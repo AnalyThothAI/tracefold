@@ -63,7 +63,6 @@ _TICKER_RE = re.compile(r"\$([A-Z]{2,6})\b")
 _NUMBER_RE = re.compile(r"(\d[\d,]*\.?\d*)\s*(%|bn|billion|m|million|k|bps|tn|trillion)?", re.IGNORECASE)
 
 # Admissions a stronger member may not overwrite.
-_REGATE_ADMISSIONS = frozenset({"candidate", "listing_deterministic", "recovery"})
 _STRONG_MEMBER_SCORE = 80.0
 
 _INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
@@ -1106,11 +1105,10 @@ def _member_result(
     now_ms: int,
     evidence_revised: bool = False,
 ) -> AdmitResult:
-    """Attach a member and, when the member is stronger evidence than the leader, re-gate a suppressed Event."""
+    """Attach a member and flag stronger evidence for semantic reanalysis."""
 
-    row = repos.news.event_regate_context(event_id)
+    row = repos.news.event_member_context(event_id)
     admission = str(row["admission"]) if row else "candidate"
-    upgraded = False
     stronger = False
     if row:
         leader_metadata = dict(row["leader_provider_metadata"] or {})
@@ -1125,30 +1123,11 @@ def _member_result(
             or member_score >= _STRONG_MEMBER_SCORE
             or (bool(reporting_origin) and reporting_origin != str(row["leader_origin"] or ""))
         )
-    if (
-        row
-        and admission not in _REGATE_ADMISSIONS
-        and gate.admission == "candidate"
-        and (stronger or admission == "suppressed_pr_template")
-    ):
-        repos.news.upgrade_event_admission(
-            event_id=event_id,
-            admission="candidate",
-            queue_priority=gate.queue_priority,
-            asset_class=gate.asset_class,
-            grounded_assets=gate.grounded_assets,
-            grounded_assets_json=grounded_assets_json,
-            watchlist_hits=gate.watchlist_hits,
-            watchlist_hits_json=watchlist_hits_json,
-            macro_lexicon=gate.macro_lexicon,
-            now_ms=now_ms,
-        )
-        admission, upgraded = "candidate", True
     return AdmitResult(
         item_id=item_id,
         item_inserted=inserted,
         event_id=event_id,
-        event_created=upgraded,  # an upgraded Event is published exactly like a new candidate
+        event_created=False,
         admission=admission,
         event_kind=event_kind,
         match_kind=match_kind,

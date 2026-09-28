@@ -57,12 +57,10 @@ _NEWS_QUERY_NAMES = (
     "news_status_pipeline",
     "news_status_source_contracts",
     "news_status_delivery",
-    "news_status_funnel_suppressed",
     "news_status_funnel_decisions",
     "news_status_funnel_reviews",
     "news_status_funnel_review_ratios",
     "news_status_funnel_totals",
-    "news_status_learning_retention",
     "news_quote_snapshot_read",
     # #553: three statements per market list request and four per detail request. The timeline, the
     # card that spoke for an observation and the observations that card covered are each their own
@@ -201,12 +199,10 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_pipeline",
         "news_status_source_contracts",
         "news_status_delivery",
-        "news_status_funnel_suppressed",
         "news_status_funnel_decisions",
         "news_status_funnel_reviews",
         "news_status_funnel_review_ratios",
         "news_status_funnel_totals",
-        "news_status_learning_retention",
     )
     # #604 T3: `/api/trading/cases` plans a primary-key Case read and three grouped 24 h counts. The
     # windowed page and its filtered twin are still audited -- `tracefold trading cases [--state]`
@@ -471,12 +467,10 @@ def test_status_audit_reads_its_sql_from_the_production_module_only():
         "STATUS_PIPELINE_SQL",
         "STATUS_SOURCE_CONTRACTS_SQL",
         "STATUS_DELIVERY_SQL",
-        "STATUS_FUNNEL_SUPPRESSED_SQL",
         "STATUS_FUNNEL_DECISIONS_SQL",
         "STATUS_FUNNEL_REVIEWS_SQL",
         "STATUS_FUNNEL_REVIEW_RATIOS_SQL",
         "STATUS_FUNNEL_TOTALS_SQL",
-        "STATUS_LEARNING_RETENTION_SQL",
     }
     assert all(getattr(feed_sql, name) for name in referenced)
 

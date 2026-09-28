@@ -24,8 +24,6 @@ OutcomeKind = Literal[
     "pending_delivery",
     "delivered",
     "delivery_failed",
-    # #706: the EventUpdate path. Semantic work, the adopted head and the notification plan replace the
-    # Triage verdict for every Event whose evidence reached the News Agent.
     "queued_semantic",
     "semantic_failed",
     "no_update",
@@ -69,63 +67,12 @@ class Outcome:
 ADMISSION_ZH: Final[dict[str, str]] = {
     "candidate": "已送审",
     "listing_deterministic": "上币/下币公告（自动送审）",
-    "telemetry_deterministic": "持仓异动遥测（规则判断，不过模型）",
-    "liquidation_deterministic": "强平遥测（规则解析，不过模型）",
-    "suppressed_pr_template": "律所推广模板，规则直接拦截",
-    "suppressed_low_signal": "低分社媒/盘口噪音，规则直接拦截",
-    "unsupported_market_contract": "市场/钱包数据合同未支持，安全落库但不送审",
     "recovery": "断线期间补抄的旧闻，仅用于去重与历史",
 }
 
-OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
-    "degraded_listing_objective": "模型不可用，上币/下币客观规则兜底推送",
-    "degraded_watchlist_objective": "模型不可用，关注列表客观规则兜底推送",
-    "degraded_no_objective_guard": "模型不可用且未命中客观推送条件",
-    "listing_deterministic": "上币/下币公告按客观规则推送",
-    "stored": "持仓异动帧已解析入账，推送由 Signal 通道负责",
-    "liquidation_fact_only": "已发生强平事实，不推断后续方向",
-    "oi_parse_failed": "持仓异动供应商格式无法解析，已安全拦截",
-    "liquidation_parse_failed": "强平供应商格式无法解析，已安全拦截",
-    "watchlist_objective_guard": "命中关注列表客观条件",
-    "single_name_without_instrument": "单一标的事实未给出可交易标的，不推送",
-    "price_report_without_basis": "纯价格播报，正文未给出关口、纪录或量化资金流等依据，不推送",
-    "conflict_claim_uncorroborated": "冲突单方说法，来源权威未知且仅单条独立文本，不推送",
-    "conflict_running_storyline": "同一冲突线索读者已收到，且非状态变化或官方措施，不推送",
-    "stale_source_artifact": "来源推文本身已过时，按旧闻扣下",
-    "restatement": "重复：读者已收到同一事实",
-    # #675 §1, policy v16: the decision table's own rows.
-    "escalate_corroborated": "状态变化或官方措施，且来源可确认或有第二条独立文本，重点推送",
-    "escalate_uncorroborated": "达到重点标准但来源权威未知且仅单条独立文本，降为普通推送",
-    "fact_kind_state_change": "事实类型：状态变化，推送",
-    "fact_kind_new_quantity": "事实类型：新数据，推送",
-    "fact_kind_level_crossed": "事实类型：价格关口，推送",
-    "fact_kind_period_record": "事实类型：期内纪录，推送",
-    "fact_kind_quantified_flow": "事实类型：量化资金流，推送",
-    "fact_kind_official_measure": "事实类型：官方措施，推送",
-    "fact_kind_statement": "事实类型：表态，不推送",
-    "fact_kind_recap": "事实类型：综述或复述，不推送",
-    "fact_kind_schedule": "事实类型：日程，不推送",
-    "fact_kind_promotion": "事实类型：营销推广，不推送",
-    "fact_kind_unavailable": "该判断未给出事实类型，无法判定，不推送",
-    # Retired with policy v15 and kept for the ledger. `decide()` cannot produce these names any more, but
-    # the 30-day verdict retention still holds rows carrying them, and a console that rendered a bare key
-    # for a card the reader received last week would be a worse answer than a stale one (#675 §1).
-    "trade_relevance_escalate": "（v15 及以前）交易相关性达到重点推送标准",
-    "trade_relevance_escalate_uncorroborated": "（v15 及以前）达到重点标准但来源未知且仅单条来源，降为普通推送",
-    "trade_relevance_realtime": "（v15 及以前）交易相关性达到实时推送标准",
-    "trade_relevance_inconsistent": "（v15 及以前）交易相关性字段不一致，未达推送标准",
-    "reader_value_background": "（v15 及以前）仅有背景价值，不实时推送",
-    "reader_value_none": "（v15 及以前）无读者价值，不推送",
-}
-
 ERROR_CODE_ZH: Final[dict[str, str]] = {
-    "oi_parse_failed": "持仓异动供应商格式无法解析",
-    "liquidation_parse_failed": "强平供应商格式无法解析",
-    "news_triage_circuit_open": "模型熔断中（连续失败后暂停调用）",
     "news_semantic_program_unconfigured": "未配置语义程序",
     "news_semantic_program_identity_mismatch": "语义程序身份校验失败",
-    "news_canary_artifact_missing": "候选语义程序制品缺失",
-    "news_canary_assignment_identity_invalid": "候选分配身份校验失败",
     "news_program_route_deadline": "语义程序超时",
     "news_program_output_truncated": "语义程序输出被截断",
 }
@@ -140,7 +87,6 @@ INCIDENT_CAUSE_ZH: Final[dict[str, str]] = {
     "broker_backpressure": "队列背压",
     "broker_unavailable": "队列不可用",
     "process_outage": "进程中断",
-    "triage_circuit_open": "模型熔断",
     "unknown": "未知原因",
 }
 
@@ -152,61 +98,9 @@ DELIVERY_ERROR_ZH: Final[dict[str, str]] = {
     "news_delivery_attempts_exhausted": "投递尝试已耗尽，未送达",
 }
 
-DEDUPE_FAMILY_ZH: Final[dict[str, str]] = {
-    "general": "综合",
-    "filing": "公告/申报",
-    "market_telemetry": "盘口数据",
-    "disaster": "灾害",
-}
-
-DIRECTION_ZH: Final[dict[str, str]] = {
-    "bullish": "利多",
-    "bearish": "利空",
-    "neutral": "中性",
-    "unclear": "方向待定",
-}
-# #675 §1: what kind of new thing the card states, in the reader's language. It replaces `MAGNITUDE_ZH`,
-# whose four words ("影响很小" .. "影响重大") rendered the model's own guess at how much the reader should
-# care. That field is deleted; an observation of the text is what the card carries in its place.
-FACT_KIND_ZH: Final[dict[str, str]] = {
-    "state_change": "状态变化",
-    "new_quantity": "新数据",
-    "level_crossed": "关口",
-    "period_record": "期内纪录",
-    "quantified_flow": "资金流",
-    "official_measure": "官方措施",
-    "statement": "表态",
-    "recap": "综述",
-    "schedule": "日程",
-    "promotion": "推广",
-}
-SCOPE_ZH: Final[dict[str, str]] = {"macro": "宏观", "sector": "板块", "single_name": "个别标的"}
-# The model's novelty judgment against the told ledger (issue #61).
-NOVELTY_ZH: Final[dict[str, str]] = {"new_fact": "新事实", "progression": "新进展", "restatement": "复述"}
-PRIORITY_ZH: Final[dict[str, str]] = {"high": "高优先级", "normal": "普通"}
-DECISION_ZH: Final[dict[str, str]] = {
-    "push": "推送",
-    "escalate": "重点推送",
-    "drop": "不推",
-    "throttled": "限流",
-    "degraded": "降级",
-}
-
-_SEEN_SUFFIX: Final = ":seen"
-# #504 D2's per-storyline budget withhold, `storyline:<key>:budget`. History only: policy v17 deleted the
-# rule and no current decision writes the key, but the v12-v16 rows that carry it stay in the ledger.
-_BUDGET_SUFFIX: Final = ":budget"
-# #154. Constant rather than per-age so the top-10 `throttled_by_key` map keeps one bucket for the rule.
-# History only since #706: the legacy verdicts that carry it stay readable, no current decision writes it.
-_STALE_ARTIFACT_KEY: Final = "artifact:stale"
-
 
 def admission_zh(admission: str | None) -> str:
     return ADMISSION_ZH.get(str(admission or ""), str(admission or ""))
-
-
-def override_rule_zh(rule: str | None) -> str:
-    return OVERRIDE_RULE_ZH.get(str(rule or ""), str(rule or ""))
 
 
 def error_code_zh(code: str | None) -> str:
@@ -251,45 +145,6 @@ def storyline_key_zh(key: str | None) -> str:
         if entry is not None:
             return entry.label_zh
     return text
-
-
-def throttled_by_zh(key: str | None) -> str:
-    text = str(key or "")
-    if not text:
-        return ""
-    if text == _STALE_ARTIFACT_KEY:
-        return "旧闻：这条推文在 provider 推送时就已过时"
-    if text.endswith(_SEEN_SUFFIX):
-        return "重复：读者刚收到过内容高度相近的卡片"
-    if text.endswith(_BUDGET_SUFFIX):
-        return "同线索预算：过去一小时该线索已推送达到上限，且本条并非方向反转"
-    return text
-
-
-def direction_zh(value: str | None) -> str:
-    return DIRECTION_ZH.get(str(value or ""), str(value or ""))
-
-
-def fact_kind_zh(value: str | None) -> str:
-    """The card's own word for one ``fact_kind``, or nothing for a verdict that states none.
-
-    A verdict written under `news_judgment_v2` has no `fact_kind` and a degraded one never had an
-    observation to report; both render as an empty string rather than as a kind nobody claimed.
-    """
-
-    return FACT_KIND_ZH.get(str(value or ""), "")
-
-
-def scope_zh(value: str | None) -> str:
-    return SCOPE_ZH.get(str(value or ""), str(value or ""))
-
-
-def decision_zh(value: str | None) -> str:
-    return DECISION_ZH.get(str(value or ""), str(value or ""))
-
-
-def novelty_zh(value: str | None) -> str:
-    return NOVELTY_ZH.get(str(value or ""), str(value or ""))
 
 
 # ------------------------------------------------------------------------------------------------ outcome
@@ -364,32 +219,17 @@ def _outcome(kind: OutcomeKind, text_zh: str, reason_zh: str) -> Outcome:
 
 __all__ = [
     "ADMISSION_ZH",
-    "DECISION_ZH",
-    "DEDUPE_FAMILY_ZH",
     "DELIVERY_ERROR_ZH",
-    "DIRECTION_ZH",
     "ERROR_CODE_ZH",
-    "FACT_KIND_ZH",
     "INCIDENT_CAUSE_ZH",
-    "NOVELTY_ZH",
     "OUTCOME_GROUP",
     "OUTCOME_VERSION",
-    "OVERRIDE_RULE_ZH",
-    "PRIORITY_ZH",
-    "SCOPE_ZH",
     "Outcome",
     "OutcomeKind",
     "admission_zh",
-    "decision_zh",
     "delivery_error_zh",
-    "direction_zh",
     "error_code_zh",
     "event_outcome",
-    "fact_kind_zh",
     "incident_cause_zh",
-    "novelty_zh",
-    "override_rule_zh",
-    "scope_zh",
     "storyline_key_zh",
-    "throttled_by_zh",
 ]

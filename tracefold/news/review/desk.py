@@ -251,8 +251,6 @@ class ReviewDesk:
 
     def open(self, query: DeskQuery, *, principal: Principal) -> dict[str, Any]:
         self._require_principal(principal)
-        if query.task.startswith("evt."):
-            raise ValueError("news_review_legacy_task_retired")
         if query.view == "coverage":
             return self._decision_coverage(query)
         return self._open_decision_queue(query)
@@ -288,8 +286,6 @@ class ReviewDesk:
         self, task: TaskRef | None, submission: ReviewSubmission, *, principal: Principal, idempotency_key: str
     ) -> dict[str, Any]:
         self._require_principal(principal)
-        if task is not None and task.task_id.startswith("evt."):
-            raise ValueError("news_review_legacy_task_retired")
         key = _idempotency_key(idempotency_key)
         request_sha = _sha(
             {

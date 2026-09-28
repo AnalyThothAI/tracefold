@@ -9,7 +9,7 @@ takes no lock and loses no compare-and-swap: `read` and `tx` are direct calls on
 object, so a recorded call order cannot tell one transaction from two, and a scripted `False` is not
 a CAS that was actually lost. Atomicity, row locks, CAS, uniqueness, crash survival and replay are
 asserted against real rows in `tests/integration/test_news_crash_replay.py`,
-`test_news_durable_event_plane.py`, `test_news_v3_pipeline.py`, `test_news_learning_retention.py`
+`test_news_durable_event_plane.py`, `test_news_v3_pipeline.py`
 and the twin `tests/integration/test_news_v3_consumers.py` (#598 D8).
 """
 
@@ -1887,7 +1887,7 @@ def test_janitor_contains_typed_wake_transients_but_unknown_failures_escape() ->
 
         prefix = ""
 
-    news = RecordingNews(pending_semantic_event_ids=["ev-transient"], purge_learning_retention={})
+    news = RecordingNews(pending_semantic_event_ids=["ev-transient"])
     telemetry = RecordingHandoffTelemetry()
     db = FakeWorkerDatabase(news)
 
@@ -1933,7 +1933,7 @@ def test_janitor_projects_the_latest_publish_failure_into_broker_status(
         return NOW_MS + 10_000
 
     monkeypatch.setattr("tracefold.news.pipeline.maintenance.now_ms", clock_ms)
-    news = RecordingNews(purge_learning_retention={})
+    news = RecordingNews()
     db = FakeWorkerDatabase(news)
 
     asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, bus=Bus()).turn())
@@ -1952,7 +1952,6 @@ def test_janitor_refreshes_every_fixed_opennews_incident_gauge(monkeypatch: pyte
             {"cause_class": "authentication", "count": 2, "oldest_opened_at_ms": NOW_MS - 90_000},
             {"cause_class": "future_dynamic_cause", "count": 3, "oldest_opened_at_ms": NOW_MS - 30_000},
         ],
-        purge_learning_retention={},
     )
     telemetry = RecordingHandoffTelemetry()
     db = FakeWorkerDatabase(news)
@@ -1966,7 +1965,7 @@ def test_janitor_refreshes_every_fixed_opennews_incident_gauge(monkeypatch: pyte
     assert observed["unknown"] == ("opennews", 3, 30.0)
     assert observed["broker_unavailable"] == ("opennews", 0, 0.0)
 
-    deferred_news = RecordingNews(purge_learning_retention={})
+    deferred_news = RecordingNews()
     deferred_db = FakeWorkerDatabase(
         deferred_news,
         admission_timeout_for={"news_opennews_incident_summary"},
@@ -1982,7 +1981,7 @@ def test_janitor_refreshes_every_fixed_opennews_incident_gauge(monkeypatch: pyte
         asyncio.run(JanitorLoop(db=broken_db, cold_db=broken_db.cold_port, telemetry=telemetry).turn())
 
 
-def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transactions() -> None:
+def test_janitor_runs_bounded_raw_batches_in_cold_transactions() -> None:
     raw_batches = iter(
         (
             {
@@ -2001,11 +2000,6 @@ def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transa
     )
     news = RecordingNews(
         purge_before=lambda **_kwargs: next(raw_batches),
-        purge_learning_retention={
-            "deleted_recordings": 2,
-            "deleted_cases": 1,
-            "deleted_artifacts": 0,
-        },
     )
     db = FakeWorkerDatabase(news)
     telemetry = RecordingHandoffTelemetry()
@@ -2024,7 +2018,6 @@ def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transa
         "news_chain_tape_retention",
         # #706: the judgment cache and stage checkpoints keep 14 days, one bounded batch per pass.
         "news_semantic_cache_retention",
-        "news_learning_retention",
     ]
     assert news.kwargs_of("chain_tape_purge_fills")["limit"] == 500
     # The judged cutoff, not the raw one: a track outlives the raw text and dies with the judged
@@ -2032,7 +2025,6 @@ def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transa
     prune = news.kwargs_of("market_prune_tracks")
     assert prune == {"cutoff_ms": news.kwargs_of("purge_before")["judged_cutoff_ms"], "limit": 500}
     assert db.operations == ["news_opennews_incident_summary"]
-    assert news.kwargs_of("purge_learning_retention") == {"batch_size": 500}
     assert [name for name in news.names() if name == "purge_before"] == ["purge_before", "purge_before"]
     assert telemetry.raw_retention[0]["deleted_rows"] == 501
     assert telemetry.raw_retention[0]["batches"] == 2
@@ -2045,35 +2037,13 @@ def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transa
 def test_janitor_does_not_sweep_a_wallet_tape_that_is_not_running() -> None:
     """#572 PR-1. A disabled tape writes no fills, so a `DELETE` every sixty seconds has a known answer."""
 
-    news = RecordingNews(purge_before={}, purge_learning_retention={})
+    news = RecordingNews(purge_before={})
     db = FakeWorkerDatabase(news)
 
     asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port).turn())
 
     assert "news_chain_tape_retention" not in db.heavy_operations
     assert "chain_tape_purge_fills" not in news.names()
-
-
-def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
-    def _fail(**_kwargs: Any) -> dict[str, Any]:
-        raise RuntimeError("broken retention function")
-
-    news = RecordingNews(purge_before={}, purge_learning_retention=_fail)
-    db = FakeWorkerDatabase(news)
-
-    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, chain_tape_enabled=True).turn())
-
-    assert db.heavy_operations == [
-        "news_expire_bands",
-        "news_raw_retention",
-        "news_market_track_retention",
-        "news_chain_tape_retention",
-        "news_semantic_cache_retention",
-        "news_learning_retention",
-        "news_learning_retention_error",
-    ]
-    error = news.kwargs_of("record_learning_retention_error")
-    assert error["error_code"] == "learning_retention_failed:RuntimeError"
 
 
 # ---------------------------------------------------------- Receiver / Recovery

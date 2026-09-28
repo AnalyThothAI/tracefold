@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from .outcome import admission_zh, error_code_zh, incident_cause_zh
+from .outcome import error_code_zh, incident_cause_zh
 
 HEALTH_VERSION: Final = "news_health_v1"
 
@@ -269,8 +269,6 @@ def status_health(
         "delivered_1h": int(delivery.get("sent_1h") or 0),
     }
     reasons: list[dict[str, Any]] = []
-    for key, count in (pipeline.get("suppressed_by_reason") or {}).items():
-        reasons.append({"stage": "gate", "key": key, "label_zh": admission_zh(key), "count": int(count)})
     for key, count in (pipeline.get("decision_actions_24h") or {}).items():
         reasons.append({"stage": "decision", "key": key, "label_zh": str(key), "count": int(count)})
     # The provider tag is its own label here: "SPOT" and "NEAR" say more to an operator than any sentence we

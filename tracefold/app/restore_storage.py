@@ -122,13 +122,6 @@ def _summary(conn: Any) -> dict[str, Any]:
             SELECT (SELECT version_num FROM alembic_version) AS migration_head,
                    (SELECT count(*) FROM news_items WHERE left(item_id, 8) = 'restore-') AS news_items,
                    (SELECT count(*) FROM news_events WHERE event_id = %s) AS current_events,
-                   (SELECT count(*) FROM information_schema.columns
-                     WHERE table_schema = 'public' AND table_name IN ('news_events', 'news_reviews')
-                       AND column_name = 'current_contract_archive_only')
-                     + (SELECT count(*) FROM pg_class relation
-                          JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
-                         WHERE namespace.nspname = 'public'
-                           AND relation.relname = 'news_current_events_v1') AS retired_compatibility_objects,
                    (SELECT count(*) FROM news_event_evidence_snapshots WHERE event_id = %s) AS evidence_rows,
                    (SELECT max(evidence_sha256) FROM news_event_evidence_snapshots WHERE event_id = %s)
                      AS evidence_sha256,
@@ -166,7 +159,6 @@ def _summary(conn: Any) -> dict[str, Any]:
     numeric = {
         "news_items",
         "current_events",
-        "retired_compatibility_objects",
         "evidence_rows",
         "delivery_rows",
         "update_rows",
@@ -210,7 +202,6 @@ def _smoke(conn: Any) -> dict[str, bool]:
         and delivery["plan"]["action"] == "notify"
         and delivery["document"]["event_id"] == _CURRENT_EVENT_ID
         and summary["update_rows"] == summary["decision_rows"] == summary["delivery_rows"] == 1,
-        "pre_genesis_compatibility_absent": summary["retired_compatibility_objects"] == 0,
         "trading_case_fact": case is not None
         and case["state"] == "SIGNAL_EMITTED"
         and case["manifest_sha256"] == summary["case_manifest_sha256"],

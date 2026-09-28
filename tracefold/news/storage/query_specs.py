@@ -37,10 +37,8 @@ from .feed_sql import (
     STATUS_FUNNEL_DECISIONS_SQL,
     STATUS_FUNNEL_REVIEW_RATIOS_SQL,
     STATUS_FUNNEL_REVIEWS_SQL,
-    STATUS_FUNNEL_SUPPRESSED_SQL,
     STATUS_FUNNEL_TOTALS_SQL,
     STATUS_INGEST_SQL,
-    STATUS_LEARNING_RETENTION_SQL,
     STATUS_PIPELINE_SQL,
     STATUS_SOURCE_CONTRACTS_SQL,
     SUBJECT_CODE_PREDICATE,
@@ -379,13 +377,6 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
-            name="news_status_funnel_suppressed",
-            sql=STATUS_FUNNEL_SUPPRESSED_SQL,
-            params=(day_ago,),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
             name="news_status_funnel_decisions",
             sql=STATUS_FUNNEL_DECISIONS_SQL,
             params=(day_ago,),
@@ -412,12 +403,6 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             params=(day_ago,),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="news_status_learning_retention",
-            sql=STATUS_LEARNING_RETENTION_SQL,
-            max_read_return_amplification=4.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         # #88 price plane. The due scan and the review aggregates are the two reads that could grow without
         # anyone noticing, so both are in the EXPLAIN registry with their real predicates.

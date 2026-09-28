@@ -117,12 +117,10 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_status_pipeline",
         "news_status_source_contracts",
         "news_status_delivery",
-        "news_status_funnel_suppressed",
         "news_status_funnel_decisions",
         "news_status_funnel_reviews",
         "news_status_funnel_review_ratios",
         "news_status_funnel_totals",
-        "news_status_learning_retention",
     ),
     # One statement over `trading_cases`, where the two 24 h `count(*)` scans this route also ran on
     # every 15 s poll were rendered nowhere the desk still has (#537 PR-5).

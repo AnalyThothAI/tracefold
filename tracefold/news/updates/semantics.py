@@ -480,14 +480,7 @@ def assemble_update(
                 event_id=head.event_id, content_revision=head.content_revision, claim=claim
             )
         evidence = {**{item.ref: item for item in head.evidence}, **evidence}
-        # v1 stored only Event-wide topic contributions. Carry that same broad scope forward;
-        # do not erase it merely because per-claim contributions were introduced in v2.
-        claims = {
-            claim.ref: claim.model_copy(update={"topics": claim.topics or head.topics})
-            if head.schema_version == "news_event_update_v1"
-            else claim
-            for claim in head.claims
-        }
+        claims = {claim.ref: claim for claim in head.claims}
         links = {(row.claim_ref, row.evidence_ref): row for row in head.evidence_relations}
         retired = set(head.retired_claim_refs)
         head_refs = set(claims)

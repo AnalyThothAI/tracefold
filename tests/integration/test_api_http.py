@@ -231,8 +231,7 @@ def test_api_projects_deterministic_event_assets_from_postgres_to_feed_and_detai
     with write_repositories() as repos, repos.transaction():
         repos.conn.execute("DELETE FROM news_event_assets WHERE event_id = %s", (event_id,))
         repos.conn.execute(
-            "UPDATE news_events SET admission = 'telemetry_deterministic', grounded_assets = '[]'::jsonb"
-            " WHERE event_id = %s",
+            "UPDATE news_events SET grounded_assets = '[]'::jsonb WHERE event_id = %s",
             (event_id,),
         )
         for seeded_event_id in event_ids:

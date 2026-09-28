@@ -454,36 +454,6 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           ))}
         </KeyValue>
       </section>
-      <section>
-        <h4>学习证据保留</h4>
-        <KeyValue>
-          <KeyValueRow
-            k="eligible"
-            v={`${status.learning_retention.eligible_recordings} recordings · ${status.learning_retention.eligible_cases} cases · ${status.learning_retention.eligible_artifacts} artifacts`}
-          />
-          <KeyValueRow
-            k="deleted_last_turn"
-            v={`${status.learning_retention.deleted_recordings} recordings · ${status.learning_retention.deleted_cases} cases · ${status.learning_retention.deleted_artifacts} artifacts`}
-          />
-          <KeyValueRow
-            k="oldest_recording_age"
-            v={optionalDuration(status.learning_retention.oldest_recording_age_ms)}
-          />
-          <KeyValueRow
-            k="oldest_case_age"
-            v={optionalDuration(status.learning_retention.oldest_case_age_ms)}
-          />
-          <KeyValueRow
-            k="oldest_artifact_age"
-            v={optionalDuration(status.learning_retention.oldest_artifact_age_ms)}
-          />
-          <KeyValueRow
-            k="last_run_at_ms"
-            v={optionalTime(status.learning_retention.last_run_at_ms)}
-          />
-          <KeyValueRow k="last_error_code" v={status.learning_retention.last_error_code ?? "—"} />
-        </KeyValue>
-      </section>
     </NewsTechnical>
   );
 }

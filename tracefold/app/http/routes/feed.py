@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import time
-from typing import Annotated, Any
+from typing import Annotated, Any, get_args
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
 from tracefold.news import EVENT_KINDS, IPTC_SUBJECT_CODES, SOURCE_AUTHORITIES
+from tracefold.news.models import Admission
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
@@ -18,13 +19,7 @@ from .events import _attach_asset_refs
 router = APIRouter()
 _FeedEnvelope = api_schemas.ApiEnvelope[feed_schemas.NewsFeedData]
 
-_ADMISSIONS = {
-    "candidate",
-    "listing_deterministic",
-    "suppressed_pr_template",
-    "suppressed_low_signal",
-    "recovery",
-}
+_ADMISSIONS = frozenset(get_args(Admission))
 
 
 @router.get("/news/feed", response_model=_FeedEnvelope)

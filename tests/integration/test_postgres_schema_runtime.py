@@ -4,7 +4,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test, postgres_migration_test_dsn
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.platform.postgres.audit import HISTORICAL_TRADING_TABLES, NEWS_TABLES, TRADING_TABLES
+from tracefold.platform.postgres.audit import NEWS_TABLES, TRADING_TABLES
 from tracefold.platform.postgres.maintenance_gate import acquire_steady_gate, release_steady_gate
 from tracefold.platform.postgres.migrations import (
     latest_migration_version,
@@ -39,8 +39,6 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
             }
 
         news_event_columns = columns("news_events")
-        news_review_columns = columns("news_reviews")
-        news_verdict_columns = columns("news_verdicts")
         news_delivery_columns = columns("news_deliveries")
         semantic_work_columns = columns("news_semantic_work")
         semantic_observation_columns = columns("news_semantic_observations")
@@ -71,13 +69,14 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         # #104: the Trading bounded context's own five tables. Registered separately from
         # `NEWS_TABLES` so "exactly these tables" stays a per-capability claim.
         *TRADING_TABLES,
-        *HISTORICAL_TRADING_TABLES,
     }
     assert {
         "news_strategy_provenance_valid",
         "reject_news_event_evidence_mutation",
         "reject_news_review_mutation",
     } <= functions
+    assert "news_current_triage_verdict_valid" not in functions
+    assert "purge_news_learning_retention" not in functions
     assert {
         "event_id",
         "dedupe_family",
@@ -99,18 +98,10 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "focus_span_start",
         "focus_span_end",
     } <= news_event_columns
-    assert {
-        "latency_ms",
-        "queue_lag_ms",
-        "reasked_after_told_change",
-        "seen_scope",
-        "judgment_contract_version",
-        "judgment_origin",
-    } <= news_verdict_columns
     assert "family" not in news_event_columns
-    assert "current_contract_archive_only" not in news_event_columns | news_review_columns
+    assert "followup_of" not in news_event_columns
+    assert "current_contract_archive_only" not in news_event_columns
     assert "news_current_event_archive_guard" not in functions
-    assert {"model_decision", "novelty_defaulted"}.isdisjoint(news_verdict_columns)
     assert "processed_evidence_refs" not in semantic_work_columns
     assert {
         "processed_read_refs",
@@ -181,17 +172,12 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "ix_news_event_bands_expires",
         "ix_news_event_assets_event",
         "ix_news_event_assets_symbol",
-        "ix_news_verdicts_stage_created",
-        "ix_news_verdicts_final",
-        "ix_news_verdicts_unpublished_delivery",
         "ix_news_deliveries_state",
         "ix_news_deliveries_sent",
         "ix_news_deliveries_editing",
         "ix_news_deliveries_deleting",
         "ix_news_event_evidence_created",
         "ix_news_external_miss_created",
-        "ix_news_reviews_event_created",
-        "ix_news_reviews_task_created",
     } <= set(news_v3_indexes)
     assert "state = 'sent'" in news_v3_indexes["ix_news_deliveries_sent"]
     assert "gin" in news_v3_indexes["ix_news_events_search"].lower()
@@ -201,12 +187,9 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     unpublished_index = news_v3_indexes["ix_news_events_unpublished"]
     assert "published_at_ms IS NULL" in unpublished_index
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
-    assert "'telemetry_deterministic'" in unpublished_index and "'liquidation_deterministic'" in unpublished_index
-    verdict_handoff_index = news_v3_indexes["ix_news_verdicts_unpublished_delivery"]
-    assert "published_at_ms IS NULL" in verdict_handoff_index
-    assert "stage = 'triage'" in verdict_handoff_index
-    assert "final_decision = ANY" in verdict_handoff_index
-    assert version == latest_migration_version() == "20260928_0410"
+    assert "telemetry_deterministic" not in unpublished_index
+    assert "liquidation_deterministic" not in unpublished_index
+    assert version == latest_migration_version() == "20260928_0411"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -231,7 +214,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260928_0410"
+    assert version == latest_migration_version() == "20260928_0411"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:
@@ -239,16 +222,12 @@ def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None
     try:
         migrate(conn)
         ingest = conn.execute("SELECT singleton_key, updated_at_ms FROM news_ingest_state").fetchall()
-        retention = conn.execute("SELECT singleton, updated_at_ms FROM news_learning_retention_state").fetchall()
-        artifacts = conn.execute("SELECT count(*) AS n FROM news_learning_artifacts").fetchone()["n"]
     finally:
         conn.close()
 
     assert ingest == [{"singleton_key": "opennews", "updated_at_ms": 0}]
-    assert retention == [{"singleton": True, "updated_at_ms": 0}]
     # A fresh install used to arrive with a `PAUSED` runtime row and three blacklisted symbols. Both
     # seeds belonged to tables `20260901_0347` dropped, so the only structural seeds left are News's.
-    assert artifacts == 0
 
 
 def test_migration_refuses_to_run_while_the_steady_runtime_holds_the_gate(tmp_path) -> None:

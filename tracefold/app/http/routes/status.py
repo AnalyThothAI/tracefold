@@ -112,7 +112,6 @@ def get_news_status(request: Request) -> Response:
         "broker": broker_data,
         "pipeline": pipeline,
         "delivery": delivery,
-        "learning_retention": snapshot["learning_retention"],
         "watchlist": sorted(settings.news.watchlist_symbols),
         "instruments": instruments,
         "price": price,

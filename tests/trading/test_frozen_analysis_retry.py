@@ -69,5 +69,5 @@ def test_reclaimed_analysis_restores_the_original_plan_menu(tmp_path) -> None:
             "entry_reference": {"price": "102", "closed_at_ms": 960_000},
         }
     )
-    with pytest.raises(ValueError, match="frozen_analysis_version_retired"):
+    with pytest.raises(ValueError, match="frozen_analysis_version_invalid"):
         asyncio.run(AnalysisRunner._restore_prepared(runner, case, {**prior, "evidence_ref": old_ref}))

@@ -22,7 +22,7 @@ from tests.postgres_test_utils import connect_postgres_test, prepare_test_migrat
 from tests.postgres_test_utils import postgres_migration_test_dsn as postgres_test_dsn
 from tests.postgres_test_utils import test_postgres_dsn as admin_postgres_test_dsn
 from tests.support.news_legacy import LEGACY_TRIAGE_POLICY_VERSION
-from tests.support.news_legacy_storage import _persist_triage_verdict, legacy_news
+from tests.support.news_legacy_storage import _persist_triage_verdict, legacy_intent_id, legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.journal import (
     ObservationFactory,
@@ -33,7 +33,6 @@ from tracefold.news.oi_signals import parse_oi_signal
 from tracefold.news.smart_money import PARSER_VERSION
 from tracefold.news.smart_money import source_key as smart_money_source_key
 from tracefold.news.source_contracts import MARKET_CATEGORY_CONFLICT, classify_source_contracts, market_route
-from tracefold.news.storage.decisions import legacy_intent_id
 from tracefold.news.storage.wallet_snapshots import wallet_snapshot
 from tracefold.news.wallet_contracts import NetBuySnapshot
 from tracefold.platform.postgres.migrations import alembic_config
@@ -52,7 +51,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260928_0410"
+HEAD = "20260928_0411"
+PRE_CUT = "20260928_0410"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
 BEFORE_REPARSE = "20260906_0369"
@@ -259,6 +259,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        PRE_CUT,
         "20260928_0409",
         "20260928_0408",
         "20260927_0407",
@@ -365,7 +366,7 @@ def test_task_read_cut_preserves_history_without_promoting_source_only_completio
                 "VALUES ('result-read','work-read','ev-read-cut',1,repeat('a',64),'original',100,"
                 "'{}'::jsonb,ARRAY['evidence:old'])"
             )
-        command.upgrade(config, HEAD)
+        command.upgrade(config, PRE_CUT)
         work = conn.execute(
             "SELECT wanted_revision,done_revision,processed_read_refs FROM news_semantic_work "
             "WHERE event_id='ev-read-cut'"
@@ -568,7 +569,7 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="news_head_scope_repairs_forward_only_restore_verified_backup"):
+    with pytest.raises(RuntimeError, match="retired_contracts_forward_only_restore_verified_backup"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
     command.stamp(config, "20260927_0405")
@@ -1909,7 +1910,7 @@ def test_the_market_cut_rebuilds_every_observation_an_event_had_swallowed() -> N
         )
         conn.commit()
 
-        command.upgrade(config, HEAD)
+        command.upgrade(config, PRE_CUT)
 
         rows = conn.execute(
             """
@@ -2096,7 +2097,7 @@ def test_the_reparse_turns_every_backfilled_smart_money_record_into_the_fact_it_
         # The production population this revision meets: all 112 rows are `historical`, none pending.
         assert {row["market_notify_state"] for row in backlog} == {"historical"}
 
-        command.upgrade(config, HEAD)
+        command.upgrade(config, PRE_CUT)
 
         items = conn.execute(
             "SELECT item_id, title, published_at_ms, observed_at_ms, market_parse_status,"
@@ -2188,7 +2189,7 @@ def test_the_reparse_is_a_no_op_when_it_runs_again() -> None:
         for offset, (item_id, title) in enumerate(_SMART_MONEY_TITLES.items()):
             _seed_pre_cut_smart_money(conn, item_id=item_id, title=title, at_ms=at_ms + offset * 60_000)
         conn.commit()
-        command.upgrade(config, HEAD)
+        command.upgrade(config, PRE_CUT)
 
         before = conn.execute(
             "SELECT source_key, item_id, available_at_ms FROM news_market_smart_money ORDER BY source_key"
@@ -2253,7 +2254,7 @@ def test_the_backfill_classifies_a_mixed_strategy_item_by_its_primary_strategy()
         )
         conn.commit()
 
-        command.upgrade(config, HEAD)
+        command.upgrade(config, PRE_CUT)
 
         row = conn.execute(
             "SELECT market_kind, market_source_strategy_id, market_parse_status FROM news_items"
@@ -2310,7 +2311,7 @@ def test_the_rebuild_reproduces_the_parsers_own_arithmetic() -> None:
             )
         conn.commit()
 
-        command.upgrade(config, HEAD)
+        command.upgrade(config, PRE_CUT)
 
         rebuilt = {
             str(row["source_item_id"]): row
@@ -2408,7 +2409,7 @@ def test_the_backfill_and_the_live_classifier_agree_on_every_fixture() -> None:
             )
         conn.commit()
 
-        command.upgrade(config, HEAD)
+        command.upgrade(config, PRE_CUT)
 
         stored = {
             str(row["item_id"]): (row["market_kind"], row["market_parse_error"])
@@ -2943,8 +2944,8 @@ def test_local_evidence_migration_preserves_v11_verdict_and_archive(monkeypatch)
                     'response', 'text', 'old', 'Pending approval', 1, 1, 'text/plain', 'success')""")
         before = conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v WHERE stage='triage'").fetchall()
         assert before[0]["row"]["program_version"] == "news_semantic_program_v11"
-    command.upgrade(config, "head")
-    command.upgrade(config, "head")
+    command.upgrade(config, PRE_CUT)
+    command.upgrade(config, PRE_CUT)
     with closing(connect_postgres_test(read_only=False)) as conn:
         assert conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v WHERE stage='triage'").fetchall() == before
         assert (
@@ -2992,9 +2993,9 @@ def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_
             _persist_triage_verdict(repos, event_id=blocked, at_ms=2100, symbol="ETH")
         conn.rollback()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, PRE_CUT)
     # Head to head is a no-op: the revision refuses a predicate it has already rewritten.
-    command.upgrade(config, "head")
+    command.upgrade(config, PRE_CUT)
 
     with closing(connect_postgres_test(read_only=False)) as conn:
         assert conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v WHERE stage='triage'").fetchall() == before
@@ -3360,9 +3361,9 @@ def test_policy_v17_migration_keeps_the_budget_withholds_it_finds_and_admits_v17
             _persist_triage_verdict(repos, event_id=blocked, at_ms=2200, symbol="SOL")
         conn.rollback()
 
-    command.upgrade(config, "head")
+    command.upgrade(config, PRE_CUT)
     # Head to head is a no-op: the revision refuses a predicate it has already rewritten.
-    command.upgrade(config, "head")
+    command.upgrade(config, PRE_CUT)
 
     with closing(connect_postgres_test(read_only=False)) as conn:
         assert conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v ORDER BY event_id").fetchall() == before
@@ -3416,7 +3417,7 @@ def test_native_identity_cut_preserves_original_payloads_without_promoting_histo
                 ),
             )
         before = conn.execute("SELECT seq, payload, summary FROM trading_execution_observations").fetchone()
-        command.upgrade(config, HEAD)
+        command.upgrade(config, PRE_CUT)
         after = conn.execute(
             "SELECT seq, payload, summary, native_environment, native_instrument, native_trade_id "
             "FROM trading_execution_observations"
@@ -3457,7 +3458,7 @@ def test_event_update_cut_keys_every_delivery_by_its_legacy_intent_without_resen
                 (at_ms, at_ms, at_ms, at_ms),
             )
         before = {row["kind"]: row for row in conn.execute("SELECT * FROM news_deliveries ORDER BY kind").fetchall()}
-        command.upgrade(config, HEAD)
+        command.upgrade(config, PRE_CUT)
         after = {row["kind"]: row for row in conn.execute("SELECT * FROM news_deliveries").fetchall()}
         for kind, row in before.items():
             assert after[kind]["intent_id"] == legacy_intent_id("ev-legacy", kind)
@@ -3531,7 +3532,7 @@ def test_source_revision_chain_migration_preserves_history_and_orders_existing_r
                 (json.dumps(document),),
             )
         before = conn.execute("SELECT * FROM news_item_revisions ORDER BY received_at_ms").fetchall()
-        command.upgrade(config, HEAD)
+        command.upgrade(config, PRE_CUT)
         after = conn.execute("SELECT * FROM news_item_revisions ORDER BY revision_sequence").fetchall()
         for old, new in zip(before, after, strict=True):
             assert {key: new[key] for key in old} == old
@@ -3552,5 +3553,65 @@ def test_source_revision_chain_migration_preserves_history_and_orders_existing_r
             "trading_amendments_retired_idx",
             "trading_catalyst_superseded_idx",
         } <= indexes
+    finally:
+        conn.close()
+
+
+def test_retired_event_update_v1_is_removed_at_the_hard_cut() -> None:
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, PRE_CUT)
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            for name in ("old", "current"):
+                conn.execute(
+                    """INSERT INTO news_items
+                         (item_id,source_id,source_item_key,title,raw_first_line,description,
+                          reporting_origin,published_at_ms,observed_at_ms,provider_metadata,
+                          provenance,first_ingest_mode,trace_id,created_at_ms,updated_at_ms)
+                       VALUES (%s,'opennews',%s,%s,%s,'','opennews',100,100,'{}'::jsonb,
+                               '[]'::jsonb,'live','trace',100,100)""",
+                    (f"item-{name}", name, name, name),
+                )
+                conn.execute(
+                    """INSERT INTO news_events
+                         (event_id,leader_item_id,dedupe_family,comparison_fingerprint,
+                          comparison_title,leader_title,opened_at_ms,last_member_at_ms,
+                          expires_at_ms,admission,ingest_mode,trace_id,created_at_ms,updated_at_ms,
+                          focus_fact_id,focus_fact_text,focus_fact_context,focus_fact_method,
+                          focus_span_start,focus_span_end,event_kind)
+                       VALUES (%s,%s,'general',%s,%s,%s,100,100,200,'candidate','live',
+                               'trace',100,100,%s,%s,'','whole_item',0,1,'news')""",
+                    (f"event-{name}", f"item-{name}", name, name, name, f"fact-{name}", name),
+                )
+            conn.execute(
+                """INSERT INTO news_semantic_observations
+                     (result_id,work_id,event_id,input_revision,input_sha256,program_identity,
+                      completed_at_ms,understanding)
+                   VALUES ('result-old','work-old','event-old',1,repeat('a',64),
+                           'historical',100,'{}'::jsonb)"""
+            )
+            conn.execute(
+                """INSERT INTO news_event_updates
+                     (event_id,content_revision,input_revision,adopted_at_ms,
+                      observation_result_id,document)
+                   VALUES ('event-old',repeat('b',64),1,100,'result-old',
+                     jsonb_build_object('schema_version','news_event_update_v1',
+                                        'event_id','event-old','content_revision',repeat('b',64),
+                                        'input_revision',1,'previous_content_revision',NULL))"""
+            )
+        command.upgrade(config, HEAD)
+        assert [row["event_id"] for row in conn.execute("SELECT event_id FROM news_events")] == ["event-current"]
+        assert {row["item_id"] for row in conn.execute("SELECT item_id FROM news_items")} == {
+            "item-old",
+            "item-current",
+        }
+        check = conn.execute(
+            "SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint "
+            "WHERE conrelid='news_event_updates'::regclass AND conname='news_event_updates_document_check'"
+        ).fetchone()
+        assert check is not None and "news_event_update_v2" in check["definition"]
+        assert "news_event_update_v1" not in check["definition"]
     finally:
         conn.close()

@@ -1,10 +1,7 @@
 """Gate v4: deterministic evidence and queue scheduling (pure).
 
-The Gate no longer decides relevance and keeps no name table of its own: the provider already resolved entities into
-``coins[]`` with a grade, so a B+/A/A+ tag (or a literal ``$TICKER`` cashtag) *is* the grounded asset; Triage — the
-model — verifies which of them are primary. The only admissions that skip the model are recovery replays,
-deterministic listing notices and unscored or under-80 market
-telemetry frames (#126). Provider-specific deterministic lanes compose after this policy.
+The Gate schedules editorial evidence for semantic work. Market observations
+use their typed fact lane and never open an Event.
 
 The three word lists this policy still needs — the energy context that lets a ``CL`` tag ground, the macro reading
 behind ``asset_class="macro"``, and the queue-order subset — are **not defined here**. They are flags on the
@@ -36,7 +33,6 @@ _TICKER_TAG_STOP: Final = frozenset(
 )
 _GROUNDING_GRADES: Final = frozenset({"B+", "A", "A+"})
 _STRONG_GRADES: Final = frozenset({"A", "A+"})
-_MARKET_TELEMETRY_MIN_SCORE: Final = 80.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,13 +216,6 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
         reasons.append("recovery_never_delivers")
     elif listing:
         admission = "listing_deterministic"
-    # A missing provider score is `0.0`, so the old `and score` guard skipped this rule for exactly the frames
-    # it exists to hold back. It never mattered while an allowlist decided which Strategies could reach the
-    # Gate at all; #126 removed that, so an unscored market frame would otherwise cost a Triage call and could
-    # reach a reader. No score is not evidence of signal.
-    elif inp.engine_type == "market" and score < _MARKET_TELEMETRY_MIN_SCORE:
-        admission = "suppressed_low_signal"
-        reasons.append("market_telemetry_below_min_score")
     else:
         admission = "candidate"
 

@@ -563,7 +563,6 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
     reasons_24h: [
       { count: 60, key: "hold", label_zh: "保留", stage: "decision" },
       { count: 7, key: "SPOT", label_zh: "SPOT", stage: "ungrounded" },
-      { count: 8, key: "suppressed_pr_template", label_zh: "律所推广模板", stage: "gate" },
     ],
     delivery: {
       delivery_available: true,
@@ -581,20 +580,6 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       last_publish_at_ms: NEWS_NOW_MS - 6_000,
       open_incidents: [],
       token_configured: true,
-    },
-    learning_retention: {
-      deleted_artifacts: 0,
-      deleted_cases: 0,
-      deleted_recordings: 0,
-      eligible_artifacts: 0,
-      eligible_cases: 0,
-      eligible_recordings: 0,
-      last_error_code: null,
-      last_run_at_ms: NEWS_NOW_MS - 60_000,
-      oldest_artifact_age_ms: 7 * 86_400_000,
-      oldest_case_age_ms: 7 * 86_400_000,
-      oldest_recording_age_ms: 7 * 86_400_000,
-      updated_at_ms: NEWS_NOW_MS - 60_000,
     },
     measured_at_ms: NEWS_NOW_MS,
     pipeline: {
@@ -621,7 +606,6 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       tagged_24h: 172,
       reviewed_external_miss_24h: 0,
       reviewed_decision_should_push_24h: 1,
-      suppressed_by_reason: { suppressed_pr_template: 8 },
       ungrounded_by_symbol_24h: { SPOT: 7, NEAR: 2 },
       card_dedicated: false,
       card_fallback_dedicated: false,

@@ -35,7 +35,6 @@ def test_new_decision_is_reviewable_without_old_verdict(selected: bool) -> None:
 
     conn = connect_postgres_test(read_only=False)
     try:
-        assert conn.execute("SELECT count(*) AS n FROM news_verdicts WHERE event_id=%s", (EVENT,)).fetchone()["n"] == 0
         desk = ReviewDesk(conn, now_ms=clock.now_ms + 1)
         principal = Principal(subject="reviewer")
         queue = desk.open(DeskQuery(status="pending", event=EVENT), principal=principal)

@@ -91,7 +91,6 @@ def test_operational_audit_deep_mode_runs_explicit_exact_counts(tmp_path, postgr
     assert payload["mode"] == "deep"
     assert set(payload["counts"]) == set(NEWS_TABLES) | set(TRADING_TABLES)
     assert all(count >= 0 for count in payload["counts"].values())
-    assert payload["counts"]["news_learning_epochs"] == 0
 
 
 def test_operational_audit_rejects_wrong_application_ownership(tmp_path, postgres_clone_dsn: str):

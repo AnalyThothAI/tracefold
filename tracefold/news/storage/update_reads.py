@@ -70,7 +70,7 @@ EVENT_NOTIFICATION_WORK_SQL: Final = """
       LEFT JOIN news_notification_decisions d ON d.decision_ref = w.decision_ref
      WHERE w.event_id = %s AND w.channel = 'news'
 """
-# Every ledger row of one Event, legacy cards and update intents alike.
+# Every EventUpdate delivery receipt for one Event.
 EVENT_DELIVERIES_SQL: Final = """
     SELECT intent_id, kind, state, card, receipt, error_code, attempted_at_ms, settled_at_ms,
            created_at_ms, edit_state, pending_card, edit_error_code, edit_attempted_at_ms,

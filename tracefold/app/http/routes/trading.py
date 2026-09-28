@@ -351,7 +351,6 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
             else None
         ),
         "root_chain": row.get("root_chain") or [],
-        "analysis_evaluations": row.get("analysis_evaluations") or [],
         "review_mode": review_mode,
     }
 

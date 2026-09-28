@@ -1,4 +1,4 @@
-"""#697 upgrades real predecessor rows without rewriting historical evidence."""
+"""Wallet predecessor rows are rewritten once into the current strict snapshot contract."""
 
 from __future__ import annotations
 
@@ -63,9 +63,12 @@ def test_membership_cutover_archives_statistics_repairs_unsafe_cursor_and_preser
             )
         original = conn.execute("SELECT initial_snapshot,send_snapshot FROM news_market_wallet_events").fetchone()
         command.upgrade(config, "head")
-        assert (
-            conn.execute("SELECT initial_snapshot,send_snapshot FROM news_market_wallet_events").fetchone() == original
-        )
+        current = conn.execute("SELECT initial_snapshot,send_snapshot FROM news_market_wallet_events").fetchone()
+        for column in ("initial_snapshot", "send_snapshot"):
+            assert "rank_quality" not in current[column]["window"]["members"][0]
+            assert "source_closed_trades" not in current[column]["window"]["members"][0]
+            assert "source_profit_factor" not in current[column]["window"]["members"][0]
+            assert original[column]["window"]["members"][0]["rank_quality"] == 1
         row = conn.execute("SELECT * FROM news_market_wallet_tape_state").fetchone()
         assert (row["high_water_block"], row["high_water_tx_index"]) == (99, 2147483647)
         assert row["scanned_block"] is row["scanned_log"] is row["scanned_at_ms"] is None
@@ -86,12 +89,12 @@ def test_membership_cutover_archives_statistics_repairs_unsafe_cursor_and_preser
         assert state["scanned_log"] == 2147483647
 
 
-def test_historical_projection_removes_only_known_retired_fields():
+def test_runtime_snapshot_rejects_old_and_unknown_fields():
     evidence = snapshot().model_dump(mode="json")
     evidence["window"]["members"][0]["rank_quality"] = 4
-    projected = wallet_snapshot(evidence)
-    assert "rank_quality" not in projected["window"]["members"][0]
-    assert evidence["window"]["members"][0]["rank_quality"] == 4
+    with pytest.raises(ValidationError):
+        wallet_snapshot(evidence)
+    del evidence["window"]["members"][0]["rank_quality"]
     evidence["window"]["members"][0]["unrecognized_future_field"] = 1
     with pytest.raises(ValidationError):
         wallet_snapshot(evidence)

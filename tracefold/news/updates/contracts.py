@@ -349,8 +349,8 @@ def content_material(
     """The business material of one adopted revision.
 
     Wording, program, observation/adoption clocks and explanatory prose do not manufacture a new
-    business revision. v2 includes current structured knowledge and topic contributions; v1 retains
-    its original identity. Evidence is identified by immutable source refs.
+    business revision. Current structured knowledge and topic contributions are part of the identity.
+    Evidence is identified by immutable source refs.
     """
 
     relations = sorted(
@@ -403,8 +403,7 @@ def content_revision_for(content_sha: str, previous_content_revision: str | None
 
 
 class EventUpdate(Exact):
-    # v1 remains readable as immutable history; every new adoption writes v2.
-    schema_version: Literal["news_event_update_v1", "news_event_update_v2"] = "news_event_update_v2"
+    schema_version: Literal["news_event_update_v2"] = "news_event_update_v2"
     event_id: str
     input_revision: int = Field(ge=1)
     content_sha: str
@@ -431,9 +430,7 @@ class EventUpdate(Exact):
             (claim.ref for claim in self.claims),
             self.retired_claim_refs,
             self.evidence_relations,
-            state=None
-            if self.schema_version == "news_event_update_v1"
-            else semantic_state(
+            state=semantic_state(
                 self.claims,
                 self.implications,
                 self.open_questions,

@@ -172,7 +172,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsSourceContracts24hData",
         "NewsDeliveryStatusData",
         "NewsDuplicatesWithheld24hData",
-        "NewsLearningRetentionStatusData",
         "NewsMarketData",
         "NewsMarketDeliveryData",
         "NewsMarketFiltersData",
@@ -230,7 +229,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "broker",
         "pipeline",
         "delivery",
-        "learning_retention",
         "watchlist",
         "instruments",
         # #88 §11: per-source quote freshness and Reaction backlog.
@@ -552,24 +550,6 @@ def test_generated_contracts_have_no_retired_product_ai_surface() -> None:
     for token in retired_contract_tokens:
         assert token not in openapi_text
         assert token not in openapi_ts_text
-
-
-def test_contracts_md_lists_the_same_fact_kinds_as_the_code() -> None:
-    """`docs/CONTRACTS.md` is the hand-written public-surface truth CLAUDE.md points readers at.
-
-    It spells the closed vocabulary out in prose, so nothing else notices when the code-owned order gains
-    a value: #173 added `product_progress` to the retired channel enum and the doc kept listing eleven
-    codes until a reviewer read both. A client validating a current accepted-review payload against a
-    stale list rejects a legitimate answer.
-    """
-
-    from tracefold.news.models import FACT_KINDS
-
-    document = (Path(__file__).resolve().parents[2] / "docs" / "CONTRACTS.md").read_text(encoding="utf-8")
-    documented = "|".join(FACT_KINDS)
-    assert f"`{documented}`" in document, (
-        f"docs/CONTRACTS.md does not spell the current code-owned fact-kind order; expected `{documented}`"
-    )
 
 
 _CONTRACTS_MD = ROOT / "docs" / "CONTRACTS.md"

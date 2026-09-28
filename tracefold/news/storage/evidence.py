@@ -79,13 +79,19 @@ BACKGROUND_CANDIDATES_SQL = (
     + """, channels AS (SELECT * FROM explicit UNION ALL SELECT * FROM entity UNION ALL SELECT * FROM similarity_band),
 merged AS (SELECT DISTINCT ON (event_id) * FROM channels ORDER BY event_id, priority, score DESC
            LIMIT %(candidate_max)s)
-SELECT m.*, COALESCE(v.verdict->'assets', '[]'::jsonb) ||
+SELECT m.*, COALESCE((
+         SELECT jsonb_agg(asset)
+           FROM (SELECT document FROM news_event_updates u
+                  WHERE u.event_id=m.event_id AND u.adopted_at_ms <= %(cutoff)s
+                  ORDER BY u.adopted_at_ms DESC, u.content_revision DESC LIMIT 1) latest
+           CROSS JOIN LATERAL jsonb_array_elements(latest.document -> 'claims') claim
+           CROSS JOIN LATERAL jsonb_array_elements(claim -> 'fields' -> 'assets') asset
+          WHERE NOT (COALESCE(latest.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+            AND NOT (COALESCE(latest.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+       ), '[]'::jsonb) ||
        COALESCE((SELECT jsonb_agg(jsonb_build_object('symbol', a.symbol, 'market_type', a.market_type))
                  FROM news_event_assets a WHERE a.event_id=m.event_id), '[]'::jsonb) AS assets
-  FROM merged m LEFT JOIN LATERAL (
-    SELECT verdict FROM news_verdicts WHERE event_id=m.event_id AND stage='triage'
-      AND created_at_ms <= %(cutoff)s ORDER BY created_at_ms DESC, policy_version DESC LIMIT 1
-  ) v ON true
+  FROM merged m
 """
 )
 

@@ -18,17 +18,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from tests.support.news_update_cards import adopted, draft, source
 from tracefold.news.delivery import update_card_assets
 from tracefold.news.events.storyline import (
-    final_storyline_key,
     same_storyline_key,
     storyline_asset,
 )
 from tracefold.news.market_review.pricing import QuoteRequest
-from tracefold.news.models import MarketAsset, TriageVerdict, market_type_of
+from tracefold.news.models import MarketAsset, market_type_of
 from tracefold.news.updates.contracts import Asset
 
 _FIXTURE = Path(__file__).parents[1] / "fixtures/news/issue_651_raw_cases.json"
@@ -100,19 +97,10 @@ def _card_assets(*assets: dict[str, Any]) -> list[MarketAsset]:
 
 
 # ---------------------------------------------------------- (e) storyline: two SEIs are two stories
-def _sei_key(market_type: str) -> str:
-    return final_storyline_key(
-        title="SEI pre-announces Q3 and Q4 and raises full-year guidance",
-        headline_zh="SEI 上调全年指引",
-        scope="single_name",
-        verdict_primaries=[MarketAsset("SEI", market_type)],  # type: ignore[arg-type]
-        grounded_assets=["SEI"],
-        dedupe_family="filing",
-    )
 
 
 def test_two_sei_markets_are_two_storylines_and_two_untyped_ones_are_still_one() -> None:
-    crypto, equity, unknown = _sei_key("crypto"), _sei_key("equity"), _sei_key("unknown")
+    crypto, equity, unknown = "asset:crypto:SEI", "asset:equity:SEI", "asset:SEI"
 
     assert crypto == "asset:crypto:SEI" and equity == "asset:equity:SEI" and unknown == "asset:SEI"
     assert not same_storyline_key(crypto, equity)
@@ -122,17 +110,3 @@ def test_two_sei_markets_are_two_storylines_and_two_untyped_ones_are_still_one()
     assert same_storyline_key(unknown, unknown)
     assert storyline_asset(crypto) == MarketAsset("SEI", "crypto")
     assert storyline_asset("conflict:mideast_2026") is None
-
-
-# ------------------------------------------------------------------- the stored history keeps parsing
-@pytest.mark.parametrize("name", sorted(_CASES))
-def test_every_frozen_production_verdict_still_validates_under_the_typed_contract(name: str) -> None:
-    """The durable ledger is audit truth and is never rewritten, so reading it must never raise."""
-
-    for row in _CASES[name]["verdicts"]:
-        verdict = TriageVerdict.model_validate(row["verdict"])
-        assert all(asset.market_type in {"crypto", "equity", "unknown"} for asset in verdict.assets)
-        stored = {str(dict(asset).get("market_type")) for asset in row["verdict"]["assets"]}
-        if stored - {"crypto", "equity"}:
-            # `None` and `token` are both outside the vocabulary and both read as `unknown`.
-            assert any(asset.market_type == "unknown" for asset in verdict.assets)

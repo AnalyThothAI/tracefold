@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from tests.postgres_test_utils import connect_postgres_test, seed_current_news_evidence
+from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_review.pricing import (
     QUOTE_TARGET_MAX,
@@ -25,7 +25,7 @@ NOW = 1_787_000_000_000
 HOUR = 3_600_000
 EVENTS = 50_000
 ASSETS_PER_EVENT = 2
-VERDICT_BATCH = 5_000
+UPDATE_BATCH = 5_000
 
 
 @pytest.fixture(scope="module")
@@ -54,7 +54,7 @@ def _serve_session(conn: Any) -> None:
 
 
 def _seed(conn: Any) -> None:
-    """One window of Events, verdicts, deliveries and two Reactions each — 100k rows, set-based."""
+    """One window of Events, adopted updates and two Reactions each — 100k rows, set-based."""
 
     window_start = NOW - REVIEW_MAX_HOURS * HOUR
     # Spread the corpus across the whole window, the way a live month arrives — bunching it at the start made
@@ -93,98 +93,45 @@ def _seed(conn: Any) -> None:
         """,
         (window_start, step, EVENTS),
     )
-    seed_current_news_evidence(conn)
     conn.commit()
-    verdict_sql = """
-        WITH base AS (
-          SELECT g,
-                 (ARRAY['push', 'drop', 'throttled', 'escalate'])[1 + g %% 4] AS final_decision,
-                 jsonb_build_object(
-                   'novelty', 'new_fact',
-                   'restates', -1,
-                   'assets', jsonb_build_array(
-                     jsonb_build_object('symbol', 'S' || (g %% 500), 'market_type', NULL, 'role', 'primary'),
-                     jsonb_build_object('symbol', 'T' || (g %% 500), 'market_type', NULL, 'role', 'primary')
-                   ),
-                   'direction', (ARRAY['bullish', 'bearish', 'neutral'])[1 + g %% 3],
-                   'scope', 'single_name',
-                   'magnitude', g %% 4,
-                   'confidence', 1.0,
-                   'audience', 'none',
-                   'headline_zh', '容量测试 ' || g,
-                   'why_zh', ''
-                 ) AS verdict
-            FROM generate_series(%s::integer, %s::integer) AS g
-        ), judgment AS (
-          SELECT *, jsonb_build_object(
-                   'judgment_contract_version', 'news_judgment_v2',
-                   'origin', 'degraded',
-                   'verdict', verdict,
-                   'decision', jsonb_build_object(
-                     'final', final_decision,
-                     'override_rule', 'capacity_fixture',
-                     'throttled_by', NULL,
-                     'rule_baseline', 'push',
-                     'watchlist_hits', '[]'::jsonb,
-                     'seen_similarity', NULL,
-                     'seen_against', -1,
-                     'seen_scope', ''
-                   ),
-                   'error_code', 'capacity_fixture'
-                 ) AS judgment_atom
-            FROM base
-        ), addressed AS (
-          SELECT *,
-                 encode(sha256(convert_to(news_canonical_jsonb(verdict), 'UTF8')), 'hex') AS verdict_sha,
-                 encode(sha256(
-                   convert_to(news_canonical_jsonb(judgment_atom), 'UTF8')
-                 ), 'hex') AS judgment_sha
-            FROM judgment
-        )
-        INSERT INTO news_verdicts (
-          event_id, stage, policy_version, judgment_contract_version, judgment_origin,
-          rule_baseline_decision, final_decision, override_rule, verdict, editorial,
-          scored_judgment_sha256, runtime_manifest_sha, model, program_version, program_sha256,
-          degraded, error_code, trace, evidence_version, evidence_sha256, focus_fact_id, created_at_ms
-        )
-        SELECT 'e-' || g, 'triage', 'news_triage_policy_v13', 'news_judgment_v2', 'degraded',
-               'push', final_decision, 'capacity_fixture', verdict, NULL,
-               judgment_sha, repeat('b', 64), NULL, 'news_semantic_program_v9', repeat('a', 64),
-               true, 'capacity_fixture',
+    observation_sql = """
+        INSERT INTO news_semantic_observations
+          (result_id,work_id,event_id,input_revision,input_sha256,program_identity,completed_at_ms,understanding)
+        SELECT 'result:e-' || g, 'work:e-' || g, 'e-' || g, 1, repeat('a',64), 'price-scale-fixture',
+               %s + g * %s::bigint, '{}'::jsonb
+          FROM generate_series(%s::integer,%s::integer) AS g
+    """
+    update_sql = """
+        INSERT INTO news_event_updates
+          (event_id,content_revision,input_revision,adopted_at_ms,observation_result_id,document)
+        SELECT 'e-' || g, repeat('a',64), 1, %s + g * %s::bigint, 'result:e-' || g,
                jsonb_build_object(
-                 'judgment_contract_version', 'news_judgment_v2',
-                 'judgment_origin', 'degraded',
-                 'judgment_sha256', judgment_sha,
-                 'verdict_sha256', verdict_sha,
-                 'runtime_manifest_sha', repeat('b', 64),
-                 'evidence_version', 1,
-                 'evidence_sha256', evidence.evidence_sha256,
-                 'focus_fact_id', 'fact:' || g,
-                 'program_version', 'news_semantic_program_v9',
-                 'program_sha256', repeat('a', 64),
-                 'told', '[]'::jsonb,
-                 'told_count', 0,
-                 'judgment', judgment_atom
-               ),
-               1, evidence.evidence_sha256, 'fact:' || g, %s + g * %s::bigint
-          FROM addressed
-          JOIN news_event_evidence_snapshots evidence
-            ON evidence.event_id = 'e-' || g AND evidence.evidence_version = 1
-        """
-    for batch_start in range(1, EVENTS + 1, VERDICT_BATCH):
-        batch_end = min(EVENTS, batch_start + VERDICT_BATCH - 1)
-        conn.execute(verdict_sql, (batch_start, batch_end, window_start, step))
+                 'schema_version','news_event_update_v2', 'event_id','e-' || g,
+                 'content_revision',repeat('a',64), 'input_revision',1,
+                 'previous_content_revision',NULL,
+                 'claims',jsonb_build_array(jsonb_build_object(
+                   'ref','cl:e-' || g,
+                   'fields',jsonb_build_object('assets',jsonb_build_array(
+                     jsonb_build_object('symbol','S' || (g %% 500),'market_type','crypto_perp','role','primary'),
+                     jsonb_build_object('symbol','T' || (g %% 500),'market_type','crypto_perp','role','primary')
+                   )))))
+          FROM generate_series(%s::integer,%s::integer) AS g
+    """
+    head_sql = """
+        INSERT INTO news_event_update_heads
+          (event_id,content_revision,input_revision,update_ref,adopted_at_ms)
+        SELECT 'e-' || g, repeat('a',64), 1,
+               news_identity('update',jsonb_build_array('e-' || g,repeat('a',64))),
+               %s + g * %s::bigint
+          FROM generate_series(%s::integer,%s::integer) AS g
+    """
+    for batch_start in range(1, EVENTS + 1, UPDATE_BATCH):
+        batch_end = min(EVENTS, batch_start + UPDATE_BATCH - 1)
+        params = (window_start, step, batch_start, batch_end)
+        conn.execute(observation_sql, params)
+        conn.execute(update_sql, params)
+        conn.execute(head_sql, params)
         conn.commit()
-    conn.execute(
-        """
-        INSERT INTO news_deliveries (intent_id, event_id, kind, state, card, attempted_at_ms, settled_at_ms,
-                                     created_at_ms)
-        SELECT news_identity('legacy_intent', jsonb_build_array('e-' || g, 'first')), 'e-' || g, 'first', 'sent',
-               '{}'::jsonb, %s + g * %s::bigint, %s + g * %s::bigint, %s + g * %s::bigint
-          FROM generate_series(1, %s) AS g WHERE g %% 4 = 0
-        """,
-        (window_start, step, window_start, step, window_start, step, EVENTS),
-    )
     conn.execute(
         """
         INSERT INTO news_event_reactions (event_id, symbol, metric_version, venue, venue_symbol,
@@ -214,10 +161,8 @@ def _seed(conn: Any) -> None:
     )
     conn.execute("ANALYZE news_event_reactions")
     conn.execute("ANALYZE news_events")
-    conn.execute("ANALYZE news_verdicts")
-    # The production review joins first-delivery state. Leaving this table to auto-analyze made the
-    # native-timeout plan depend on whether background maintenance won a race with the assertion.
-    conn.execute("ANALYZE news_deliveries")
+    conn.execute("ANALYZE news_event_update_heads")
+    conn.execute("ANALYZE news_event_updates")
     conn.commit()
 
 

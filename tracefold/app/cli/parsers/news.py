@@ -30,7 +30,7 @@ def add_news_commands(
     news_review = news_subcommands.add_parser("review", help="ReviewDesk queue, evidence, and append-only judgments")
     review_subcommands = news_review.add_subparsers(dest="review_command", required=True)
     review_queue = review_subcommands.add_parser("queue", help="open the deterministic operator review queue")
-    review_queue.add_argument("--view", choices=("queue", "coverage", "market"), default="queue")
+    review_queue.add_argument("--view", choices=("queue", "coverage"), default="queue")
     review_queue.add_argument("--cohort", default="")
     review_queue.add_argument("--stratum", default="")
     review_queue.add_argument("--task", default="")

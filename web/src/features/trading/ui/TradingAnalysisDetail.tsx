@@ -27,7 +27,7 @@ const SOURCE_TEXT_MAX = 160;
 /**
  * The frozen source's own words. A News EventUpdate source (#706: `catalyst_delta`/`source_update`) carries
  * claims and a deterministic `text`, never a headline: the first claim statement reads as the source, else
- * the head of `text`. A legacy catalyst keeps its headline/why and an OI source its kind, as before.
+ * the head of `text`. An OI source uses its kind.
  */
 function sourceLabel(source: Record<string, unknown> | null): string {
   if (source?.kind === "catalyst_delta" || source?.kind === "source_update") {
@@ -39,7 +39,7 @@ function sourceLabel(source: Record<string, unknown> | null): string {
     const text = typeof source.text === "string" ? source.text.trim() : "";
     if (text) return text.length > SOURCE_TEXT_MAX ? `${text.slice(0, SOURCE_TEXT_MAX)}…` : text;
   }
-  return word(source?.headline ?? source?.why ?? source?.kind);
+  return word(source?.kind);
 }
 
 function attemptClock(value: number | null | undefined): string {
@@ -307,7 +307,7 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
                 </div>
               ))
             ) : (
-              <p className="trading-inline-empty">旧 Case 或尚未开始分析。</p>
+              <p className="trading-inline-empty">尚未开始分析。</p>
             )}
           </Card>
 
@@ -325,42 +325,6 @@ export function TradingAnalysisDetail({ item, token }: { item: TradingCase; toke
               </div>
             ) : (
               <p className="trading-inline-empty">没有适用的价格路径。</p>
-            )}
-          </Card>
-
-          <Card flush title="历史净值评估" hint="以下是旧版研究记录；模拟结果不是交易所成交收益">
-            {item.analysis_evaluations?.length ? (
-              <div className="trading-case-checks">
-                {item.analysis_evaluations.map((evaluation) => {
-                  const result = record(evaluation.result);
-                  return (
-                    <div key={`${evaluation.source}-${evaluation.evaluation_version}`}>
-                      <p>
-                        {evaluation.source === "shadow_simulation"
-                          ? "历史模拟路径"
-                          : "历史场所回执"}{" "}
-                        · {evaluation.status} · {evaluation.evaluation_version}
-                      </p>
-                      <p>
-                        原因：{word(evaluation.reason)} · 净值：
-                        {result?.net_bps == null && result?.net_usd == null
-                          ? "不可评价"
-                          : evaluation.source === "shadow_simulation"
-                            ? `${word(result?.net_bps)} bps`
-                            : `${word(result?.net_usd)} USD`}
-                      </p>
-                      <p>
-                        证据：决策报价 {word(evaluation.decision_quote_ref)} · 计划报价{" "}
-                        {word(evaluation.planned_quote_ref)} · 标记价格{" "}
-                        {word(evaluation.mark_path_ref)} · 资金费 {word(evaluation.funding_ref)} ·
-                        场所回执 {word(evaluation.venue_receipt_ref)}
-                      </p>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="trading-inline-empty">尚无可评估的交易决策。</p>
             )}
           </Card>
         </div>

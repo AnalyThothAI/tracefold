@@ -34,10 +34,6 @@ PUBLIC_NEWS_INTERFACE = {
     # it, so the browser contract and the News contracts cannot disagree about what a market is. The
     # normalizer and the comparison rule that read it stay private.
     "MarketType",
-    # #675 §1: the closed `fact_kind` vocabulary legacy verdicts carry. The HTTP legacy triage summary and
-    # the review submission are both typed by it, so the browser and review contracts read one vocabulary.
-    "FACT_KINDS",
-    "FactKind",
     "NetBuySnapshot",
     "OI_METRIC_VERSION",
     # #553: the market read surface's own vocabulary and bounds, which the HTTP route validates a

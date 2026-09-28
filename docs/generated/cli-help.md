@@ -271,7 +271,7 @@ options:
 ## `news review queue`
 
 ```
-usage: tracefold news review queue [-h] [--view {queue,coverage,market}]
+usage: tracefold news review queue [-h] [--view {queue,coverage}]
                                    [--cohort COHORT] [--stratum STRATUM]
                                    [--task TASK] [--event EVENT]
                                    [--status {pending,accepted,all}]
@@ -280,7 +280,7 @@ usage: tracefold news review queue [-h] [--view {queue,coverage,market}]
 
 options:
   -h, --help            show this help message and exit
-  --view {queue,coverage,market}
+  --view {queue,coverage}
   --cohort COHORT
   --stratum STRATUM
   --task TASK

@@ -15,24 +15,12 @@ import {
  */
 export type FeedFilterChanges = Partial<Omit<NewsFeedFilters, "q">> & { q?: string | null };
 
-/*
- * `telemetry_deterministic` left this list with the admission itself (#553 PR-1): market observations are
- * not admitted to the Event feed at all, so the chip could only ever have returned an empty page.
- */
-export const KNOWN_ADMISSIONS = [
-  "candidate",
-  "listing_deterministic",
-  "recovery",
-  "suppressed_low_signal",
-  "suppressed_pr_template",
-] as const;
+export const KNOWN_ADMISSIONS = ["candidate", "listing_deterministic", "recovery"] as const;
 
 export const ADMISSION_FILTER_LABELS: Record<string, string> = {
   candidate: "已送审",
   listing_deterministic: "上币/下币公告",
   recovery: "补抄件",
-  suppressed_low_signal: "低分噪音（未送审）",
-  suppressed_pr_template: "律所模板（未送审）",
 };
 export function parseFeedFilters(searchParams: URLSearchParams): NewsFeedFilters {
   return {

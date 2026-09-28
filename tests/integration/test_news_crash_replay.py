@@ -661,5 +661,4 @@ def test_a_mark_failure_after_a_successful_wake_is_re_woken_and_adopted_exactly_
     assert _count(conn, "SELECT count(*) AS n FROM news_semantic_observations WHERE event_id = %s", (event_id,)) == 1
     work = conn.execute("SELECT * FROM news_semantic_work WHERE event_id = %s", (event_id,)).fetchone()
     assert work["done_revision"] == 1 and work["last_outcome"] == "adopted"
-    assert _count(conn, "SELECT count(*) AS n FROM news_verdicts WHERE event_id = %s", (event_id,)) == 0
     assert len(_events(conn)) == 1

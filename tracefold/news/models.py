@@ -17,15 +17,10 @@ EVENT_IDENTITY_VERSION = "news_event_identity_v6"
 # and the change label (新增/更新/更正). No model direction, novelty or fact kind, and no progression review.
 DELIVERY_CARD_VERSION = "news_delivery_card_v12"
 
-# What the editorial Gate can decide about one Event. Three market admissions left this vocabulary
-# with the Events they described (#553): a market observation is stored with its typed fact at
-# admission and is never gated, queued or judged, so it has no admission to carry. The strings remain
-# on historical rows and `outcome.py` still renders them; nothing new is written under them.
+# What the editorial Gate can decide about one Event.
 Admission = Literal[
     "candidate",
     "listing_deterministic",
-    "suppressed_pr_template",
-    "suppressed_low_signal",
     "recovery",
 ]
 # The admissions that go on to Triage. `listing_deterministic` is an admitted state, not a suppression: the funnel,
@@ -41,43 +36,8 @@ ADMITTED_ADMISSIONS: Final[frozenset[str]] = frozenset({"candidate", "listing_de
 # 30.6 h old exchange notice). Code-owned, not policy: it is a relevance floor, not a tuning knob.
 OUTBOX_MAX_AGE_MS: Final[int] = 30 * 60_000
 
-# #675 §1: the closed `fact_kind` vocabulary legacy `news_judgment_v3` verdicts carry. Nothing new writes
-# it since #706 (an EventUpdate states claims, not one kind per Event); it stays so the durable verdict
-# ledger, the Console and the ReviewDesk can still read the rows that do.
-#
-# The order is canonical: the six that state a new fact about the world first, the four that restate,
-# schedule or sell one after them. Nothing here is ranked by importance, and no row reads the order.
-FACT_KINDS: Final[tuple[str, ...]] = (
-    "state_change",
-    "new_quantity",
-    "level_crossed",
-    "period_record",
-    "quantified_flow",
-    "official_measure",
-    "statement",
-    "recap",
-    "schedule",
-    "promotion",
-)
-FactKind = Literal[
-    "state_change",
-    "new_quantity",
-    "level_crossed",
-    "period_record",
-    "quantified_flow",
-    "official_measure",
-    "statement",
-    "recap",
-    "schedule",
-    "promotion",
-]
-# The four kinds the legacy decision table never pushed on their own; the ReviewDesk flags a legacy card
-# of one of them that still reached the reader.
-DROP_FACT_KINDS: Final[frozenset[str]] = frozenset({"statement", "recap", "schedule", "promotion"})
 AssetClass = Literal["crypto", "equity_or_commodity", "macro", "none"]
 EngineType = Literal["news", "meme", "listing", "market", "unknown"]
-Decision = Literal["push", "escalate", "drop", "throttled"]
-Novelty = Literal["new_fact", "progression", "restatement"]
 ReaderReceiptState = Literal["received", "not_received", "unknown"]
 
 
@@ -265,98 +225,6 @@ def same_market_asset(left: MarketAsset, right: MarketAsset) -> bool:
     return "unknown" in {left.market_type, right.market_type} or left.market_type == right.market_type
 
 
-class TriageAsset(BaseModel):
-    """One instrument a judgment is about, in the one market vocabulary News compares assets under.
-
-    ``market_type`` used to be a free optional string, and a free optional string is not an identity:
-    ``SEI`` the Cosmos token and ``SEI`` the NYSE-listed insurer produced byte-identical assets, so the
-    storyline key, the told overlap, the gold comparison and the quote target could not tell a coin
-    headline from an equity headline about the same three letters (#651 §6.2). It is required now, over
-    exactly the catalogue's instrument-class vocabulary, so every comparison is ``(market_type, symbol,
-    role)`` and a contradiction is visible instead of silently agreeing.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    symbol: str = Field(min_length=1, max_length=16)
-    market_type: MarketType = Field(
-        description=(
-            "REQUIRED. crypto | equity | commodity | index | fx | pre_ipo | unknown. "
-            "Emit unknown rather than confirming a market the evidence does not establish."
-        )
-    )
-    role: Literal["primary", "mentioned"]
-
-    @model_validator(mode="before")
-    @classmethod
-    def _market_is_vocabulary_or_unknown(cls, value: Any) -> Any:
-        """Normalize the stored position before validation, so reading history can never raise.
-
-        Verdicts written before #651 carry ``null`` or a provider-tag word (``token``, ``cex``,
-        ``private``, ``equity_or_commod``) here. Those rows are audit truth and are never rewritten, so
-        the one contract that owns this field is also the one place that says what they mean: nothing
-        the vocabulary can honour, therefore ``unknown``. Refusing them would crash every reader of the
-        durable ledger; defaulting them to ``crypto`` would invent the exact claim this field exists to
-        stop inventing.
-        """
-
-        if isinstance(value, Mapping):
-            return {**value, "market_type": market_type_of(value.get("market_type"))}
-        return value
-
-
-class TriageVerdict(BaseModel):
-    """Current shared semantic and reader-copy atom.
-
-    ``novelty`` is judged against the told ledger in the status bar (cards the reader already received) and comes
-    first in the schema on purpose: the model fills the tool call in property order, and a required field placed
-    last was the one it dropped (issue #61 probe: 7/44 hard inputs omitted it). ``restates`` is an integer sentinel
-    (-1 = none) rather than ``int | None`` because the anyOf/null shape raised the empty-tool-call rate. Semantic
-    taxonomy lives only in ``EditorialEnvelope.taxonomy`` and every action lives only in ``DecisionResult``.
-
-    ``fact_kind`` and ``evidence_ref`` arrive with `news_judgment_v3` (#675 §1) and replace ``magnitude`` and
-    ``audience``. They are ``None``/``""`` on exactly two kinds of row and on no third: a verdict read back
-    out of the ledger that was written under `news_judgment_v2`, and the code-owned degraded fallback, which
-    made no observation of the text to report. Every model judgment written from here on carries both, and
-    the database CHECK is what says so.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    novelty: Novelty = Field(
-        description="REQUIRED. new_fact | progression | restatement, judged against <event_status>.told",
-    )
-    restates: int = Field(
-        default=-1, ge=-1, description="index i of the told entry this event restates; -1 unless novelty=restatement"
-    )
-    assets: list[TriageAsset] = Field(default_factory=list, max_length=8)
-    direction: Literal["bullish", "bearish", "neutral", "unclear"]
-    scope: Literal["macro", "sector", "single_name"]
-    fact_kind: FactKind | None = None
-    evidence_ref: str = Field(default="", max_length=64)
-    confidence: float = Field(ge=0.0, le=1.0)
-    headline_zh: str = Field(min_length=1, max_length=60)
-    why_zh: str = Field(default="", max_length=140)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _drop_retired_v2_fields(cls, value: Any) -> Any:
-        """Read a `news_judgment_v2` verdict without rewriting it (#675 §1).
-
-        ``magnitude`` and ``audience`` are on every verdict the ledger holds from before this contract,
-        those rows are audit truth addressed by `scored_judgment_sha256`, and they are never migrated.
-        The frozen learning corpus, the review projection and the release metric all validate a stored
-        verdict through this model, so refusing the two keys would make the durable ledger unreadable and
-        keeping them as live fields would leave the deleted policy inputs in the contract. The one place
-        that owns the fields is also the one place that says what a row carrying them means: a v2 row,
-        whose `fact_kind` is unknown rather than any particular kind.
-        """
-
-        if isinstance(value, Mapping) and ("magnitude" in value or "audience" in value):
-            return {key: item for key, item in value.items() if key not in {"magnitude", "audience"}}
-        return value
-
-
 def base_symbol(symbol: str) -> str:
     """The canonical instrument identity used wherever two symbol sets are compared."""
 
@@ -366,30 +234,23 @@ def base_symbol(symbol: str) -> str:
 __all__ = [
     "ADMITTED_ADMISSIONS",
     "DELIVERY_CARD_VERSION",
-    "DROP_FACT_KINDS",
     "EVENT_IDENTITY_VERSION",
-    "FACT_KINDS",
     "MARKET_TYPES",
     "NEWS_BUS_SCHEMA_VERSION",
     "OUTBOX_MAX_AGE_MS",
     "Admission",
     "AssetClass",
-    "Decision",
     "EngineType",
     "ExactNewsModel",
-    "FactKind",
     "MarketAsset",
     "MarketType",
     "NewsFeedEntry",
-    "Novelty",
     "ReaderDeliveryPresentation",
     "ReaderMarketMovement",
     "ReaderMarketState",
     "ReaderReceipt",
     "ReaderReceiptState",
     "ReaderTradeTarget",
-    "TriageAsset",
-    "TriageVerdict",
     "base_symbol",
     "market_type_of",
     "same_market_asset",

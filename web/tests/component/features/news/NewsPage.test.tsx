@@ -856,11 +856,9 @@ describe("NewsPage", () => {
       expect(within(reasons).getByText(reason.label_zh)).toBeInTheDocument();
     }
     expect(within(reasons).getByText("保留")).toBeInTheDocument();
-    expect(within(reasons).getByText("律所推广模板")).toBeInTheDocument();
     expect(
       within(reasons).queryByText("storyline:conflict:mideast_2026:cap3"),
     ).not.toBeInTheDocument();
-    expect(within(reasons).queryByText("suppressed_pr_template")).not.toBeInTheDocument();
 
     // The pause/mute control panel went with `news_control_state`: it never withheld a card, so the
     // console has nothing to show and no button that would be a second writer.
@@ -876,8 +874,6 @@ describe("NewsPage", () => {
     const technical = screen.getByText(/技术指标/).closest("details")!;
     expect(technical).not.toHaveAttribute("open");
     expect(within(technical).getByText("decisions_24h")).toBeInTheDocument();
-    expect(within(technical).getByText("学习证据保留")).toBeInTheDocument();
-    expect(within(technical).getByText("deleted_last_turn")).toBeInTheDocument();
   });
 
   it("shows a deterministic ledger asset in the Event detail current-quote table", async () => {
@@ -1016,15 +1012,10 @@ describe("NewsPage", () => {
         HttpResponse.json({
           ok: true,
           data: newsEventDetailFixture({
-            deliveries: [
-              newsDeliveryFixture({ intent_id: `legacy_intent:${"5".repeat(64)}`, kind: "first" }),
-            ],
+            deliveries: [],
             event_update: null,
             processing: null,
-            timeline: [
-              ...newsTimelineFixture().slice(0, 2),
-              { ...newsTimelineFixture()[3], facts: { kind: "first", state: "sent" } },
-            ],
+            timeline: newsTimelineFixture().slice(0, 2),
           }),
         }),
       ),

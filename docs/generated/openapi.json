@@ -3915,109 +3915,6 @@
         "title": "NewsItemRelatedEventsData",
         "type": "object"
       },
-      "NewsLearningRetentionStatusData": {
-        "additionalProperties": false,
-        "properties": {
-          "deleted_artifacts": {
-            "default": 0,
-            "title": "Deleted Artifacts",
-            "type": "integer"
-          },
-          "deleted_cases": {
-            "default": 0,
-            "title": "Deleted Cases",
-            "type": "integer"
-          },
-          "deleted_recordings": {
-            "default": 0,
-            "title": "Deleted Recordings",
-            "type": "integer"
-          },
-          "eligible_artifacts": {
-            "default": 0,
-            "title": "Eligible Artifacts",
-            "type": "integer"
-          },
-          "eligible_cases": {
-            "default": 0,
-            "title": "Eligible Cases",
-            "type": "integer"
-          },
-          "eligible_recordings": {
-            "default": 0,
-            "title": "Eligible Recordings",
-            "type": "integer"
-          },
-          "last_error_code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Error Code"
-          },
-          "last_run_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Run At Ms"
-          },
-          "oldest_artifact_age_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oldest Artifact Age Ms"
-          },
-          "oldest_case_age_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oldest Case Age Ms"
-          },
-          "oldest_recording_age_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oldest Recording Age Ms"
-          },
-          "updated_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Updated At Ms"
-          }
-        },
-        "title": "NewsLearningRetentionStatusData",
-        "type": "object"
-      },
       "NewsMarketData": {
         "additionalProperties": false,
         "properties": {
@@ -5444,13 +5341,6 @@
           "source_contracts_24h": {
             "$ref": "#/components/schemas/NewsSourceContracts24hData"
           },
-          "suppressed_by_reason": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Suppressed By Reason",
-            "type": "object"
-          },
           "tagged_24h": {
             "default": 0,
             "title": "Tagged 24H",
@@ -6424,9 +6314,6 @@
           "instruments": {
             "$ref": "#/components/schemas/NewsInstrumentUniverse"
           },
-          "learning_retention": {
-            "$ref": "#/components/schemas/NewsLearningRetentionStatusData"
-          },
           "measured_at_ms": {
             "title": "Measured At Ms",
             "type": "integer"
@@ -6481,7 +6368,6 @@
           "broker",
           "pipeline",
           "delivery",
-          "learning_retention",
           "measured_at_ms"
         ],
         "title": "NewsStatusData",
@@ -8697,13 +8583,6 @@
               }
             ]
           },
-          "analysis_evaluations": {
-            "items": {
-              "$ref": "#/components/schemas/TradingCaseEvaluationData"
-            },
-            "title": "Analysis Evaluations",
-            "type": "array"
-          },
           "analysis_outcomes": {
             "items": {
               "$ref": "#/components/schemas/TradingAnalysisOutcomeData"
@@ -9039,138 +8918,6 @@
           "created_at_ms"
         ],
         "title": "TradingCaseData",
-        "type": "object"
-      },
-      "TradingCaseEvaluationData": {
-        "additionalProperties": false,
-        "properties": {
-          "decision_at_ms": {
-            "title": "Decision At Ms",
-            "type": "integer"
-          },
-          "decision_quote_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Decision Quote Ref"
-          },
-          "due_at_ms": {
-            "title": "Due At Ms",
-            "type": "integer"
-          },
-          "evaluated_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Evaluated At Ms"
-          },
-          "evaluation_version": {
-            "title": "Evaluation Version",
-            "type": "string"
-          },
-          "funding_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Funding Ref"
-          },
-          "mark_path_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mark Path Ref"
-          },
-          "planned_quote_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Planned Quote Ref"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          },
-          "result": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Result"
-          },
-          "scheduled_at_ms": {
-            "title": "Scheduled At Ms",
-            "type": "integer"
-          },
-          "source": {
-            "enum": [
-              "shadow_simulation",
-              "paper_venue"
-            ],
-            "title": "Source",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "venue_receipt_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Venue Receipt Ref"
-          }
-        },
-        "required": [
-          "source",
-          "evaluation_version",
-          "status",
-          "decision_at_ms",
-          "scheduled_at_ms",
-          "due_at_ms"
-        ],
-        "title": "TradingCaseEvaluationData",
         "type": "object"
       },
       "TradingCasesData": {

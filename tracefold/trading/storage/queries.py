@@ -120,12 +120,6 @@ TRADING_CASE_CHAIN_SQL = (
     "FROM trading_cases c LEFT JOIN trading_case_decisions d USING (case_id) "
     "WHERE c.trigger_id=%s ORDER BY c.recheck_seq,c.created_at_ms,c.case_id LIMIT 8"
 )
-TRADING_CASE_EVALUATIONS_SQL = (
-    "SELECT source,evaluation_version,status,reason,decision_at_ms,scheduled_at_ms,"
-    "due_at_ms,decision_quote_ref,planned_quote_ref,mark_path_ref,funding_ref,"
-    "venue_receipt_ref,result,evaluated_at_ms FROM trading_case_evaluations "
-    "WHERE case_id=%s ORDER BY source,evaluation_version"
-)
 
 
 def console_cases_statement(
@@ -659,9 +653,6 @@ class QueryStorage:
             result["watch_observation"] = dict(watch) if watch is not None else None
             result["root_chain"] = [
                 dict(item) for item in self.conn.execute(TRADING_CASE_CHAIN_SQL, (result["trigger_id"],)).fetchall()
-            ]
-            result["analysis_evaluations"] = [
-                dict(item) for item in self.conn.execute(TRADING_CASE_EVALUATIONS_SQL, (case_id,)).fetchall()
             ]
         return result
 

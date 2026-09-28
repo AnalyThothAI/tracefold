@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 from tracefold.news.health import status_health
-from tracefold.news.models import FACT_KINDS
 from tracefold.news.outcome import (
-    OVERRIDE_RULE_ZH,
     admission_zh,
     delivery_error_zh,
-    override_rule_zh,
     storyline_key_zh,
-    throttled_by_zh,
 )
 from tracefold.news.timeline import event_timeline
 
@@ -21,42 +17,8 @@ def test_unexpected_delivery_error_copy_is_provider_neutral() -> None:
     assert delivery_error_zh("news_delivery_failed:ProviderError") == "推送失败（ProviderError）"
 
 
-def test_vocabulary_names_current_public_rule_codes_and_falls_back_for_unknown_codes() -> None:
-    current_rules = {
-        "degraded_listing_objective",
-        "degraded_no_objective_guard",
-        "degraded_watchlist_objective",
-        "listing_deterministic",
-        "liquidation_fact_only",
-        "liquidation_parse_failed",
-        "oi_parse_failed",
-        "restatement",
-        "stale_source_artifact",
-        # #458 replaced the OI lane's four push-gate names with one: a frame is parsed and stored.
-        "stored",
-        "trade_relevance_escalate",
-        "trade_relevance_inconsistent",
-        "trade_relevance_realtime",
-        "watchlist_objective_guard",
-        # #675 §3: the legacy decision table's rows. Legacy verdicts carry them as override rules, so the
-        # historical outcome still owes the reader the same named reason.
-        "fact_kind_unavailable",
-        "escalate_corroborated",
-        "escalate_uncorroborated",
-        "price_report_without_basis",
-        "conflict_claim_uncorroborated",
-        "conflict_running_storyline",
-        *(f"fact_kind_{kind}" for kind in FACT_KINDS),
-    }
-    missing = sorted(rule for rule in current_rules if rule not in OVERRIDE_RULE_ZH)
-    assert missing == []
-    assert override_rule_zh("brand_new_rule") == "brand_new_rule"
+def test_current_admission_and_storyline_labels() -> None:
     assert admission_zh("candidate") == "已送审"
-    assert override_rule_zh("restatement") == "重复：读者已收到同一事实"
-    assert throttled_by_zh("storyline:asset:BTC:seen") == "重复：读者刚收到过内容高度相近的卡片"
-    assert throttled_by_zh("storyline:asset:KLAC:seen") == "重复：读者刚收到过内容高度相近的卡片"
-    assert throttled_by_zh("storyline:conflict:mideast_2026:seen") == "重复：读者刚收到过内容高度相近的卡片"
-    assert throttled_by_zh("storyline:none:seen") == "重复：读者刚收到过内容高度相近的卡片"
     assert storyline_key_zh("conflict:mideast_2026") == "美伊冲突" and storyline_key_zh("asset:BTC") == "BTC"
     assert storyline_key_zh("none") == "无线索" and storyline_key_zh("actor:boj") == "日本央行"
 
@@ -145,7 +107,6 @@ def _status_inputs(**over: object) -> dict[str, object]:
             "funnel_adopted_24h": 142,
             "funnel_delivered_24h": 19,
             "selected_24h": 20,
-            "suppressed_by_reason": {"suppressed_pr_template": 5},
             "decision_actions_24h": {"notify": 20, "no_notification": 60},
             "semantic_observations_24h": 147,
             "semantic_failed_24h": 3,
@@ -202,7 +163,7 @@ def test_status_health_is_green_with_funnel_and_named_reasons() -> None:
         "label_zh": "no_notification",
         "count": 60,
     }
-    assert {r["stage"] for r in reasons} == {"gate", "decision", "ungrounded"}
+    assert {r["stage"] for r in reasons} == {"decision", "ungrounded"}
     assert all(r["label_zh"] for r in reasons)
     # The provider tag is its own label — inventing the English word it collided with would be a guess.
     assert {"stage": "ungrounded", "key": "SPOT", "label_zh": "SPOT", "count": 38} in reasons
@@ -436,9 +397,9 @@ def test_status_health_thresholds_turn_amber_and_red() -> None:
     assert off["health"]["overall"] == "bad"
 
 
-def test_source_only_timeline_keeps_the_gate_and_a_historical_receipt() -> None:
-    receipt = {"kind": "first", "state": "sent", "attempted_at_ms": NOW + 9_000, "settled_at_ms": NOW + 9_500}
-    outcome, steps = event_timeline(event=_event(), members=[], deliveries=[receipt])
+def test_source_only_timeline_keeps_the_gate_and_a_current_receipt() -> None:
+    receipt = {"kind": "update", "state": "sent", "attempted_at_ms": NOW + 9_000, "settled_at_ms": NOW + 9_500}
+    outcome, steps = event_timeline(event=_event(), members=[], deliveries=[receipt], intents=[receipt])
     assert outcome.kind == "delivered"
     assert [step["stage"] for step in steps] == ["received", "gate", "delivery"]
     assert steps[-1]["facts"]["state"] == "sent"

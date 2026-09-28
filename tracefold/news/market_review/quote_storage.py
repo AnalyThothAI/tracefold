@@ -40,37 +40,31 @@ DUE_REACTIONS_SQL: Final = """
             SELECT a.event_id, a.symbol, a.opened_at_ms AS anchor_at_ms,
                    r.state, r.venue, r.venue_symbol, r.instrument_class,
                    r.p0, r.p0_at_ms, r.p1, r.p1_at_ms,
-                   -- Whether the model called this asset a primary, read once here and stored on the row:
-                   -- the review's event-level sample is the median over primaries, and re-deriving it from
-                   -- verdict JSONB per request does not fit the 720 h budget (#88 §14).
+                   EXISTS (
+                     SELECT 1 FROM news_event_update_heads h
+                     JOIN news_event_updates u
+                       ON u.event_id = h.event_id AND u.content_revision = h.content_revision
+                     CROSS JOIN LATERAL jsonb_array_elements(u.document -> 'claims') claim
+                     CROSS JOIN LATERAL jsonb_array_elements(claim -> 'fields' -> 'assets') asset
+                    WHERE h.event_id = a.event_id
+                      AND NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+                      AND NOT (COALESCE(u.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+                      AND replace(upper(asset ->> 'symbol'), 'XYZ-', '') = a.symbol
+                      AND asset ->> 'role' = 'primary'
+                   ) AS is_primary,
                    COALESCE((
-                     SELECT bool_or(replace(upper(x ->> 'symbol'), 'XYZ-', '') = a.symbol)
-                       FROM (
-                         SELECT v.verdict FROM news_verdicts v
-                         WHERE v.event_id = a.event_id AND v.stage = 'triage'
-                           AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
-                          ORDER BY v.created_at_ms DESC LIMIT 1
-                       ) t, LATERAL jsonb_array_elements(COALESCE(t.verdict -> 'assets', '[]'::jsonb)) x
-                      WHERE x ->> 'role' = 'primary'
-                   ), false) AS is_primary,
-                   -- Which market this Event says the symbol is (#651 §6.2). `news_event_assets` is the
-                   -- Gate's tag ledger and carries no market; the judgment does, and it is the authority on
-                   -- what the Event is about. A primary's market wins over a mention of the same symbol; a
-                   -- verdict written before #651 says nothing here and reads as `unknown`, which resolves
-                   -- exactly as it did before.
-                   (
-                     SELECT x ->> 'market_type'
-                       FROM (
-                         SELECT v.verdict FROM news_verdicts v
-                         WHERE v.event_id = a.event_id AND v.stage = 'triage'
-                           AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
-                          ORDER BY v.created_at_ms DESC LIMIT 1
-                       ) t, LATERAL jsonb_array_elements(COALESCE(t.verdict -> 'assets', '[]'::jsonb)) x
-                      WHERE replace(upper(x ->> 'symbol'), 'XYZ-', '') = a.symbol
-                        AND jsonb_typeof(x -> 'market_type') = 'string'
-                      ORDER BY (x ->> 'role' = 'primary') DESC
-                      LIMIT 1
-                   ) AS market_type
+                     SELECT asset ->> 'market_type' FROM news_event_update_heads h
+                     JOIN news_event_updates u
+                       ON u.event_id = h.event_id AND u.content_revision = h.content_revision
+                     CROSS JOIN LATERAL jsonb_array_elements(u.document -> 'claims') claim
+                     CROSS JOIN LATERAL jsonb_array_elements(claim -> 'fields' -> 'assets') asset
+                    WHERE h.event_id = a.event_id
+                      AND NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+                      AND NOT (COALESCE(u.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+                      AND replace(upper(asset ->> 'symbol'), 'XYZ-', '') = a.symbol
+                    ORDER BY (asset ->> 'role' = 'primary') DESC
+                    LIMIT 1
+                   ), a.market_type) AS market_type
               FROM news_event_assets a
               JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
               -- A lateral probe on the primary key, not a hash join: the scan walks Event-assets oldest
@@ -528,8 +522,8 @@ class QuoteStorage:
         """The compact event-level 1H/4H aggregate for a bounded batch of Events, for the feed.
 
         One Event contributes one sample however many assets it mentions: the aggregate is the median signed
-        return of the Triage *primaries* that resolve to a contract. An Event whose primaries price nothing
-        has no aggregate — the per-asset rows stay inspectable on the detail page either way (#88 §6).
+        return of active primary assets in its adopted EventUpdate that resolve to a contract. An Event
+        whose primaries price nothing has no aggregate; per-asset rows remain on the detail page.
         """
 
         wanted = [str(event_id) for event_id in event_ids if str(event_id).strip()]
@@ -539,19 +533,16 @@ class QuoteStorage:
             """
             WITH wanted AS (SELECT unnest(%s::text[]) AS event_id),
             prim AS (
-              -- Upper-case *then* strip, exactly like the Deduper writes `news_event_assets.symbol`
-              -- (`repository.insert_event`). Doing it the other way leaves a model-authored `xyz-btc` as
-              -- `XYZ-BTC` here and `BTC` there, and the join silently finds nothing.
-              SELECT w.event_id, replace(upper(x ->> 'symbol'), 'XYZ-', '') AS symbol
+              SELECT DISTINCT w.event_id, replace(upper(asset ->> 'symbol'), 'XYZ-', '') AS symbol
                 FROM wanted w
-                JOIN LATERAL (
-                  SELECT v.verdict FROM news_verdicts v
-                   WHERE v.event_id = w.event_id AND v.stage = 'triage'
-                     AND v.judgment_contract_version IN ('news_judgment_v2', 'news_judgment_v3')
-                   ORDER BY v.created_at_ms DESC LIMIT 1
-                ) t ON true,
-                LATERAL jsonb_array_elements(COALESCE(t.verdict -> 'assets', '[]'::jsonb)) x
-               WHERE x ->> 'role' = 'primary'
+                JOIN news_event_update_heads h ON h.event_id = w.event_id
+                JOIN news_event_updates u
+                  ON u.event_id = h.event_id AND u.content_revision = h.content_revision
+                CROSS JOIN LATERAL jsonb_array_elements(u.document -> 'claims') claim
+                CROSS JOIN LATERAL jsonb_array_elements(claim -> 'fields' -> 'assets') asset
+               WHERE asset ->> 'role' = 'primary'
+                 AND NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+                 AND NOT (COALESCE(u.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
             )
             SELECT p.event_id,
                    min(e.opened_at_ms) AS anchor_at_ms,
