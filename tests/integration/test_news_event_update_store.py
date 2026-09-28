@@ -1251,3 +1251,48 @@ def test_exact_digest_member_has_its_own_scope_without_focus_snapshot() -> None:
         assert "Agency suspends withdrawals" in shown
         assert "不构成投资建议" in shown
         assert "Beta releases earnings" not in shown
+
+
+def test_legacy_sibling_claim_is_invalidated_before_a_pending_notification_can_commit() -> None:
+    from tracefold.news.events.facts import extract_fact_units
+
+    pg, db, clock = store()
+    body = "1. Agency suspends withdrawals.\n2. Beta releases earnings.\n3. Gamma opens a factory."
+    seed_event(text=body, title="Daily digest")
+    source = asyncio.run(pg.input_for(EVENT))
+    assert source.extraction_scopes == ()
+    evidence = source.evidence[0]
+    claims = (
+        draft(evidence, slot="focus", action="suspends withdrawals", quote="Agency suspends withdrawals."),
+        draft(evidence, slot="sibling", action="releases earnings", quote="Beta releases earnings."),
+    )
+    adopted, head = asyncio.run(adopt_next(pg, None, source, Extraction(claims=claims), work_id="legacy-digest"))
+    assert adopted
+    before = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    assert before is not None and before.reader.invalidated_claim_refs == ()
+
+    item_id = f"it-{EVENT}"
+    focus = extract_fact_units(item_id=item_id, raw_text=body, fallback_title="Daily digest")[0]
+    sql(
+        "UPDATE news_events SET focus_fact_id=%s,focus_fact_text=%s,focus_fact_context=%s,"
+        "focus_fact_method=%s,focus_span_start=%s,focus_span_end=%s WHERE event_id=%s",
+        (focus.fact_id, focus.text, focus.context, focus.method, focus.span_start, focus.span_end, EVENT),
+    )
+    sql(
+        "UPDATE news_event_members SET fact_id=%s,fact_text=%s WHERE event_id=%s AND item_id=%s",
+        (focus.fact_id, focus.text, EVENT, item_id),
+    )
+    asyncio.run(
+        db.tx(
+            "snapshot",
+            lambda r: r.news.append_evidence_snapshot(
+                event_id=EVENT, now_ms=clock(), focus_item_id=item_id, focus_fact=focus
+            ),
+        )
+    )
+    after = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    assert after is not None
+    by_statement = {claim.statement: claim.ref for claim in head.claims}
+    assert after.reader.invalidated_claim_refs == (by_statement["Beta releases earnings."],)
+    assert after.reader.revision != before.reader.revision
+    assert not asyncio.run(pg.atomic_record_plan(notify_plan(head, before.reader.revision))).recorded

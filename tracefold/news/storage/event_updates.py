@@ -430,6 +430,28 @@ def _extraction_scopes(material: Mapping[str, Any], evidence: Sequence[Evidence]
     return tuple(scopes)
 
 
+def _claims_outside_member_scopes(update: EventUpdate, members: Sequence[Mapping[str, Any]]) -> set[str]:
+    """Keep legacy whole-digest claims outside today's Event task out of future sends."""
+
+    member_ids = {str(row["item_id"]) for row in members}
+    evidence = tuple(item for item in update.evidence if item.source.record_id in member_ids)
+    scopes = _extraction_scopes({"members": members, "items": members}, evidence)
+    visible = {
+        view.evidence_ref: tuple(span.text for span in view.spans)
+        for item in evidence
+        if (view := reading_view(update.event_id, item, scopes)).mode == "scoped"
+    }
+    return {
+        claim.ref
+        for claim in update.claims
+        if any(
+            citation.evidence_ref in visible
+            and not any(citation.quote in span for span in visible[citation.evidence_ref])
+            for citation in claim.citations
+        )
+    }
+
+
 def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
     """Assemble the frozen semantic input from one consistent read.
 
@@ -1276,7 +1298,22 @@ class EventUpdateStorage:
             """,
             (event_id,),
         ).fetchall()
-        return sorted(str(row["ref"]) for row in rows)
+        invalidated = {str(row["ref"]) for row in rows}
+        members = self.conn.execute(
+            """
+            SELECT m.item_id, m.fact_id, m.fact_text, i.title, i.description, i.evidence_text
+              FROM news_events e
+              JOIN news_event_members m ON m.event_id=e.event_id
+              JOIN news_items i ON i.item_id=m.item_id
+             WHERE e.event_id=%s AND e.focus_fact_method='explicit_numbered'
+            """,
+            (event_id,),
+        ).fetchall()
+        if members:
+            head = self.event_update_head_document(event_id)
+            if head is not None:
+                invalidated.update(_claims_outside_member_scopes(EventUpdate.model_validate(head), members))
+        return sorted(invalidated)
 
     def _blocked_claim_refs(self, event_id: str) -> list[str]:
         rows = self.conn.execute(

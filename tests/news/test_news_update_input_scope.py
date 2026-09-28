@@ -11,7 +11,12 @@ import pytest
 from tests.support.news_update_semantic import draft, generated, material
 from tracefold.news.events.facts import extract_fact_units
 from tracefold.news.events.gate import grounded_assets
-from tracefold.news.storage.event_updates import EventUpdateConflict, EventUpdateStorage, frozen_input
+from tracefold.news.storage.event_updates import (
+    EventUpdateConflict,
+    EventUpdateStorage,
+    _claims_outside_member_scopes,
+    frozen_input,
+)
 from tracefold.news.updates.contracts import Citation, Extraction, FrozenInput
 from tracefold.news.updates.dspy_backend import DspyExtractor
 from tracefold.news.updates.identity import canonical_json
@@ -100,6 +105,50 @@ def test_exact_member_recovers_its_own_numbered_scope_without_a_focus_snapshot()
         )
         with pytest.raises(ContractFault, match="news_citation_not_in_visible_source"):
             validate_extraction(source, Extraction(claims=(sibling,)))
+
+
+def test_legacy_whole_digest_claim_outside_exact_member_scope_cannot_be_notified() -> None:
+    body = BODY + "\n（以上内容仅供参考，不构成投资建议）"
+    data = input_material()
+    data["item_ids"] = ["digest", "copy"]
+    data["items"] = [
+        {**data["items"][0], "title": "Digest", "evidence_text": body},
+        {**data["items"][0], "item_id": "copy", "source_item_key": "copy", "title": "Digest", "evidence_text": body},
+    ]
+    focus = extract_fact_units(item_id="digest", raw_text=body, fallback_title="Digest")[0]
+    exact = extract_fact_units(item_id="copy", raw_text=body, fallback_title="Digest")[0]
+    data["members"] = [
+        {"item_id": "digest", "fact_id": focus.fact_id, "fact_text": focus.text},
+        {"item_id": "copy", "fact_id": exact.fact_id, "fact_text": exact.text},
+    ]
+    old_source = frozen_input("near-event", {**data, "members": [], "fact_scopes": {}})
+    exact_evidence = old_source.evidence[1]
+    valid = draft(exact_evidence).model_copy(
+        update={
+            "slot": "focus",
+            "statement": "Exchange suspends $NEAR withdrawals.",
+            "citations": (Citation(evidence_ref=exact_evidence.ref, quote="Exchange suspends $NEAR withdrawals."),),
+        }
+    )
+    sibling = draft(exact_evidence, quantity="30").model_copy(
+        update={
+            "slot": "sibling",
+            "statement": "Beta announces earnings.",
+            "citations": (Citation(evidence_ref=exact_evidence.ref, quote="Beta announces earnings."),),
+        }
+    )
+    old_head = assemble_update(old_source, Extraction(claims=(valid, sibling)), None, adopted_at_ms=101)
+    assert old_head is not None and len(old_head.claims) == 2
+    rows = [
+        {**item, **member}
+        for item in data["items"]
+        for member in data["members"]
+        if item["item_id"] == member["item_id"]
+    ]
+    excluded = _claims_outside_member_scopes(old_head, rows)
+    assert excluded == {next(claim.ref for claim in old_head.claims if claim.statement == sibling.statement)}
+    unresolved = [{**row, "fact_id": "unresolved"} if row["item_id"] == "copy" else row for row in rows]
+    assert _claims_outside_member_scopes(old_head, unresolved) == set()
 
 
 def test_whole_item_keeps_whole_item_extraction_and_multiple_scopes_are_unioned() -> None:
