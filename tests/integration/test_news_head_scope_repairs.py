@@ -15,7 +15,8 @@ from tracefold.news.updates.identity import digest
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
-def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement() -> None:
+@pytest.mark.parametrize("notification_state", ("pending", "done"))
+def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(notification_state: str) -> None:
     event_id = "event-alpha"
     item_id = f"it-{event_id}"
     seed_event(event_id, text=BODY, title="Digest")
@@ -49,6 +50,22 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement()
              (event_id,content_revision,input_revision,update_ref,adopted_at_ms)
            VALUES (%s,%s,2,%s,%s)""",
         (event_id, head.content_revision, head.ref, STAMP + 1),
+    )
+    decision_ref = None
+    if notification_state == "done":
+        decision_ref = "historical-decision"
+        sql(
+            """INSERT INTO news_notification_decisions
+                 (decision_ref,event_id,update_ref,channel,input_snapshot,plan,origin,created_at_ms)
+               VALUES (%s,%s,%s,'news','{}'::jsonb,'{}'::jsonb,'legacy_work_plan',%s)""",
+            (decision_ref, event_id, head.ref, STAMP + 1),
+        )
+    sql(
+        """INSERT INTO news_notification_work
+             (event_id,channel,content_revision,state,decision_ref,
+              attempts,next_attempt_at_ms,updated_at_ms)
+           VALUES (%s,'news',%s,%s,%s,0,%s,%s)""",
+        (event_id, head.content_revision, notification_state, decision_ref, STAMP + 1, STAMP + 1),
     )
     conn = connect_postgres_test(read_only=False)
     try:
@@ -107,8 +124,9 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement()
         conn.close()
     assert sql("SELECT count(*) AS n FROM trading_source_amendments")[0]["n"] == 1
     assert sql("SELECT count(*) AS n FROM news_semantic_observations")[0]["n"] == 1
-    assert sql("SELECT content_revision,state FROM news_notification_work")[0] == {
-        "content_revision": revision,
-        "state": "pending",
+    assert sql("SELECT content_revision,state,decision_ref FROM news_notification_work")[0] == {
+        "content_revision": revision if notification_state == "pending" else head.content_revision,
+        "state": notification_state,
+        "decision_ref": decision_ref if notification_state == "done" else None,
     }
     assert sql("SELECT count(*) AS n FROM news_deliveries")[0]["n"] == 0

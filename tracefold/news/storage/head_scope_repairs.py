@@ -185,14 +185,13 @@ class HeadScopeRepairStorage:
                 source_recorded_at_ms=now_ms,
             ):
                 raise ValueError("news_scope_repair_public_conflict")
+        # A repair has no new reader fact. Preserve completed notification decisions;
+        # only work already owed may plan against the corrected active claims.
         self.conn.execute(
-            """INSERT INTO news_notification_work
-                 (event_id,channel,content_revision,state,attempts,next_attempt_at_ms,updated_at_ms)
-               VALUES (%s,%s,%s,'pending',0,%s,%s)
-               ON CONFLICT (event_id,channel) DO UPDATE SET
-                 content_revision=EXCLUDED.content_revision,state='pending',plan=NULL,
-                 decision_ref=NULL,reader_revision=NULL,attempts=0,
-                 next_attempt_at_ms=EXCLUDED.next_attempt_at_ms,updated_at_ms=EXCLUDED.updated_at_ms""",
-            (event_id, NEWS_CHANNEL, update.content_revision, int(now_ms), int(now_ms)),
+            """UPDATE news_notification_work
+                  SET content_revision=%s,plan=NULL,decision_ref=NULL,reader_revision=NULL,
+                      attempts=0,next_attempt_at_ms=%s,updated_at_ms=%s
+                WHERE event_id=%s AND channel=%s AND state='pending'""",
+            (update.content_revision, int(now_ms), int(now_ms), event_id, NEWS_CHANNEL),
         )
         return update.content_revision

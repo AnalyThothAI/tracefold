@@ -116,7 +116,7 @@ docker compose exec -T serve tracefold news repair-head-scopes \
 docker compose exec -T serve tracefold news repair-head-scopes
 ```
 
-执行命令在同一事务中重审证据并核对所有 head；出现未能判定的引用、状态变化或相关发送仍在进行时整批回滚。成功后越界活跃 Claim 应为 0；核对 `news_head_scope_repairs` 的证明、`news_event_updates` 的新旧链和 `news_trade_events` 的 `source_update`，再恢复 News Workers。已送回执作为实际外部结果保留，不将它们改写成未发送。
+执行命令在同一事务中重审证据并核对所有 head；出现未能判定的引用、状态变化或相关发送仍在进行时整批回滚。成功后越界活跃 Claim 应为 0；核对 `news_head_scope_repairs` 的证明、`news_event_updates` 的新旧链和 `news_trade_events` 的 `source_update`，再恢复 News Workers。已完成的通知工作不重新打开，原本待处理的工作改为读取修复后 head；已送回执作为实际外部结果保留，不将它们改写成未发送。
 
 ### 通知计划失败
 
