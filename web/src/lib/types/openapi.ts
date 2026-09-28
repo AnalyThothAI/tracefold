@@ -670,49 +670,6 @@ export interface components {
             to_ms: number;
         };
         /**
-         * NewsAcceptedReviewData
-         * @description Typed current Review summary; the stored submission payload is audit-only.
-         */
-        NewsAcceptedReviewData: {
-            /** Created At Ms */
-            created_at_ms: number;
-            /** Event Id */
-            event_id?: string | null;
-            /** Evidence Refs */
-            evidence_refs?: string[];
-            /**
-             * Expected Correction
-             * @default
-             */
-            expected_correction: string;
-            /** External Snapshot Id */
-            external_snapshot_id?: string | null;
-            /** First Bad Owner */
-            first_bad_owner?: string | null;
-            /**
-             * Note
-             * @default
-             */
-            note: string;
-            /** Pairwise Case Id */
-            pairwise_case_id?: string | null;
-            /** Reader Contract Version */
-            reader_contract_version: string;
-            /** Review Id */
-            review_id: string;
-            /** Reviewer */
-            reviewer: string;
-            /** Rubric Version */
-            rubric_version: string;
-            /** Should Push */
-            should_push?: ("must_push" | "should_push" | "should_hold" | "must_hold" | "uncertain") | null;
-            /**
-             * Subject Kind
-             * @enum {string}
-             */
-            subject_kind: "event" | "external_miss" | "pairwise";
-        };
-        /**
          * NewsAssetRefData
          * @description One durable Event asset, resolved against the #75 instrument universe (#87/#287).
          *
@@ -971,6 +928,26 @@ export interface components {
             /** Value */
             value: string;
         };
+        /** NewsDecisionFeedbackData */
+        NewsDecisionFeedbackData: {
+            /** Claim Ref */
+            claim_ref: string;
+            /** Created At Ms */
+            created_at_ms: number;
+            /** Decision Ref */
+            decision_ref: string;
+            /** Note */
+            note: string;
+            /** Review Id */
+            review_id: string;
+            /** Reviewer */
+            reviewer: string;
+            /**
+             * Should Push
+             * @enum {string}
+             */
+            should_push: "must_push" | "should_push" | "should_hold" | "must_hold" | "uncertain";
+        };
         /** NewsDeliveryData */
         NewsDeliveryData: {
             /** Attempted At Ms */
@@ -1146,22 +1123,16 @@ export interface components {
         };
         /**
          * NewsEventDetailData
-         * @description One Event. ``event_update``/``processing`` are the EventUpdate path (#706); ``legacy_verdict``,
-         *     ``verdicts``, ``evidence_inputs`` and ``late_evidence`` are the history of an Event judged before it,
-         *     and none of them is merged into the other.
+         * @description Current EventUpdate, source facts, feedback and actual reader receipts.
          */
         NewsEventDetailData: {
             /** Deliveries */
             deliveries: components["schemas"]["NewsDeliveryData"][];
             event: components["schemas"]["NewsEventData"];
             event_update?: components["schemas"]["NewsEventUpdateData"] | null;
-            /** Evidence Inputs */
-            evidence_inputs?: components["schemas"]["NewsEvidenceInputData"][];
             /** Evidence Snapshots */
             evidence_snapshots?: components["schemas"]["NewsEvidenceSnapshotData"][];
-            /** Late Evidence */
-            late_evidence?: components["schemas"]["NewsLateEvidenceData"][];
-            legacy_verdict?: components["schemas"]["NewsLegacyVerdictData"] | null;
+            feedback: components["schemas"]["NewsEventFeedbackData"];
             /** Members */
             members: components["schemas"]["NewsEventMemberData"][];
             /** Normalization */
@@ -1172,11 +1143,14 @@ export interface components {
             /** Reactions */
             reactions?: components["schemas"]["NewsEventReactionData"][];
             reader_receipt: components["schemas"]["NewsReaderReceiptData"];
-            review: components["schemas"]["NewsEventReviewSummaryData"];
             /** Timeline */
             timeline?: components["schemas"]["NewsTimelineStepData"][];
-            /** Verdicts */
-            verdicts: components["schemas"]["NewsVerdictData"][];
+        };
+        /** NewsEventFeedbackData */
+        NewsEventFeedbackData: {
+            /** Feedback N */
+            feedback_n: number;
+            latest?: components["schemas"]["NewsDecisionFeedbackData"] | null;
         };
         /** NewsEventMemberData */
         NewsEventMemberData: {
@@ -1272,20 +1246,6 @@ export interface components {
             /** Venue Symbol */
             venue_symbol?: string | null;
         };
-        /** NewsEventReviewSummaryData */
-        NewsEventReviewSummaryData: {
-            accepted?: components["schemas"]["NewsAcceptedReviewData"] | null;
-            /**
-             * Judgment N
-             * @default 0
-             */
-            judgment_n: number;
-            /**
-             * Uncertain
-             * @default false
-             */
-            uncertain: boolean;
-        };
         /**
          * NewsEventUpdateData
          * @description The Event's adopted EventUpdate head: what happened, what changed, who says so, what is missing.
@@ -1323,45 +1283,6 @@ export interface components {
             topics?: components["schemas"]["NewsTopicData"][];
             /** Update Ref */
             update_ref: string;
-        };
-        /** NewsEvidenceInputData */
-        NewsEvidenceInputData: {
-            /** Candidate Count */
-            candidate_count: number;
-            /** Current Evidence */
-            current_evidence: components["schemas"]["NewsEvidenceSpanData"][];
-            /** Cutoff At Ms */
-            cutoff_at_ms: number;
-            /** Declared Source Refs */
-            declared_source_refs: string[];
-            /** Document Receipt */
-            document_receipt?: {
-                [key: string]: unknown;
-            } | null;
-            /** Document Status */
-            document_status?: string | null;
-            /** Elapsed Ms */
-            elapsed_ms: number;
-            /** Exclusions */
-            exclusions: string[];
-            /** Execution Index */
-            execution_index: number;
-            /** Focus Fact Id */
-            focus_fact_id: string;
-            /** Input Version */
-            input_version: string;
-            /** Missing */
-            missing: string[];
-            /** Reference Issues */
-            reference_issues: string[];
-            /** Related Evidence */
-            related_evidence: components["schemas"]["NewsEvidenceSpanData"][];
-            /** Selected */
-            selected: boolean;
-            /** Selected Count */
-            selected_count: number;
-            /** Status */
-            status: string;
         };
         /** NewsEvidenceRelationData */
         NewsEvidenceRelationData: {
@@ -1407,46 +1328,6 @@ export interface components {
             provenance: "observed";
             /** Release Eligible */
             release_eligible: boolean;
-        };
-        /** NewsEvidenceSpanData */
-        NewsEvidenceSpanData: {
-            /** Available At Ms */
-            available_at_ms: number | null;
-            /** Content Sha256 */
-            content_sha256: string;
-            /** Coverage Status */
-            coverage_status: string;
-            /** Document Id */
-            document_id?: string | null;
-            /** Extraction Version */
-            extraction_version: string;
-            /**
-             * Material Kind
-             * @enum {string}
-             */
-            material_kind: "current" | "related";
-            /** Ref Id */
-            ref_id: string;
-            /** Reported Published At Ms */
-            reported_published_at_ms: number | null;
-            /** Selection Reason */
-            selection_reason: string;
-            /** Source */
-            source: string;
-            /** Source Artifact Id */
-            source_artifact_id: string;
-            /** Source Item Id */
-            source_item_id: string;
-            /** Span End */
-            span_end: number;
-            /** Span Start */
-            span_start: number;
-            /** Text */
-            text: string;
-            /** Text Space */
-            text_space: string;
-            /** Url */
-            url: string;
         };
         /**
          * NewsFeedCountsData
@@ -1542,7 +1423,6 @@ export interface components {
             leader_title: string;
             /** Leader Url */
             leader_url?: string | null;
-            legacy_verdict?: components["schemas"]["NewsLegacyVerdictData"] | null;
             /**
              * Macro Lexicon
              * @default false
@@ -1578,12 +1458,8 @@ export interface components {
         NewsFeedFiltersData: {
             /** Admission */
             admission?: string | null;
-            /** Direction */
-            direction?: string | null;
             /** Event Kind */
             event_kind?: string | null;
-            /** Final Decision */
-            final_decision?: string | null;
             /** Hours */
             hours?: number | null;
             /** Limit */
@@ -1638,15 +1514,15 @@ export interface components {
              */
             admitted: number;
             /**
+             * Adopted
+             * @default 0
+             */
+            adopted: number;
+            /**
              * Candidates
              * @default 0
              */
             candidates: number;
-            /**
-             * Decided Push
-             * @default 0
-             */
-            decided_push: number;
             /**
              * Delivered
              * @default 0
@@ -1673,15 +1549,15 @@ export interface components {
              */
             received_1h: number;
             /**
+             * Selected
+             * @default 0
+             */
+            selected: number;
+            /**
              * Tagged
              * @default 0
              */
             tagged: number;
-            /**
-             * Triaged
-             * @default 0
-             */
-            triaged: number;
         };
         /** NewsHealthData */
         NewsHealthData: {
@@ -1862,15 +1738,6 @@ export interface components {
             /** Total Events */
             total_events: number;
         };
-        /** NewsLateEvidenceData */
-        NewsLateEvidenceData: {
-            /** Available At Ms */
-            available_at_ms: number;
-            /** Material Id */
-            material_id: string;
-            /** Material Kind */
-            material_kind: string;
-        };
         /** NewsLearningRetentionStatusData */
         NewsLearningRetentionStatusData: {
             /**
@@ -1915,100 +1782,6 @@ export interface components {
             oldest_recording_age_ms?: number | null;
             /** Updated At Ms */
             updated_at_ms?: number | null;
-        };
-        /**
-         * NewsLegacyTaxonomyData
-         * @description The four retired taxonomy axes exactly as one legacy verdict stored them (#706).
-         *
-         *     Audit only. The axes have no current owner or reading, so no vocabulary is applied and nothing is
-         *     validated against the retired enums: a stored code is published as stored, a missing one as ``null``.
-         */
-        NewsLegacyTaxonomyData: {
-            /** Assertion Status */
-            assertion_status?: string | null;
-            /** Change State */
-            change_state?: string | null;
-            /** Event Family */
-            event_family?: string | null;
-            /** Subject Codes */
-            subject_codes?: string[];
-        };
-        /**
-         * NewsLegacyVerdictData
-         * @description The reader-facing view of one legacy Triage verdict: history only since #706.
-         *
-         *     `news_verdicts` receives no writes. An Event the News Agent processed has no verdict and therefore no
-         *     summary; its reading is `event_update`. Every `*_zh` is server-owned copy; the raw enum stays beside it
-         *     so the browser can map it to a visual tone without owning a vocabulary table. The retired taxonomy axes
-         *     are not summarized here -- the verdict rows keep their stored values for audit.
-         */
-        NewsLegacyVerdictData: {
-            /** Assets */
-            assets?: components["schemas"]["NewsTriageAssetData"][];
-            /** Confidence */
-            confidence?: number | null;
-            /**
-             * Decision Zh
-             * @default
-             */
-            decision_zh: string;
-            /**
-             * Degraded
-             * @default false
-             */
-            degraded: boolean;
-            /** Direction */
-            direction?: string | null;
-            /**
-             * Direction Zh
-             * @default
-             */
-            direction_zh: string;
-            /** Error Code */
-            error_code?: string | null;
-            /** Evidence Ref */
-            evidence_ref?: string | null;
-            /** Fact Kind */
-            fact_kind?: ("state_change" | "new_quantity" | "level_crossed" | "period_record" | "quantified_flow" | "official_measure" | "statement" | "recap" | "schedule" | "promotion") | null;
-            /**
-             * Fact Kind Zh
-             * @default
-             */
-            fact_kind_zh: string;
-            /**
-             * Final Decision
-             * @enum {string}
-             */
-            final_decision: "push" | "escalate" | "drop" | "throttled";
-            /** Headline Zh */
-            headline_zh?: string | null;
-            /** Novelty */
-            novelty?: string | null;
-            /**
-             * Novelty Zh
-             * @default
-             */
-            novelty_zh: string;
-            /** Override Rule */
-            override_rule?: string | null;
-            /** Scope */
-            scope?: string | null;
-            /**
-             * Scope Zh
-             * @default
-             */
-            scope_zh: string;
-            /** Source Authority */
-            source_authority?: ("regulatory_filing" | "issuer_first_party" | "reputable_secondary" | "unknown") | null;
-            /**
-             * Source Authority Zh
-             * @default
-             */
-            source_authority_zh: string;
-            /** Throttled By */
-            throttled_by?: string | null;
-            /** Why Zh */
-            why_zh?: string | null;
         };
         /** NewsMarketData */
         NewsMarketData: {
@@ -2318,38 +2091,6 @@ export interface components {
              */
             unknown: number;
         };
-        /**
-         * NewsModelEditorialData
-         * @description The editorial sibling of one legacy model verdict, in the `news_editorial_v4` read shape.
-         *
-         *     ``source_authority`` is code-owned and always present; ``taxonomy`` is the retired taxonomy Predictor's
-         *     stored answer and is ``null`` when that call failed on its own, in which case ``taxonomy_status`` reads
-         *     ``unavailable`` and ``taxonomy_error_code`` names the `news_program_*` code. Verdicts written under
-         *     `news_editorial_v2` are projected into this shape at the storage read boundary, so a historical row
-         *     reads as ``available`` with its authority lifted out of the taxonomy object (#651 §5.3), and a
-         *     `news_editorial_v3` row loses the `relevance` object the Program no longer produces (#675 §1).
-         */
-        NewsModelEditorialData: {
-            /**
-             * Source Authority
-             * @enum {string}
-             */
-            source_authority: "regulatory_filing" | "issuer_first_party" | "reputable_secondary" | "unknown";
-            /**
-             * Source Authority Zh
-             * @default
-             */
-            source_authority_zh: string;
-            taxonomy?: components["schemas"]["NewsLegacyTaxonomyData"] | null;
-            /** Taxonomy Error Code */
-            taxonomy_error_code?: string | null;
-            /**
-             * Taxonomy Status
-             * @default available
-             * @enum {string}
-             */
-            taxonomy_status: "available" | "unavailable";
-        };
         /** NewsNotificationPlanData */
         NewsNotificationPlanData: {
             /**
@@ -2444,7 +2185,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "held_recovery" | "held_gate" | "expired_triage_handoff" | "expired_delivery_handoff" | "queued_publish" | "queued_triage" | "dropped" | "throttled" | "degraded_dropped" | "pending_delivery" | "delivered" | "delivery_failed" | "queued_semantic" | "semantic_failed" | "no_update" | "queued_notification" | "notification_deferred" | "notification_exhausted" | "not_notified" | "delivery_ambiguous";
+            kind: "held_recovery" | "held_gate" | "pending_delivery" | "delivered" | "delivery_failed" | "queued_semantic" | "semantic_failed" | "no_update" | "queued_notification" | "notification_deferred" | "notification_exhausted" | "not_notified" | "delivery_ambiguous";
             /**
              * Reason Zh
              * @default
@@ -2481,15 +2222,15 @@ export interface components {
             card_fallback_model?: string | null;
             /** Card Model */
             card_model?: string | null;
-            /**
-             * Decided Push 24H
-             * @default 0
-             */
-            decided_push_24h: number;
-            /** Dropped By Rule */
-            dropped_by_rule?: {
+            /** Decision Actions 24H */
+            decision_actions_24h?: {
                 [key: string]: number;
             };
+            /**
+             * Decisions 24H
+             * @default 0
+             */
+            decisions_24h: number;
             duplicates_withheld_24h?: components["schemas"]["NewsDuplicatesWithheld24hData"];
             /**
              * Events 1H
@@ -2511,6 +2252,11 @@ export interface components {
              */
             funnel_admitted_24h: number;
             /**
+             * Funnel Adopted 24H
+             * @default 0
+             */
+            funnel_adopted_24h: number;
+            /**
              * Funnel Delivered 24H
              * @default 0
              */
@@ -2521,11 +2267,6 @@ export interface components {
              */
             funnel_received_24h: number;
             /**
-             * Funnel Triaged 24H
-             * @default 0
-             */
-            funnel_triaged_24h: number;
-            /**
              * Grounded 24H
              * @default 0
              */
@@ -2535,12 +2276,7 @@ export interface components {
             /** Judgment Model */
             judgment_model?: string | null;
             keep_ratio_sent_24h?: components["schemas"]["NewsReviewRatio24hData"];
-            missed_ratio_dropped_24h?: components["schemas"]["NewsReviewRatio24hData"];
-            /**
-             * Model Triage 24H
-             * @default 0
-             */
-            model_triage_24h: number;
+            missed_ratio_held_24h?: components["schemas"]["NewsReviewRatio24hData"];
             /**
              * News Judgment Configured
              * @default false
@@ -2548,27 +2284,21 @@ export interface components {
             news_judgment_configured: boolean;
             /** News Program Identity */
             news_program_identity?: string | null;
-            /** Pushed By Rule */
-            pushed_by_rule?: {
-                [key: string]: number;
-            };
-            /** Queue Lag P95 Ms */
-            queue_lag_p95_ms?: number | null;
             /**
-             * Reasked 24H
+             * Reviewed Decision Should Push 24H
              * @default 0
              */
-            reasked_24h: number;
+            reviewed_decision_should_push_24h: number;
             /**
              * Reviewed External Miss 24H
              * @default 0
              */
             reviewed_external_miss_24h: number;
             /**
-             * Reviewed Should Push 24H
+             * Selected 24H
              * @default 0
              */
-            reviewed_should_push_24h: number;
+            selected_24h: number;
             /**
              * Semantic Adopted 24H
              * @default 0
@@ -2623,75 +2353,10 @@ export interface components {
              * @default 0
              */
             tagged_24h: number;
-            /**
-             * Throttled 24H
-             * @default 0
-             */
-            throttled_24h: number;
-            /** Throttled By Key */
-            throttled_by_key?: {
-                [key: string]: number;
-            };
-            /**
-             * Triage 24H
-             * @default 0
-             */
-            triage_24h: number;
-            /**
-             * Triage Degraded 24H
-             * @default 0
-             */
-            triage_degraded_24h: number;
-            /** Triage Degraded By Code 24H */
-            triage_degraded_by_code_24h?: {
-                [key: string]: number;
-            };
-            /** Triage P50 Ms */
-            triage_p50_ms?: number | null;
-            /** Triage P95 Ms */
-            triage_p95_ms?: number | null;
             /** Ungrounded By Symbol 24H */
             ungrounded_by_symbol_24h?: {
                 [key: string]: number;
             };
-        };
-        /** NewsPresentationVerdictData */
-        NewsPresentationVerdictData: {
-            /** Assets */
-            assets?: components["schemas"]["NewsTriageAssetData"][];
-            /** Confidence */
-            confidence: number;
-            /**
-             * Direction
-             * @enum {string}
-             */
-            direction: "bullish" | "bearish" | "neutral" | "unclear";
-            /**
-             * Evidence Ref
-             * @default
-             */
-            evidence_ref: string;
-            /** Fact Kind */
-            fact_kind?: ("state_change" | "new_quantity" | "level_crossed" | "period_record" | "quantified_flow" | "official_measure" | "statement" | "recap" | "schedule" | "promotion") | null;
-            /** Headline Zh */
-            headline_zh: string;
-            /**
-             * Novelty
-             * @enum {string}
-             */
-            novelty: "new_fact" | "progression" | "restatement";
-            /** Restates */
-            restates: number;
-            /**
-             * Scope
-             * @enum {string}
-             */
-            scope: "macro" | "sector" | "single_name";
-            /**
-             * Why Zh
-             * @default
-             */
-            why_zh: string;
         };
         /**
          * NewsPriceStatusData
@@ -2925,7 +2590,7 @@ export interface components {
              * Stage
              * @enum {string}
              */
-            stage: "gate" | "drop" | "throttle" | "push" | "degraded" | "ungrounded";
+            stage: "gate" | "decision" | "ungrounded";
         };
         /** NewsRecoveryStatusData */
         NewsRecoveryStatusData: {
@@ -3043,6 +2708,11 @@ export interface components {
         /** NewsSourceContractStageCountsData */
         NewsSourceContractStageCountsData: {
             /**
+             * Adopted
+             * @default 0
+             */
+            adopted: number;
+            /**
              * Parsed
              * @default 0
              */
@@ -3052,11 +2722,6 @@ export interface components {
              * @default 0
              */
             received: number;
-            /**
-             * Verdict
-             * @default 0
-             */
-            verdict: number;
         };
         /**
          * NewsSourceContracts24hData
@@ -3156,7 +2821,7 @@ export interface components {
              * Stage
              * @enum {string}
              */
-            stage: "received" | "gate" | "triage" | "decide" | "evidence" | "semantic" | "notify" | "delivery";
+            stage: "received" | "gate" | "evidence" | "semantic" | "notify" | "delivery";
             /** Summary Zh */
             summary_zh: string;
             /** Title Zh */
@@ -3168,29 +2833,6 @@ export interface components {
             code: string;
             /** Label Zh */
             label_zh: string;
-        };
-        /**
-         * NewsTriageAssetData
-         * @description One typed asset of a Triage verdict (#651 §6.2).
-         *
-         *     ``market_type`` is the catalogue's instrument-class vocabulary, never a free string: the browser has
-         *     to be able to tell `SEI` the token from `SEI` the listed insurer, and so does anything reading this
-         *     API. Verdicts written before #651 carry `null` or a provider-tag word; the projection normalizes
-         *     those to `unknown` rather than publishing a market nobody established.
-         */
-        NewsTriageAssetData: {
-            /**
-             * Market Type
-             * @enum {string}
-             */
-            market_type: "crypto" | "equity" | "commodity" | "index" | "fx" | "pre_ipo" | "unknown";
-            /**
-             * Role
-             * @enum {string}
-             */
-            role: "primary" | "mentioned";
-            /** Symbol */
-            symbol: string;
         };
         /**
          * NewsUpdateEvidenceData
@@ -3286,76 +2928,6 @@ export interface components {
             source_authority_zh: string;
             /** Url */
             url?: string | null;
-        };
-        /** NewsVerdictData */
-        NewsVerdictData: {
-            /** Created At Ms */
-            created_at_ms: number;
-            /**
-             * Degraded
-             * @default false
-             */
-            degraded: boolean;
-            /** Error Code */
-            error_code?: string | null;
-            /** Evidence Sha256 */
-            evidence_sha256: string;
-            /** Evidence Version */
-            evidence_version: number;
-            /**
-             * Final Decision
-             * @enum {string}
-             */
-            final_decision: "push" | "escalate" | "drop" | "throttled";
-            /** Focus Fact Id */
-            focus_fact_id: string;
-            /**
-             * Judgment Contract Version
-             * @enum {string}
-             */
-            judgment_contract_version: "news_judgment_v2" | "news_judgment_v3";
-            /**
-             * Judgment Origin
-             * @enum {string}
-             */
-            judgment_origin: "model" | "oi" | "liquidation" | "degraded";
-            /** Judgment Sha256 */
-            judgment_sha256: string;
-            /** Model */
-            model?: string | null;
-            model_editorial?: components["schemas"]["NewsModelEditorialData"] | null;
-            /** Model Input Tokens */
-            model_input_tokens?: number | null;
-            /** Model Output Tokens */
-            model_output_tokens?: number | null;
-            /** Model Provider Cost Microusd */
-            model_provider_cost_microusd?: number | null;
-            /**
-             * Model Usage Coverage
-             * @default unknown
-             * @enum {string}
-             */
-            model_usage_coverage: "complete" | "partial" | "unknown";
-            /** Override Rule */
-            override_rule?: string | null;
-            /** Policy Version */
-            policy_version: string;
-            /** Program Sha256 */
-            program_sha256: string;
-            /** Program Version */
-            program_version: string;
-            /** Published At Ms */
-            published_at_ms?: number | null;
-            /**
-             * Rule Baseline Decision
-             * @enum {string}
-             */
-            rule_baseline_decision: "push" | "escalate" | "drop" | "throttled";
-            /** Stage */
-            stage: string;
-            /** Throttled By */
-            throttled_by?: string | null;
-            verdict: components["schemas"]["NewsPresentationVerdictData"];
         };
         /** NewsWalletEventData */
         NewsWalletEventData: {
@@ -4729,7 +4301,6 @@ export interface operations {
             query?: {
                 source_authority?: string;
                 subject_code?: string;
-                final_decision?: string;
                 event_kind?: string;
                 admission?: string;
                 symbol?: string;
@@ -4738,7 +4309,6 @@ export interface operations {
                 cursor?: string;
                 outcome?: string;
                 hours?: number;
-                direction?: string;
             };
             header?: never;
             path?: never;

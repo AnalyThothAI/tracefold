@@ -2,7 +2,6 @@ import { newsEventPath, newsPath, newsSymbolPath } from "@shared/routing/paths";
 import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { Card } from "@shared/ui/Card";
 import { EmptyNote } from "@shared/ui/EmptyNote";
-import { FactGrid } from "@shared/ui/FactGrid";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
 import { PageReadingContent, PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
@@ -16,11 +15,9 @@ import {
   type NewsEventDetail,
   type NewsEventMember,
   type NewsEventReaction,
-  type NewsLegacyVerdict,
   type NewsQuote,
   type NewsReaction,
   type NewsSymbolNormalization,
-  type NewsVerdict,
   useNewsEventWithToken,
   useNewsItemRelatedEventsWithToken,
   useNewsQuotesWithToken,
@@ -36,7 +33,6 @@ import {
 } from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsTechnical } from "../chrome/NewsChrome";
-import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
@@ -106,11 +102,9 @@ function EventDocument({
   token: string;
 }) {
   const { event, outcome } = detail;
-  const legacy = detail.legacy_verdict ?? null;
   const update = detail.event_update ?? null;
   const headline = eventHeadline({
     leader_title: event.leader_title,
-    legacy_verdict: legacy,
     update,
   });
   const url = validExternalUrl(event.leader_url);
@@ -120,11 +114,7 @@ function EventDocument({
   const priorComparisonCount = update?.changes?.filter((change) => change.previous_ref).length ?? 0;
   return (
     <>
-      <article
-        className="news-detail-hero"
-        data-direction={legacy?.direction ?? undefined}
-        data-update={update ? true : undefined}
-      >
+      <article className="news-detail-hero" data-update={update ? true : undefined}>
         <div className="news-detail-hero-top">
           {/* The conclusion and its one-line why, side by side: the chip is the verdict, the sentence is the
               server's reason for it. The chip does not repeat the reason inside itself. */}
@@ -154,9 +144,8 @@ function EventDocument({
             ) : null}
           </p>
         ) : null}
-        {legacy || assets.length || update?.topics?.length ? (
+        {assets.length || update?.topics?.length ? (
           <div aria-label="事件判定" className="news-detail-verdict">
-            {legacy ? <NewsDirectionChip size="lg" verdict={legacy} /> : null}
             {update?.topics?.length ? (
               <span className="news-detail-asset-group">
                 <small>主题</small>
@@ -237,7 +226,6 @@ function EventDocument({
         </>
       ) : null}
       {!update && detail.processing ? <NewsProcessingState processing={detail.processing} /> : null}
-      {legacy ? <LegacyVerdict verdict={legacy} /> : null}
 
       <SymbolNormalization groups={detail.normalization ?? []} />
 
@@ -252,7 +240,6 @@ function EventDocument({
       </Card>
 
       <ReviewSummary detail={detail} />
-      {legacy || detail.evidence_inputs?.length ? <EvidenceInputs detail={detail} /> : null}
 
       <div className="news-detail-grid">
         <Card
@@ -339,32 +326,23 @@ const SHOULD_PUSH_LABELS: Record<string, string> = {
   uncertain: "证据不足",
 };
 
-/**
- * Whether a human has judged this Event, and what they concluded.
- *
- * The ReviewDesk console is gone (#256) and the judgments are not: `tracefold news review submit` still
- * appends them and `/api/news/events/{event_id}` still serves the accepted one. What went with the page is
- * the link into it — this card reports the judgment, it is no longer a door to making one.
- */
+/** The latest current notification decision feedback for this Event. */
 function ReviewSummary({ detail }: { detail: NewsEventDetail }) {
-  const accepted = detail.review.accepted;
+  const latest = detail.feedback.latest;
   return (
-    <Card
-      aria-label="人工复盘"
-      hint={`${detail.review.judgment_n} 条不可变判断${detail.review.uncertain ? " · 尚有分歧" : ""}`}
-      title="人工复盘"
-    >
-      {accepted ? (
+    <Card aria-label="人工复盘" hint={`${detail.feedback.feedback_n} 条判断`} title="人工复盘">
+      {latest ? (
         <div className="news-detail-review-summary">
           <p>
-            最新接受结论：
-            <b>{SHOULD_PUSH_LABELS[accepted.should_push || "uncertain"] || accepted.should_push}</b>
+            最新结论：<b>{SHOULD_PUSH_LABELS[latest.should_push] || latest.should_push}</b>
           </p>
-          {accepted.first_bad_owner ? <small>第一处错误：{accepted.first_bad_owner}</small> : null}
-          {accepted.note ? <small>{accepted.note}</small> : null}
+          {latest.note ? <small>{latest.note}</small> : null}
+          <small>
+            {latest.reviewer} · {absoluteTime(latest.created_at_ms)}
+          </small>
         </div>
       ) : (
-        <EmptyNote>还没有经过接受的人工复盘；这里不会用 1H 涨跌代替判断。</EmptyNote>
+        <EmptyNote>还没有当前通知决策的人工反馈。</EmptyNote>
       )}
     </Card>
   );
@@ -431,75 +409,6 @@ function EventReactions({
         </p>
       ) : null}
     </div>
-  );
-}
-
-/**
- * 旧版判定: the Triage verdict an Event was judged by before the News Agent (#706). History only -- it is
- * never merged into the EventUpdate sections above, and a News Agent Event has none. The retired taxonomy
- * axes are not shown; a verdict row keeps its stored codes in the technical details.
- */
-function LegacyVerdict({ verdict }: { verdict: NewsLegacyVerdict }) {
-  return (
-    <Card aria-label="旧版判定" hint="#706 之前的 Triage 判定，仅供历史查阅" title="旧版判定">
-      {verdict.why_zh ? <p className="news-detail-why">{verdict.why_zh}</p> : null}
-      <VerdictFacts verdict={verdict} />
-      <VerdictAssets verdict={verdict} />
-    </Card>
-  );
-}
-
-/**
- * The rest of the legacy judgment, in the server's own words. A cell is omitted rather than rendered as a
- * dash when the server has nothing for it, so a macro Event with no assets does not show a row of dashes.
- */
-function VerdictFacts({ verdict }: { verdict: NewsLegacyVerdict }) {
-  return (
-    <FactGrid
-      className="news-detail-fact-grid"
-      facts={[
-        { label: "判定", value: verdict.decision_zh ?? "" },
-        { label: "来源权威", value: verdict.source_authority_zh ?? "" },
-        { label: "范围", value: verdict.scope_zh ?? "" },
-        // Confidence used to sit beside the direction, where it competed with the one number that matters
-        // there. It is a judgment detail like the rest, so it reads as one (#87).
-        {
-          label: "把握",
-          value: verdict.confidence == null ? "" : `${Math.round(verdict.confidence * 100)}%`,
-        },
-        { label: "新颖度", value: verdict.novelty_zh ?? "" },
-        { label: "事实类型", value: verdict.fact_kind_zh ?? "" },
-      ]}
-      label="判定明细"
-    />
-  );
-}
-
-/** Which assets the legacy judgment called primary, and which it merely mentioned. */
-function VerdictAssets({ verdict }: { verdict: NewsLegacyVerdict }) {
-  const assets = verdict.assets ?? [];
-  const primary = assets.filter((asset) => asset.role === "primary").map((a) => a.symbol);
-  const mentioned = assets.filter((asset) => asset.role !== "primary").map((a) => a.symbol);
-  if (!primary.length && !mentioned.length) return null;
-  return (
-    <p className="news-detail-intent">
-      {primary.length ? (
-        <span className="news-detail-asset-group">
-          <small>主要标的</small>
-          {primary.map((symbol) => (
-            <code key={symbol}>{symbol}</code>
-          ))}
-        </span>
-      ) : null}
-      {mentioned.length ? (
-        <span className="news-detail-asset-group">
-          <small>提及</small>
-          {mentioned.map((symbol) => (
-            <code key={symbol}>{symbol}</code>
-          ))}
-        </span>
-      ) : null}
-    </p>
   );
 }
 
@@ -664,7 +573,7 @@ function RelatedItemEvents({
 function TechnicalDetails({ detail }: { detail: NewsEventDetail }) {
   const { event } = detail;
   return (
-    <NewsTechnical summary="技术详情（事件 id、话题线、判定与投递记录）">
+    <NewsTechnical summary="技术详情（事件 id、话题线与投递记录）">
       <section>
         <h4>事件</h4>
         <KeyValue>
@@ -682,12 +591,6 @@ function TechnicalDetails({ detail }: { detail: NewsEventDetail }) {
           <KeyValueRow k="context_line" v={event.context_line || "—"} />
         </KeyValue>
       </section>
-      {detail.verdicts.map((verdict, index) => (
-        <VerdictRecord
-          key={`${verdict.stage}-${verdict.created_at_ms}-${index}`}
-          verdict={verdict}
-        />
-      ))}
       {detail.deliveries.map((delivery, index) => (
         <DeliveryRecord delivery={delivery} key={`${delivery.kind}-${index}`} />
       ))}
@@ -709,50 +612,6 @@ function TechnicalDetails({ detail }: { detail: NewsEventDetail }) {
   );
 }
 
-function VerdictRecord({ verdict }: { verdict: NewsVerdict }) {
-  return (
-    <section>
-      <h4>判定 · {verdict.stage}</h4>
-      <KeyValue>
-        <KeyValueRow k="policy_version" v={verdict.policy_version} />
-        <KeyValueRow k="judgment_contract_version" v={verdict.judgment_contract_version} />
-        <KeyValueRow k="judgment_origin" v={verdict.judgment_origin} />
-        <KeyValueRow k="judgment_sha256" v={verdict.judgment_sha256} />
-        <KeyValueRow k="model" v={verdict.model ?? "—"} />
-        <KeyValueRow k="program_version" v={verdict.program_version} />
-        <KeyValueRow k="program_sha256" v={verdict.program_sha256} />
-        <KeyValueRow k="rule_baseline_decision" v={verdict.rule_baseline_decision} />
-        <KeyValueRow k="final_decision" v={verdict.final_decision} />
-        <KeyValueRow k="override_rule" v={verdict.override_rule ?? "—"} />
-        <KeyValueRow k="throttled_by" v={verdict.throttled_by ?? "—"} />
-        <KeyValueRow k="degraded" v={verdict.degraded ? "true" : "false"} />
-        <KeyValueRow k="error_code" v={verdict.error_code ?? "—"} />
-        <KeyValueRow k="verdict_direction" v={verdict.verdict.direction} />
-        <KeyValueRow k="verdict_fact_kind" v={verdict.verdict.fact_kind ?? "—"} />
-        <KeyValueRow k="verdict_scope" v={verdict.verdict.scope} />
-        <KeyValueRow k="verdict_novelty" v={verdict.verdict.novelty} />
-        <KeyValueRow k="headline_zh" v={verdict.verdict.headline_zh} />
-        <KeyValueRow
-          k="event_family"
-          v={
-            verdict.model_editorial?.taxonomy?.event_family ??
-            (verdict.model_editorial?.taxonomy_status === "unavailable"
-              ? `分类不可用（${verdict.model_editorial.taxonomy_error_code ?? "未知原因"}）`
-              : "—")
-          }
-        />
-        <KeyValueRow k="source_authority" v={verdict.model_editorial?.source_authority ?? "—"} />
-        <KeyValueRow k="verdict_evidence_ref" v={verdict.verdict.evidence_ref || "—"} />
-        <KeyValueRow k="evidence_version" v={String(verdict.evidence_version)} />
-        <KeyValueRow k="evidence_sha256" v={verdict.evidence_sha256} />
-        <KeyValueRow k="focus_fact_id" v={verdict.focus_fact_id} />
-        <KeyValueRow k="created_at_ms" v={absoluteTime(verdict.created_at_ms)} />
-        <KeyValueRow k="published_at_ms" v={optionalTime(verdict.published_at_ms)} />
-      </KeyValue>
-    </section>
-  );
-}
-
 function DeliveryRecord({ delivery }: { delivery: NewsDelivery }) {
   return (
     <section>
@@ -767,86 +626,5 @@ function DeliveryRecord({ delivery }: { delivery: NewsDelivery }) {
         <pre className="news-json">{JSON.stringify(delivery.receipt, null, 2)}</pre>
       ) : null}
     </section>
-  );
-}
-
-function EvidenceInputs({ detail }: { detail: NewsEventDetail }) {
-  const inputs = detail.evidence_inputs ?? [];
-  return (
-    <Card aria-label="本次判断的证据" title="本次判断的证据" hint="按实际执行冻结；引用是模型声明">
-      {(detail.late_evidence ?? []).map((row) => (
-        <p key={row.material_id}>后到材料 · {absoluteTime(row.available_at_ms)} · 未参与该次判断</p>
-      ))}
-      {inputs.length === 0 ? (
-        <EmptyNote>该历史记录没有保存选材回执。</EmptyNote>
-      ) : (
-        inputs.map((input, index) => (
-          <details key={`${input.execution_index}-${index}`} open={input.selected}>
-            <summary>
-              {input.selected ? "采用的判断" : "其他执行"} · {absoluteTime(input.cutoff_at_ms)} ·{" "}
-              {input.status}
-            </summary>
-            <details>
-              <summary>输入标识</summary>
-              <p>
-                焦点事实：{input.focus_fact_id}；输入版本：{input.input_version}
-              </p>
-            </details>
-            <p>
-              背景候选 {input.candidate_count}，选入 {input.selected_count}
-              {input.document_status ? `；历史网页记录：${input.document_status}` : ""}
-            </p>
-            {input.reference_issues?.includes("empty_source_refs") ? (
-              <p>引用关联：模型未声明来源片段</p>
-            ) : null}
-            {input.missing.length ? <p>材料缺口：{input.missing.join("、")}</p> : null}
-            {input.exclusions.length ? <p>未选入：{input.exclusions.join("、")}</p> : null}
-            {(
-              [
-                ["当前证据", input.current_evidence],
-                ["相关背景", input.related_evidence],
-              ] as const
-            ).map(([label, spans]) => (
-              <section key={label} aria-label={label}>
-                <h3>{label}</h3>
-                {spans.length === 0 ? (
-                  <p>没有选入材料。</p>
-                ) : (
-                  spans.map((span) => (
-                    <blockquote key={span.ref_id}>
-                      <p>{span.text}</p>
-                      <footer>
-                        {span.ref_id} · {span.source || "来源未明"} · {span.coverage_status}
-                      </footer>
-                      <p>
-                        来源声明：{optionalTime(span.reported_published_at_ms)}；系统可用：
-                        {optionalTime(span.available_at_ms)}
-                      </p>
-                      {validExternalUrl(span.url) ? (
-                        <a href={validExternalUrl(span.url)!} target="_blank" rel="noreferrer">
-                          查看来源
-                        </a>
-                      ) : null}
-                      <details>
-                        <summary>选材依据</summary>
-                        <p>
-                          材料：{span.document_id || span.source_item_id}；内容指纹：
-                          {span.content_sha256}
-                        </p>
-                        <p>
-                          {span.selection_reason} · {span.text_space} [{span.span_start},{" "}
-                          {span.span_end})
-                        </p>
-                      </details>
-                    </blockquote>
-                  ))
-                )}
-              </section>
-            ))}
-            <p>模型声明引用：{input.declared_source_refs.join("、") || "未声明"}</p>
-          </details>
-        ))
-      )}
-    </Card>
   );
 }

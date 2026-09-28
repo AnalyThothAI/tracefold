@@ -68,11 +68,9 @@ const routeCases: RouteCase[] = [
     specific: async (page) => {
       await expect(page.getByRole("link", { name: "返回新闻事件流" })).toBeVisible();
       await expect(
-        page.getByRole("heading", { exact: true, level: 1, name: "央行政策转向，风险资产承压" }),
+        page.getByRole("heading", { exact: true, level: 1, name: "钢铁进口关税上调至 50%" }),
       ).toBeVisible();
-      await expect(page.locator(".news-detail-original")).toContainText(
-        "Macro desk flags liquidity rotation",
-      );
+      await expect(page.locator(".news-detail-update-foot")).toContainText("原文 · Reuters World");
       await expect(page.locator(".news-detail-hero .news-outcome")).toContainText("已推送");
       await expect(page.getByRole("heading", { name: "这条新闻经历了什么" })).toBeVisible();
       await expect(page.getByRole("heading", { name: "同类报道" })).toBeVisible();

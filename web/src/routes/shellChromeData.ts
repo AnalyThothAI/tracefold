@@ -151,8 +151,8 @@ export function topbarFigures(pathname: string, newsStatus?: NewsStatus): Cockpi
     return [
       { label: "EVENTS 24H", tone: "accent", value: newsStatus?.pipeline.events_24h },
       {
-        label: "QUEUE P95",
-        text: loadedDuration(newsStatus?.pipeline.queue_lag_p95_ms),
+        label: "SEMANTIC PENDING",
+        value: newsStatus?.pipeline.semantic_pending,
       },
     ];
   }

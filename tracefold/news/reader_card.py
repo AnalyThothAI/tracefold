@@ -565,12 +565,6 @@ class ReaderCard:
         return fmt.clock(first) if first == last else f"{fmt.clock(first)}–{fmt.clock(last)}"
 
 
-def _joined(*parts: str) -> str:
-    """The card's own separator, with the parts nobody could fill dropped rather than printed empty."""
-
-    return " · ".join(part for part in parts if part)
-
-
 def reader_quotes(quotes: Sequence[Mapping[str, Any]]) -> tuple[ReaderCardQuote, ...]:
     """The quote read model's rows as card facts, bounded to the assets a card names.
 

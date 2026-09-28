@@ -6,13 +6,11 @@ import type { NewsFeedEvent, NewsQuote } from "../../api/newsQueries";
 import {
   absoluteTime,
   clockTime,
-  directionTone,
   displayAssetRefs,
   eventHeadline,
   relativeTime,
 } from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
-import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 
@@ -24,7 +22,7 @@ const ROW_ASSET_CHIPS = 3;
 /**
  * One Event in the feed: when · what · one outcome, tiered by that outcome.
  *
- * The row is `54 / 1fr / 150` with a 3px left rail carrying the *direction* — the pipeline's own state lives
+ * The row is `54 / 1fr / 150` with a 3px left rail. The pipeline's own state lives
  * in the right column as a word, because a coloured pill on every row draws a vertical band the reader stops
  * seeing. A held Event steps back rather than disappearing: smaller headline, secondary ink, grey state word,
  * and the server's `reason_zh` under it.
@@ -50,7 +48,6 @@ export function NewsEventRow({
   quotes?: Record<string, NewsQuote>;
   searchState?: string;
 }) {
-  const legacy = event.legacy_verdict;
   const headline = eventHeadline(event);
   const showOriginal = headline !== event.leader_title;
   const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
@@ -72,8 +69,6 @@ export function NewsEventRow({
   return (
     <article
       className="news-event-row"
-      /* The 3px rail is the market call, not the pipeline state — the right column already owns that. */
-      data-direction={directionTone(legacy?.direction)}
       data-event-id={event.event_id}
       data-fresh={fresh || undefined}
       data-outcome={event.outcome.kind}
@@ -96,14 +91,6 @@ export function NewsEventRow({
         {showOriginal ? <p className="news-event-original">{event.leader_title}</p> : null}
         <p className="news-event-meta">
           <span className="news-event-origin">{event.reporting_origin || "未知来源"}</span>
-          {legacy ? (
-            <>
-              <span aria-hidden className="news-event-divider">
-                ·
-              </span>
-              <NewsDirectionChip verdict={legacy} withStrength={false} />
-            </>
-          ) : null}
           <span aria-hidden className="news-event-divider">
             ·
           </span>

@@ -23,11 +23,8 @@ export type NewsSymbolNormalization = NewsSchemas["NewsSymbolNormalizationData"]
 export type NewsEventDetail = NewsSchemas["NewsEventDetailData"];
 export type NewsItemRelatedEvents = NewsSchemas["NewsItemRelatedEventsData"];
 export type NewsEventMember = NewsSchemas["NewsEventMemberData"];
-export type NewsVerdict = NewsSchemas["NewsVerdictData"];
 export type NewsDelivery = NewsSchemas["NewsDeliveryData"];
 export type NewsDeliverySummary = NewsSchemas["NewsDeliverySummaryData"];
-/** History only (#706): the Triage verdict of an Event judged before the News Agent. */
-export type NewsLegacyVerdict = NewsSchemas["NewsLegacyVerdictData"];
 export type NewsFeedUpdate = NewsSchemas["NewsFeedUpdateData"];
 export type NewsEventUpdate = NewsSchemas["NewsEventUpdateData"];
 export type NewsClaim = NewsSchemas["NewsClaimData"];
@@ -87,20 +84,11 @@ export type NewsWalletEventFilters = {
 };
 
 export type NewsFeedOutcome = NewsOutcomeGroup;
-export type NewsFeedDirection = "bullish" | "bearish" | "neutral";
-export type NewsFeedFinalDecision = "push" | "escalate" | "drop" | "throttled";
 export const NEWS_FEED_OUTCOMES: readonly NewsFeedOutcome[] = ["pushed", "held", "pending"];
-export const NEWS_FEED_DIRECTIONS: readonly NewsFeedDirection[] = ["bullish", "bearish", "neutral"];
 /** The three windows in the approved Event-feed visual. */
 export const NEWS_FEED_HOURS: readonly number[] = [1, 24, 168];
 export const NEWS_FEED_DEFAULT_HOURS = 24;
 
-export const NEWS_FEED_FINAL_DECISIONS: readonly NewsFeedFinalDecision[] = [
-  "push",
-  "escalate",
-  "drop",
-  "throttled",
-];
 export const NEWS_FEED_PAGE_SIZE = 25;
 export const NEWS_FEED_REFETCH_MS = 3_000;
 export const NEWS_STATUS_REFETCH_MS = 15_000;
@@ -119,11 +107,9 @@ export type NewsFeedFilters = {
   admission: string | null;
   sourceAuthorities: string[];
   subjectCodes: string[];
-  finalDecisions: NewsFeedFinalDecision[];
   eventKinds: NewsEventKind[];
   hours: number | null;
   outcome: NewsFeedOutcome | null;
-  directions: NewsFeedDirection[];
   q: string;
   symbol: string | null;
 };
@@ -168,9 +154,7 @@ const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: st
       params: {
         admission: filters.admission,
         cursor,
-        direction: filters.directions.join(",") || null,
         event_kind: filters.eventKinds.join(",") || null,
-        final_decision: filters.finalDecisions.join(",") || null,
         hours: filters.hours ?? undefined,
         limit: NEWS_FEED_PAGE_SIZE,
         outcome: filters.outcome,

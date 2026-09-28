@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from decimal import Decimal
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import httpx2
@@ -15,7 +15,9 @@ import pytest
 from tests.trading.news_public_updates import first_report
 from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.system_one import SystemOneConnection
+from tracefold.app.trading_prepared import PreparedAnalysis
 from tracefold.app.trading_tools import CaseToolContext
+from tracefold.trading.engine.brief import AnalystBrief
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult
 
 
@@ -82,6 +84,20 @@ class _BarMarket(_Market):
         )
 
 
+class _Budget:
+    def __init__(self) -> None:
+        self.deadline_at_monotonic = time.monotonic() + 60
+
+    def remaining_ms(self) -> int:
+        return max(1, int((self.deadline_at_monotonic - time.monotonic()) * 1000))
+
+    async def start(self, request_payload: dict[str, Any]) -> tuple[int, int]:
+        return 0, self.remaining_ms()
+
+    async def finish(self, call_index: int, call: Any) -> None:
+        return None
+
+
 def _context(
     root: Path,
     market: _Market,
@@ -114,7 +130,7 @@ def _context(
     async def file_io(fn: Any, *args: Any) -> Any:
         return await asyncio.to_thread(fn, *args)
 
-    return CaseToolContext(
+    context = CaseToolContext(
         case={
             "case_id": "case-1",
             "claim_attempt": 1,
@@ -129,10 +145,15 @@ def _context(
         },
         source={"source_revision": "v1", "payload": {"kind": "oi", "oi_change_bps": 100}},
         source_first_visible_at_ms=1_000,
-        prepared=SimpleNamespace(
-            brief=SimpleNamespace(evidence_catalog={"source": {"status": "ok"}}),
+        prepared=PreparedAnalysis(
+            brief=AnalystBrief(text="{}", sha="", plan_menu_sha="", evidence_catalog={"source": {"status": "ok"}}),
             plans=(),
             evidence_ref=seed_ref,
+            brief_ref=seed_ref,
+            reference_price=Decimal("100"),
+            reference_at_ms=1_000,
+            source_history=(),
+            source_amendments=(),
         ),
         market_data=market,
         files=files,
@@ -141,13 +162,19 @@ def _context(
         source_history_at=history,
         semantics=None,
     )
+    context.tools(_Budget())
+    return context
 
 
 def test_tools_validate_before_fetch_and_archive_the_result(tmp_path: Path) -> None:
     async def run() -> None:
         market = _Market()
         context = _context(tmp_path, market)
-        assert len(context.tools(object())) == 3
+        expired = _Budget()
+        expired.deadline_at_monotonic = time.monotonic() - 1
+        with pytest.raises(TimeoutError, match="analysis_tool_budget_expired"):
+            context.tools(expired)
+        assert len(context.tools(_Budget())) == 3
         invalid = json.loads(await context.get_market_snapshot("unknown", 60))
         assert invalid["status"] == "error"
         assert market.requests == []

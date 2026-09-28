@@ -163,9 +163,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsEventData",
         "NewsEventDetailData",
         "NewsEventMemberData",
-        "NewsVerdictData",
-        "NewsPresentationVerdictData",
-        "NewsModelEditorialData",
         "NewsDeliveryData",
         "NewsStatusData",
         "NewsIngestStatusData",
@@ -209,18 +206,13 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
     assert set(components["NewsEventDetailData"]["properties"]) == {
         "event",
         "outcome",
-        # #706: the adopted EventUpdate, the work behind it, and the legacy verdict kept apart from both.
         "event_update",
         "processing",
-        "legacy_verdict",
         "timeline",
         "members",
-        "verdicts",
         "deliveries",
-        "review",
+        "feedback",
         "evidence_snapshots",
-        "evidence_inputs",
-        "late_evidence",
         "reader_receipt",
         "normalization",
         # #88: the event-level aggregate and every per-asset Reaction with the closes behind it.
@@ -396,19 +388,15 @@ def test_news_contract_hard_cuts_story_brief_rss_and_title_translation_surfaces(
 
 
 @pytest.mark.contract
-def test_news_feed_contract_exposes_bounded_event_filters() -> None:
+def test_news_feed_contract_exposes_current_bounded_filters() -> None:
     from tracefold.app.http.app import create_app
     from tracefold.platform.config.models import Settings
 
     schema = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()
-    operation = schema["paths"]["/api/news/feed"]["get"]
-    parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
-
-    # #706: the three retired taxonomy axes are not parameters any more.
+    parameters = {parameter["name"]: parameter for parameter in schema["paths"]["/api/news/feed"]["get"]["parameters"]}
     assert set(parameters) == {
         "source_authority",
         "subject_code",
-        "final_decision",
         "event_kind",
         "admission",
         "symbol",
@@ -417,104 +405,17 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "cursor",
         "outcome",
         "hours",
-        "direction",
     }
-    assert parameters["q"]["schema"]["maxLength"] == 200
-    assert parameters["symbol"]["schema"]["maxLength"] == 32
-    assert parameters["outcome"]["schema"]["pattern"] == "^(pushed|held|pending)?$"
-    assert parameters["hours"]["schema"]["maximum"] == 168
-    limit = parameters["limit"]["schema"]
-    assert limit == {"default": 50, "maximum": 100, "minimum": 1, "title": "Limit", "type": "integer"}
-    assert {"reporting_origin", "provider_score_gt"}.isdisjoint(parameters)
-    filters = schema["components"]["schemas"]["NewsFeedFiltersData"]
-    assert set(filters["properties"]) == {
-        "source_authority",
-        "subject_code",
-        "final_decision",
-        "event_kind",
-        "admission",
-        "symbol",
-        "q",
-        "limit",
-        "outcome",
-        "hours",
-        "direction",
-    }
-    assert set(filters["required"]) == {"limit"}
-    triage = schema["components"]["schemas"]["NewsLegacyVerdictData"]["properties"]
-    assert {"fact_kind", "headline_zh", "final_decision"} <= set(triage)
-    assert {"taxonomy", "taxonomy_status", "taxonomy_error_code"}.isdisjoint(triage)
-    assert "NewsTaxonomyData" not in schema["components"]["schemas"]
-    assert "NewsTriageSummaryData" not in schema["components"]["schemas"]
+    assert parameters["limit"]["schema"]["maximum"] == 100
+    assert set(schema["components"]["schemas"]["NewsFeedFiltersData"]["properties"]) == set(parameters) - {"cursor"}
     feed_row = schema["components"]["schemas"]["NewsFeedEventData"]["properties"]
-    assert {"update", "legacy_verdict"} <= set(feed_row) and "triage" not in feed_row
-    assert {
-        "event_type",
-        "event_type_zh",
-        "actionable",
-        "model_decision",
-        "model_decision_zh",
-        "title_zh",
-    }.isdisjoint(triage)
-    verdict = schema["components"]["schemas"]["NewsVerdictData"]["properties"]
-    assert {"judgment_contract_version", "judgment_origin", "judgment_sha256", "model_editorial"} <= set(verdict)
-    assert {"editorial", "trace", "prompt_version", "model_decision"}.isdisjoint(verdict)
-    # The published judgment is exactly the ten dimensions `TriageVerdict` declares, and the model's
-    # editorial is exactly the two it may add. Both sets are `==`, not `<=`: a field arriving here is
-    # a contract change whether or not anyone remembered to name it.
-    assert set(schema["components"]["schemas"]["NewsPresentationVerdictData"]["properties"]) == {
-        "novelty",
-        "restates",
-        "assets",
-        "direction",
-        "scope",
-        # #675 §1: the model's observation of the text, and the evidence span it read it off. `magnitude`
-        # and `audience` left with the reader judgment they carried.
-        "fact_kind",
-        "evidence_ref",
-        "confidence",
-        "headline_zh",
-        "why_zh",
-    }
-    assert set(schema["components"]["schemas"]["NewsModelEditorialData"]["properties"]) == {
-        # #651 §5.3: the code-owned authority is published beside the classification, and the two
-        # status fields say whether the taxonomy Predictor answered at all.
-        "source_authority",
-        "source_authority_zh",
-        "taxonomy",
-        "taxonomy_status",
-        "taxonomy_error_code",
-    }
-    # #706: a legacy verdict's retired axes are stored codes with no vocabulary and no codebook claim.
-    assert set(schema["components"]["schemas"]["NewsLegacyTaxonomyData"]["properties"]) == {
-        "subject_codes",
-        "event_family",
-        "change_state",
-        "assertion_status",
-    }
-    assert {
-        "judgment_contract_version",
-        "judgment_origin",
-        "judgment_sha256",
-        "verdict",
-        "program_version",
-        "program_sha256",
-        "evidence_version",
-        "evidence_sha256",
-        "focus_fact_id",
-    } <= set(schema["components"]["schemas"]["NewsVerdictData"]["required"])
-    assert schema["components"]["schemas"]["NewsEvidenceSnapshotData"]["properties"]["provenance"]["const"] == (
-        "observed"
-    )
-    assert "snapshot" not in schema["components"]["schemas"]["NewsEvidenceSnapshotData"]["properties"]
-    assert "legacy_label" not in str(
-        schema["components"]["schemas"]["NewsAcceptedReviewData"]["properties"]["subject_kind"]
-    )
-    review = schema["components"]["schemas"]["NewsAcceptedReviewData"]["properties"]
-    assert {"payload", "dimensions", "novelty"}.isdisjoint(review)
+    assert "update" in feed_row and "legacy_verdict" not in feed_row
+    detail = schema["components"]["schemas"]["NewsEventDetailData"]["properties"]
+    assert "feedback" in detail and "verdicts" not in detail
+    for retired in ("NewsLegacyVerdictData", "NewsVerdictData", "NewsAcceptedReviewData"):
+        assert retired not in schema["components"]["schemas"]
 
 
-@pytest.mark.contract
 def test_news_event_update_contract_is_exact_and_types_the_core_vocabulary() -> None:
     """#706: the Event detail's EventUpdate and processing sections, as published.
 
@@ -590,8 +491,6 @@ def test_news_event_update_contract_is_exact_and_types_the_core_vocabulary() -> 
     assert components["NewsTimelineStepData"]["properties"]["stage"]["enum"] == [
         "received",
         "gate",
-        "triage",
-        "decide",
         "evidence",
         "semantic",
         "notify",

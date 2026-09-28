@@ -5,26 +5,24 @@ four ways it could quietly lie: reading a feature that was not observable at ent
 the provider's series shift a lookback, filling a stop better than the market would, and reporting a
 corpus payload that no longer hashes to what the manifest sealed.
 
-Research self-tests, deliberately outside `tests/` (#537 PR-1). The code they cover is not part of the
-service and the fixed CI job set does not collect it -- `testpaths = ["tests"]`. Run them beside the
-scripts, before quoting a receipt they produced:
+These checks are in the normal hermetic test collection, before a research receipt is quoted:
 
-    uv run python -m pytest notebooks/research/test_oi_research.py
+    uv run python -m pytest tests/research/test_oi_research.py
 """
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import json
-import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from oi_corpus import (
+from notebooks.research import oi_research_cli
+from notebooks.research.oi_corpus import (
     FIVE_MIN_MS,
     CorpusError,
     CorpusWindow,
@@ -32,7 +30,7 @@ from oi_corpus import (
     seal,
     window_now,
 )
-from oi_replay import (
+from notebooks.research.oi_replay import (
     BARS_PER_HOUR,
     COST_BPS,
     HOLD_BARS,
@@ -45,6 +43,7 @@ from oi_replay import (
     permutation_p,
     score,
 )
+from notebooks.research.open_interest_history import OpenInterestHistoryError
 
 START = 1_785_000_000_000 // FIVE_MIN_MS * FIVE_MIN_MS
 
@@ -183,7 +182,7 @@ def test_the_permutation_is_reproducible_from_its_seed() -> None:
 def _write_corpus(tmp_path: Path, *, bars: int, contracts: list[float], closes: list[float]) -> Path:
     """A one-symbol corpus written through the real sealing path, then read back by the replay."""
 
-    import oi_corpus
+    from notebooks.research import oi_corpus
 
     corpus = tmp_path / "corpus"
     (corpus / "raw").mkdir(parents=True)
@@ -292,7 +291,7 @@ def test_a_hole_in_the_provider_series_makes_its_dependants_unmeasured(tmp_path:
     symbols whose data is worst -- so the feature is `None` and the rule refuses the bar instead.
     """
 
-    import oi_corpus
+    from notebooks.research import oi_corpus
 
     bars = BARS_PER_HOUR * 3 + HOLD_BARS
     corpus = _write_corpus(tmp_path, bars=bars, contracts=[100.0] * bars, closes=[10.0] * bars)
@@ -335,3 +334,82 @@ def test_the_corpus_window_is_aligned_to_the_five_minute_grid() -> None:
     # The candle window is wider on both sides: `pre1h` needs history, the forward return needs future.
     assert window.candle_start_ms < window.start_ms
     assert window.candle_end_ms > window.end_ms
+
+
+def test_corpus_pull_bounds_inflight_requests_and_keeps_its_fixed_window(tmp_path: Path, monkeypatch) -> None:
+    active = peak = 0
+    windows: list[tuple[int, int]] = []
+
+    @asynccontextmanager
+    async def client(*, max_connections: int):
+        assert max_connections == 4
+        yield object()
+
+    async def universe(_client, *, budget):
+        return tuple(f"S{index}USDT" for index in range(12))
+
+    async def fetch(_client, symbol, *, start_ms, end_ms, budget):
+        nonlocal active, peak
+        windows.append((start_ms, end_ms))
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0.002)
+            return [{"timestamp": start_ms}] if budget is oi_budget else [[start_ms]]
+        finally:
+            active -= 1
+
+    oi_budget = object()
+    monkeypatch.setattr(oi_research_cli, "history_client", client)
+    monkeypatch.setattr(
+        oi_research_cli,
+        "Budget",
+        lambda rate: oi_budget if rate == oi_research_cli.OPEN_INTEREST_REQUESTS_PER_MIN else object(),
+    )
+    monkeypatch.setattr(oi_research_cli, "fetch_usdt_perpetuals", universe)
+    monkeypatch.setattr(oi_research_cli, "fetch_open_interest_history", fetch)
+    monkeypatch.setattr(oi_research_cli, "fetch_candle_history", fetch)
+
+    corpus = tmp_path / "corpus"
+    first = asyncio.run(oi_research_cli._pull(corpus, days=1, symbols=None, concurrency=2, now_ms=START))
+    resumed = asyncio.run(
+        oi_research_cli._pull(corpus, days=1, symbols=None, concurrency=2, now_ms=START + FIVE_MIN_MS)
+    )
+    assert first["coverage"]["symbols_stored"] == 12
+    assert first["manifest_sha256"] == resumed["manifest_sha256"]
+    assert peak <= 4 and active == 0
+    assert len(windows) == 24  # Resume does not re-pull completed symbols.
+    with pytest.raises(ValueError, match="oi_corpus_concurrency_out_of_range"):
+        asyncio.run(oi_research_cli._pull(corpus, days=1, symbols=None, concurrency=0, now_ms=START))
+
+
+def test_corpus_pull_cancels_and_awaits_sibling_on_provider_failure(tmp_path: Path, monkeypatch) -> None:
+    candle_started = asyncio.Event()
+    candle_cancelled = asyncio.Event()
+
+    @asynccontextmanager
+    async def client(*, max_connections: int):
+        yield object()
+
+    async def universe(_client, *, budget):
+        return ("FAILUSDT",)
+
+    async def oi(_client, symbol, *, start_ms, end_ms, budget):
+        await candle_started.wait()
+        raise OpenInterestHistoryError("injected provider failure")
+
+    async def candle(_client, symbol, *, start_ms, end_ms, budget):
+        candle_started.set()
+        try:
+            await asyncio.sleep(60)
+        finally:
+            candle_cancelled.set()
+
+    monkeypatch.setattr(oi_research_cli, "history_client", client)
+    monkeypatch.setattr(oi_research_cli, "fetch_usdt_perpetuals", universe)
+    monkeypatch.setattr(oi_research_cli, "fetch_open_interest_history", oi)
+    monkeypatch.setattr(oi_research_cli, "fetch_candle_history", candle)
+    corpus = tmp_path / "corpus"
+    result = asyncio.run(oi_research_cli._pull(corpus, days=1, symbols=None, concurrency=1, now_ms=START))
+    assert candle_cancelled.is_set()
+    assert result["coverage"]["symbols_stored"] == 0

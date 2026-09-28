@@ -12,6 +12,7 @@ from tracefold.platform.resource import (
     ResourceCapability,
     ResourceOperationOverrun,
     await_concurrent_future,
+    drain_futures,
 )
 
 _THREAD_FUTURE_COMPLETION_GRACE_SECONDS = 0.500
@@ -130,7 +131,7 @@ class FiniteOperations:
         self._accepting = False
 
     async def drain(self, *, timeout_seconds: float) -> bool:
-        return await _drain(self._pending, timeout_seconds=timeout_seconds)
+        return await drain_futures(self._pending, timeout_seconds=timeout_seconds)
 
     def close(self) -> None:
         if self._closed:
@@ -196,21 +197,6 @@ def _record_completion(
 
 def _change_active(telemetry: TelemetryRegistry, capability: str, delta: int) -> None:
     telemetry.change_resource_active(capability, delta)
-
-
-async def _drain(
-    pending: set[asyncio.Future[Any]],
-    *,
-    timeout_seconds: float,
-) -> bool:
-    active = {future for future in pending if not future.done()}
-    if not active:
-        return True
-    _, unfinished = await asyncio.wait(
-        active,
-        timeout=max(0.0, float(timeout_seconds)),
-    )
-    return not unfinished
 
 
 def _operation_name(value: str) -> str:

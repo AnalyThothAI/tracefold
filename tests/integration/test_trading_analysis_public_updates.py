@@ -15,9 +15,8 @@ from typing import Any
 
 import pytest
 
-from tests.integration.test_trading_analysis_runner import _Analyst, _Market
-from tests.integration.test_trading_analysis_storage import _selection
 from tests.postgres_test_utils import connect_postgres_test, postgres_migration_test_dsn, reset_postgres_schema
+from tests.support.trading_analysis import _Analyst, _Market, _selection
 from tests.trading.news_public_updates import first_report, next_update, outbox_row
 from tracefold.app import trading_analysis
 from tracefold.app.analysis_files import AnalysisFiles

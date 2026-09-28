@@ -155,7 +155,7 @@ sequenceDiagram
 | Trading 研究结果 | 冻结 Case / 候选根在规定研究协议下的价格路径 |
 | 原生执行收益 | 真实成交、手续费、资金费率及其覆盖情况 |
 
-新闻后的上涨不证明新闻造成上涨；通知命中率不证明策略盈利；纸面价格路径也不能补上缺失的手续费和成交证据。`review_storage.py` 中仍有依赖历史 verdict 的聚合，不应包装为新 EventUpdate Agent 的全样本线上质量评估。
+新闻后的上涨不证明新闻造成上涨；通知命中率不证明策略盈利；纸面价格路径也不能补上缺失的手续费和成交证据。`review_storage.py` 只提供价格新鲜度与 Reaction 积压读取，不生成历史 verdict cohort 评分。
 
 <a id="section-排障与验证"></a>
 ## 07 · 排障与验证
@@ -174,7 +174,7 @@ sequenceDiagram
 | [loops.py](../../tracefold/news/market_review/loops.py) | `QuoteSnapshotLoop` 和 `EventReactionLoop` 的有界 I/O 编排 |
 | [quote_storage.py](../../tracefold/news/market_review/quote_storage.py) | 目标查询、当前快照与到期 Reaction 存储 |
 | [projections.py](../../tracefold/news/market_review/projections.py) | 显示字段、覆盖率与派生结果投影 |
-| [review_storage.py](../../tracefold/news/market_review/review_storage.py) | 保留的历史 verdict / cohort 复盘查询；不能据此宣称新 Agent 自动评估已闭环 |
+| [review_storage.py](../../tracefold/news/market_review/review_storage.py) | 价格新鲜度与 Reaction 积压状态读取 |
 | [integrations/venues](../../tracefold/integrations/venues/) | Binance、Hyperliquid、OKX 等来源的公开行情与历史适配 |
 | [Workers wiring](../../tracefold/app/workers/wiring/) | 将目录、报价、复盘能力装配进 Workers，分配独立资源接缝 |
 

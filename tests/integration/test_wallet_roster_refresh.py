@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from tests.integration.test_news_chain_tape import _Db
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.wallet_chain import _Db
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.robinhoodtrenches import RosterProviderError
 from tracefold.news.chain_tape.contracts import RosterMember

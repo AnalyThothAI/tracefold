@@ -1,25 +1,16 @@
+"""Current decision feedback accepts only its bounded fields."""
+
 import pytest
+from pydantic import ValidationError
 
-from tracefold.news.review.desk import EventRubricSubmission
+from tracefold.news.review.desk import DecisionFeedbackSubmission
 
 
-def test_evidence_refs_are_bounded_per_entry() -> None:
-    with pytest.raises(ValueError, match="at most 500 characters"):
-        EventRubricSubmission(
-            should_push="must_hold",
-            dimensions={
-                "factual_fidelity": "fail",
-                "taxonomy_subject_codes": "pass",
-                "taxonomy_event_family": "pass",
-                "taxonomy_change_state": "pass",
-                "taxonomy_assertion_status": "pass",
-            },
-            novelty={"judgment": "new_fact"},
-            taxonomy={
-                "subject_codes": [],
-                "event_family": "other",
-                "change_state": "unknown",
-                "assertion_status": "unknown",
-            },
-            evidence_refs=["x" * 501],
-        )
+def test_decision_feedback_note_is_bounded_without_legacy_rubric() -> None:
+    assert DecisionFeedbackSubmission(should_push="should_hold", note="").note == ""
+    with pytest.raises(ValidationError) as error:
+        DecisionFeedbackSubmission(should_push="should_hold", note="x" * 2001)
+    assert error.value.errors()[0]["loc"] == ("note",)
+    with pytest.raises(ValidationError) as error:
+        DecisionFeedbackSubmission.model_validate({"should_push": "should_hold", "dimensions": {}})
+    assert error.value.errors()[0]["loc"] == ("dimensions",)

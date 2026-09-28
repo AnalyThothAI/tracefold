@@ -207,9 +207,6 @@ class PriceInstrument:
     def quote_key(self) -> tuple[str, str]:
         return (self.venue_symbol, self.price_kind)
 
-    def sort_key(self) -> tuple[int, int, str, str]:
-        return (source_rank(self.venue), quote_asset_rank(self.quote_asset), self.venue, self.venue_symbol)
-
 
 # ---------------------------------------------------------------------------- quotes
 @dataclass(frozen=True, slots=True)

@@ -18,9 +18,7 @@ import { describe, expect, it } from "vitest";
 
 const baseFilters = {
   admission: null,
-  directions: [],
   eventKinds: [],
-  finalDecisions: [],
   hours: null,
   outcome: null,
   q: "",
@@ -32,20 +30,19 @@ const baseFilters = {
 describe("useNewsFeedWithToken", () => {
   it("separates Feed cache identities by every server filter", () => {
     const latest = queryKeys.newsFeed(baseFilters);
-    const pushed = queryKeys.newsFeed({ ...baseFilters, finalDecisions: ["push"] });
+    const pushed = queryKeys.newsFeed({ ...baseFilters, outcome: "pushed" });
 
     expect(latest).not.toEqual(pushed);
     expect(latest[0]).toBe("news-feed");
-    expect(pushed[4]).toBe("push");
+    expect(pushed).toContain("pushed");
     const held = queryKeys.newsFeed({ ...baseFilters, hours: 6, outcome: "held" });
     expect(held).not.toEqual(latest);
-    expect(held[8]).toBe("held");
-    expect(held[9]).toBe("6");
+    expect(held).toContain("held");
+    expect(held).toContain("6");
     for (const filtered of [
       { ...baseFilters, sourceAuthorities: ["issuer_first_party"] as const },
       { ...baseFilters, subjectCodes: ["medtop:04000000"] as const },
       { ...baseFilters, eventKinds: ["news"] as const },
-      { ...baseFilters, directions: ["bullish"] as const },
     ]) {
       expect(queryKeys.newsFeed(filtered)).not.toEqual(latest);
     }
@@ -83,9 +80,7 @@ describe("useNewsFeedWithToken", () => {
       () =>
         useNewsFeedWithToken("token", {
           admission: "candidate",
-          directions: ["bullish", "neutral"],
           eventKinds: ["news"],
-          finalDecisions: ["push"],
           hours: 24,
           outcome: "pushed",
           q: "bitcoin",
@@ -101,10 +96,10 @@ describe("useNewsFeedWithToken", () => {
       assertion_status: null,
       change_state: null,
       cursor: null,
-      direction: "bullish,neutral",
+      direction: null,
       event_family: null,
       event_kind: "news",
-      final_decision: "push",
+      final_decision: null,
       hours: "24",
       limit: "25",
       outcome: "pushed",
@@ -113,7 +108,7 @@ describe("useNewsFeedWithToken", () => {
       subject_code: "medtop:04000000",
       symbol: "BTC",
     });
-    expect(result.current.data?.events[0].legacy_verdict?.final_decision).toBe("push");
+    expect(result.current.data?.events[0].update?.headline_source).toBe("sent_card");
   });
 
   it("reads one Event detail by encoded id", async () => {
@@ -130,7 +125,7 @@ describe("useNewsFeedWithToken", () => {
 
     await waitFor(() => expect(result.current.data?.event.event_id).toBe("evt-global-policy"));
     expect(requestedPath).toBe("/api/news/events/evt%2Fwith%20slash");
-    expect(result.current.data?.verdicts).toHaveLength(1);
+    expect(result.current.data?.event_update?.claims.length).toBeGreaterThan(0);
     expect(result.current.data?.deliveries[0].state).toBe("sent");
   });
 
@@ -149,7 +144,7 @@ describe("useNewsFeedWithToken", () => {
     await waitFor(() => expect(result.current.data?.state).toBe("ready"));
     expect(view).toBeNull();
     expect(result.current.data?.ingest.connected).toBe(true);
-    expect(result.current.data?.pipeline.triage_p95_ms).toBe(1_900);
+    expect(result.current.data?.pipeline.semantic_adopted_24h).toBe(150);
   });
 });
 

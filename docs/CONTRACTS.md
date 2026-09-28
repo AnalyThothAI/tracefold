@@ -102,15 +102,15 @@
 | card copy input digest | 所选命题的完整表达材料和文案器身份；仅相同实际输入复用中文文案 |
 | 冻结正文 / 实际发送账本 | 谁可能收到什么、结果是否已明确 |
 
-新采用内容使用 `news_event_update_v2`；旧 v1 保留原始内容。Event 详情可保留 `legacy_verdict` 作为历史读取，但 UI、公开 outbox 与新 Agent 不由旧 verdict 合成新 Claim。
+新采用内容使用 `news_event_update_v2`；旧 v1 保留原始内容与哈希。Event 详情读取当前 adopted update、来源、语义工作、通知决策及真实发送回执。只有旧事实的 Event 仍可看到来源和实际回执，但不再生成旧 verdict 的详情投影，也不会由旧 verdict 合成新 Claim。
 
 公开编辑型契约 `news_public_update_v1` 区分 `catalyst_delta` 与 `source_update`。前者给合格变化内容一个研究入口，后者显式更新旧 claim refs，可能跨 Event；它不创建新研究有效期或自动影响已有仓位。
 
 [News 文档](modules/news.md)解释抽取与采用，[主题和来源](modules/news.md#topics-and-cited-source-authority)解释 IPTC 与引用来源身份，不将来源权威、事实已兑现和交易授权混成一个字段。
 
-### 保留的历史复核词表
+### 历史事实中的判断词表
 
-`FACT_KINDS` 的代码顺序仍供旧 verdict / 接受复核读取：
+`FACT_KINDS` 的代码顺序用于解释既存原始 verdict 事实；当前 ReviewDesk 只接受通知决策反馈与外部漏报：
 
 `state_change|new_quantity|level_crossed|period_record|quantified_flow|official_measure|statement|recap|schedule|promotion`
 

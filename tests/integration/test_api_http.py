@@ -10,19 +10,10 @@ from tests.postgres_test_utils import (
     connect_postgres_test,
     postgres_settings_storage,
 )
-from tests.support.news_legacy import (
-    LEGACY_PROGRAM_VERSION,
-    LEGACY_TRIAGE_POLICY_VERSION,
-    legacy_editorial,
-    legacy_taxonomy,
-)
-from tests.support.news_legacy_storage import legacy_news
 from tracefold.app import serve_database as serve_database_module
 from tracefold.app.http.app import create_app
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.market_review.instruments import Instrument
-from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
 from tracefold.platform.config.models import NewsSettings, Settings
@@ -140,7 +131,6 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     assert feed_data["filters"] == {
         "source_authority": None,
         "subject_code": None,
-        "final_decision": None,
         "event_kind": None,
         "admission": None,
         "symbol": None,
@@ -148,7 +138,6 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         "limit": 10,
         "outcome": None,
         "hours": None,
-        "direction": None,
     }
 
     assert retired_oi.status_code == 400
@@ -170,18 +159,17 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     assert {row["outcome"]["kind"] for row in feed_data["events"]} <= {
         "held_recovery",
         "held_gate",
-        "expired_triage_handoff",
-        "expired_delivery_handoff",
-        "queued_publish",
-        "queued_triage",
-        "dropped",
-        "throttled",
-        "degraded_dropped",
         "pending_delivery",
         "delivered",
         "delivery_failed",
-        # #706: admission commits semantic work beside the evidence of every admitted live Event.
         "queued_semantic",
+        "semantic_failed",
+        "no_update",
+        "queued_notification",
+        "notification_deferred",
+        "notification_exhausted",
+        "not_notified",
+        "delivery_ambiguous",
     }
     assert 0 < len(feed_data["events"]) <= 10
     assert all("title_zh" not in event for event in feed_data["events"])
@@ -207,7 +195,8 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     assert detail.status_code == 200
     detail_data = detail.json()["data"]
     assert detail_data["event"]["event_id"] == event_ids[0]
-    assert detail_data["members"] and detail_data["verdicts"] == [] and detail_data["deliveries"] == []
+    assert detail_data["members"] and detail_data["deliveries"] == []
+    assert "verdicts" not in detail_data and "legacy_verdict" not in detail_data
     assert missing.status_code == 404
     assert missing.json() == {"ok": False, "error": "news_event_not_found"}
     assert bad_admission.status_code == 400
@@ -369,196 +358,3 @@ def test_api_retired_market_routes_and_websocket_are_absent(tmp_path):
 
     assert [response.status_code for response in responses] == [404] * len(responses)
     assert websocket_missing
-
-
-def _historical_v2_editorial(*, source_authority: str) -> dict:
-    """One `news_editorial_v2` document, exactly as the worker wrote it before #651 §5.3.
-
-    Written by hand because the legacy v4 builder cannot produce it: v4 carries no `relevance` block at
-    all, and the v1 taxonomy label has no `source_authority` field. That is
-    the point — these rows are audit truth that is never rewritten, and the feed's source-authority
-    filter has to keep answering over them.
-    """
-
-    payload = {
-        "editorial_contract_version": "news_editorial_v2",
-        "editorial_origin": "model",
-        "relevance": {
-            "impact_breadth": "single_instrument",
-            "tradability": "direct",
-            "surprise": "unscheduled",
-            "development_delta": "state_change",
-            "channels": ["exchange_access"],
-            "affected_markets": ["single_asset"],
-            "reader_value": "realtime",
-        },
-        "taxonomy": legacy_taxonomy(event_family="market_access", change_state="effective")
-        | {"source_authority": source_authority},
-    }
-    return payload | {"editorial_sha256": canonical_sha(payload)}
-
-
-def _verdict_payload(*, judgment_contract_version: str) -> dict:
-    """The verdict document the named judgment contract binds its rows to (#675 §1).
-
-    `news_judgment_v3` is the shape the Python contract produces; the v2 shape is hand-written for the
-    same reason its editorial is, because `TriageVerdict` drops `magnitude`/`audience` on the way in.
-    """
-
-    common = {
-        "novelty": "new_fact",
-        "restates": -1,
-        "assets": [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}],
-        "direction": "bullish",
-        "scope": "single_name",
-        "confidence": 0.8,
-        "headline_zh": "比特币获得新的市场准入",
-        "why_zh": "新增入口扩大可交易范围。",
-    }
-    if judgment_contract_version == "news_judgment_v3":
-        return TriageVerdict(**common, fact_kind="state_change", evidence_ref="c1").model_dump(mode="json")
-    return common | {"magnitude": 2, "audience": "crypto"}
-
-
-def _write_model_verdict(
-    *,
-    event_id: str,
-    editorial: dict,
-    policy_version: str,
-    judgment_contract_version: str,
-    override_rule: str,
-    now_ms: int,
-) -> None:
-    verdict = _verdict_payload(judgment_contract_version=judgment_contract_version)
-    verdict_sha = canonical_sha(verdict)
-    judgment_sha = canonical_sha(
-        {
-            "judgment_contract_version": judgment_contract_version,
-            "verdict": verdict,
-            "editorial": editorial,
-            "verdict_sha256": verdict_sha,
-        }
-    )
-    runtime_manifest_sha = "b" * 64
-    program_sha256 = "a" * 64
-    with write_repositories() as repos:
-        evidence = repos.news.latest_evidence_snapshot(event_id)
-        assert evidence is not None
-        trace = {
-            "judgment_contract_version": judgment_contract_version,
-            "judgment_origin": "model",
-            "judgment_sha256": judgment_sha,
-            "verdict_sha256": verdict_sha,
-            "editorial_sha256": editorial["editorial_sha256"],
-            "runtime_manifest_sha": runtime_manifest_sha,
-            "program_version": LEGACY_PROGRAM_VERSION,
-            "program_sha256": program_sha256,
-            "evidence_version": int(evidence["evidence_version"]),
-            "evidence_sha256": str(evidence["evidence_sha256"]),
-            "focus_fact_id": str(evidence["focus_fact_id"]),
-            "told": [],
-            "told_count": 0,
-        }
-        with repos.transaction():
-            assert legacy_news(repos.news).insert_verdict(
-                event_id=event_id,
-                stage="triage",
-                policy_version=policy_version,
-                judgment_contract_version=judgment_contract_version,
-                judgment_origin="model",
-                rule_baseline_decision="push",
-                final_decision="push",
-                override_rule=override_rule,
-                throttled_by=None,
-                verdict=verdict,
-                model_editorial=editorial,
-                judgment_sha256=judgment_sha,
-                runtime_manifest_sha=runtime_manifest_sha,
-                model="test-model",
-                program_version=LEGACY_PROGRAM_VERSION,
-                program_sha256=program_sha256,
-                degraded=False,
-                error_code=None,
-                trace=trace,
-                evidence_version=int(evidence["evidence_version"]),
-                evidence_sha256=str(evidence["evidence_sha256"]),
-                focus_fact_id=str(evidence["focus_fact_id"]),
-                now_ms=now_ms,
-            )
-
-
-def test_api_serves_an_unavailable_taxonomy_and_filters_history_by_source_authority(tmp_path):
-    """#651 §5.3, end to end over real PostgreSQL.
-
-    Three facts in one pass, because they are one fact: a judgment whose taxonomy Predictor failed alone
-    is persistable under the new CHECK, readable through the public Event detail with its classification
-    absent and its code-owned authority intact, and indistinguishable to the feed's source-authority
-    filter from a `news_editorial_v2` row written before the cut.
-    """
-
-    settings = make_settings(tmp_path)
-    app = create_app(settings=settings)
-    now_ms = int(time.time() * 1000)
-    event_ids = _seed_news_v3_events(now_ms=now_ms)
-    assert len(event_ids) >= 2
-    unavailable_event, historical_event = event_ids[0], event_ids[1]
-
-    unavailable = legacy_editorial(
-        source_authority="issuer_first_party",
-        taxonomy_error_code="news_program_output_truncated",
-    ).document
-    _write_model_verdict(
-        event_id=unavailable_event,
-        editorial=unavailable,
-        policy_version=LEGACY_TRIAGE_POLICY_VERSION,
-        judgment_contract_version="news_judgment_v3",
-        override_rule="fact_kind_state_change",
-        now_ms=now_ms,
-    )
-    _write_model_verdict(
-        event_id=historical_event,
-        editorial=_historical_v2_editorial(source_authority="reputable_secondary"),
-        # The policy the pre-cut worker wrote under: a historical row, not a re-issued one.
-        policy_version="news_triage_policy_v13",
-        judgment_contract_version="news_judgment_v2",
-        override_rule="trade_relevance_realtime",
-        now_ms=now_ms,
-    )
-
-    with TestClient(app) as client:
-        headers = {"Authorization": "Bearer secret"}
-        detail = client.get(f"/api/news/events/{unavailable_event}", headers=headers)
-        historical_detail = client.get(f"/api/news/events/{historical_event}", headers=headers)
-        issuer_feed = client.get("/api/news/feed?source_authority=issuer_first_party&limit=100", headers=headers)
-        secondary_feed = client.get("/api/news/feed?source_authority=reputable_secondary&limit=100", headers=headers)
-
-    assert detail.status_code == 200
-    # #706: the Triage verdict is history, served under its legacy name and without the retired axes.
-    triage = detail.json()["data"]["legacy_verdict"]
-    assert {"taxonomy", "taxonomy_status", "taxonomy_error_code"}.isdisjoint(triage)
-    assert detail.json()["data"]["event_update"] is None
-    assert triage["source_authority"] == "issuer_first_party"
-    assert triage["source_authority_zh"]
-    assert triage["headline_zh"] == "比特币获得新的市场准入"
-    verdict_row = next(row for row in detail.json()["data"]["verdicts"] if row["stage"] == "triage")
-    assert verdict_row["policy_version"] == LEGACY_TRIAGE_POLICY_VERSION == "news_triage_policy_v17"
-    assert verdict_row["model_editorial"]["taxonomy"] is None
-    assert verdict_row["model_editorial"]["taxonomy_status"] == "unavailable"
-    assert verdict_row["model_editorial"]["source_authority"] == "issuer_first_party"
-
-    # The v2 row reads as v3 above the storage boundary: the authority is lifted out of the taxonomy,
-    # which is present and therefore `available`.
-    assert historical_detail.status_code == 200
-    historical_triage = historical_detail.json()["data"]["legacy_verdict"]
-    assert historical_triage["source_authority"] == "reputable_secondary"
-    historical_row = next(row for row in historical_detail.json()["data"]["verdicts"] if row["stage"] == "triage")
-    assert historical_row["model_editorial"]["taxonomy_status"] == "available"
-    # The stored axis as stored: no vocabulary, no codebook claim, and the authority lifted out.
-    assert historical_row["model_editorial"]["taxonomy"]["event_family"] == "market_access"
-    assert "source_authority" not in historical_row["model_editorial"]["taxonomy"]
-
-    assert issuer_feed.status_code == 200 and secondary_feed.status_code == 200
-    issuer_ids = {event["event_id"] for event in issuer_feed.json()["data"]["events"]}
-    secondary_ids = {event["event_id"] for event in secondary_feed.json()["data"]["events"]}
-    assert unavailable_event in issuer_ids and historical_event not in issuer_ids
-    assert historical_event in secondary_ids and unavailable_event not in secondary_ids

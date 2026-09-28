@@ -773,83 +773,6 @@ def _complete(conn, event_id: str, symbol: str, *, anchor: int, bps_1h: int, bps
         )
 
 
-def test_review_reports_coverage_and_potential_misses(conn) -> None:
-    _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"), _instrument("binance.perp", "ETHUSDT", "ETH"))
-    anchor = NOW - 6 * HOUR
-    _event(conn, "hit", symbols=("BTC",), opened_at_ms=anchor, direction="bullish")
-    _event(
-        conn, "miss", symbols=("ETH",), opened_at_ms=anchor, direction="bearish", decision="throttled", delivered=False
-    )
-    _event(conn, "nocover", symbols=("BTC",), opened_at_ms=anchor, direction="bullish")
-    _event(conn, "not-mature", symbols=("BTC",), opened_at_ms=NOW - 60_000, direction="bullish")
-    _complete(conn, "hit", "BTC", anchor=anchor, bps_1h=150, bps_4h=300)
-    _complete(conn, "miss", "ETH", anchor=anchor, bps_1h=900, bps_4h=1200)
-
-    review = repositories_for_connection(conn).price.review(hours=168, now_ms=NOW)
-
-    coverage = {row["horizon"]: row for row in review["coverage"]}
-    assert coverage["1h"]["eligible_n"] == 3  # the one-minute-old Event is not yet in the denominator
-    assert coverage["1h"]["priced_n"] == 2
-    assert coverage["1h"]["coverage_pct"] == pytest.approx(66.7, abs=0.1)
-
-    assert review["directions"] == []
-    assert review["summary"]["hit_1h_n"] == 0
-    assert review["summary"]["hit_1h_pct"] is None
-
-    misses = review["potential_misses"]
-    assert [row["event_id"] for row in misses] == ["miss"]  # only what never reached the reader
-    assert misses[0]["final_decision"] == "throttled"
-    assert misses[0]["return_1h_bps"] == 900
-    assert misses[0]["assets"][0]["venue_symbol"] == "ETHUSDT"
-
-    # #112 retires direction, fact-kind, and taxonomy rankings: none is causal quality evidence.
-    assert review["fact_kinds"] == []
-    assert review["event_families"] == []
-
-
-def test_market_miss_queue_clusters_duplicate_events_into_one_fact(conn) -> None:
-    _universe(conn, _instrument("binance.perp", "WMTUSDT", "WMT"))
-    anchor = NOW - 6 * HOUR
-    for index, event_id in enumerate(("wmt-a", "wmt-b")):
-        _event(
-            conn,
-            event_id,
-            symbols=("WMT",),
-            opened_at_ms=anchor + index * 60_000,
-            decision="drop",
-            delivered=False,
-        )
-        conn.execute(
-            "UPDATE news_events SET leader_title = %s WHERE event_id = %s",
-            ("沃尔玛下调全年业绩指引，股价盘前下跌", event_id),
-        )
-        _complete(conn, event_id, "WMT", anchor=anchor + index * 60_000, bps_1h=-692, bps_4h=-500)
-    conn.commit()
-
-    misses = repositories_for_connection(conn).price.review(hours=168, now_ms=NOW)["potential_misses"]
-
-    assert len(misses) == 1
-    assert misses[0]["fact_cluster_n"] == 2
-    assert misses[0]["related_event_ids"] == ["wmt-a", "wmt-b"]
-    assert len(misses[0]["fact_cluster_key"]) == 64
-
-
-def test_degraded_and_recovery_events_stay_out_of_the_scored_denominators(conn) -> None:
-    _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"))
-    anchor = NOW - 6 * HOUR
-    _event(conn, "degraded", symbols=("BTC",), opened_at_ms=anchor, degraded=True)
-    _event(conn, "recovery", symbols=("BTC",), opened_at_ms=anchor, ingest_mode="recovery")
-    _complete(conn, "degraded", "BTC", anchor=anchor, bps_1h=500, bps_4h=500)
-    _complete(conn, "recovery", "BTC", anchor=anchor, bps_1h=500, bps_4h=500)
-
-    review = repositories_for_connection(conn).price.review(hours=168, now_ms=NOW)
-
-    assert review["summary"]["hit_1h_n"] == 0
-    coverage = {row["horizon"]: row for row in review["coverage"]}
-    assert coverage["1h"]["eligible_n"] == 1  # recovery never enters the eligible set at all
-    assert coverage["1h"]["degraded_n"] == 1  # the degraded one stays visible in the diagnostics
-
-
 def test_event_level_aggregate_contributes_one_sample_per_event(conn) -> None:
     _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"), _instrument("binance.perp", "ETHUSDT", "ETH"))
     anchor = NOW - 6 * HOUR
@@ -865,10 +788,6 @@ def test_event_level_aggregate_contributes_one_sample_per_event(conn) -> None:
     assert aggregates["multi"]["p0"] is None  # prices in different units cannot be aggregated
     assert aggregates["multi"]["return_1h_bps"] == 100  # discrete median, not a sum
     assert aggregates["multi"]["state"] == "complete"
-
-    review = repos.price.review(hours=168, now_ms=NOW)
-    coverage = {row["horizon"]: row for row in review["coverage"]}
-    assert coverage["1h"]["eligible_n"] == 1  # mentioning two assets does not double-weight one judgment
 
 
 def test_an_event_with_no_priceable_primary_has_no_aggregate_but_stays_visible(conn) -> None:
@@ -894,9 +813,6 @@ def test_an_event_with_no_priceable_primary_has_no_aggregate_but_stays_visible(c
     assert aggregate["p0"] is None
     assert aggregate["return_1h_bps"] is None
     assert aggregate["unavailable_reason"] == "no_candle_within_gap"
-    review = repos.price.review(hours=168, now_ms=NOW)
-    reasons = {row["reason"] for row in review["coverage"][0]["unavailable"]}
-    assert "no_candle_within_gap" in reasons
 
 
 def test_backlog_lateness_is_measured_against_each_row_own_horizon(conn) -> None:
@@ -1014,18 +930,6 @@ def test_price_status_aggregates_the_oldest_and_worst_applicable_quote(conn) -> 
     assert source["received_age_ms"] == 0
     assert source["freshness_basis"] == "source_and_received"
     assert status["fresh_sources"] == 0
-
-
-def test_the_review_window_is_bounded_by_the_requested_hours(conn) -> None:
-    _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"))
-    old = NOW - 200 * HOUR
-    _event(conn, "old", symbols=("BTC",), opened_at_ms=old)
-    _complete(conn, "old", "BTC", anchor=old, bps_1h=100, bps_4h=100)
-    repos = repositories_for_connection(conn)
-
-    assert repos.price.review(hours=168, now_ms=NOW)["coverage"][0]["eligible_n"] == 0
-    assert repos.price.review(hours=720, now_ms=NOW)["coverage"][0]["eligible_n"] == 1
-    assert repos.price.review(hours=168, now_ms=NOW)["meta"]["hours"] == 168
 
 
 def test_horizon_constants_match_the_stored_metric(conn) -> None:

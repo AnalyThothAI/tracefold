@@ -190,10 +190,10 @@ test("a News row stays flat and carries one visible conclusion", async ({ page }
   await expect(row.locator(".news-event-expand")).toHaveCount(0);
   await expect(row.locator(".news-event-verdict")).toHaveCount(0);
 
-  await expect(page.locator(".news-direction")).toContainText("利空");
+  await expect(page.locator(".news-direction")).toHaveCount(0);
   await expect(page.locator(".news-kind")).toContainText("新闻");
   await expect(page.locator(".news-event-badge")).toContainText("已推送");
-  await expect(page.locator(".news-event-reason")).toContainText("模型判断值得推送");
+  await expect(page.locator(".news-event-reason")).toContainText("推送于");
 
   /*
    * The chip has to actually win the click. A link under the headline's stretched `::after` renders, reads
@@ -211,7 +211,7 @@ async function routeNewsFeed(page: Page, titles: string[]) {
       newsFeedEventFixture({
         event_id: `news-density-${index + 1}`,
         leader_title: title,
-        legacy_verdict: { ...newsFeedEventFixture().legacy_verdict!, headline_zh: null },
+        update: { ...newsFeedEventFixture().update!, headline: null },
       }),
     ),
   });

@@ -15,7 +15,7 @@
 
 | 所有者 | 职责 |
 | --- | --- |
-| [review/desk.py](../../tracefold/news/review/desk.py) | 决策命题队列、版本化证据、简短反馈与外部漏报；历史 Event 复核只读 |
+| [review/desk.py](../../tracefold/news/review/desk.py) | 决策命题队列、版本化证据、简短反馈与外部漏报 |
 | [learning/judge.py](../../tracefold/news/learning/judge.py) | 保留的卡片评审器契约和调用 |
 | [learning/judge_calibration.py](../../tracefold/news/learning/judge_calibration.py) | 固定扰动语料、评估与独立结果凭据 |
 | [app/learning_runtime.py](../../tracefold/app/learning_runtime.py) | 当前评估执行的模型装配，不是线上自动发布器 |
@@ -90,7 +90,7 @@ docker compose exec -T workers tracefold news review evidence TASK --version VER
 
 `--source-only` 只提供绑定的来源证据，不展示待评 Agent 答案或其他复核，避免把看过原答案后的评分误称盲评。
 
-`news review submit` 要求 `dec.` 任务、版本、判断文件和真实 reviewer；`evt.` 历史任务仍可按版本读取，但拒绝新写入。`external-miss` 追加系统外发现的遗漏及同样的短反馈。两者是显式数据操作，不因修改手册而运行。准确参数见[CLI 参考](../generated/cli-help.md)。
+`news review submit` 要求 `dec.` 任务、版本、判断文件和真实 reviewer；`evt.` 任务已退役，队列、证据读取与提交均具名拒绝。`external-miss` 追加系统外发现的遗漏及同样的短反馈。两者是显式数据操作，不因修改手册而运行。准确参数见[CLI 参考](../generated/cli-help.md)。
 
 <a id="section-评审器校准做什么"></a>
 ## 03 · 评审器校准做什么
@@ -137,7 +137,7 @@ class Receipt store;
 <a id="section-旧研究与当前运行的边界"></a>
 ## 04 · 旧研究与当前运行的边界
 
-历史 verdict 词表和部分复盘聚合仍用于读取旧记录，不承担新 EventUpdate 的判断权。旧 Stable / teacher / GEPA / release 资料在历史研究语境中阅读，不能写成今天启动项目必须运行的步骤。
+历史 verdict 保留原始账本记录，不承担新 EventUpdate 的判断权，也不进入当前审核队列或评分聚合。旧 Stable / teacher / GEPA / release 资料在历史研究语境中阅读，不能写成今天启动项目必须运行的步骤。
 
 [notebooks](../../notebooks/README.md)保留离线工作说明；数据库 schema 和已接受标签属于审计历史，不因简化当前入口被篡改。
 

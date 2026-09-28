@@ -23,6 +23,7 @@ import pytest
 
 from tests.support.news_update_cards import adopted, asset, draft, plan_for
 from tests.support.news_update_cards import source as update_source
+from tests.support.telegram import BOT_ID, BOT_TOKEN, BOT_TOKEN_ROTATED, CHANNEL_ID, _preflight_response, _sent_text
 from tracefold.integrations.telegram import (
     _SECTION_SEPARATOR,
     _TELEGRAM_RESPONSE_MAX_BYTES,
@@ -48,37 +49,6 @@ from tracefold.news.reader_card import ReaderCard, ReaderCardLink
 from tracefold.news.updates.contracts import SupportDraft
 from tracefold.news.updates.identity import digest
 from tracefold.news.updates.notification import FrozenCard
-
-CHANNEL_ID = -1001234567890
-BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyzABCDE_12345"
-BOT_TOKEN_ROTATED = "123456:abcdefghijklmnopqrstuvwxyzABCDE_12346"
-BOT_ID = 123456
-
-
-def _preflight_response(request: httpx.Request) -> httpx.Response | None:
-    method = request.url.path.rsplit("/", maxsplit=1)[-1]
-    payload = json.loads(request.content)
-    if method == "getChat":
-        assert payload == {"chat_id": CHANNEL_ID}
-        return httpx.Response(200, json={"ok": True, "result": {"id": CHANNEL_ID, "type": "channel"}})
-    if method == "getMe":
-        assert payload == {}
-        return httpx.Response(200, json={"ok": True, "result": {"id": BOT_ID, "is_bot": True}})
-    if method == "getChatMember":
-        assert payload == {"chat_id": CHANNEL_ID, "user_id": BOT_ID}
-        return httpx.Response(
-            200,
-            json={
-                "ok": True,
-                "result": {
-                    "status": "administrator",
-                    "user": {"id": BOT_ID, "is_bot": True},
-                    "can_post_messages": True,
-                },
-            },
-        )
-    return None
-
 
 # 14:32 on the reader's clock, so a card that states no time of its own still states this one.
 NEWS_AT_MS = 1_787_898_725_000
@@ -1744,32 +1714,6 @@ def _fixture_market_card(fixture_id: str) -> ReaderCard:
         detail_url=inputs["detail_url"],
         action_changes=inputs["action_changes"],
     )
-
-
-def _sent_text(card: ReaderCard, *, presentation: ReaderDeliveryPresentation | None = None) -> str:
-    """One card through the real adapter and a fake Telegram endpoint; the text that left."""
-
-    observed: dict[str, object] = {}
-
-    def handle(request: httpx.Request) -> httpx.Response:
-        preflight = _preflight_response(request)
-        if preflight is not None:
-            return preflight
-        observed.update(json.loads(request.content))
-        return httpx.Response(
-            200,
-            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
-        )
-
-    sender = TelegramNewsPushSender(
-        bot_token=BOT_TOKEN,
-        chat_id=CHANNEL_ID,
-        transport=httpx.MockTransport(handle),
-        wall_clock_ms=lambda: 1_788_600_420_000,  # 17:27 on the reader's clock
-    )
-    sender.prepare()
-    sender.send_card(card, channel_payload=feishu_card(card), presentation=presentation)
-    return str(observed["text"])
 
 
 def test_an_open_interest_card_keeps_its_family_mark_its_event_time_and_its_own_body() -> None:

@@ -1,12 +1,9 @@
 import {
   NEWS_FEED_DEFAULT_HOURS,
-  NEWS_FEED_DIRECTIONS,
-  NEWS_FEED_FINAL_DECISIONS,
   NEWS_FEED_HOURS,
   NEWS_FEED_OUTCOMES,
   NEWS_EVENT_KINDS,
   type NewsFeedFilters,
-  type NewsFeedDirection,
   type NewsFeedOutcome,
   type NewsEventKind,
 } from "../api/newsQueries";
@@ -42,11 +39,9 @@ export function parseFeedFilters(searchParams: URLSearchParams): NewsFeedFilters
     admission: searchParams.get("admission") || null,
     sourceAuthorities: parseOpaqueList(searchParams.get("source_authority")),
     subjectCodes: parseOpaqueList(searchParams.get("subject_code")),
-    finalDecisions: parseList(searchParams.get("final_decision"), NEWS_FEED_FINAL_DECISIONS),
     eventKinds: parseList(searchParams.get("event_kind"), NEWS_EVENT_KINDS),
     hours: parseHours(searchParams.get("hours")),
     outcome: parseOutcome(searchParams.get("outcome")),
-    directions: parseList(searchParams.get("direction"), NEWS_FEED_DIRECTIONS),
     q: searchParams.get("q")?.trim() ?? "",
     symbol: normalizeSymbol(searchParams.get("symbol")),
   };
@@ -67,8 +62,6 @@ export function nextFeedParams(
   params.set("outcome", outcome ?? "all");
   const hours = changes.hours === undefined ? filters.hours : changes.hours;
   params.set("hours", String(hours ?? NEWS_FEED_DEFAULT_HOURS));
-  const directions = changes.directions === undefined ? filters.directions : changes.directions;
-  if (directions.length) params.set("direction", directions.join(","));
   for (const [name, values] of filterLists(filters, changes)) {
     if (values.length) params.set(name, values.join(","));
   }
@@ -82,7 +75,6 @@ function filterLists(
   return [
     ["source_authority", changes.sourceAuthorities ?? filters.sourceAuthorities],
     ["subject_code", changes.subjectCodes ?? filters.subjectCodes],
-    ["final_decision", changes.finalDecisions ?? filters.finalDecisions],
     ["event_kind", changes.eventKinds ?? filters.eventKinds],
   ];
 }
@@ -94,9 +86,8 @@ export function hasAdvancedFilters(filters: NewsFeedFilters): boolean {
     filters.symbol ||
     filters.sourceAuthorities.length ||
     filters.subjectCodes.length ||
-    filters.finalDecisions.length ||
     filters.eventKinds.length ||
-    filters.directions.length,
+    false,
   );
 }
 
@@ -128,7 +119,7 @@ function parseOpaqueList(value: string | null): string[] {
     : selected.sort();
 }
 
-export function toggleFilterValue<T extends NewsFeedDirection | NewsEventKind>(
+export function toggleFilterValue<T extends NewsEventKind>(
   selected: readonly T[],
   value: T,
   order: readonly T[],

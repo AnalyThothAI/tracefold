@@ -226,15 +226,6 @@ def test_the_corpus_is_the_size_the_budget_was_written_for(seeded) -> None:
     assert rows >= 100_000
 
 
-def test_review_completes_under_the_serve_statement_timeout(seeded) -> None:
-    """Both public windows complete against 100k rows before PostgreSQL's native timeout."""
-
-    repos = repositories_for_connection(seeded)
-    for hours in (24, 168):
-        review = repos.price.review(hours=hours, now_ms=NOW)
-        assert review["coverage"][0]["eligible_n"] > 0
-
-
 def test_feed_attachment_completes_under_the_serve_statement_timeout(seeded) -> None:
     repos = repositories_for_connection(seeded)
     event_ids = [f"e-{index}" for index in range(1, 101)]

@@ -85,7 +85,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/news/events/{event_id}": (
         "news_event_detail",
         "news_event_members",
-        "news_event_verdicts",
+        "news_event_feedback",
         "news_event_deliveries",
         "news_event_delivery_queue",
         "news_event_semantic_work",
@@ -118,7 +118,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_status_source_contracts",
         "news_status_delivery",
         "news_status_funnel_suppressed",
-        "news_status_funnel_verdicts",
+        "news_status_funnel_decisions",
         "news_status_funnel_reviews",
         "news_status_funnel_review_ratios",
         "news_status_funnel_totals",

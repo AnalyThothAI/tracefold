@@ -10,7 +10,6 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
@@ -18,7 +17,8 @@ from typing import Any, cast
 
 from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.system_one import SystemOneConnection
-from tracefold.app.trading_analyst import PhysicalModelCall, TradeAnalyst
+from tracefold.app.trading_analyst import AnalystCallReceipt, PhysicalModelCall, TradeAnalyst
+from tracefold.app.trading_prepared import PreparedAnalysis
 from tracefold.app.trading_tools import CaseToolContext
 from tracefold.news.updates.contracts import PublicUpdate
 from tracefold.platform.market_identity import (
@@ -29,6 +29,7 @@ from tracefold.platform.market_identity import (
     VerifiedAlias,
 )
 from tracefold.trading.engine.brief import AnalystBrief, build_brief, canonical_json
+from tracefold.trading.engine.contracts import FrozenEvidence
 from tracefold.trading.engine.features import (
     CATALYST_SOURCE_KIND,
     PROFILE_VERSION,
@@ -50,7 +51,6 @@ from tracefold.trading.engine.marketdata import (
 from tracefold.trading.engine.outcomes import price_path_label
 from tracefold.trading.engine.plans import (
     ENTRY_WINDOW_MS,
-    MAX_HOLDING_SECONDS,
     EntryPlan,
     build_entry_plans,
     compile_proposal,
@@ -81,22 +81,129 @@ def _clock_ms() -> int:
     return int(time.time() * 1000)
 
 
-@dataclass(frozen=True, slots=True)
-class PreparedAnalysis:
-    evidence_ref: str
-    brief_ref: str
-    brief: AnalystBrief
-    reference_price: Decimal
-    reference_at_ms: int
-    plans: tuple[EntryPlan, ...]
-    source_history: tuple[dict[str, Any], ...] = ()
-    source_amendments: tuple[dict[str, Any], ...] = ()
-
-
 class FrozenEvidenceError(ValueError):
     def __init__(self, reason: str, evidence_ref: str) -> None:
         super().__init__(reason)
         self.evidence_ref = evidence_ref
+
+
+def _build_brief_evidence(
+    *,
+    source_fact: dict[str, Any],
+    case: dict[str, Any],
+    evidence_ref: str,
+    knowledge_cutoff: int,
+    results: dict[str, MarketDataResult],
+    requests: dict[str, MarketDataRequest],
+    price_window_ref: str,
+    price_rows: tuple[dict[str, Any], ...],
+    typed_evidence: FrozenEvidence,
+    environment: str,
+    native: str,
+) -> dict[str, dict[str, Any]]:
+    """Project one frozen snapshot into the brief's citable, cutoff-bound catalog."""
+
+    if source_fact.get("kind") == "oi":
+        source_units = {
+            "oi_change_bps": "bps",
+            "oi_value_usd": "USD",
+            "measurement_definition": "text",
+            "measurement_window_ms": "ms",
+        }
+        source_values: dict[str, Any] = {
+            key: source_fact[key] for key in source_units if source_fact.get(key) is not None and source_fact[key] != ""
+        }
+    else:
+        # Only a News catalyst delta's structured projection is citable source text.
+        source_values = catalyst_text_values(source_fact)
+        source_units = {key: "text" for key in source_values}
+    brief_evidence: dict[str, dict[str, Any]] = {
+        "source": {
+            "status": "ok" if source_values else "missing",
+            "source_ref": evidence_ref,
+            "values": source_values,
+            "unit_definition": {key: source_units[key] for key in source_values},
+            "event_at_ms": source_recorded_at_ms(source_fact),
+            "received_at_ms": int(case.get("created_at_ms", knowledge_cutoff)),
+            "knowledge_cutoff_ms": knowledge_cutoff,
+        }
+    }
+    value_fields: dict[str, tuple[str, ...]] = {
+        "perp_bars": ("close", "high", "low", "quote_volume"),
+        "spot_bars": ("close", "high", "low", "quote_volume"),
+        "market_bars": ("close", "high", "low", "quote_volume"),
+        "open_interest": ("open_interest_quantity",),
+        "open_interest_history": ("sum_open_interest_quantity", "sum_open_interest_value"),
+        "funding_basis": ("mark_price", "index_price", "last_funding_rate"),
+        "instrument_rules": (
+            "trading_status",
+            "contract_type",
+            "price_tick_size",
+            "market_min_quantity",
+            "market_max_quantity",
+            "market_step_size",
+            "minimum_notional",
+        ),
+    }
+    brief_evidence.update(
+        {
+            f"market:{name}": {
+                "status": result.status,
+                "source_ref": evidence_ref,
+                "dataset": name,
+                "source": result.source_identity,
+                "environment": requests[name].environment,
+                "native_symbol": requests[name].native_symbol,
+                "values": {
+                    key: result.payload[-1][key]
+                    for key in value_fields[name]
+                    if result.payload and result.payload[-1].get(key) is not None
+                },
+                "unit_definition": result.unit_definition,
+                "event_at_ms": result.event_end_ms,
+                "event_end_ms": result.event_end_ms,
+                "received_at_ms": result.received_at_ms,
+                "knowledge_cutoff_ms": knowledge_cutoff,
+                "missing_reasons": result.missing_reasons,
+            }
+            for name, result in results.items()
+        }
+    )
+    brief_evidence[price_window_ref] = {
+        "status": "ok",
+        "source_ref": evidence_ref,
+        "projection_version": WINDOW_VERSION,
+        "dataset": "perp_bars",
+        "window_identity": price_window_ref,
+        "source": results["perp_bars"].source_identity,
+        "environment": environment,
+        "native_symbol": native,
+        "window_start_ms": int(price_rows[0]["event_at_ms"]),
+        "window_end_ms": int(price_rows[-1]["event_at_ms"]),
+        "row_count": len(price_rows),
+        "values": {"close": price_rows[-1]["close"]},
+        "unit_definition": results["perp_bars"].unit_definition,
+        "event_at_ms": int(price_rows[-1]["event_at_ms"]),
+        "received_at_ms": results["perp_bars"].received_at_ms,
+        "knowledge_cutoff_ms": knowledge_cutoff,
+    }
+    brief_evidence.update(
+        {
+            f"feature:{value.feature_id}": {
+                "status": value.status,
+                "source_ref": value.source_ref,
+                "environment": "live" if value.feature_id.startswith("spot_") else environment,
+                "values": {"value": value.value} if value.status == "ok" else {},
+                "unit_definition": value.unit,
+                "event_at_ms": value.event_at_ms,
+                "received_at_ms": value.received_at_ms,
+                "knowledge_cutoff_ms": knowledge_cutoff,
+                "feature_version": value.feature_version,
+            }
+            for value in typed_evidence.values
+        }
+    )
+    return brief_evidence
 
 
 class FrameReader:
@@ -294,107 +401,18 @@ class FrameReader:
             results=results,
             features=features,
         )
-        if source_fact.get("kind") == "oi":
-            source_units = {
-                "oi_change_bps": "bps",
-                "oi_value_usd": "USD",
-                "measurement_definition": "text",
-                "measurement_window_ms": "ms",
-            }
-            source_values: dict[str, Any] = {
-                key: source_fact[key]
-                for key in source_units
-                if source_fact.get(key) is not None and source_fact[key] != ""
-            }
-        else:
-            # Only a News catalyst delta's structured projection is citable source text.
-            source_values = catalyst_text_values(source_fact)
-            source_units = {key: "text" for key in source_values}
-        brief_evidence: dict[str, dict[str, Any]] = {
-            "source": {
-                "status": "ok" if source_values else "missing",
-                "source_ref": evidence_ref,
-                "values": source_values,
-                "unit_definition": {key: source_units[key] for key in source_values},
-                "event_at_ms": source_recorded_at_ms(source_fact),
-                "received_at_ms": int(case.get("created_at_ms", knowledge_cutoff)),
-                "knowledge_cutoff_ms": knowledge_cutoff,
-            }
-        }
-        value_fields: dict[str, tuple[str, ...]] = {
-            "perp_bars": ("close", "high", "low", "quote_volume"),
-            "spot_bars": ("close", "high", "low", "quote_volume"),
-            "market_bars": ("close", "high", "low", "quote_volume"),
-            "open_interest": ("open_interest_quantity",),
-            "open_interest_history": ("sum_open_interest_quantity", "sum_open_interest_value"),
-            "funding_basis": ("mark_price", "index_price", "last_funding_rate"),
-            "instrument_rules": (
-                "trading_status",
-                "contract_type",
-                "price_tick_size",
-                "market_min_quantity",
-                "market_max_quantity",
-                "market_step_size",
-                "minimum_notional",
-            ),
-        }
-        brief_evidence.update(
-            {
-                f"market:{name}": {
-                    "status": result.status,
-                    "source_ref": evidence_ref,
-                    "dataset": name,
-                    "source": result.source_identity,
-                    "environment": requests[name].environment,
-                    "native_symbol": requests[name].native_symbol,
-                    "values": {
-                        key: result.payload[-1][key]
-                        for key in value_fields[name]
-                        if result.payload and result.payload[-1].get(key) is not None
-                    },
-                    "unit_definition": result.unit_definition,
-                    "event_at_ms": result.event_end_ms,
-                    "event_end_ms": result.event_end_ms,
-                    "received_at_ms": result.received_at_ms,
-                    "knowledge_cutoff_ms": knowledge_cutoff,
-                    "missing_reasons": result.missing_reasons,
-                }
-                for name, result in results.items()
-            }
-        )
-        brief_evidence[price_window_ref] = {
-            "status": "ok",
-            "source_ref": evidence_ref,
-            "projection_version": WINDOW_VERSION,
-            "dataset": "perp_bars",
-            "window_identity": price_window_ref,
-            "source": results["perp_bars"].source_identity,
-            "environment": environment,
-            "native_symbol": native,
-            "window_start_ms": int(price_rows[0]["event_at_ms"]),
-            "window_end_ms": int(price_rows[-1]["event_at_ms"]),
-            "row_count": len(price_rows),
-            "values": {"close": price_rows[-1]["close"]},
-            "unit_definition": results["perp_bars"].unit_definition,
-            "event_at_ms": int(price_rows[-1]["event_at_ms"]),
-            "received_at_ms": results["perp_bars"].received_at_ms,
-            "knowledge_cutoff_ms": knowledge_cutoff,
-        }
-        brief_evidence.update(
-            {
-                f"feature:{value.feature_id}": {
-                    "status": value.status,
-                    "source_ref": value.source_ref,
-                    "environment": "live" if value.feature_id.startswith("spot_") else environment,
-                    "values": {"value": value.value} if value.status == "ok" else {},
-                    "unit_definition": value.unit,
-                    "event_at_ms": value.event_at_ms,
-                    "received_at_ms": value.received_at_ms,
-                    "knowledge_cutoff_ms": knowledge_cutoff,
-                    "feature_version": value.feature_version,
-                }
-                for value in typed_evidence.values
-            }
+        brief_evidence = _build_brief_evidence(
+            source_fact=source_fact,
+            case=case,
+            evidence_ref=evidence_ref,
+            knowledge_cutoff=knowledge_cutoff,
+            results=results,
+            requests=requests,
+            price_window_ref=price_window_ref,
+            price_rows=price_rows,
+            typed_evidence=typed_evidence,
+            environment=environment,
+            native=native,
         )
         brief = build_brief(
             target_asset_id=str(selection["asset_id"]),
@@ -417,6 +435,49 @@ class FrameReader:
             source_history,
             source_amendments,
         )
+
+
+def _assessment_document(
+    *,
+    case: dict[str, Any],
+    receipt: AnalystCallReceipt,
+    brief_ref: str | None,
+    request_ref: str | None,
+    response_ref: str | None,
+    status: str,
+    validation_errors: tuple[dict[str, str], ...],
+    call_rows: list[dict[str, Any]],
+    tool_context: CaseToolContext | None,
+    final_manifest_ref: str | None,
+) -> dict[str, Any]:
+    """Freeze the attempt's record payload after all external archive writes settle."""
+    return {
+        "case_id": case["case_id"],
+        "claim_token": case["claim_token"],
+        "claim_attempt": case["claim_attempt"],
+        "brief_ref": brief_ref,
+        "brief_sha": receipt.brief_sha,
+        "menu_sha": receipt.menu_sha,
+        "prompt_sha": receipt.prompt_sha,
+        "model": receipt.model,
+        "profile_version": PROFILE_VERSION,
+        "started_at_ms": receipt.started_at_ms,
+        "ended_at_ms": receipt.ended_at_ms,
+        "provider_status": receipt.status,
+        "validation_status": status,
+        "input_tokens": receipt.input_tokens,
+        "output_tokens": receipt.output_tokens,
+        "cost_microusd": receipt.cost_microusd,
+        "request_ref": request_ref,
+        "response_ref": response_ref,
+        "assessment": None if receipt.assessment is None else receipt.assessment.model_dump(mode="json"),
+        "error_code": receipt.error_code,
+        "validation_errors": validation_errors,
+        "physical_calls": call_rows,
+        "termination_reason": receipt.termination_reason,
+        "tool_refs": () if tool_context is None else tuple(tool_context.tool_refs),
+        "final_manifest_ref": final_manifest_ref,
+    }
 
 
 _MAX_SOURCE_ASSETS = 8
@@ -631,7 +692,6 @@ class AnalysisRunner:
         self._active: set[asyncio.Task[bool]] = set()
         self._label_task: asyncio.Task[int] | None = None
         self._watch_task: asyncio.Task[int] | None = None
-        self._root_tape_task: asyncio.Task[int] | None = None
         self._db_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-db")
 
     def _db(self, fn: Any, *, transaction: bool = False) -> Any:
@@ -1112,33 +1172,18 @@ class AnalysisRunner:
                 )
             assessment_ref = await _file_io(
                 self.files.write,
-                {
-                    "case_id": case["case_id"],
-                    "claim_token": case["claim_token"],
-                    "claim_attempt": case["claim_attempt"],
-                    "brief_ref": brief_ref,
-                    "brief_sha": receipt.brief_sha,
-                    "menu_sha": receipt.menu_sha,
-                    "prompt_sha": receipt.prompt_sha,
-                    "model": receipt.model,
-                    "profile_version": PROFILE_VERSION,
-                    "started_at_ms": receipt.started_at_ms,
-                    "ended_at_ms": receipt.ended_at_ms,
-                    "provider_status": receipt.status,
-                    "validation_status": status,
-                    "input_tokens": receipt.input_tokens,
-                    "output_tokens": receipt.output_tokens,
-                    "cost_microusd": receipt.cost_microusd,
-                    "request_ref": request_ref,
-                    "response_ref": response_ref,
-                    "assessment": None if receipt.assessment is None else receipt.assessment.model_dump(mode="json"),
-                    "error_code": receipt.error_code,
-                    "validation_errors": validation_errors,
-                    "physical_calls": call_rows,
-                    "termination_reason": receipt.termination_reason,
-                    "tool_refs": () if tool_context is None else tuple(tool_context.tool_refs),
-                    "final_manifest_ref": final_manifest_ref,
-                },
+                _assessment_document(
+                    case=case,
+                    receipt=receipt,
+                    brief_ref=brief_ref,
+                    request_ref=request_ref,
+                    response_ref=response_ref,
+                    status=status,
+                    validation_errors=validation_errors,
+                    call_rows=call_rows,
+                    tool_context=tool_context,
+                    final_manifest_ref=final_manifest_ref,
+                ),
             )
         await self._db_async(
             lambda repos: repos.trading.record_analysis_attempt(
@@ -1566,246 +1611,6 @@ class AnalysisRunner:
         except Exception:
             _LOG.exception("analysis_watch_observation_failed")
 
-    async def sample_root_research_once(self, *, limit: int = 8) -> int:
-        """Capture candidate-root quotes and closed bars regardless of model action."""
-        now_ms = _clock_ms()
-        rows = await self._db_async(lambda repos: repos.trading.due_root_research_tapes(now_ms=now_ms, limit=limit))
-        for row in rows:
-            try:
-                instrument = row["target_selection"]["instrument"]
-                native = str(instrument["native_symbol"])
-                environment = str(instrument["environment"])
-                prior_ref = row["tape_ref"]
-                tape = (
-                    {
-                        "version": "root_research_tape_v2",
-                        "case_id": row["case_id"],
-                        "native_symbol": native,
-                        "environment": environment,
-                        "mapping_semantics_digest": str(instrument["mapping_semantics_digest"]),
-                        "source_first_visible_at_ms": int(row["first_visible_at_ms"]),
-                        "root_accepted_at_ms": int(row["created_at_ms"]),
-                        "root_expires_at_ms": int(row["root_expires_at_ms"]),
-                        "quotes": [],
-                        "closed_bars": [],
-                        "mark_bars": [],
-                        "funding_history": None,
-                        "coverage": [],
-                    }
-                    if prior_ref is None
-                    else await _file_io(self.files.read, str(prior_ref))
-                )
-                if (
-                    tape.get("version") != "root_research_tape_v2"
-                    or tape.get("case_id") != row["case_id"]
-                    or tape.get("native_symbol") != native
-                    or tape.get("environment") != environment
-                    or tape.get("mapping_semantics_digest") != instrument["mapping_semantics_digest"]
-                    or tape.get("root_accepted_at_ms") != int(row["created_at_ms"])
-                ):
-                    raise ValueError("root_research_tape_identity_mismatch")
-                quotes, bars, mark_bars, coverage = (
-                    tape.get("quotes"),
-                    tape.get("closed_bars"),
-                    tape.get("mark_bars"),
-                    tape.get("coverage"),
-                )
-                if (
-                    not isinstance(quotes, list)
-                    or not isinstance(bars, list)
-                    or not isinstance(mark_bars, list)
-                    or not isinstance(coverage, list)
-                ):
-                    raise ValueError("root_research_tape_invalid")
-                end_ms = now_ms // _BAR_MS * _BAR_MS
-                # Retry the recent closed path after a failed minute. Late
-                # backfills retain their actual received_at_ms; WATCH and net
-                # evaluation can still reject observations that arrived late.
-                bar_start_ms = min(
-                    end_ms - _BAR_MS,
-                    max(int(row["created_at_ms"]) // _BAR_MS * _BAR_MS, end_ms - 4 * _BAR_MS),
-                )
-                request = MarketDataRequest(
-                    dataset="perp_bars",
-                    native_symbol=native,
-                    venue="binance.usdm",
-                    environment=environment,
-                    product="perpetual",
-                    source_identity="binance_public_v1",
-                    unit_definition="quote_per_base_and_volume_v1",
-                    start_ms=bar_start_ms,
-                    end_ms=end_ms,
-                    interval_ms=_BAR_MS,
-                    max_age_ms=None,
-                    deadline_at_monotonic=time.monotonic() + 5.0,
-                )
-                mark_request = MarketDataRequest(
-                    dataset="mark_bars",
-                    native_symbol=native,
-                    venue="binance.usdm",
-                    environment=environment,
-                    product="perpetual",
-                    source_identity="binance_public_v1",
-                    unit_definition="mark_quote_per_base_v1",
-                    start_ms=bar_start_ms,
-                    end_ms=end_ms,
-                    interval_ms=_BAR_MS,
-                    max_age_ms=None,
-                    deadline_at_monotonic=request.deadline_at_monotonic,
-                )
-                quote_snapshot, bar_answer, mark_answer = await asyncio.gather(
-                    self._read_executable_quote(row),
-                    self.reader.market_data.fetch(request),
-                    self.reader.market_data.fetch(mark_request),
-                    return_exceptions=True,
-                )
-                if isinstance(quote_snapshot, BaseException):
-                    if isinstance(quote_snapshot, asyncio.CancelledError):
-                        raise quote_snapshot
-                    quote_snapshot = {"status": "error", "missing_reasons": (type(quote_snapshot).__name__,)}
-                if isinstance(bar_answer, asyncio.CancelledError):
-                    raise bar_answer
-                if isinstance(mark_answer, asyncio.CancelledError):
-                    raise mark_answer
-                quote_ref = await _file_io(self.files.write, quote_snapshot)
-                sample = {
-                    "sampled_at_ms": _clock_ms(),
-                    "quote_ref": quote_ref,
-                    "status": quote_snapshot["status"],
-                    "environment": quote_snapshot.get("environment"),
-                    "native_symbol": quote_snapshot.get("native_symbol"),
-                    "mapping_semantics_digest": quote_snapshot.get("mapping_semantics_digest"),
-                    "units_per_contract": quote_snapshot.get("units_per_contract"),
-                    "missing_reasons": quote_snapshot.get("missing_reasons", ()),
-                }
-                if quote_snapshot.get("status") == "ok" and quote_snapshot.get("payload"):
-                    sample.update(quote_snapshot["payload"][0])
-                quotes.append(sample)
-                if isinstance(bar_answer, MarketDataResult):
-                    bar_ref = await _file_io(
-                        self.files.write,
-                        {
-                            "status": bar_answer.status,
-                            "payload": bar_answer.payload,
-                            "request_receipts": bar_answer.request_receipts,
-                            "missing_reasons": bar_answer.missing_reasons,
-                        },
-                    )
-                    existing = {int(bar["event_at_ms"]) for bar in bars}
-                    for bar in bar_answer.payload:
-                        if int(bar["event_at_ms"]) not in existing:
-                            bars.append({**bar, "snapshot_ref": bar_ref})
-                            existing.add(int(bar["event_at_ms"]))
-                    bars.sort(key=lambda bar: int(bar["event_at_ms"]))
-                    bar_status = bar_answer.status
-                    missing_reasons = bar_answer.missing_reasons
-                else:
-                    bar_ref = None
-                    bar_status = "error"
-                    missing_reasons = (type(bar_answer).__name__,)
-                if isinstance(mark_answer, MarketDataResult):
-                    mark_ref = await _file_io(
-                        self.files.write,
-                        {
-                            "status": mark_answer.status,
-                            "payload": mark_answer.payload,
-                            "request_receipts": mark_answer.request_receipts,
-                            "missing_reasons": mark_answer.missing_reasons,
-                        },
-                    )
-                    existing_marks = {int(bar["event_at_ms"]) for bar in mark_bars}
-                    for bar in mark_answer.payload:
-                        if int(bar["event_at_ms"]) not in existing_marks:
-                            mark_bars.append({**bar, "snapshot_ref": mark_ref})
-                            existing_marks.add(int(bar["event_at_ms"]))
-                    mark_bars.sort(key=lambda bar: int(bar["event_at_ms"]))
-                    mark_status = mark_answer.status
-                    mark_missing = mark_answer.missing_reasons
-                else:
-                    mark_ref = None
-                    mark_status = "error"
-                    mark_missing = (type(mark_answer).__name__,)
-                research_end_ms = int(row["root_expires_at_ms"]) + MAX_HOLDING_SECONDS * 1_000 + ENTRY_WINDOW_MS
-                if now_ms >= research_end_ms + 120_000 and not (
-                    isinstance(tape.get("funding_history"), dict) and tape["funding_history"].get("status") == "ok"
-                ):
-                    funding_request = MarketDataRequest(
-                        dataset="funding_history",
-                        native_symbol=native,
-                        venue="binance.usdm",
-                        environment=environment,
-                        product="perpetual",
-                        source_identity="binance_public_v1",
-                        unit_definition="funding_rate_and_mark_price_v2",
-                        start_ms=int(row["created_at_ms"]),
-                        end_ms=research_end_ms + 90_000,
-                        interval_ms=None,
-                        max_age_ms=None,
-                        deadline_at_monotonic=time.monotonic() + 5.0,
-                    )
-                    try:
-                        funding = await self.reader.market_data.fetch(funding_request)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        tape["funding_history"] = {"status": "error", "missing_reasons": (type(exc).__name__,)}
-                    else:
-                        funding_ref = await _file_io(
-                            self.files.write,
-                            {
-                                "status": funding.status,
-                                "payload": funding.payload,
-                                "request_receipts": funding.request_receipts,
-                                "missing_reasons": funding.missing_reasons,
-                            },
-                        )
-                        tape["funding_history"] = {
-                            "status": funding.status,
-                            "payload": funding.payload,
-                            "snapshot_ref": funding_ref,
-                            "scan_received_at_ms": _clock_ms(),
-                            "missing_reasons": funding.missing_reasons,
-                        }
-                coverage.append(
-                    {
-                        "sampled_at_ms": sample["sampled_at_ms"],
-                        "bar_snapshot_ref": bar_ref,
-                        "bar_status": bar_status,
-                        "missing_reasons": missing_reasons,
-                        "mark_snapshot_ref": mark_ref,
-                        "mark_status": mark_status,
-                        "mark_missing_reasons": mark_missing,
-                        "funding_status": (
-                            tape["funding_history"].get("status")
-                            if isinstance(tape.get("funding_history"), dict)
-                            else "pending"
-                        ),
-                    }
-                )
-                tape_ref = await _file_io(self.files.write, tape)
-                await self._db_async(
-                    lambda repos, row=row, prior_ref=prior_ref, tape_ref=tape_ref, sample=sample: (
-                        repos.trading.record_root_research_sample(
-                            case_id=row["case_id"],
-                            prior_ref=prior_ref,
-                            tape_ref=tape_ref,
-                            sampled_at_ms=int(sample["sampled_at_ms"]),
-                        )
-                    ),
-                    transaction=True,
-                )
-            except (OSError, ValueError, KeyError, TypeError):
-                _LOG.exception("analysis_root_research_sample_failed", extra={"case_id": row["case_id"]})
-        return len(rows)
-
-    def _root_tape_completed(self, task: asyncio.Task[int]) -> None:
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            _LOG.exception("analysis_root_research_sampling_failed")
-
     async def run(self, stop_event: asyncio.Event) -> None:
         """Relay keeps draining while model calls occupy separate bounded tasks."""
 
@@ -1842,9 +1647,6 @@ class AnalysisRunner:
                     if self._watch_task is None or self._watch_task.done():
                         self._watch_task = asyncio.create_task(self.watch_once())
                         self._watch_task.add_done_callback(self._watch_completed)
-                    if self._root_tape_task is None or self._root_tape_task.done():
-                        self._root_tape_task = asyncio.create_task(self.sample_root_research_once())
-                        self._root_tape_task.add_done_callback(self._root_tape_completed)
                 except Exception:
                     _LOG.exception("analysis_runner_cycle_failed")
                 with contextlib.suppress(TimeoutError):
@@ -1856,6 +1658,4 @@ class AnalysisRunner:
                 await asyncio.gather(self._label_task, return_exceptions=True)
             if self._watch_task is not None:
                 await asyncio.gather(self._watch_task, return_exceptions=True)
-            if self._root_tape_task is not None:
-                await asyncio.gather(self._root_tape_task, return_exceptions=True)
             self._db_executor.shutdown(wait=True)

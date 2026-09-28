@@ -67,7 +67,7 @@ export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
 
 function funnelTiles(funnel: NewsFunnel) {
   const gated = Math.max(0, funnel.received - funnel.admitted);
-  const unjudged = Math.max(0, funnel.admitted - funnel.triaged);
+  const pending = Math.max(0, funnel.admitted - funnel.adopted);
   return [
     {
       caption: "采集",
@@ -88,13 +88,13 @@ function funnelTiles(funnel: NewsFunnel) {
       value: funnel.admitted,
     },
     {
-      caption: "已审稿",
-      eyebrow: "JUDGED",
-      note: percent(funnel.triaged, funnel.admitted),
-      title: unjudged ? `尚待审稿 ${formatCount(unjudged)}` : "已全部审稿",
+      caption: "已采用更新",
+      eyebrow: "ADOPTED",
+      note: percent(funnel.adopted, funnel.admitted),
+      title: pending ? `尚无更新 ${formatCount(pending)}` : "均已有更新",
       to: null,
       tone: "plain" as const,
-      value: funnel.triaged,
+      value: funnel.adopted,
     },
     {
       caption: "已推送",

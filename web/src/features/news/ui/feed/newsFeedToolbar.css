@@ -210,24 +210,6 @@
     font-weight: 600;
   }
 
-  .news-filter-panel button[data-direction="bullish"][aria-pressed="true"] {
-    border-color: var(--dir-bullish-border);
-    color: var(--dir-bullish);
-    background: var(--dir-bullish-soft);
-  }
-
-  .news-filter-panel button[data-direction="bearish"][aria-pressed="true"] {
-    border-color: var(--dir-bearish-border);
-    color: var(--dir-bearish);
-    background: var(--dir-bearish-soft);
-  }
-
-  .news-filter-panel button[data-direction="neutral"][aria-pressed="true"] {
-    border-color: var(--border-strong);
-    color: var(--text-secondary);
-    background: var(--surface-slot);
-  }
-
   .news-filter-panel .news-filter-clear {
     margin-left: auto;
     border: 0;

@@ -4,7 +4,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test, postgres_migration_test_dsn
 from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tracefold.platform.postgres.audit import NEWS_TABLES, TRADING_TABLES
+from tracefold.platform.postgres.audit import HISTORICAL_TRADING_TABLES, NEWS_TABLES, TRADING_TABLES
 from tracefold.platform.postgres.maintenance_gate import acquire_steady_gate, release_steady_gate
 from tracefold.platform.postgres.migrations import (
     latest_migration_version,
@@ -71,6 +71,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         # #104: the Trading bounded context's own five tables. Registered separately from
         # `NEWS_TABLES` so "exactly these tables" stays a per-capability claim.
         *TRADING_TABLES,
+        *HISTORICAL_TRADING_TABLES,
     }
     assert {
         "news_strategy_provenance_valid",

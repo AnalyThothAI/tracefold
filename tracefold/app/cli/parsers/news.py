@@ -88,7 +88,9 @@ def add_news_commands(
     news_wallets.add_argument(
         "--queue-limit", type=_positive_int, default=10, help="how many waiting deliveries to list"
     )
-    news_why = news_subcommands.add_parser("why", help="print one Event's chain: item, gate, triage, decide, delivery")
+    news_why = news_subcommands.add_parser(
+        "why", help="print one Event's sources, semantic work, adopted update, notification and delivery"
+    )
     news_why.add_argument("event_id")
     retry = news_subcommands.add_parser(
         "retry-work", help="reopen one failed News work version; retain facts and receipts"

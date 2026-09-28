@@ -52,10 +52,8 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
     () => ({
       admission: null,
       eventKinds: [],
-      finalDecisions: [],
       hours: NEWS_FEED_DEFAULT_HOURS,
       outcome: null,
-      directions: [],
       q: "",
       sourceAuthorities: [],
       subjectCodes: [],

@@ -21,7 +21,6 @@ from tracefold.news import EVENT_KINDS, MARKET_KINDS
 from tracefold.news.market_review.instruments import InstrumentSearchIdentity
 from tracefold.news.market_review.pricing import REACTION_METRIC_VERSION
 from tracefold.news.models import Admission
-from tracefold.news.storage.feed import _triage_assets
 from tracefold.news.update_view import (
     event_update_view,
     intent_views,
@@ -64,7 +63,7 @@ def _event(event_id: str = "ev-1") -> dict[str, Any]:
     }
 
 
-_OUTCOME = {"kind": "queued_publish", "text_zh": "待处理", "reason_zh": "已入库，等待送审", "group": "pending"}
+_OUTCOME = {"kind": "no_update", "text_zh": "仅有来源", "reason_zh": "没有当前语义工作记录", "group": "held"}
 
 
 class _FakeNewsRepository:
@@ -90,11 +89,10 @@ class _FakeNewsRepository:
             "next_cursor": None,
             "counts": None
             if kwargs.get("cursor")
-            else {"total": len(self.events), "pushed": 0, "held": 0, "pending": len(self.events)},
+            else {"total": len(self.events), "pushed": 0, "held": len(self.events), "pending": 0},
             "filters": {
                 "source_authority": ",".join(kwargs.get("source_authority") or ()) or None,
                 "subject_code": ",".join(kwargs.get("subject_code") or ()) or None,
-                "final_decision": ",".join(kwargs.get("final_decision") or ()) or None,
                 "event_kind": ",".join(kwargs.get("event_kind") or ()) or None,
                 "admission": kwargs["admission"],
                 "symbol": search.symbol if search else None,
@@ -102,7 +100,6 @@ class _FakeNewsRepository:
                 "limit": kwargs["limit"],
                 "outcome": kwargs.get("outcome"),
                 "hours": kwargs.get("hours"),
-                "direction": ",".join(kwargs.get("directions") or ()) or None,
             },
             "search": search.public_metadata() if search else None,
         }
@@ -125,9 +122,8 @@ class _FakeNewsRepository:
                 }
             ],
             "members": [],
-            "verdicts": [],
             "deliveries": [],
-            "review": {"judgment_n": 0, "accepted": None, "uncertain": False},
+            "feedback": {"feedback_n": 0, "latest": None},
             "evidence_snapshots": [],
             "reader_receipt": {
                 "state": "not_received",
@@ -419,67 +415,10 @@ def test_news_exposes_read_routes_and_no_write_route_at_all() -> None:
     }
 
 
-def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> None:
-    assert set(event_schemas.NewsQuoteData.model_fields) == {
-        "requested_symbol",
-        "symbol",
-        "base_symbol",
-        "venue",
-        "venue_symbol",
-        "instrument_class",
-        "quote_asset",
-        "price",
-        "price_kind",
-        "price_kind_zh",
-        "change_pct",
-        "change_basis",
-        "change_basis_zh",
-        "source_at_ms",
-        "received_at_ms",
-        "received_age_ms",
-        "source_age_ms",
-        "effective_age_ms",
-        "freshness_basis",
-        "reference_at_ms",
-        "reference_age_ms",
-        "state",
-        "state_zh",
-    }
-    assert set(status_schemas.NewsQuoteVenueData.model_fields) == {
-        "source_key",
-        "target_count",
-        "quote_count",
-        "received_age_ms",
-        "source_age_ms",
-        "effective_age_ms",
-        "freshness_basis",
-        "state",
-        "source_at_ms",
-        "received_at_ms",
-    }
-    assert {
-        "received_age_ms",
-        "source_age_ms",
-        "effective_age_ms",
-        "freshness_basis",
-        "reference_at_ms",
-        "reference_age_ms",
-    } <= {name for name, field in event_schemas.NewsQuoteData.model_fields.items() if field.is_required()}
-    assert {"received_age_ms", "source_age_ms", "effective_age_ms", "freshness_basis"} <= {
-        name for name, field in status_schemas.NewsQuoteVenueData.model_fields.items() if field.is_required()
-    }
-    assert set(feed_schemas.NewsFeedData.model_fields) == {"events", "next_cursor", "counts", "filters", "search"}
-    assert set(feed_schemas.NewsFeedCountsData.model_fields) == {"total", "pushed", "held", "pending"}
-    assert set(feed_schemas.NewsFeedSearchData.model_fields) == {
-        "mode",
-        "normalized_query",
-        "resolved_symbols",
-    }
-    # #706: the three retired taxonomy axes are no longer filters. Topics and cited-source authority are.
+def test_news_schemas_publish_current_event_update_and_feedback_only() -> None:
     assert set(feed_schemas.NewsFeedFiltersData.model_fields) == {
         "source_authority",
         "subject_code",
-        "final_decision",
         "event_kind",
         "admission",
         "symbol",
@@ -487,299 +426,36 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "limit",
         "outcome",
         "hours",
-        "direction",
     }
     assert set(feed_schemas.NewsFeedEventData.model_fields) - set(event_schemas.NewsEventData.model_fields) == {
         "outcome",
-        # #706: the adopted EventUpdate head, and the legacy Triage verdict under a name that says so.
         "update",
-        "legacy_verdict",
         "delivery",
-        # #88: the fixed post-Event return. The *current* quote is deliberately not a feed field.
         "reaction",
-    }
-    # #553: `source_contract_reason` named why a market frame was refused an Event. Nothing is refused
-    # now -- a market frame is stored as a fact instead -- so the field would only ever be null.
-    assert {"family", "source_contract_reason"}.isdisjoint(event_schemas.NewsEventData.model_fields)
-    # The two OI-shaped response types went with the lane that produced them.
-    assert not hasattr(feed_schemas, "NewsFeedOiData")
-    assert not hasattr(status_schemas, "NewsOiStatusData")
-    assert set(news_common_schemas.NewsLegacyVerdictData.model_fields).isdisjoint(
-        {"event_type", "event_type_zh", "actionable", "model_decision", "model_decision_zh", "title_zh"}
-    )
-    assert {"payload", "dimensions", "novelty"}.isdisjoint(event_schemas.NewsAcceptedReviewData.model_fields)
-    assert set(event_schemas.NewsVerdictData.model_fields) == {
-        "stage",
-        "policy_version",
-        "judgment_contract_version",
-        "judgment_origin",
-        "judgment_sha256",
-        "verdict",
-        "model_editorial",
-        "rule_baseline_decision",
-        "final_decision",
-        "override_rule",
-        "throttled_by",
-        "model",
-        "model_input_tokens",
-        "model_output_tokens",
-        "model_provider_cost_microusd",
-        "model_usage_coverage",
-        "program_version",
-        "program_sha256",
-        "degraded",
-        "error_code",
-        "evidence_version",
-        "evidence_sha256",
-        "focus_fact_id",
-        "published_at_ms",
-        "created_at_ms",
-    }
-    # #553: this funnel counts the two Event families and nothing else. Market intake is counted from
-    # the stored facts by `/api/news/market`, so there is no second tally here to disagree with them,
-    # and no `parse_failed`/`unsupported` stage -- an unparsed market frame is a stored raw fact now,
-    # not a refusal.
-    assert set(status_schemas.NewsSourceContractStageCountsData.model_fields) == {
-        "received",
-        "parsed",
-        "verdict",
-    }
-    assert set(status_schemas.NewsSourceContracts24hData.model_fields) == {"news_v1", "listing_v1"}
-    assert set(status_schemas.NewsDuplicatesWithheld24hData.model_fields) == {"all"}
-    with pytest.raises(ValueError):
-        status_schemas.NewsDuplicatesWithheld24hData.model_validate({"throttled": 1})
-    assert {"source_classifier_version", "source_contracts_24h"} <= set(
-        status_schemas.NewsPipelineStatusData.model_fields
-    )
-    assert {
-        "funnel_parsed_24h",
-        "novelty_defaulted_24h",
-        # #553: the four telemetry counters measured market frames against an Event funnel they never
-        # enter now. They are not reconstructed here; the facts are counted where they are stored.
-        "telemetry_received_24h",
-        "telemetry_parsed_24h",
-        "telemetry_parse_failed_24h",
-        "telemetry_events_24h",
-    }.isdisjoint(status_schemas.NewsPipelineStatusData.model_fields)
-    assert set(status_schemas.NewsFunnelData.model_fields) == {
-        "received",
-        "admitted",
-        "candidates",
-        "triaged",
-        "tagged",
-        "grounded",
-        "decided_push",
-        "delivered",
-        "received_1h",
-        "delivered_1h",
     }
     assert set(event_schemas.NewsEventDetailData.model_fields) == {
         "event",
         "outcome",
-        # #706: the EventUpdate path, and the legacy verdict beside it rather than mixed into it.
         "event_update",
         "processing",
-        "legacy_verdict",
         "timeline",
         "members",
-        "verdicts",
         "deliveries",
-        "review",
+        "feedback",
         "evidence_snapshots",
-        "evidence_inputs",
-        "late_evidence",
         "reader_receipt",
         "normalization",
-        # #88: the event-level aggregate plus every per-asset Reaction, with the closes they came from.
         "reaction",
         "reactions",
     }
-    assert set(event_schemas.NewsDeliveryData.model_fields) == {
-        "intent_id",
-        "kind",
-        "state",
-        "error_code",
-        "attempted_at_ms",
-        "settled_at_ms",
-        "card",
-        "receipt",
-        "pending_card",
-        "edit_state",
-        "edit_error_code",
-        "edit_attempted_at_ms",
-        "edit_settled_at_ms",
-    }
-    assert set(news_common_schemas.NewsAssetRefData.model_fields) == {"symbol", "base_symbol", "venue", "listed"}
-    assert set(news_common_schemas.NewsSymbolNormalizationData.model_fields) == {"base_symbol", "aliases", "sources"}
-    # #706: the taxonomy Predictor is retired. No summary projects its four axes into a current reading;
-    # a legacy verdict row keeps its stored codes, verbatim and unlabelled, for audit only.
-    assert not hasattr(news_common_schemas, "NewsTaxonomyData")
-    assert not hasattr(news_common_schemas, "NewsTriageSummaryData")
-    assert {"taxonomy", "taxonomy_status", "taxonomy_error_code"}.isdisjoint(
-        news_common_schemas.NewsLegacyVerdictData.model_fields
+    assert set(event_schemas.NewsEventFeedbackData.model_fields) == {"feedback_n", "latest"}
+    assert set(status_schemas.NewsSourceContractStageCountsData.model_fields) == {"received", "parsed", "adopted"}
+    assert {"received", "admitted", "adopted", "selected", "delivered"} <= set(
+        status_schemas.NewsFunnelData.model_fields
     )
-    assert {"source_authority", "source_authority_zh"} <= set(news_common_schemas.NewsLegacyVerdictData.model_fields)
-    assert set(event_schemas.NewsLegacyTaxonomyData.model_fields) == {
-        "subject_codes",
-        "event_family",
-        "change_state",
-        "assertion_status",
-    }
-    assert set(news_common_schemas.NewsOutcomeData.model_fields) == {"kind", "text_zh", "reason_zh", "group"}
-    assert set(status_schemas.NewsStatusData.model_fields) == {
-        "state",
-        "workers_state",
-        "health",
-        "funnel_24h",
-        "reasons_24h",
-        "ingest",
-        "broker",
-        "pipeline",
-        "delivery",
-        "learning_retention",
-        "watchlist",
-        "instruments",
-        # #88 §11: per-source quote freshness and Reaction backlog, beside the pipeline's own health.
-        "price",
-        "measured_at_ms",
-    }
-    assert set(status_schemas.NewsIngestStatusData.model_fields) == {
-        "connected",
-        "last_frame_at_ms",
-        "last_publish_at_ms",
-        "last_error_code",
-        "open_incidents",
-        "recovery",
-        "token_configured",
-    }
-    assert set(status_schemas.NewsDeliveryStatusData.model_fields) == {
-        "sent_24h",
-        "sent_1h",
-        "terminal_24h",
-        "last_error_code",
-        "e2e_p95_ms",
-        "e2e_p50_ms",
-        "delivery_available",
-    }
-    assert set(status_schemas.NewsLearningRetentionStatusData.model_fields) == {
-        "last_run_at_ms",
-        "eligible_recordings",
-        "eligible_cases",
-        "eligible_artifacts",
-        "deleted_recordings",
-        "deleted_cases",
-        "deleted_artifacts",
-        "oldest_recording_age_ms",
-        "oldest_case_age_ms",
-        "oldest_artifact_age_ms",
-        "last_error_code",
-        "updated_at_ms",
-    }
-    # #706: a notification plan is a current contract again -- the planner's claim decisions and its work
-    # state -- and each such name is listed here deliberately rather than by marker.
-    named_notification = {"NewsNotificationPlanData", "NewsNotificationWorkData"}
-    for schema_module in (
-        event_schemas,
-        feed_schemas,
-        news_common_schemas,
-        status_schemas,
-    ):
-        for name in set(dir(schema_module)) - named_notification:
-            assert not any(
-                marker in name for marker in ("Story", "Brief", "Rss", "TitleTranslation", "Notification")
-            ), name
-
-
-def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
-    verdict = {
-        "novelty": "new_fact",
-        "restates": -1,
-        "assets": [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}],
-        "direction": "bullish",
-        "scope": "single_name",
-        "fact_kind": "state_change",
-        "evidence_ref": "c1",
-        "confidence": 0.9,
-        "headline_zh": "BTC 获得新的市场准入",
-        "why_zh": "准入状态发生变化",
-    }
-    model_editorial = {
-        "source_authority": "issuer_first_party",
-        "source_authority_zh": "发行方一手来源",
-        "taxonomy_status": "available",
-        "taxonomy_error_code": None,
-        # #706: the retired axes as the legacy verdict stored them, with no vocabulary applied.
-        "taxonomy": {
-            "subject_codes": ["medtop:20000385"],
-            "event_family": "market_access",
-            "change_state": "effective",
-            "assertion_status": "confirmed",
-        },
-    }
-    payload = {
-        "stage": "triage",
-        "policy_version": "news_triage_policy_v17",
-        "judgment_contract_version": "news_judgment_v3",
-        "judgment_origin": "model",
-        "judgment_sha256": "b" * 64,
-        "verdict": verdict,
-        "model_editorial": model_editorial,
-        "model": "model-v1",
-        "program_version": "news_semantic_program_v10",
-        "program_sha256": "d" * 64,
-        "rule_baseline_decision": "push",
-        "final_decision": "push",
-        "evidence_version": 1,
-        "evidence_sha256": "e" * 64,
-        "focus_fact_id": "fact",
-        "created_at_ms": 1,
-    }
-
-    validated = event_schemas.NewsVerdictData.model_validate(payload)
-    assert validated.judgment_origin == "model"
-    assert validated.verdict.assets[0].market_type == "crypto"
-    assert _triage_assets(verdict["assets"]) == [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}]
-    # A verdict written before #651 says nothing about the market, and the projection says so rather than
-    # raising or inventing one: `unknown` is a value the browser can render and nothing can act on.
-    assert _triage_assets([{"symbol": "BTC", "role": "primary"}]) == [
-        {"symbol": "BTC", "market_type": "unknown", "role": "primary"}
-    ]
-    assert _triage_assets([{"symbol": "BTC", "market_type": "token", "role": "primary"}]) == [
-        {"symbol": "BTC", "market_type": "unknown", "role": "primary"}
-    ]
-    # A verdict written under `news_judgment_v2` is still in the 30-day retention and still has to reach
-    # the Event detail. It carries no `fact_kind`, and the schema publishes the absence rather than a
-    # kind nobody claimed (#675 §1).
-    archived = {
-        **payload,
-        "policy_version": "news_triage_policy_v14",
-        "judgment_contract_version": "news_judgment_v2",
-        "verdict": {key: value for key, value in verdict.items() if key not in {"fact_kind", "evidence_ref"}},
-    }
-    older = event_schemas.NewsVerdictData.model_validate(archived)
-    assert older.verdict.fact_kind is None and older.verdict.evidence_ref == ""
-    deterministic = {**payload, "judgment_origin": "oi", "model": None, "model_editorial": None}
-    assert event_schemas.NewsVerdictData.model_validate(deterministic).judgment_origin == "oi"
-    with pytest.raises(ValueError, match="news_verdict_model_identity_origin_mismatch"):
-        event_schemas.NewsVerdictData.model_validate({**payload, "judgment_origin": "oi"})
-    with pytest.raises(ValueError, match="news_verdict_model_identity_origin_mismatch"):
-        event_schemas.NewsVerdictData.model_validate({**payload, "model_editorial": None})
-    with pytest.raises(ValueError):
-        event_schemas.NewsVerdictData.model_validate({**payload, "trace": {"raw": True}})
-    with pytest.raises(ValueError, match="news_verdict_degraded_origin_mismatch"):
-        event_schemas.NewsVerdictData.model_validate({**deterministic, "judgment_origin": "degraded"})
-    with pytest.raises(ValueError):
-        event_schemas.NewsEvidenceSnapshotData.model_validate(
-            {
-                "event_id": "ev",
-                "evidence_version": 1,
-                "focus_fact_id": "fact",
-                "evidence_sha256": "c" * 64,
-                "provenance": "legacy_reconstructed",
-                "release_eligible": False,
-                "created_at_ms": 1,
-            }
-        )
+    assert not hasattr(news_common_schemas, "NewsLegacyVerdictData")
+    assert not hasattr(event_schemas, "NewsVerdictData")
+    assert not hasattr(event_schemas, "NewsAcceptedReviewData")
 
 
 def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) -> None:
@@ -796,7 +472,6 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
     assert body["data"]["filters"] == {
         "source_authority": None,
         "subject_code": "medtop:04000000,medtop:16000000",
-        "final_decision": None,
         "event_kind": None,
         "admission": None,
         "symbol": None,
@@ -804,11 +479,10 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
         "limit": 5,
         "outcome": None,
         "hours": None,
-        "direction": None,
     }
     assert body["data"]["events"][0]["event_id"] == "ev-1"
     assert "priority" not in body["data"]["events"][0]
-    assert body["data"]["events"][0]["outcome"]["kind"] == "queued_publish"
+    assert body["data"]["events"][0]["outcome"]["kind"] == "no_update"
     assert "title_zh" not in body["data"]["events"][0]
     # Raw provider/Gate evidence stays, while the durable Event-asset ledger is resolved beside it — so the
     # browser can strike through a symbol that names nothing without owning a symbol table.
@@ -901,27 +575,21 @@ def test_feed_forwards_all_current_filters_in_canonical_order(client) -> None:
         "/api/news/feed",
         params={
             "token": TOKEN,
-            "direction": "neutral,bullish",
             "source_authority": "unknown,issuer_first_party",
             "subject_code": "medtop:16000000,medtop:04000000",
-            "final_decision": "throttled,push",
             "event_kind": "listing,news",
         },
     )
 
     assert response.status_code == 200
     forwarded = news.calls[0][1]
-    assert forwarded["directions"] == ("bullish", "neutral")
     assert {"event_family", "change_state", "assertion_status"}.isdisjoint(forwarded)
     assert forwarded["source_authority"] == ("issuer_first_party", "unknown")
     assert forwarded["subject_code"] == ("medtop:04000000", "medtop:16000000")
-    assert forwarded["final_decision"] == ("push", "throttled")
     assert forwarded["event_kind"] == ("news", "listing")
     filters = response.json()["data"]["filters"]
-    assert filters["direction"] == "bullish,neutral"
     assert filters["source_authority"] == "issuer_first_party,unknown"
     assert filters["subject_code"] == "medtop:04000000,medtop:16000000"
-    assert filters["final_decision"] == "push,throttled"
     assert filters["event_kind"] == "news,listing"
 
 
@@ -968,7 +636,7 @@ def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:
     first = http.get("/api/news/feed", params={"token": TOKEN}).json()["data"]
     paged = http.get("/api/news/feed", params={"token": TOKEN, "cursor": "abc"}).json()["data"]
 
-    assert first["counts"] == {"total": 1, "pushed": 0, "held": 0, "pending": 1}
+    assert first["counts"] == {"total": 1, "pushed": 0, "held": 1, "pending": 0}
     assert paged["counts"] is None
 
 
@@ -983,7 +651,7 @@ def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:
         ({"assertion_status": "confirmed"}, "unsupported_query_param", "assertion_status"),
         ({"source_authority": "blog"}, "news_feed_source_authority_invalid", "source_authority"),
         ({"subject_code": "topic:1"}, "news_feed_subject_code_invalid", "subject_code"),
-        ({"final_decision": "maybe"}, "news_feed_final_decision_invalid", "final_decision"),
+        ({"final_decision": "push"}, "unsupported_query_param", "final_decision"),
         # #553: the three market admissions are gone with the lane that set them. A stale console link
         # must be named invalid rather than fall through to "no filter", which would serve the whole
         # feed under a tab whose count says otherwise.
@@ -993,8 +661,7 @@ def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:
         # #553: `?oi=` was the OI lane's own tab filter, and the parameter is refused rather than
         # ignored — a silently dropped filter serves an unfiltered feed under a filtered heading.
         ({"oi": "stored"}, "unsupported_query_param", "oi"),
-        ({"direction": "up"}, "news_feed_direction_invalid", "direction"),
-        ({"direction": "bullish,bullish"}, "news_feed_direction_invalid", "direction"),
+        ({"direction": "up"}, "unsupported_query_param", "direction"),
         ({"event_kind": "social"}, "news_feed_event_kind_invalid", "event_kind"),
         ({"family": "general"}, "unsupported_query_param", "family"),
         ({"decision": "push"}, "unsupported_query_param", "decision"),
@@ -1106,7 +773,7 @@ def test_item_related_events_is_bounded_authenticated_and_on_demand(client) -> N
     assert http.get("/api/news/items/item%3Ashared/events", params={"token": TOKEN, "limit": 51}).status_code == 422
 
 
-def test_event_detail_serves_the_event_update_and_its_processing_beside_no_legacy_verdict(client) -> None:
+def test_event_detail_serves_the_event_update_and_its_processing(client) -> None:
     """#706: the detail of a News Agent Event, projected by the production read view, through the schema.
 
     The head is a real `assemble_update` revision -- a 25% tariff raised to 50% -- whose first revision
@@ -1162,14 +829,12 @@ def test_event_detail_serves_the_event_update_and_its_processing_beside_no_legac
             "intents": intents,
             "update_error_code": None,
         },
-        "legacy_verdict": None,
     }
 
     response = http.get("/api/news/events/ev-1", params={"token": TOKEN})
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["legacy_verdict"] is None
     served = data["event_update"]
     # The headline a reader actually received outranks any claim text.
     assert (served["headline"], served["headline_source"]) == ("钢铁进口关税上调至 50%", "sent_card")
@@ -1199,26 +864,13 @@ def test_event_detail_serves_the_event_update_and_its_processing_beside_no_legac
     assert processing["intents"][0]["state"] == "sent" and processing["intents"][0]["body"] == body
 
 
-def test_a_legacy_event_detail_keeps_its_verdict_under_the_legacy_name(client) -> None:
-    http, news = client
-    news.detail_overrides["ev-1"] = {
-        "legacy_verdict": {
-            "final_decision": "push",
-            "direction": "bullish",
-            "fact_kind": "state_change",
-            "headline_zh": "铜价创新高",
-            "direction_zh": "利多",
-            "fact_kind_zh": "状态变化",
-            "source_authority": "reputable_secondary",
-            "source_authority_zh": "可信二手来源",
-        }
-    }
-
+def test_source_only_event_has_no_synthetic_legacy_judgment(client) -> None:
+    http, _ = client
     data = http.get("/api/news/events/ev-1", params={"token": TOKEN}).json()["data"]
-
-    assert data.get("event_update") is None and data.get("processing") is None
-    assert data["legacy_verdict"]["headline_zh"] == "铜价创新高"
-    assert "taxonomy" not in data["legacy_verdict"]
+    assert data.get("event_update") is None
+    assert data.get("processing") is None
+    assert data["feedback"] == {"feedback_n": 0, "latest": None}
+    assert "legacy_verdict" not in data and "verdicts" not in data
 
 
 def test_status_reports_unavailable_without_broker_or_token(client) -> None:

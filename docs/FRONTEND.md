@@ -99,7 +99,7 @@ Event 详情应分别呈现：最新 wanted 输入是否完成、当前 adopted 
 | 新输入失败与已有知识无效 | 保留可读旧 head，同时说明最新语义失败 |
 | 卡片生成成功与提供商发送成功 | 展示意图、冻结内容和独立真实回执 |
 | 所选 claim refs 与正文完整覆盖 | 以实际发送正文为准，不用选择集合冒充覆盖证据 |
-| 旧 `legacy_verdict` 与新 Claim | 标明历史来源，不由 UI 合成或提升新知识 |
+| 历史发送回执与新 Claim | 只显示实际发送事实，不由旧记录合成当前命题 |
 | 新闻流计数与推送次数 | 各用对应查询定义，不把一个 Event 的多次通知重复计成多条 Event |
 
 News 状态还要分开 `semantic_pending`、`semantic_deferred`、`semantic_in_progress` 与 `semantic_failed_exhausted`；耗尽工作不能画成仍可自动运行的 pending。

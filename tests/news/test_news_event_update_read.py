@@ -31,12 +31,8 @@ def _document(update: Any) -> dict[str, Any]:
 def _outcome(**over: Any) -> Any:
     return event_outcome(
         admission=over.pop("admission", "candidate"),
-        published_at_ms=over.pop("published_at_ms", NOW),
-        triage=over.pop("triage", None),
         delivery=over.pop("delivery", None),
         delivery_queue=over.pop("delivery_queue", None),
-        opened_at_ms=NOW,
-        now_ms=NOW + 60_000,
         **over,
     )
 
@@ -140,15 +136,10 @@ def test_outcome_texts_name_the_key_card_and_the_reasons_nothing_was_sent() -> N
     assert failed_after_head.kind == "pending_delivery"
 
 
-def test_a_legacy_verdict_outcome_is_untouched_by_the_update_path() -> None:
-    legacy = {"final_decision": "escalate", "created_at_ms": NOW, "published_at_ms": NOW}
-    assert _outcome(triage=legacy, delivery={"state": "sent"}).text_zh == "已推送（重点）"
-    assert _outcome(triage=legacy).kind == "pending_delivery"
-    assert _outcome(triage={**legacy, "final_decision": "drop"}).kind == "dropped"
-    # Semantic work outranks the history: a legacy Event re-opened by new evidence is on the new path.
-    assert _outcome(triage={**legacy, "final_decision": "drop"}, semantic={"wanted_revision": 2}).kind == (
-        "queued_semantic"
-    )
+def test_source_only_event_keeps_actual_delivery_receipt_without_inventing_an_old_verdict() -> None:
+    assert _outcome().kind == "no_update"
+    assert _outcome(delivery={"state": "sent"}).kind == "delivered"
+    assert _outcome(semantic={"wanted_revision": 2}).kind == "queued_semantic"
 
 
 def test_semantic_state_is_the_workers_own_failure_or_an_unfinished_revision() -> None:
@@ -298,7 +289,6 @@ def test_the_timeline_narrates_evidence_semantics_the_plan_and_the_intent_in_clo
     outcome, steps = event_timeline(
         event=event,
         members=[],
-        verdicts=[],
         deliveries=[ledger],
         semantic={"wanted_revision": 1, "done_revision": 1, "updated_at_ms": NOW + 3_000},
         adopted=True,
@@ -320,7 +310,6 @@ def test_the_timeline_narrates_evidence_semantics_the_plan_and_the_intent_in_clo
         ],
         notification_view=notification,
         intents=intent_views([], [ledger]),
-        now_ms=NOW + 10_000,
     )
 
     assert (outcome.kind, outcome.text_zh) == ("delivered", "已推送（重点）")

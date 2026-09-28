@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from .outcome import admission_zh, error_code_zh, incident_cause_zh, override_rule_zh, throttled_by_zh
+from .outcome import admission_zh, error_code_zh, incident_cause_zh
 
 HEALTH_VERSION: Final = "news_health_v1"
 
@@ -256,14 +256,14 @@ def status_health(
         "received": int(pipeline.get("funnel_received_24h") or 0),
         "admitted": int(pipeline.get("funnel_admitted_24h") or 0),
         "candidates": int(pipeline.get("candidates_24h") or 0),
-        "triaged": int(pipeline.get("funnel_triaged_24h") or 0),
+        "adopted": int(pipeline.get("funnel_adopted_24h") or 0),
         # #87: between "sent to the model" and "decided", the reader wants to know how many Events named an
         # asset that actually exists on a venue. It is a property of the same Events, not a separate stage.
         # `tagged` travels with it because it is the only population `grounded` can honestly be compared
         # against — Events that carried no coin tag at all never offered a symbol to resolve.
         "tagged": int(pipeline.get("tagged_24h") or 0),
         "grounded": int(pipeline.get("grounded_24h") or 0),
-        "decided_push": int(pipeline.get("decided_push_24h") or 0),
+        "selected": int(pipeline.get("selected_24h") or 0),
         "delivered": int(pipeline.get("funnel_delivered_24h") or 0),
         "received_1h": int(pipeline.get("events_1h") or 0),
         "delivered_1h": int(delivery.get("sent_1h") or 0),
@@ -271,14 +271,8 @@ def status_health(
     reasons: list[dict[str, Any]] = []
     for key, count in (pipeline.get("suppressed_by_reason") or {}).items():
         reasons.append({"stage": "gate", "key": key, "label_zh": admission_zh(key), "count": int(count)})
-    for key, count in (pipeline.get("dropped_by_rule") or {}).items():
-        reasons.append({"stage": "drop", "key": key, "label_zh": override_rule_zh(key), "count": int(count)})
-    for key, count in (pipeline.get("throttled_by_key") or {}).items():
-        reasons.append({"stage": "throttle", "key": key, "label_zh": throttled_by_zh(key), "count": int(count)})
-    for key, count in (pipeline.get("pushed_by_rule") or {}).items():
-        reasons.append({"stage": "push", "key": key, "label_zh": override_rule_zh(key), "count": int(count)})
-    for key, count in (pipeline.get("triage_degraded_by_code_24h") or {}).items():
-        reasons.append({"stage": "degraded", "key": key, "label_zh": error_code_zh(key), "count": int(count)})
+    for key, count in (pipeline.get("decision_actions_24h") or {}).items():
+        reasons.append({"stage": "decision", "key": key, "label_zh": str(key), "count": int(count)})
     # The provider tag is its own label here: "SPOT" and "NEAR" say more to an operator than any sentence we
     # could wrap around them, and inventing the English word they came from would be a guess.
     for key, count in (pipeline.get("ungrounded_by_symbol_24h") or {}).items():

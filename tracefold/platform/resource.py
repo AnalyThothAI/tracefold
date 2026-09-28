@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
 from enum import StrEnum
 from typing import Any
@@ -66,39 +65,19 @@ def _retrieve_future_exception(future: asyncio.Future[Any]) -> None:
         future.exception()
 
 
-class ResourceSubmissionTracker:
-    """Track only the resource operation currently awaited by a claimed shard."""
-
-    def __init__(self) -> None:
-        self._submitted = False
-
-    @property
-    def submitted(self) -> bool:
-        return self._submitted
-
-    async def run[T](
-        self,
-        submit: Callable[[Callable[[], None]], Awaitable[T]],
-    ) -> T:
-        self._submitted = False
-        try:
-            result = await submit(self._mark_submitted)
-        except (asyncio.CancelledError, ResourceOperationOverrun):
-            raise
-        except BaseException:
-            self._submitted = False
-            raise
-        self._submitted = False
-        return result
-
-    def _mark_submitted(self) -> None:
-        self._submitted = True
+async def drain_futures(pending: set[asyncio.Future[Any]], *, timeout_seconds: float) -> bool:
+    """Wait for physical completions before a resource permit may be released."""
+    active = {future for future in pending if not future.done()}
+    if not active:
+        return True
+    _, unfinished = await asyncio.wait(active, timeout=max(0.0, float(timeout_seconds)))
+    return not unfinished
 
 
 __all__ = [
     "ResourceAdmissionTimeout",
     "ResourceCapability",
     "ResourceOperationOverrun",
-    "ResourceSubmissionTracker",
     "await_concurrent_future",
+    "drain_futures",
 ]

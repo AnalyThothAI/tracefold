@@ -3,11 +3,9 @@ import { DropdownMenu } from "radix-ui";
 import { useState } from "react";
 
 import {
-  NEWS_FEED_DIRECTIONS,
   NEWS_FEED_HOURS,
   NEWS_EVENT_KINDS,
   type NewsFeedCounts,
-  type NewsFeedDirection,
   type NewsFeedFilters,
   type NewsFeedOutcome,
 } from "../../api/newsQueries";
@@ -17,12 +15,6 @@ import { eventKindLabel, formatCount, hoursLabel, outcomeTabLabel } from "../../
 import "./newsFeedToolbar.css";
 
 const OUTCOME_TABS: Array<NewsFeedOutcome | null> = ["pushed", "held", "pending", null];
-const DIRECTION_LABELS: Record<NewsFeedDirection, string> = {
-  bullish: "▲ 利多",
-  bearish: "▼ 利空",
-  neutral: "◆ 中性",
-};
-
 /** The Event-feed controls in the approved order: task, count, window, then two bounded filter axes. */
 export function NewsFeedToolbar({
   counts,
@@ -38,7 +30,7 @@ export function NewsFeedToolbar({
   const total = tabCount(counts, filters.outcome);
   const [timeOpen, setTimeOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const activeFilters = filters.directions.length + filters.eventKinds.length;
+  const activeFilters = filters.eventKinds.length;
   return (
     <>
       <div className="news-feed-toolbar">
@@ -191,24 +183,6 @@ function FilterPanel({
 }) {
   return (
     <div className="news-filter-panel">
-      <small>方向</small>
-      <div>
-        {NEWS_FEED_DIRECTIONS.map((value) => (
-          <button
-            aria-pressed={filters.directions.includes(value)}
-            data-direction={value}
-            key={value}
-            onClick={() =>
-              onChange({
-                directions: toggleFilterValue(filters.directions, value, NEWS_FEED_DIRECTIONS),
-              })
-            }
-            type="button"
-          >
-            {DIRECTION_LABELS[value]}
-          </button>
-        ))}
-      </div>
       <small>类型</small>
       <div>
         {NEWS_EVENT_KINDS.map((value) => (
@@ -229,7 +203,7 @@ function FilterPanel({
       {activeFilters ? (
         <button
           className="news-filter-clear"
-          onClick={() => onChange({ eventKinds: [], directions: [] })}
+          onClick={() => onChange({ eventKinds: [] })}
           type="button"
         >
           清除

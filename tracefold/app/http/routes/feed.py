@@ -25,8 +25,6 @@ _ADMISSIONS = {
     "suppressed_low_signal",
     "recovery",
 }
-_FINAL_DECISIONS = ("push", "escalate", "drop", "throttled")
-_DIRECTIONS = ("bullish", "bearish", "neutral")
 
 
 @router.get("/news/feed", response_model=_FeedEnvelope)
@@ -34,7 +32,6 @@ def get_news_feed(
     request: Request,
     source_authority: Annotated[str, Query(max_length=128)] = "",
     subject_code: Annotated[str, Query(max_length=768)] = "",
-    final_decision: Annotated[str, Query(max_length=64)] = "",
     event_kind: Annotated[str, Query(max_length=128)] = "",
     admission: Annotated[str, Query(max_length=40)] = "",
     symbol: Annotated[str, Query(max_length=32)] = "",
@@ -43,16 +40,12 @@ def get_news_feed(
     cursor: Annotated[str, Query(max_length=200)] = "",
     outcome: Annotated[str, Query(pattern="^(pushed|held|pending)?$")] = "",
     hours: Annotated[int, Query(ge=0, le=168)] = 0,
-    # Wide enough to hold a full rule key: someone reaching for `oi_parse_failed` should get
-    # the named `news_feed_oi_invalid` rather than a shape error that says nothing about the vocabulary.
-    direction: Annotated[str, Query(max_length=40)] = "",
 ) -> Response:
     _validate_query_params(
         request,
         supported={
             "source_authority",
             "subject_code",
-            "final_decision",
             "event_kind",
             "admission",
             "symbol",
@@ -61,7 +54,6 @@ def get_news_feed(
             "cursor",
             "outcome",
             "hours",
-            "direction",
             "token",
         },
     )
@@ -79,20 +71,11 @@ def get_news_feed(
         error="news_feed_subject_code_invalid",
         field="subject_code",
     )
-    final_decisions = _parse_csv_filter(
-        final_decision,
-        allowed=_FINAL_DECISIONS,
-        error="news_feed_final_decision_invalid",
-        field="final_decision",
-    )
     event_kinds = _parse_csv_filter(
         event_kind,
         allowed=EVENT_KINDS,
         error="news_feed_event_kind_invalid",
         field="event_kind",
-    )
-    directions = _parse_csv_filter(
-        direction, allowed=_DIRECTIONS, error="news_feed_direction_invalid", field="direction"
     )
     if q.strip() and symbol.strip():
         raise ApiBadRequest("news_feed_search_conflict", field="q")
@@ -104,7 +87,6 @@ def get_news_feed(
             data = repos.news.list_feed(
                 source_authority=source_authorities,
                 subject_code=subject_codes,
-                final_decision=final_decisions,
                 event_kind=event_kinds,
                 admission=admission or None,
                 search=search,
@@ -112,7 +94,6 @@ def get_news_feed(
                 cursor=cursor or None,
                 outcome=outcome or None,
                 hours=hours or None,
-                directions=directions,
             )
         except ValueError as exc:
             # Only `list_feed` decodes the cursor. Anything that fails while resolving instruments is a

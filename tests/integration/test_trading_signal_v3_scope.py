@@ -14,9 +14,9 @@ from typing import Any
 import pytest
 from psycopg.errors import UniqueViolation
 
-from tests.integration.test_trading_analysis_storage import _selection
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
+from tests.support.trading_analysis import _selection
 from tests.trading.news_public_updates import first_report, next_update
 from tracefold.news.updates.contracts import PublicUpdate
 from tracefold.platform.market_identity import DEFAULT_UNIVERSE

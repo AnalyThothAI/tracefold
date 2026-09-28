@@ -43,7 +43,7 @@ import "./newsStatus.css";
  * server sends that is missing here is silently dropped — `ungrounded` shipped computed, labelled and
  * documented but invisible for exactly that reason (#87 review).
  */
-const REASON_STAGE_ORDER = ["push", "throttle", "drop", "ungrounded", "gate", "degraded"] as const;
+const REASON_STAGE_ORDER = ["decision", "ungrounded", "gate"] as const;
 
 export function NewsStatusPage({ token }: { token: string }) {
   const query = useNewsStatusWithToken(token);
@@ -180,8 +180,8 @@ function HealthNumbers({
           ]
         : keyName === "model"
           ? [
-              ["JUDGED", formatCount(status.pipeline.triage_24h)],
-              ["P95", optionalDuration(status.pipeline.triage_p95_ms)],
+              ["ADOPTED", formatCount(status.pipeline.semantic_adopted_24h)],
+              ["FAILED", formatCount(status.pipeline.semantic_failed_24h)],
             ]
           : [["SENT", formatCount(status.delivery.sent_24h)]];
   return (
@@ -207,22 +207,16 @@ function Funnel({ status }: { status: NewsStatus }) {
       value: funnel.received,
     },
     {
-      hint: percent(funnel.candidates, funnel.received),
+      hint: percent(funnel.admitted, funnel.received),
       label: "送审",
       to: null,
-      value: funnel.candidates,
+      value: funnel.admitted,
     },
     {
-      hint: percent(funnel.triaged, funnel.received),
-      label: "模型判断",
+      hint: percent(funnel.adopted, funnel.received),
+      label: "已采用更新",
       to: null,
-      value: funnel.triaged,
-    },
-    {
-      hint: percent(funnel.decided_push, funnel.received),
-      label: "决定推送",
-      to: `${newsPath()}?outcome=pushed`,
-      value: funnel.decided_push,
+      value: funnel.adopted,
     },
     {
       hint: `1h ${formatCount(funnel.delivered_1h)}`,
@@ -234,7 +228,7 @@ function Funnel({ status }: { status: NewsStatus }) {
   return (
     <>
       {/*
-       * The bars are the chain and only the chain: 收到 ⊇ 送审 ⊇ 模型判断 ⊇ 决定推送 ⊇ 已送达, so every band is a
+       * The bars are the chain and only the chain: 收到 ⊇ 送审 ⊇ 已采用更新 ⊇ 已送达, so every band is a
        * share of the one above it and the drop sentence below can name any two adjacent rows. 符号落表 is
        * deliberately not here — an Event whose symbols never landed can still have been pushed, so it is a
        * property of the Events in these bands rather than a band of its own, and it gets a tile on the feed
@@ -279,10 +273,9 @@ function Funnel({ status }: { status: NewsStatus }) {
 function BiggestDrop({ status }: { status: NewsStatus }) {
   const funnel = status.funnel_24h;
   const drops = [
-    { from: "收到", lost: funnel.received - funnel.candidates, to: "送审" },
-    { from: "送审", lost: funnel.candidates - funnel.triaged, to: "模型判断" },
-    { from: "模型判断", lost: funnel.triaged - funnel.decided_push, to: "决定推送" },
-    { from: "决定推送", lost: funnel.decided_push - funnel.delivered, to: "已送达" },
+    { from: "收到", lost: funnel.received - funnel.admitted, to: "送审" },
+    { from: "送审", lost: funnel.admitted - funnel.adopted, to: "已采用更新" },
+    { from: "已采用更新", lost: funnel.adopted - funnel.delivered, to: "已送达" },
   ];
   const worst = drops.reduce((best, drop) => (drop.lost > best.lost ? drop : best), drops[0]);
   if (worst.lost <= 0) return null;
@@ -387,18 +380,11 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="extraction_model" v={status.pipeline.extraction_model ?? "—"} />
           <KeyValueRow k="judgment_model" v={status.pipeline.judgment_model ?? "—"} />
           <KeyValueRow k="card_model" v={status.pipeline.card_model ?? "—"} />
-          <KeyValueRow k="triage_p50_ms" v={optionalDuration(status.pipeline.triage_p50_ms)} />
-          <KeyValueRow k="triage_p95_ms" v={optionalDuration(status.pipeline.triage_p95_ms)} />
-          <KeyValueRow
-            k="queue_lag_p95_ms"
-            v={optionalDuration(status.pipeline.queue_lag_p95_ms)}
-          />
           <KeyValueRow k="e2e_p95_ms" v={optionalDuration(status.delivery.e2e_p95_ms)} />
           <KeyValueRow k="events_24h" v={String(status.pipeline.events_24h)} />
           <KeyValueRow k="candidates_24h" v={String(status.pipeline.candidates_24h)} />
-          <KeyValueRow k="triage_24h" v={String(status.pipeline.triage_24h)} />
-          <KeyValueRow k="triage_degraded_24h" v={String(status.pipeline.triage_degraded_24h)} />
-          <KeyValueRow k="throttled_24h" v={String(status.pipeline.throttled_24h)} />
+          <KeyValueRow k="decisions_24h" v={String(status.pipeline.decisions_24h)} />
+          <KeyValueRow k="selected_24h" v={String(status.pipeline.selected_24h)} />
           {/* The three `telemetry_*_24h` counters left with the lane (#553 PR-1). Market intake is counted
               off the stored observations and reported per kind by `/api/news/market`, which 市场事实
               renders; restating it here would be a second, differently-sourced number for one fact. */}
@@ -407,8 +393,8 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
             v={`${status.pipeline.duplicates_withheld_24h?.all ?? 0} 全量比对`}
           />
           <KeyValueRow
-            k="reviewed_should_push_24h"
-            v={String(status.pipeline.reviewed_should_push_24h)}
+            k="reviewed_decision_should_push_24h"
+            v={String(status.pipeline.reviewed_decision_should_push_24h)}
           />
           <KeyValueRow
             k="reviewed_external_miss_24h"
@@ -422,8 +408,8 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
             v={reviewRatio(status.pipeline.keep_ratio_sent_24h)}
           />
           <KeyValueRow
-            k="missed_ratio_dropped_24h"
-            v={reviewRatio(status.pipeline.missed_ratio_dropped_24h)}
+            k="missed_ratio_held_24h"
+            v={reviewRatio(status.pipeline.missed_ratio_held_24h)}
           />
           <KeyValueRow
             k="candidate_share_24h"

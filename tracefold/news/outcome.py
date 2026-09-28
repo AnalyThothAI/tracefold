@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal
 
 from .events.storyline import NO_STORYLINE_KEY, storyline_entry
-from .models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS
+from .models import ADMITTED_ADMISSIONS
 from .update_view import claim_reasons_zh, notification_state, semantic_state
 
 OUTCOME_VERSION: Final = "news_outcome_v1"
@@ -21,13 +21,6 @@ OUTCOME_VERSION: Final = "news_outcome_v1"
 OutcomeKind = Literal[
     "held_recovery",
     "held_gate",
-    "expired_triage_handoff",
-    "expired_delivery_handoff",
-    "queued_publish",
-    "queued_triage",
-    "dropped",
-    "throttled",
-    "degraded_dropped",
     "pending_delivery",
     "delivered",
     "delivery_failed",
@@ -47,13 +40,6 @@ OutcomeKind = Literal[
 OUTCOME_GROUP: Final[dict[str, str]] = {
     "held_recovery": "held",
     "held_gate": "held",
-    "expired_triage_handoff": "held",
-    "expired_delivery_handoff": "held",
-    "queued_publish": "pending",
-    "queued_triage": "pending",
-    "dropped": "held",
-    "throttled": "held",
-    "degraded_dropped": "held",
     "pending_delivery": "pending",
     "delivered": "pushed",
     "delivery_failed": "held",
@@ -307,66 +293,30 @@ def novelty_zh(value: str | None) -> str:
 
 
 # ------------------------------------------------------------------------------------------------ outcome
-_HELD_DECISIONS: Final = frozenset({"drop", "throttled", "degraded"})
-_PUSH_DECISIONS: Final = frozenset({"push", "escalate"})
-
-
 def event_outcome(
     *,
     admission: str | None,
-    published_at_ms: int | None,
-    triage: Mapping[str, Any] | None,
     delivery: Mapping[str, Any] | None,
     delivery_queue: Mapping[str, Any] | None = None,
-    opened_at_ms: int | None = None,
-    now_ms: int | None = None,
     semantic: Mapping[str, Any] | None = None,
     adopted: bool = False,
     notification: Mapping[str, Any] | None = None,
 ) -> Outcome:
-    """The one place that turns an Event's processing rows into a conclusion.
-
-    ``delivery`` is the Event's representative reader delivery (its latest sent card, else its latest
-    ledger row) and needs ``state``, ``error_code`` and, for a sent update intent, ``plan_key``;
-    ``delivery_queue`` is its latest owed intent without a ledger row (``state``, ``error_code``). The
-    outbound ledger outranks everything else.
-
-    An Event with ``semantic`` work (#706: ``wanted_revision``, ``done_revision``, ``last_outcome``,
-    ``last_error_code``) is on the EventUpdate path: ``adopted`` says whether it has a head, and
-    ``notification`` is its notification work (``state`` plus the stored plan's ``action`` and
-    ``claim_decisions``). Otherwise ``triage`` is the legacy verdict (``final_decision``,
-    ``override_rule``, ``throttled_by``, ``degraded``, ``error_code``, ``created_at_ms``,
-    ``published_at_ms``), read exactly as before. Missing rows are ``None``.
-
-    `storage.feed_sql.OUTCOME_GROUP_SQL` states the same precedence in SQL for the feed's tabs.
-    """
-
+    """Resolve durable reader receipts first, then current semantic and notification work."""
     state = str((delivery or {}).get("state") or "")
     queue_state = str((delivery_queue or {}).get("state") or "")
-    if state in {"sent", "terminal", "sending", "ambiguous"}:
-        # The outbound ledger is a material fact and outranks a later routing hard cut. This also covers
-        # repaired/replayed data whose immutable verdict is absent.
-        final = str((triage or {}).get("final_decision") or "")
-        degraded = bool((triage or {}).get("degraded"))
-        error_zh = error_code_zh((triage or {}).get("error_code")) if degraded else ""
-        rule_zh = override_rule_zh((triage or {}).get("override_rule")) if semantic is None else ""
-        if degraded and semantic is None:
-            rule_zh = "模型不可用，按规则兜底推送" + (f"：{error_zh}" if error_zh else "")
-        if state == "sent":
-            key = final == "escalate" if semantic is None else bool((delivery or {}).get("plan_key"))
-            return _outcome("delivered", "已推送（重点）" if key else "已推送", rule_zh)
-        if state == "sending":
-            return _outcome("pending_delivery", "推送中", rule_zh)
-        if queue_state == "pending":
-            # A later intent is owed after an earlier one ended without a card: the Event is not done.
+    if state == "sent":
+        return _outcome("delivered", "已推送（重点）" if (delivery or {}).get("plan_key") else "已推送", "")
+    if state == "sending":
+        return _outcome("pending_delivery", "推送中", "")
+    if state in {"terminal", "ambiguous"}:
+        if queue_state == "pending" and semantic is not None:
             return _outcome("pending_delivery", "待推送", "上一张卡未送达，新的通知待发送")
         if state == "ambiguous":
             return _outcome("delivery_ambiguous", "发送结果不确定", "发送后未能确认是否送达，不重发，等待对账")
         return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery or {}).get("error_code")))
-
     if queue_state == "dead":
         return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery_queue or {}).get("error_code")))
-
     admission_text = str(admission or "")
     if admission_text == "recovery":
         return _outcome("held_recovery", "补抄件，不推送", ADMISSION_ZH["recovery"])
@@ -374,54 +324,7 @@ def event_outcome(
         return _outcome("held_gate", "未送审", admission_zh(admission_text))
     if semantic is not None:
         return _update_outcome(semantic, adopted=adopted, notification=notification)
-    if triage is None:
-        if published_at_ms is None:
-            if _handoff_expired(started_at_ms=opened_at_ms, now_ms=now_ms):
-                return _outcome(
-                    "expired_triage_handoff",
-                    "未送审（交接过期）",
-                    "入库后 30 分钟内未完成送审交接，已停止补发",
-                )
-            return _outcome("queued_publish", "待处理", "已入库，等待送审")
-        return _outcome("queued_triage", "审稿中", "排队等待模型判断")
-
-    final = str(triage.get("final_decision") or "")
-    degraded = bool(triage.get("degraded"))
-    error_zh = error_code_zh(triage.get("error_code")) if degraded else ""
-    if final == "throttled":
-        throttled_by = str(triage.get("throttled_by") or "")
-        if throttled_by.endswith(_SEEN_SUFFIX):
-            text = "未推送（重复）"
-        elif throttled_by.endswith(_BUDGET_SUFFIX):
-            text = "未推送（同线索预算）"
-        elif throttled_by == _STALE_ARTIFACT_KEY:
-            text = "未推送（旧闻）"
-        else:
-            text = "未推送（历史限流）"
-        return _outcome("throttled", text, throttled_by_zh(throttled_by))
-    if final in _HELD_DECISIONS:
-        if degraded:
-            reason = "模型不可用，按规则兜底不推" + (f"：{error_zh}" if error_zh else "")
-            return _outcome("degraded_dropped", "未推送（规则兜底）", reason)
-        return _outcome("dropped", "未推送", override_rule_zh(triage.get("override_rule")))
-    if final not in _PUSH_DECISIONS:
-        return _outcome("dropped", "未推送", override_rule_zh(triage.get("override_rule")) or final)
-
-    important = final == "escalate"
-    rule_zh = override_rule_zh(triage.get("override_rule"))
-    if degraded:
-        rule_zh = "模型不可用，按规则兜底推送" + (f"：{error_zh}" if error_zh else "")
-    if (
-        delivery is None
-        and triage.get("published_at_ms") is None
-        and _handoff_expired(started_at_ms=triage.get("created_at_ms"), now_ms=now_ms)
-    ):
-        return _outcome(
-            "expired_delivery_handoff",
-            "未推送（交接过期）",
-            "判定后 30 分钟内未完成投递交接，已停止补发",
-        )
-    return _outcome("pending_delivery", "待推送（重点）" if important else "待推送", rule_zh)
+    return _outcome("no_update", "仅有来源", "没有当前语义工作记录")
 
 
 def _update_outcome(semantic: Mapping[str, Any], *, adopted: bool, notification: Mapping[str, Any] | None) -> Outcome:
@@ -453,15 +356,6 @@ def _update_outcome(semantic: Mapping[str, Any], *, adopted: bool, notification:
         "未通知",
         claim_reasons_zh((notification or {}).get("claim_decisions")) or "没有未覆盖且可通知的命题",
     )
-
-
-def _handoff_expired(*, started_at_ms: Any, now_ms: int | None) -> bool:
-    if started_at_ms is None or now_ms is None:
-        return False
-    try:
-        return int(now_ms) - int(started_at_ms) > OUTBOX_MAX_AGE_MS
-    except (TypeError, ValueError):
-        return False
 
 
 def _outcome(kind: OutcomeKind, text_zh: str, reason_zh: str) -> Outcome:

@@ -35,7 +35,12 @@ def replay_hits(
     watchlist_symbols: frozenset[str],
     instrument_classes: Mapping[str, str] | None,
 ) -> dict[str, Any]:
-    """``instrument_classes`` is what the live Gate reads to tell a stock headline from a coin one (#89).
+    """Diagnose provider admission and dedupe on a fixed input list.
+
+    This simplified Event count does not run current multi-scope assignment, semantic work,
+    EventUpdate adoption or notification. It cannot stand in for a full News pipeline replay.
+
+    ``instrument_classes`` is what the live Gate reads to tell a stock headline from a coin one (#89).
 
     It has no default: passing ``None`` exercises the fallback rather than the deployed behaviour, and a
     replay that measured the fallback by omission would report a Gate nothing runs. Every caller says

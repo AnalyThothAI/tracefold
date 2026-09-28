@@ -6,12 +6,10 @@ import type {
   NewsEventUpdate,
   NewsFeed,
   NewsFeedEvent,
-  NewsLegacyVerdict,
   NewsOutcome,
   NewsProcessing,
   NewsStatus,
   NewsTimelineStep,
-  NewsVerdict,
   NewsEventReaction,
   NewsQuote,
   NewsReaction,
@@ -35,7 +33,7 @@ export function newsOutcomeFixture(overrides: Partial<NewsOutcome> = {}): NewsOu
   return {
     group: "pushed",
     kind: "delivered",
-    reason_zh: "模型判断值得推送",
+    reason_zh: "",
     text_zh: "已推送",
     ...overrides,
   };
@@ -80,42 +78,14 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
     reaction: newsReactionFixture(),
     reporting_origin: "Reuters World",
     storyline_key: "asset:BTC",
-    // A legacy Event by default: judged by a Triage verdict before #706 and carrying no EventUpdate head.
-    legacy_verdict: newsLegacyVerdictFixture(),
-    update: null,
+    update: {
+      content_revision: "9".repeat(64),
+      adopted_at_ms: NEWS_NOW_MS - 80_000,
+      claim_n: 1,
+      headline: "央行政策转向，风险资产承压",
+      headline_source: "sent_card",
+    },
     watchlist_hits: ["BTC"],
-    ...overrides,
-  };
-}
-
-export function newsLegacyVerdictFixture(
-  overrides: Partial<NewsLegacyVerdict> = {},
-): NewsLegacyVerdict {
-  return {
-    assets: [
-      { market_type: "crypto", role: "primary", symbol: "BTC" },
-      { market_type: "crypto", role: "mentioned", symbol: "ETH" },
-    ],
-    confidence: 0.78,
-    decision_zh: "推送",
-    degraded: false,
-    direction: "bearish",
-    direction_zh: "利空",
-    error_code: null,
-    final_decision: "push",
-    evidence_ref: "c1",
-    fact_kind: "official_measure",
-    fact_kind_zh: "官方措施",
-    headline_zh: "央行政策转向，风险资产承压",
-    novelty: "new_fact",
-    novelty_zh: "新事实",
-    override_rule: "escalate_corroborated",
-    scope: "macro",
-    scope_zh: "宏观",
-    throttled_by: null,
-    source_authority: "reputable_secondary",
-    source_authority_zh: "可信二手来源",
-    why_zh: "利率指引与市场预期背离，风险资产定价需要重估",
     ...overrides,
   };
 }
@@ -128,7 +98,6 @@ export function newsFeedFixture(overrides: Partial<NewsFeed> = {}): NewsFeed {
     filters: {
       admission: null,
       event_kind: null,
-      final_decision: null,
       limit: 25,
       outcome: null,
       q: null,
@@ -196,64 +165,12 @@ export function newsEventMemberFixture(overrides: Partial<NewsEventMember> = {})
   };
 }
 
-export function newsVerdictFixture(overrides: Partial<NewsVerdict> = {}): NewsVerdict {
-  const legacy = newsLegacyVerdictFixture();
-  return {
-    created_at_ms: NEWS_NOW_MS - 90_000,
-    degraded: false,
-    error_code: null,
-    evidence_sha256: "2".repeat(64),
-    evidence_version: 1,
-    final_decision: "push",
-    focus_fact_id: "fact-global-policy",
-    judgment_contract_version: "news_judgment_v3",
-    judgment_origin: "model",
-    judgment_sha256: "3".repeat(64),
-    model: "triage-model-v1",
-    model_usage_coverage: "unknown",
-    model_editorial: {
-      source_authority: legacy.source_authority!,
-      source_authority_zh: legacy.source_authority_zh,
-      // #706: the retired axes exactly as the verdict stored them, with no vocabulary applied.
-      taxonomy: {
-        assertion_status: "confirmed",
-        change_state: "updated",
-        event_family: "macro_policy_data",
-        subject_codes: ["medtop:20000379"],
-      },
-      taxonomy_error_code: null,
-      taxonomy_status: "available",
-    },
-    override_rule: null,
-    policy_version: "news_triage_policy_v17",
-    program_sha256: "4".repeat(64),
-    program_version: "news_semantic_program_v13",
-    published_at_ms: NEWS_NOW_MS - 60_000,
-    rule_baseline_decision: "escalate",
-    stage: "triage",
-    throttled_by: null,
-    verdict: {
-      assets: [{ market_type: "crypto", role: "primary", symbol: "BTC" }],
-      confidence: 0.82,
-      direction: "bearish",
-      evidence_ref: "c1",
-      fact_kind: "official_measure",
-      headline_zh: "央行政策转向，风险资产承压",
-      novelty: "new_fact",
-      restates: -1,
-      scope: "macro",
-      why_zh: "利率指引与市场预期背离，风险资产定价需要重估",
-    },
-    ...overrides,
-  };
-}
-
 export function newsDeliveryFixture(overrides: Partial<NewsDelivery> = {}): NewsDelivery {
   return {
     attempted_at_ms: NEWS_NOW_MS - 40_000,
     error_code: null,
-    intent_id: `legacy_intent:${"5".repeat(64)}`,
-    kind: "first",
+    intent_id: `intent:${"5".repeat(64)}`,
+    kind: "update",
     receipt: { message_id: "om_123" },
     settled_at_ms: NEWS_NOW_MS - 20_000,
     state: "sent",
@@ -286,26 +203,15 @@ export function newsTimelineFixture(): NewsTimelineStep[] {
       title_zh: "门禁",
     },
     {
-      at_ms: NEWS_NOW_MS - 90_000,
-      facts: { direction: "bearish", fact_kind: "official_measure", model: "triage-model-v1" },
-      stage: "triage",
-      summary_zh: "央行政策转向，风险资产承压 · 利空 / 影响明显 / 宏观",
-      title_zh: "审稿",
-    },
-    {
-      at_ms: NEWS_NOW_MS - 90_000,
-      facts: {
-        final_decision: "push",
-        override_rule: "escalate_corroborated",
-        storyline_key: "asset:BTC",
-      },
-      stage: "decide",
-      summary_zh: "推送 · 模型判断值得推送",
-      title_zh: "决策",
+      at_ms: NEWS_NOW_MS - 80_000,
+      facts: { content_revision: "9".repeat(64) },
+      stage: "semantic",
+      summary_zh: "采用当前更新",
+      title_zh: "语义处理",
     },
     {
       at_ms: NEWS_NOW_MS - 20_000,
-      facts: { kind: "first", state: "sent" },
+      facts: { kind: "update", state: "sent" },
       stage: "delivery",
       summary_zh: "已送达",
       title_zh: "推送",
@@ -329,10 +235,9 @@ export function newsEventDetailFixture(overrides: Partial<NewsEventDetail> = {})
       rendered_card: {},
       state: "received",
     },
-    review: { accepted: null, judgment_n: 0, uncertain: false },
-    event_update: null,
-    processing: null,
-    legacy_verdict: newsLegacyVerdictFixture(),
+    feedback: { feedback_n: 0, latest: null },
+    event_update: newsEventUpdateFixture(),
+    processing: newsProcessingFixture(),
     timeline: newsTimelineFixture(),
     members: [
       newsEventMemberFixture(),
@@ -346,7 +251,6 @@ export function newsEventDetailFixture(overrides: Partial<NewsEventDetail> = {})
         url: "https://www.bloomberg.com/news/story",
       }),
     ],
-    verdicts: [newsVerdictFixture()],
     ...overrides,
   };
 }
@@ -571,16 +475,9 @@ export function newsProcessingFixture(overrides: Partial<NewsProcessing> = {}): 
   };
 }
 
-/** A News Agent Event's detail: an EventUpdate head, its processing, and no legacy verdict at all. */
+/** One current EventUpdate detail with optional variations. */
 export function newsUpdateDetailFixture(overrides: Partial<NewsEventDetail> = {}): NewsEventDetail {
-  return newsEventDetailFixture({
-    event_update: newsEventUpdateFixture(),
-    evidence_inputs: [],
-    legacy_verdict: null,
-    processing: newsProcessingFixture(),
-    verdicts: [],
-    ...overrides,
-  });
+  return newsEventDetailFixture(overrides);
 }
 
 export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStatus {
@@ -647,14 +544,14 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
     funnel_24h: {
       admitted: 180,
       candidates: 180,
-      decided_push: 40,
+      selected: 40,
       delivered: 41,
       delivered_1h: 2,
       grounded: 168,
       received: 320,
       received_1h: 12,
       tagged: 172,
-      triaged: 175,
+      adopted: 175,
     },
     health: {
       broker: { detail_zh: "raw 0 · triage 3 · deliver 0", level: "ok", summary_zh: "队列畅通" },
@@ -664,36 +561,9 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       overall: "ok",
     },
     reasons_24h: [
-      { count: 60, key: "noise", label_zh: "模型判定为噪音", stage: "drop" },
-      // #87: a provider tag that names nothing. The tag is its own label — inventing the English word it
-      // collided with would be a guess.
+      { count: 60, key: "hold", label_zh: "保留", stage: "decision" },
       { count: 7, key: "SPOT", label_zh: "SPOT", stage: "ungrounded" },
-      {
-        count: 30,
-        key: "fact_kind_state_change",
-        label_zh: "事实类型：状态变化，推送",
-        stage: "push",
-      },
-      { count: 20, key: "below_threshold", label_zh: "影响不够，未达推送标准", stage: "drop" },
-      {
-        count: 10,
-        key: "escalate_corroborated",
-        label_zh: "状态变化或官方措施，重点推送",
-        stage: "push",
-      },
-      {
-        count: 9,
-        key: "storyline:conflict:mideast_2026:cap3",
-        label_zh: "「美伊冲突」话题 4 小时内已推 3 条",
-        stage: "throttle",
-      },
-      {
-        count: 8,
-        key: "suppressed_pr_template",
-        label_zh: "律所推广模板，规则直接拦截",
-        stage: "gate",
-      },
-      { count: 2, key: "news_program_route_deadline", label_zh: "语义程序超时", stage: "degraded" },
+      { count: 8, key: "suppressed_pr_template", label_zh: "律所推广模板", stage: "gate" },
     ],
     delivery: {
       delivery_available: true,
@@ -729,37 +599,30 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
     measured_at_ms: NEWS_NOW_MS,
     pipeline: {
       admitted_24h: 180,
-      candidate_share_24h: 0.94,
+      candidate_share_24h: 0.56,
+      decisions_24h: 75,
+      selected_24h: 40,
+      decision_actions_24h: { notify: 40, hold: 35 },
       candidates_24h: 180,
-      decided_push_24h: 40,
-      model_triage_24h: 41,
       source_classifier_version: "opennews_source_classifier_v1",
       // The editorial funnel, and only that (#553 PR-1). Market intake is counted off the stored
       // observations and reported per kind by `/api/news/market`, never here.
       source_contracts_24h: {
-        news_v1: { received: 170, parsed: 170, verdict: 100 },
-        listing_v1: { received: 8, parsed: 8, verdict: 8 },
+        news_v1: { received: 170, parsed: 170, adopted: 100 },
+        listing_v1: { received: 8, parsed: 8, adopted: 8 },
       },
-      dropped_by_rule: { noise: 60, below_threshold: 20 },
       events_1h: 12,
       events_24h: 320,
       funnel_admitted_24h: 180,
       funnel_delivered_24h: 41,
       funnel_received_24h: 320,
-      funnel_triaged_24h: 175,
+      funnel_adopted_24h: 175,
       grounded_24h: 168,
       tagged_24h: 172,
       reviewed_external_miss_24h: 0,
-      reviewed_should_push_24h: 1,
-      pushed_by_rule: { fact_kind_state_change: 30, escalate_corroborated: 10 },
-      reasked_24h: 1,
+      reviewed_decision_should_push_24h: 1,
       suppressed_by_reason: { suppressed_pr_template: 8 },
       ungrounded_by_symbol_24h: { SPOT: 7, NEAR: 2 },
-      throttled_24h: 9,
-      throttled_by_key: { "storyline:conflict:mideast_2026:cap3": 9 },
-      triage_24h: 175,
-      triage_degraded_24h: 2,
-      triage_degraded_by_code_24h: { news_program_route_deadline: 2 },
       card_dedicated: false,
       card_fallback_dedicated: false,
       card_fallback_model: null,
@@ -771,6 +634,7 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       news_judgment_configured: false,
       news_program_identity: null,
       semantic_adopted_24h: 150,
+      missed_ratio_held_24h: { ratio: null, numerator: 0, denominator: 0 },
       semantic_failed_24h: 2,
       semantic_failed_by_code_24h: { "news_provider_unavailable:TimeoutError": 2 },
       semantic_observations_24h: 173,
@@ -778,8 +642,6 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       semantic_deferred: 0,
       semantic_in_progress: 0,
       semantic_failed_exhausted: 0,
-      triage_p50_ms: 640,
-      triage_p95_ms: 1_900,
     },
     state: "ready",
     watchlist: ["BTC", "ETH", "SOL"],
