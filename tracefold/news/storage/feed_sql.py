@@ -38,9 +38,8 @@ ITEM_RELATED_EVENTS_SQL: Final = """
 """
 
 ADMITTED_SQL: Final = ", ".join(f"'{value}'" for value in sorted(ADMITTED_ADMISSIONS))
-# A card a reader could have received: the legacy first card and every EventUpdate intent (#706). The
-# legacy `followup` kind was never a feed or status fact and stays out.
-READER_DELIVERY_KINDS_SQL: Final = "('first', 'update')"
+# Reader cards are EventUpdate intents.
+READER_DELIVERY_KINDS_SQL: Final = "('update')"
 # Feed task tabs mirror `outcome.event_outcome` over the feed's joined rows. Keeping these predicates
 # beside both statement builders makes the page and count query share one definition.
 # The EventUpdate path (#706), after the ledger and the Gate: semantic work still owed a revision, or an
@@ -63,10 +62,8 @@ OUTCOME_GROUP_SQL: Final = {
     "pending": f"COALESCE(d.state, '') <> 'sent' AND ({_PENDING_CORE_SQL})",
     "held": f"COALESCE(d.state, '') <> 'sent' AND NOT ({_PENDING_CORE_SQL})",
 }
-# The News feed is the editorial Event feed and nothing else (#553). Market observations are stored as
-# facts beside their Item and read through `/api/news/market`; a feed row for one would be a second copy
-# of live market data under an editorial vocabulary it never had. Events of a retired market kind stay in
-# PostgreSQL as immutable evidence, and this predicate is what stops the live feed reading them back.
+# The News feed contains editorial Events. Market observations are stored as
+# facts beside their Item and read through `/api/news/market`.
 EVENT_KIND_SQL: Final = ", ".join(f"'{value}'" for value in EVENT_KINDS)
 EDITORIAL_EVENT_SQL: Final = f"e.event_kind IN ({EVENT_KIND_SQL})"
 # Current adopted update citations and topics own these two filters. A source-only Event cannot
@@ -85,7 +82,7 @@ CURRENT_EVENT_CARD_SQL: Final = """
            e.comparison_title, e.leader_title, e.opened_at_ms, e.last_member_at_ms,
            e.expires_at_ms, e.member_count, e.admission, e.queue_priority, e.provider_score_max,
            e.engine_type, e.asset_class, e.grounded_assets, e.watchlist_hits, e.macro_lexicon,
-           e.storyline_key, e.context_line, e.search_doc, e.published_at_ms, e.followup_of,
+           e.storyline_key, e.context_line, e.search_doc, e.published_at_ms,
            e.ingest_mode, e.trace_id, e.created_at_ms, e.updated_at_ms, e.focus_fact_id,
            e.focus_fact_text, e.focus_fact_context, e.focus_fact_method, e.focus_span_start,
            e.focus_span_end, e.event_kind,
@@ -96,12 +93,7 @@ CURRENT_EVENT_CARD_SQL: Final = """
       JOIN news_items i ON i.item_id = e.leader_item_id
      WHERE e.event_id = %s
 """
-# The public Event read. The statement above is the raw row, and internal callers that already know an
-# Event's identity keep using it; this one is what a *reader* may be served, and the two differ by
-# exactly the predicate the feed uses. The migration keeps every pre-cut market Event, `EventKind` no
-# longer names their kinds, and a bookmarked or pushed link to one is an ordinary thing to still have
-# -- so it has to resolve to "not an Event" rather than to a row the response envelope cannot
-# validate. The observation that Event was built from is readable at `/api/news/market`.
+# The public Event read uses the same editorial predicate as the feed.
 EDITORIAL_EVENT_CARD_SQL: Final = f"{CURRENT_EVENT_CARD_SQL.rstrip()}\n       AND {EDITORIAL_EVENT_SQL}\n"
 EVENT_MEMBERS_SQL: Final = """
             SELECT m.item_id, m.joined_at_ms, m.match_kind, m.jaccard_estimate, i.title, i.canonical_url,
@@ -120,14 +112,6 @@ STATUS_INGEST_SQL: Final = """
       FROM news_ingest_state
      WHERE singleton_key = 'opennews'
 """
-STATUS_LEARNING_RETENTION_SQL: Final = """
-    SELECT last_run_at_ms, eligible_recordings, eligible_cases, eligible_artifacts,
-           deleted_recordings, deleted_cases, deleted_artifacts, oldest_recording_age_ms,
-           oldest_case_age_ms, oldest_artifact_age_ms, last_error_code, updated_at_ms
-      FROM news_learning_retention_state
-     WHERE singleton
-"""
-
 # Every statement `/api/news/status` executes, in one place. The query audit registers these exact
 # constants, so the page and its plan evidence cannot be two different queries: the audit used to carry
 # a `count(news_verdicts)` sketch while the route ran the correlated latest-Evidence subquery, the
@@ -202,7 +186,7 @@ STATUS_DELIVERY_SQL: Final = f"""
          FROM news_deliveries d JOIN news_events e ON e.event_id = d.event_id
          JOIN news_items i ON i.item_id = e.leader_item_id
         WHERE d.state = 'sent' AND d.kind IN {READER_DELIVERY_KINDS_SQL} AND d.settled_at_ms >= %s
-          -- An Event's first card a reader received, whether a legacy first card or its first update.
+          -- The first EventUpdate card this reader received.
           AND NOT EXISTS (
             SELECT 1 FROM news_deliveries earlier
              WHERE earlier.event_id = d.event_id AND earlier.kind IN {READER_DELIVERY_KINDS_SQL}
@@ -214,30 +198,13 @@ STATUS_DELIVERY_SQL: Final = f"""
          FROM news_deliveries d JOIN news_events e ON e.event_id = d.event_id
          JOIN news_items i ON i.item_id = e.leader_item_id
         WHERE d.state = 'sent' AND d.kind IN {READER_DELIVERY_KINDS_SQL} AND d.settled_at_ms >= %s
-          -- An Event's first card a reader received, whether a legacy first card or its first update.
+          -- The first EventUpdate card this reader received.
           AND NOT EXISTS (
             SELECT 1 FROM news_deliveries earlier
              WHERE earlier.event_id = d.event_id AND earlier.kind IN {READER_DELIVERY_KINDS_SQL}
                AND earlier.state = 'sent'
                AND (earlier.settled_at_ms, earlier.intent_id) < (d.settled_at_ms, d.intent_id)
           )) AS e2e_p95_ms
-"""  # noqa: S608
-
-# The five funnel statements. `_funnel_24h` folds their rows into the named reasons a reader sees.
-STATUS_FUNNEL_SUPPRESSED_SQL: Final = f"""
-    SELECT admission, count(*) AS n FROM news_events current_event
-     WHERE current_event.opened_at_ms >= %s AND admission NOT IN ({ADMITTED_SQL})
-       AND EXISTS (
-         SELECT 1 FROM news_event_evidence_snapshots evidence
-          WHERE evidence.event_id = current_event.event_id
-            AND evidence.evidence_version = (
-              SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
-               WHERE latest.event_id = current_event.event_id
-            )
-            AND evidence.provenance = 'observed'
-            AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-       )
-     GROUP BY admission ORDER BY n DESC
 """  # noqa: S608
 
 STATUS_FUNNEL_DECISIONS_SQL: Final = """
@@ -295,7 +262,7 @@ STATUS_FUNNEL_TOTALS_SQL: Final = f"""
 
 
 # The joins the page and the count query share, after the Event, its leader Item and its current Evidence:
-# the legacy Triage verdict (history only), the EventUpdate plane (#706) and the reader deliveries. Every
+# the EventUpdate plane and the reader deliveries. Every
 # EventUpdate join is on a primary key. `d` is the Event's representative ledger row -- its latest sent
 # card, else its latest attempt -- over the `(event_id, kind)` index; `q` is its latest intent still owed
 # with no ledger row, from one pass over the in-flight queue.
@@ -426,7 +393,6 @@ __all__ = [
     "READER_DELIVERY_KINDS_SQL",
     "SOURCE_AUTHORITY_PREDICATE",
     "STATUS_INGEST_SQL",
-    "STATUS_LEARNING_RETENTION_SQL",
     "SUBJECT_CODE_PREDICATE",
     "TEXT_SEARCH_PREDICATE",
     "feed_counts_sql",

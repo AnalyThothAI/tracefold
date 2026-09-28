@@ -198,10 +198,8 @@ def test_intents_join_their_queue_and_ledger_rows_and_the_ledger_outranks() -> N
         "body": "关税 25%",
         "receipt": None,
     }
-    legacy = {"intent_id": "legacy_intent:x", "kind": "first", "state": "sent"}
-
-    (only_queued,) = intent_views([queued], [legacy])
-    (both,) = intent_views([queued], [legacy, ledger])
+    (only_queued,) = intent_views([queued], [])
+    (both,) = intent_views([queued], [ledger])
 
     assert (only_queued["state"], only_queued["attempts"], only_queued["body"]) == ("queued", 1, None)
     assert (both["state"], both["body"], both["headline_zh"]) == ("sending", "关税 25%", "关税 25%")
@@ -241,12 +239,11 @@ def test_the_representative_reader_card_is_the_latest_sent_one() -> None:
         {"intent_id": "a", "kind": "update", "state": "sent", "created_at_ms": 1},
         {"intent_id": "b", "kind": "update", "state": "terminal", "created_at_ms": 3},
         {"intent_id": "c", "kind": "update", "state": "sent", "created_at_ms": 2},
-        {"intent_id": "d", "kind": "followup", "state": "sent", "created_at_ms": 9},
     ]
 
     assert reader_delivery(rows)["intent_id"] == "c"  # type: ignore[index]
     assert reader_delivery(rows[1:2])["intent_id"] == "b"  # type: ignore[index]
-    assert reader_delivery(rows[3:]) is None
+    assert reader_delivery([]) is None
 
 
 def test_the_timeline_narrates_evidence_semantics_the_plan_and_the_intent_in_clock_order() -> None:

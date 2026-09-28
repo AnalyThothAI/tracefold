@@ -11,7 +11,7 @@ import pytest
 
 from tests.trading.news_public_updates import first_report, next_update
 from tracefold.app.analysis_files import AnalysisFiles
-from tracefold.app.trading_analysis import FrameReader, LegacyCatalystPayload, catalyst_assets, public_update
+from tracefold.app.trading_analysis import FrameReader, catalyst_assets, public_update
 from tracefold.news.storage.trade_projection import TradeProjectionStorage
 from tracefold.news.updates.contracts import PublicUpdate
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult
@@ -256,7 +256,7 @@ def test_blank_public_text_is_missing_in_both_evidence_and_candidates(text, tmp_
 )
 def test_retired_headline_why_catalyst_has_no_reading_path(legacy, tmp_path, monkeypatch) -> None:
     row = {"kind": "catalyst", "source_fact_key": "event-old", "source_revision": "1:" + "e" * 64, "payload": legacy}
-    with pytest.raises(LegacyCatalystPayload, match="legacy_catalyst_payload"):
+    with pytest.raises(ValueError):
         public_update(row)
     prepared = _prepare(legacy, "102", tmp_path, monkeypatch)
     assert prepared.brief.evidence_catalog["source"]["status"] == "missing"

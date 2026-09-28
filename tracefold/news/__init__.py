@@ -11,8 +11,6 @@ from .card_format import clock as card_clock
 from .delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
 from .market_contracts import MARKET_PAGE_MAX, MARKET_WINDOW_DEFAULT_MS, MARKET_WINDOW_MAX_MS
 from .models import (
-    FACT_KINDS,
-    FactKind,
     MarketType,
     ReaderDeliveryPresentation,
     ReaderMarketMovement,
@@ -30,7 +28,6 @@ __all__ = [
     "COMMIT_PHASE_NOT_SENT",
     "COMMIT_PHASE_UNKNOWN",
     "EVENT_KINDS",
-    "FACT_KINDS",
     "IPTC_SUBJECT_CODES",
     "LINKABLE_TICKER_RE",
     "MARKET_KINDS",
@@ -41,7 +38,6 @@ __all__ = [
     "SOURCE_AUTHORITIES",
     "UNTRADEABLE_NOTICE_ZH",
     "EventKind",
-    "FactKind",
     "MarketType",
     "NetBuySnapshot",
     "OpenNewsExpectedError",

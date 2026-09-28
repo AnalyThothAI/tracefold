@@ -9,16 +9,57 @@ documents and digests are the ones the retired Program wrote: a `news_judgment_v
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.models import TriageVerdict
+from tracefold.news.models import MarketType, market_type_of
 from tracefold.news.taxonomy import IPTC_CODEBOOK_SHA256, IPTC_SUBJECT_CODES
 
 LEGACY_TRIAGE_POLICY_VERSION = "news_triage_policy_v17"
 LEGACY_PROGRAM_VERSION = "news_semantic_program_v13"
 LEGACY_JUDGMENT_CONTRACT_VERSION = "news_judgment_v3"
 LEGACY_EDITORIAL_CONTRACT_VERSION = "news_editorial_v4"
+
+
+class _StoredAsset(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1, max_length=16)
+    market_type: MarketType
+    role: Literal["primary", "mentioned"]
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_market(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {**value, "market_type": market_type_of(value.get("market_type"))}
+        return value
+
+
+class TriageVerdict(BaseModel):
+    """Test-only value for seeding a pre-cut judgment during migration checks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    novelty: Literal["new_fact", "progression", "restatement"]
+    restates: int = Field(default=-1, ge=-1)
+    assets: list[_StoredAsset] = Field(default_factory=list, max_length=8)
+    direction: Literal["bullish", "bearish", "neutral", "unclear"]
+    scope: Literal["macro", "sector", "single_name"]
+    fact_kind: str | None = None
+    evidence_ref: str = ""
+    confidence: float = Field(ge=0.0, le=1.0)
+    headline_zh: str
+    why_zh: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_pre_v3_fields(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: item for key, item in value.items() if key not in {"magnitude", "audience"}}
+        return value
 
 
 def legacy_taxonomy(**overrides: Any) -> dict[str, Any]:

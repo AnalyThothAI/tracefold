@@ -7,12 +7,9 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
-from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.artifact_identity import canonical_json, canonical_sha
+from tracefold.news.artifact_identity import canonical_json
 from tracefold.news.liquidations import parse_liquidation
-from tracefold.news.models import TriageVerdict
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.news.oi_signals import OiSignal, measurement_definition, oi_source_contract
 from tracefold.news.source_contracts import (
@@ -102,70 +99,6 @@ def _event(news: Any, event_id: str, item_id: str, event_kind: EventKind) -> Non
     news.append_evidence_snapshot(event_id=event_id, now_ms=NOW)
 
 
-def _verdict(news: Any, event_id: str, *, error_code: str | None = None) -> None:
-    """One model verdict for one editorial Event.
-
-    The market branches this helper used to carry left with the judges they built (#553): a market
-    observation is a stored fact, so there is no verdict for it to write.
-    """
-
-    evidence = news.latest_evidence_snapshot(event_id)
-    judgment = legacy_judgment(
-        TriageVerdict(
-            novelty="new_fact",
-            assets=[],
-            direction="neutral",
-            scope="single_name",
-            fact_kind="state_change",
-            evidence_ref="c1",
-            confidence=1.0,
-            headline_zh="测试新闻判断",
-        )
-    )
-    runtime_manifest_sha = "b" * 64
-    program_sha256 = "c" * 64
-    trace: dict[str, Any] = {
-        "editorial_sha256": judgment.editorial.editorial_sha256,
-        "judgment_contract_version": judgment.judgment_contract_version,
-        "judgment_origin": "model",
-        "judgment_sha256": judgment.scored_judgment_sha256,
-        "verdict_sha256": canonical_sha(judgment.verdict.model_dump(mode="json")),
-        "runtime_manifest_sha": runtime_manifest_sha,
-        "program_version": LEGACY_PROGRAM_VERSION,
-        "program_sha256": program_sha256,
-        "evidence_version": int(evidence["evidence_version"]),
-        "evidence_sha256": str(evidence["evidence_sha256"]),
-        "focus_fact_id": str(evidence["focus_fact_id"]),
-        "told": [],
-        "told_count": 0,
-    }
-    legacy_news(news).insert_verdict(
-        event_id=event_id,
-        stage="triage",
-        policy_version=LEGACY_TRIAGE_POLICY_VERSION,
-        judgment_contract_version=judgment.judgment_contract_version,
-        judgment_origin="model",
-        rule_baseline_decision="drop",
-        final_decision="drop",
-        override_rule=None,
-        throttled_by=None,
-        verdict=judgment.verdict.model_dump(mode="json"),
-        model_editorial=judgment.editorial.document,
-        judgment_sha256=judgment.scored_judgment_sha256,
-        runtime_manifest_sha=runtime_manifest_sha,
-        model="test",
-        program_version=LEGACY_PROGRAM_VERSION,
-        program_sha256=program_sha256,
-        degraded=False,
-        error_code=error_code,
-        trace=trace,
-        evidence_version=int(evidence["evidence_version"]),
-        evidence_sha256=str(evidence["evidence_sha256"]),
-        focus_fact_id=str(evidence["focus_fact_id"]),
-        now_ms=NOW,
-    )
-
-
 def _insert_oi(news: Any, *, event_id: str, item_id: str, signal: OiSignal, **over: Any) -> None:
     source = oi_source_contract({"strategies": [{"id": "1019"}]})
     assert source is not None
@@ -219,8 +152,7 @@ def test_oi_fact_enqueues_a_trade_event_without_editorial_verdict(conn) -> None:
     with repos.transaction():
         _item(news, "projection-oi-item")
         _insert_oi(news, event_id="projection-oi-event", item_id="projection-oi-item", signal=signal)
-    assert conn.execute("SELECT count(*) AS n FROM news_verdicts").fetchone()["n"] == 0
-    [event] = news.unacknowledged_trade_events(limit=10)
+        [event] = news.unacknowledged_trade_events(limit=10)
     assert event["kind"] == "oi" and event["source_fact_key"] == "projection-oi-event"
     assert event["payload"]["assets"] == [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}]
 
@@ -342,14 +274,14 @@ def test_item_redelivery_unions_full_strategy_tuples_and_preserves_first_metadat
     assert row["provenance"] == ["1019", "2083"]
 
 
-def test_exact_artifact_and_band_dedupe_never_cross_event_kind(conn) -> None:
+def test_exact_artifact_and_band_dedupe_stay_within_current_event_kind(conn) -> None:
     repos = repositories_for_connection(conn)
     news = repos.news
     with repos.transaction():
         _item(news, "news-item")
-        _item(news, "oi-item")
+        _item(news, "listing-item")
         _event(news, "news-event", "news-item", "news")
-        _event(news, "oi-event", "oi-item", "oi")
+        _event(news, "listing-event", "listing-item", "listing")
 
     assert (
         news.find_exact_event(dedupe_family="general", event_kind="news", fingerprint="same-fingerprint", now_ms=NOW)[
@@ -358,10 +290,10 @@ def test_exact_artifact_and_band_dedupe_never_cross_event_kind(conn) -> None:
         == "news-event"
     )
     assert (
-        news.find_exact_event(dedupe_family="general", event_kind="oi", fingerprint="same-fingerprint", now_ms=NOW)[
-            "event_id"
-        ]
-        == "oi-event"
+        news.find_exact_event(
+            dedupe_family="general", event_kind="listing", fingerprint="same-fingerprint", now_ms=NOW
+        )["event_id"]
+        == "listing-event"
     )
     assert (
         news.find_artifact_event(
@@ -378,12 +310,12 @@ def test_exact_artifact_and_band_dedupe_never_cross_event_kind(conn) -> None:
         news.find_artifact_event(
             source_artifact_id="artifact:shared",
             dedupe_family="general",
-            event_kind="oi",
+            event_kind="listing",
             fingerprint="same-fingerprint",
             item_id="new-item",
             opened_after_ms=NOW - 1,
         )["event_id"]
-        == "oi-event"
+        == "listing-event"
     )
     assert [
         row["event_id"]
@@ -394,14 +326,14 @@ def test_exact_artifact_and_band_dedupe_never_cross_event_kind(conn) -> None:
     assert [
         row["event_id"]
         for row in news.find_band_candidates(
-            dedupe_family="general", event_kind="oi", band_keys=("same-band",), now_ms=NOW
+            dedupe_family="general", event_kind="listing", band_keys=("same-band",), now_ms=NOW
         )
-    ] == ["oi-event"]
-    assert news.event_card("oi-event")["event_kind"] == "oi"
-    assert news.event_admission("oi-event") == {
+    ] == ["listing-event"]
+    assert news.event_card("listing-event")["event_kind"] == "listing"
+    assert news.event_admission("listing-event") == {
         "admission": "candidate",
-        "event_kind": "oi",
-        "storyline_key": "story:oi-event",
+        "event_kind": "listing",
+        "storyline_key": "story:listing-event",
     }
 
 
@@ -442,7 +374,6 @@ def test_feed_detail_filters_counts_and_status_project_the_closed_event_kinds(co
                 trace_id="trace",
                 now_ms=NOW,
             )
-        _verdict(news, "news-event-a")
 
     def page(
         *channels: EventKind,
@@ -491,40 +422,6 @@ def test_feed_detail_filters_counts_and_status_project_the_closed_event_kinds(co
         "listing_v1": {"received": 2, "parsed": 2, "adopted": 0},
     }
     assert {"telemetry_received_24h", "telemetry_parsed_24h", "oi"}.isdisjoint(status)
-
-
-def test_terminal_delivery_without_a_verdict_is_held_in_both_row_and_tab_partition(conn) -> None:
-    repos = repositories_for_connection(conn)
-    news = repos.news
-    with repos.transaction():
-        _item(news, "terminal-item")
-        _event(news, "terminal-event", "terminal-item", "news")
-        assert legacy_news(news).begin_delivery(event_id="terminal-event", kind="first", card={}, now_ms=NOW) == "new"
-        assert legacy_news(news).settle_delivery(
-            event_id="terminal-event",
-            kind="first",
-            state="terminal",
-            receipt=None,
-            error_code="delivery_unavailable",
-            now_ms=NOW,
-        )
-
-    common = dict(
-        source_authority=None,
-        subject_code=None,
-        admission=None,
-        event_kind=None,
-        search=None,
-        limit=20,
-        cursor=None,
-        now_ms=NOW + 1,
-    )
-    all_rows = news.list_feed(**common)
-    held = news.list_feed(**common, outcome="held")
-    row = next(event for event in all_rows["events"] if event["event_id"] == "terminal-event")
-    assert row["outcome"]["kind"] == "delivery_failed"
-    assert {event["event_id"] for event in held["events"]} == {"terminal-event"}
-    assert all_rows["counts"] == {"total": 1, "pushed": 0, "held": 1, "pending": 0}
 
 
 def test_oi_frame_whose_provider_clock_ran_ahead_stores_on_the_first_attempt(conn) -> None:

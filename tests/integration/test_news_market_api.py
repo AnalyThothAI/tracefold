@@ -1,11 +1,6 @@
 """The market read surface through the real app on real PostgreSQL (#553 PR-1).
 
-Two questions the storage-level tests cannot answer. First, what the public Event API does with the
-market Events that existed before the cut: the migration keeps every one of them, the public
-`EventKind` no longer names their kinds, and a bookmarked or pushed link to one is an ordinary thing
-for a reader to still have. Second, whether the collapse, the cursor and the detail survive the
-envelope -- a group shape that validates in Python and not in Pydantic is a 500 nobody sees until a
-reader opens the page.
+The collapse, cursor and detail must survive the HTTP envelope.
 """
 
 from __future__ import annotations
@@ -90,114 +85,6 @@ def _admit(conn: Any, frame: Any, *, at_ms: int) -> str:
         )
     conn.commit()
     return result.item_id
-
-
-def _seed_legacy_market_event(conn: Any, *, event_id: str, item_id: str, event_kind: str) -> None:
-    """One Event of a kind the cut retired, exactly as the migration leaves it in place.
-
-    Nothing in the code can create one any more, which is the point: the rows are immutable history
-    and the reader's bookmark still resolves to this identity.
-    """
-
-    conn.execute(
-        """
-        INSERT INTO news_items (
-          item_id, source_id, source_item_key, title, raw_first_line, description, reporting_origin,
-          published_at_ms, observed_at_ms, provider_metadata, provenance, first_ingest_mode, trace_id,
-          created_at_ms, updated_at_ms
-        ) VALUES (
-          %(item)s, 'opennews', %(item)s, 'TRUMP OI Rise 4.55%%', '', '', 'opennews', %(at)s, %(at)s,
-          '{"strategies": [{"id": "1019", "name": "OI Event Monitor"}]}'::jsonb, '[]'::jsonb,
-          'live', 'trace', %(at)s, %(at)s
-        )
-        """,
-        {"item": item_id, "at": NOW},
-    )
-    conn.execute(
-        """
-        INSERT INTO news_events (
-          event_id, leader_item_id, dedupe_family, comparison_fingerprint, comparison_title,
-          leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, admission, ingest_mode,
-          trace_id, created_at_ms, updated_at_ms, focus_fact_id, focus_fact_text, focus_fact_context,
-          focus_fact_method, focus_span_start, focus_span_end, event_kind, source_contract_reason
-        ) VALUES (
-          %(event)s, %(item)s, 'market_telemetry', %(event)s, 'legacy market card', 'legacy market card',
-          %(at)s, %(at)s, %(at)s, 'telemetry_deterministic', 'live', 'trace', %(at)s, %(at)s,
-          %(fact)s, 'legacy market card', '', 'whole_item', 0, 18, %(kind)s, %(reason)s
-        )
-        """,
-        {
-            "event": event_id,
-            "item": item_id,
-            "at": NOW,
-            "fact": f"fact-{event_id}",
-            "kind": event_kind,
-            # The retired consistency CHECK still holds these rows: an `unsupported_market` Event
-            # always carried a reason and the other two never did.
-            "reason": "unsupported_market_contract" if event_kind == "unsupported_market" else None,
-        },
-    )
-    conn.execute(
-        """
-        INSERT INTO news_event_members (event_id, item_id, joined_at_ms, match_kind, fact_id, fact_text)
-        VALUES (%s, %s, %s, 'leader', %s, 'legacy market card')
-        """,
-        (event_id, item_id, NOW, f"fact-{event_id}"),
-    )
-    conn.commit()
-
-
-@pytest.mark.parametrize("event_kind", ["oi", "liquidation", "unsupported_market"])
-def test_a_retired_market_event_is_missing_from_the_event_api_rather_than_a_server_error(
-    app, conn, event_kind: str
-) -> None:
-    """#553. The public `EventKind` no longer names these, so serving one cannot validate.
-
-    A reader who kept a link to a pre-cut OI card must get "this is not an Event" -- the observation
-    it was built from is readable at `/api/news/market`. Returning the row would fail the response
-    envelope inside `_etagged` and surface as a 500, which reads as an outage rather than a move.
-    """
-
-    event_id = f"legacy-{event_kind}-event"
-    _seed_legacy_market_event(conn, event_id=event_id, item_id=f"legacy-{event_kind}-item", event_kind=event_kind)
-
-    with TestClient(app) as client:
-        detail = client.get(f"/api/news/events/{event_id}", headers=AUTH)
-        feed = client.get("/api/news/feed?limit=100", headers=AUTH)
-
-    assert detail.status_code == 404
-    assert detail.json() == {"ok": False, "error": "news_event_not_found"}
-    assert feed.status_code == 200
-    assert event_id not in {row["event_id"] for row in feed.json()["data"]["events"]}
-
-
-def test_the_ordinary_news_feed_and_its_counts_never_see_a_retired_market_event(app, conn) -> None:
-    """The `/news` denominator is editorial Events, and a retired market Event is not one."""
-
-    _seed_legacy_market_event(conn, event_id="legacy-count-event", item_id="legacy-count-item", event_kind="oi")
-    _admit(
-        conn,
-        _frame(
-            record_id=7_710_001,
-            text="A regulator approves a spot ETF for the second time this year",
-            strategy_id=1018,
-            strategy_name="News Score > 70",
-            source_type="news",
-            source="wire",
-            extra={"score": 92},
-        ),
-        at_ms=NOW,
-    )
-
-    with TestClient(app) as client:
-        feed = client.get("/api/news/feed?limit=100", headers=AUTH)
-
-    body = feed.json()["data"]
-    counts = body["counts"]
-    assert feed.status_code == 200
-    assert "legacy-count-event" not in {row["event_id"] for row in body["events"]}
-    assert counts["total"] == len(body["events"]) == 1
-    assert counts["total"] == counts["pushed"] + counts["held"] + counts["pending"]
 
 
 def test_the_market_list_collapses_orders_and_pages_through_the_real_envelope(app, conn) -> None:

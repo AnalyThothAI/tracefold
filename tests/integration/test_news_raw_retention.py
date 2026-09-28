@@ -1,13 +1,11 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
-from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.models import TriageVerdict
 
 pytestmark = pytest.mark.integration
 
@@ -70,60 +68,33 @@ def _seed_current_event(repos, *, event_id: str, at_ms: int, judged: bool) -> st
     )
     evidence = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=at_ms)
     if judged:
-        verdict = TriageVerdict(
-            novelty="new_fact",
-            assets=[],
-            direction="neutral",
-            scope="macro",
-            fact_kind="state_change",
-            evidence_ref="c1",
-            confidence=0.7,
-            headline_zh="保留证据",
-            why_zh="",
-        )
-        judgment = legacy_judgment(verdict)
-        runtime_manifest_sha = "b" * 64
-        program_sha = "a" * 64
-        verdict_payload = verdict.model_dump(mode="json")
-        trace = {
-            "judgment_contract_version": judgment.judgment_contract_version,
-            "judgment_origin": "model",
-            "judgment_sha256": judgment.scored_judgment_sha256,
-            "verdict_sha256": canonical_sha(verdict_payload),
-            "editorial_sha256": judgment.editorial.editorial_sha256,
-            "runtime_manifest_sha": runtime_manifest_sha,
-            "program_version": LEGACY_PROGRAM_VERSION,
-            "program_sha256": program_sha,
-            "evidence_version": int(evidence["evidence_version"]),
-            "evidence_sha256": str(evidence["evidence_sha256"]),
-            "focus_fact_id": str(evidence["focus_fact_id"]),
-            "told": [],
-            "told_count": 0,
+        revision = "a" * 64
+        result_id = f"result:{event_id}"
+        document = {
+            "schema_version": "news_event_update_v2",
+            "event_id": event_id,
+            "content_revision": revision,
+            "input_revision": 1,
+            "previous_content_revision": None,
+            "claims": [],
         }
-        legacy_news(repos.news).insert_verdict(
-            event_id=event_id,
-            stage="triage",
-            policy_version=LEGACY_TRIAGE_POLICY_VERSION,
-            judgment_contract_version=judgment.judgment_contract_version,
-            judgment_origin="model",
-            rule_baseline_decision="drop",
-            final_decision="drop",
-            override_rule=None,
-            throttled_by=None,
-            verdict=verdict_payload,
-            model_editorial=judgment.editorial.document,
-            judgment_sha256=judgment.scored_judgment_sha256,
-            runtime_manifest_sha=runtime_manifest_sha,
-            model="retention-fixture",
-            program_version=LEGACY_PROGRAM_VERSION,
-            program_sha256=program_sha,
-            degraded=False,
-            error_code=None,
-            trace=trace,
-            evidence_version=int(evidence["evidence_version"]),
-            evidence_sha256=str(evidence["evidence_sha256"]),
-            focus_fact_id=str(evidence["focus_fact_id"]),
-            now_ms=at_ms,
+        repos.conn.execute(
+            """INSERT INTO news_semantic_observations
+                 (result_id,work_id,event_id,input_revision,input_sha256,program_identity,completed_at_ms,understanding)
+               VALUES (%s,%s,%s,1,%s,'retention-fixture',%s,'{}'::jsonb)""",
+            (result_id, result_id, event_id, revision, at_ms),
+        )
+        repos.conn.execute(
+            """INSERT INTO news_event_updates
+                 (event_id,content_revision,input_revision,adopted_at_ms,observation_result_id,document)
+               VALUES (%s,%s,1,%s,%s,%s::jsonb)""",
+            (event_id, revision, at_ms, result_id, json.dumps(document)),
+        )
+        repos.conn.execute(
+            """INSERT INTO news_event_update_heads
+                 (event_id,content_revision,input_revision,update_ref,adopted_at_ms)
+               VALUES (%s,%s,1,news_identity('update',jsonb_build_array(%s::text,%s::text)),%s)""",
+            (event_id, revision, event_id, revision, at_ms),
         )
     return str(evidence["evidence_sha256"])
 
@@ -232,9 +203,9 @@ def test_raw_retention_keeps_30_day_judged_corpus_and_expires_it_after_365_days(
             "SELECT evidence_sha256 FROM news_event_evidence_snapshots WHERE event_id = 'judged-31d'"
         ).fetchone()
         assert retained == {"evidence_sha256": retained_sha}
-        assert conn.execute("SELECT count(*) AS n FROM news_verdicts WHERE event_id = 'judged-31d'").fetchone() == {
-            "n": 1
-        }
+        assert conn.execute(
+            "SELECT count(*) AS n FROM news_event_updates WHERE event_id = 'judged-31d'"
+        ).fetchone() == {"n": 1}
         assert conn.execute(
             "SELECT count(*) AS n FROM news_events WHERE event_id IN ('raw-31d', 'judged-366d')"
         ).fetchone() == {"n": 0}

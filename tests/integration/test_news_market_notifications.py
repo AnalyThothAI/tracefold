@@ -14,7 +14,6 @@ loop durably does with each answer.
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import threading
 import time
@@ -28,11 +27,9 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.market_oi import _oi_item, _write_oi
-from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
-from tests.support.news_legacy_storage import legacy_news
+from tests.support.news_current_delivery import seed_delivery
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news import card_format as fmt
-from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.liquidations import parse_liquidation
 from tracefold.news.market_contracts import (
     REASON_ROUND_CLOSED,
@@ -49,7 +46,6 @@ from tracefold.news.market_notifications import (
 )
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import QUOTE_FRESH_MAX_AGE_MS, QUOTE_READ_TIMEOUT_SECONDS, Quote
-from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
 from tracefold.news.pipeline.delivery import read_display_quotes, read_pushed_news
@@ -1453,9 +1449,7 @@ def _observation_of(detail: dict[str, Any]) -> Any:
 
 # --- the OI card's News line, on the delivered-card ledger it reads (#582 §3.3) --------------------
 #
-# The rows here are written by the production writers -- admission, the verdict insert, the delivery
-# ledger -- because the statement under test joins all four of them. A hand-built row would prove the
-# join it was built to satisfy and nothing about the one production produces.
+# The rows include admitted editorial Events and current frozen notification receipts.
 
 
 def _news_event(
@@ -1465,8 +1459,7 @@ def _news_event(
     symbol: str,
     text: str,
     opened_at_ms: int,
-    # The verdict's own headline, which is what the card's COALESCE falls back to when the frozen
-    # snapshot carries no title. Distinct from every `delivered_title` below on purpose.
+    # The frozen notification headline, distinct from explicit delivered titles below.
     headline_zh: str = "判定给出的标题",
     settled_at_ms: int | None = None,
     delivered_title: str | None = None,
@@ -1508,84 +1501,16 @@ def _news_event(
         event_id = batch.results[0].event_id
         if settled_at_ms is None:
             return event_id
-        _persist_verdict(repos, event_id=event_id, symbol=symbol, headline_zh=headline_zh, at_ms=settled_at_ms - 1)
-        card = {"header": {"title": {"content": delivered_title}}} if delivered_title is not None else {}
-        assert (
-            legacy_news(repos.news).begin_delivery(
-                event_id=event_id,
-                kind="first",
-                card=card,
-                now_ms=settled_at_ms - 1,
-                history_context_json=json.dumps({"headline_zh": headline_zh}),
-            )
-            == "new"
-        )
-        assert legacy_news(repos.news).settle_delivery(
+        title = headline_zh if delivered_title is None else delivered_title
+        seed_delivery(
+            conn,
             event_id=event_id,
-            kind="first",
+            at_ms=settled_at_ms,
+            history_context={"headline_zh": title},
+            card={"header": {"title": {"content": title}}},
             state=state,
-            receipt={"ok": True} if state == "sent" else None,
-            error_code=None if state == "sent" else "gave_up",
-            now_ms=settled_at_ms,
         )
     return event_id
-
-
-def _persist_verdict(repos: Any, *, event_id: str, symbol: str, headline_zh: str, at_ms: int) -> None:
-    evidence = repos.news.latest_evidence_snapshot(event_id)
-    assert evidence is not None
-    verdict = TriageVerdict(
-        novelty="new_fact",
-        assets=[{"symbol": symbol, "role": "primary"}],
-        direction="bearish",
-        scope="single_name",
-        fact_kind="state_change",
-        evidence_ref="c1",
-        confidence=0.9,
-        headline_zh=headline_zh,
-        why_zh="",
-    )
-    judgment = legacy_judgment(verdict)
-    manifest_sha = "b" * 64
-    assert legacy_news(repos.news).insert_verdict(
-        event_id=event_id,
-        stage="triage",
-        policy_version=LEGACY_TRIAGE_POLICY_VERSION,
-        judgment_contract_version=judgment.judgment_contract_version,
-        judgment_origin="model",
-        rule_baseline_decision="push",
-        final_decision="push",
-        override_rule="fact_kind_state_change",
-        throttled_by=None,
-        verdict=verdict.model_dump(mode="json"),
-        model_editorial=judgment.editorial.document,
-        judgment_sha256=judgment.scored_judgment_sha256,
-        runtime_manifest_sha=manifest_sha,
-        model="test",
-        program_version=LEGACY_PROGRAM_VERSION,
-        program_sha256="a" * 64,
-        degraded=False,
-        error_code=None,
-        trace={
-            "judgment_contract_version": judgment.judgment_contract_version,
-            "judgment_origin": "model",
-            "judgment_sha256": judgment.scored_judgment_sha256,
-            "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
-            "editorial_sha256": judgment.editorial.editorial_sha256,
-            "runtime_manifest_sha": manifest_sha,
-            "program_version": LEGACY_PROGRAM_VERSION,
-            "program_sha256": "a" * 64,
-            "evidence_version": int(evidence["evidence_version"]),
-            "evidence_sha256": str(evidence["evidence_sha256"]),
-            "focus_fact_id": str(evidence["focus_fact_id"]),
-            "told": [],
-            "told_count": 0,
-        },
-        evidence_version=int(evidence["evidence_version"]),
-        evidence_sha256=str(evidence["evidence_sha256"]),
-        focus_fact_id=str(evidence["focus_fact_id"]),
-        now_ms=at_ms,
-    )
 
 
 def test_an_oi_card_carries_the_news_its_own_instrument_already_has(conn: Any) -> None:
@@ -1830,7 +1755,7 @@ def test_the_news_read_changes_no_notification_decision(conn: Any) -> None:
         connection = connect_postgres_test(read_only=False)
         try:
             connection.execute("TRUNCATE news_items, news_market_tracks, news_market_deliveries CASCADE")
-            connection.execute("TRUNCATE news_events, news_deliveries, news_verdicts CASCADE")
+            connection.execute("TRUNCATE news_events, news_deliveries CASCADE")
             _news_event(
                 connection,
                 hit_id=582_060,
@@ -1965,8 +1890,7 @@ def test_the_pushed_news_read_counts_only_cards_a_reader_actually_received(conn:
         settled_at_ms=NOW - 3_600_000 + 30_000,
         delivered_title="WIF 国库向交易所转入大额代币",
     )
-    # A card that was never delivered, one deleted after it was, one settled before the window opened,
-    # and one whose Event is a retired market kind rather than editorial News.
+    # A card that was never delivered, one deleted after it was, and one settled before the window opened.
     _news_event(
         conn,
         hit_id=582_301,
@@ -1995,33 +1919,23 @@ def test_the_pushed_news_read_counts_only_cards_a_reader_actually_received(conn:
         settled_at_ms=NOW - 50 * 3_600_000 + 30_000,
         delivered_title="窗口之外的旧卡",
     )
-    retired = _news_event(
-        conn,
-        hit_id=582_304,
-        symbol="WIF",
-        text="Dogwifhat open interest rose sharply on a single venue overnight",
-        opened_at_ms=NOW - 3_600_000,
-        settled_at_ms=NOW - 3_600_000 + 30_000,
-        delivered_title="退役的市场 Event",
-    )
     conn.execute(
         "UPDATE news_deliveries SET delete_state = 'deleted', delete_evidence = '{}'::jsonb,"
         " delete_reason = 'test', delete_attempted_at_ms = %s, delete_settled_at_ms = %s WHERE event_id = %s",
         (NOW, NOW, deleted),
     )
-    conn.execute("UPDATE news_events SET event_kind = 'oi' WHERE event_id = %s", (retired,))
     conn.commit()
 
     answer = repositories_for_connection(conn).news.pushed_news_for_symbol("WIF", now_ms=NOW)
 
     assert [row["event_id"] for row in answer["pushed"]] == [told]
     # The three excluded-from-`pushed` Events that are still inside the Event window are still counted;
-    # the one that opened 50 h ago and the retired market kind are outside the total as well.
+    # the one that opened 50 h ago is outside the total.
     assert answer["total"] == 3
 
 
-def test_a_delivered_card_without_a_rendered_title_uses_its_bound_verdict_headline(conn: Any) -> None:
-    """The same COALESCE reader history reads, so both surfaces name a card the same way."""
+def test_a_delivered_card_uses_its_frozen_notification_headline(conn: Any) -> None:
+    """Reader history and market cards read the same frozen notification headline."""
 
     _news_event(
         conn,

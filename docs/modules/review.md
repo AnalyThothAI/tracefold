@@ -90,7 +90,7 @@ docker compose exec -T workers tracefold news review evidence TASK --version VER
 
 `--source-only` 只提供绑定的来源证据，不展示待评 Agent 答案或其他复核，避免把看过原答案后的评分误称盲评。
 
-`news review submit` 要求 `dec.` 任务、版本、判断文件和真实 reviewer；`evt.` 任务已退役，队列、证据读取与提交均具名拒绝。`external-miss` 追加系统外发现的遗漏及同样的短反馈。两者是显式数据操作，不因修改手册而运行。准确参数见[CLI 参考](../generated/cli-help.md)。
+`news review submit` 要求 `dec.` 任务、版本、判断文件和真实 reviewer；无效任务身份按当前格式校验。`external-miss` 追加系统外发现的遗漏及同样的短反馈。两者是显式数据操作，不因修改手册而运行。准确参数见[CLI 参考](../generated/cli-help.md)。
 
 <a id="section-评审器校准做什么"></a>
 ## 03 · 评审器校准做什么

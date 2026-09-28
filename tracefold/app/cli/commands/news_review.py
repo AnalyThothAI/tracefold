@@ -26,10 +26,6 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
     action = str(args.review_command)
     try:
         if action == "queue":
-            if args.view == "market":
-                raise ValueError("news_review_view_retired")
-            if str(args.task).startswith("evt."):
-                raise ValueError("news_review_legacy_task_retired")
             query = DeskQuery(
                 view=args.view,
                 cohort=args.cohort,
@@ -45,8 +41,6 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
                 data = ReviewDesk(conn).open(query, principal=principal)
             return 0, {"ok": True, "data": data}
         if action == "evidence":
-            if str(args.task).startswith("evt."):
-                raise ValueError("news_review_legacy_task_retired")
             task = TaskRef(task_id=str(args.task), task_version=str(args.version))
             with postgres_connection(settings) as conn:
                 data = ReviewDesk(conn).evidence(task, principal=principal, source_only=bool(args.source_only))
@@ -58,8 +52,6 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
             reviewer = str(args.reviewer or "").strip()
             if not reviewer:
                 raise ValueError("news_review_submit_reviewer_required")
-            if str(args.task).startswith("evt."):
-                raise ValueError("news_review_legacy_task_retired")
             principal = Principal(subject=reviewer)
         # The HTTP pool is connection-level read-only. This short-lived CLI connection uses the shared
         # login's ordinary transaction mode; since #256 it is the only ReviewDesk writer.

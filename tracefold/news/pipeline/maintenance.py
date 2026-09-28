@@ -286,26 +286,6 @@ class JanitorLoop:
             log.warning(
                 "news semantic cache retention failed code=semantic_cache_retention_failed:%s", type(exc).__name__
             )
-        try:
-            retention = await self.cold_db.tx(
-                "news_learning_retention",
-                lambda repos: dict(repos.news.purge_learning_retention(batch_size=500)),
-                timeout_seconds=10.0,
-            )
-            deleted = sum(
-                int(retention.get(field) or 0) for field in ("deleted_recordings", "deleted_cases", "deleted_artifacts")
-            )
-            if deleted:
-                log.info("news learning retention deleted=%d detail=%s", deleted, retention)
-        except Exception as exc:
-            error_code = f"learning_retention_failed:{type(exc).__name__}"
-            log.warning("news learning retention failed code=%s", error_code)
-            with contextlib.suppress(Exception):
-
-                def _retention_error(repos: Any, s: int = stamp, code: str = error_code) -> None:
-                    repos.news.record_learning_retention_error(error_code=code, now_ms=s)
-
-                await self.cold_db.tx("news_learning_retention_error", _retention_error, timeout_seconds=2.0)
         if self.bus is not None:
             snapshot: dict[str, Any] = {
                 "configured": True,

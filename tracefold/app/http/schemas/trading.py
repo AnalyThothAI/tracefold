@@ -256,23 +256,6 @@ class TradingRootChainCaseData(ExactApiSchema):
     side: str | None = None
 
 
-class TradingCaseEvaluationData(ExactApiSchema):
-    source: Literal["shadow_simulation", "paper_venue"]
-    evaluation_version: str
-    status: str
-    reason: str | None = None
-    decision_at_ms: int
-    scheduled_at_ms: int
-    due_at_ms: int
-    decision_quote_ref: str | None = None
-    planned_quote_ref: str | None = None
-    mark_path_ref: str | None = None
-    funding_ref: str | None = None
-    venue_receipt_ref: str | None = None
-    result: dict[str, Any] | None = None
-    evaluated_at_ms: int | None = None
-
-
 class TradingCaseData(ExactApiSchema):
     """One frozen Case, as the drawer behind `?case=<id>` renders it.
 
@@ -321,7 +304,6 @@ class TradingCaseData(ExactApiSchema):
     analysis_attempts: list[TradingAnalysisAttemptData] = Field(default_factory=list)
     watch_observation: TradingWatchObservationData | None = None
     root_chain: list[TradingRootChainCaseData] = Field(default_factory=list)
-    analysis_evaluations: list[TradingCaseEvaluationData] = Field(default_factory=list)
     review_mode: Literal["none", "event_wait", "research_note"] = "none"
     run_kind: str | None = None
     recheck_seq: int | None = None

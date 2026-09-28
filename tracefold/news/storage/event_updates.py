@@ -171,9 +171,7 @@ def delivered_text(row: Mapping[str, Any]) -> DeliveredText | None:
 
     body = row.get("body")
     payload_sha256 = row.get("payload_sha256")
-    # Earlier first cards retained the provider card and a summary but no exact
-    # reader-visible body/hash. Those rows remain sent in the ledger; a summary
-    # cannot be promoted into full reader coverage.
+    # Malformed or incomplete receipts cannot prove exact reader coverage.
     if not isinstance(body, str) or not body or not isinstance(payload_sha256, str):
         return None
     receipt = row.get("receipt") or {}
@@ -1336,14 +1334,14 @@ class EventUpdateStorage:
             SELECT intent_id, event_id, kind, body, payload_sha256, settled_at_ms,
                    receipt, card, history_context, claim_refs
               FROM news_deliveries
-             WHERE event_id = ANY(%s) AND kind IN ('first', 'update') AND state = 'sent'
+             WHERE event_id = ANY(%s) AND kind = 'update' AND state = 'sent'
                AND delete_state IS DISTINCT FROM 'deleted'
                AND settled_at_ms < %s
              ORDER BY settled_at_ms DESC, intent_id
             """,
             ([event_id, *band], int(now_ms)),
         ).fetchall()
-        # The legacy bands use the leader. Recall content from later members directly at receipt
+        # The bands use the leader. Recall content from later members directly at receipt
         # granularity too; rank all bands again outside this read before the final model budget.
         relevant = (
             self.conn.execute(
@@ -1358,7 +1356,7 @@ class EventUpdateStorage:
                     similarity(COALESCE(d.body, d.history_context ->> 'why_zh', ''), q)
                 )) AS score FROM unnest(%s::text[]) AS q
               ) relevance
-             WHERE d.kind IN ('first', 'update') AND d.state = 'sent'
+             WHERE d.kind = 'update' AND d.state = 'sent'
                AND d.delete_state IS DISTINCT FROM 'deleted'
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
                AND relevance.score > 0

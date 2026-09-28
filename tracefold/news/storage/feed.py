@@ -41,10 +41,8 @@ from .feed_sql import (
     STATUS_FUNNEL_DECISIONS_SQL,
     STATUS_FUNNEL_REVIEW_RATIOS_SQL,
     STATUS_FUNNEL_REVIEWS_SQL,
-    STATUS_FUNNEL_SUPPRESSED_SQL,
     STATUS_FUNNEL_TOTALS_SQL,
     STATUS_INGEST_SQL,
-    STATUS_LEARNING_RETENTION_SQL,
     STATUS_PIPELINE_SQL,
     STATUS_SOURCE_CONTRACTS_SQL,
     SUBJECT_CODE_PREDICATE,
@@ -197,9 +195,6 @@ class FeedStorage:
         }
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
-        # A retired market Event is immutable history, not a 404 waiting to be a 500: the public
-        # `EventKind` cannot spell its kind, so the read refuses it here rather than handing the row to
-        # a response envelope that will reject it (#553). Its observation is at `/api/news/market`.
         card = self._editorial_event_card(event_id)  # type: ignore[attr-defined]
         if card is None:
             return None
@@ -362,7 +357,6 @@ class FeedStorage:
             (day_ago, hour_ago, day_ago, day_ago, day_ago),
         ).fetchone()
         funnel = self._funnel_24h(day_ago=day_ago)
-        retention = self.conn.execute(STATUS_LEARNING_RETENTION_SQL).fetchone()
         return {
             "ingest": {
                 "connected": bool(ingest["connected"]) if ingest else False,
@@ -401,20 +395,6 @@ class FeedStorage:
                 "e2e_p95_ms": float(delivery["e2e_p95_ms"])
                 if delivery and delivery["e2e_p95_ms"] is not None
                 else None,
-            },
-            "learning_retention": {
-                "last_run_at_ms": retention["last_run_at_ms"] if retention else None,
-                "eligible_recordings": int(retention["eligible_recordings"] or 0) if retention else 0,
-                "eligible_cases": int(retention["eligible_cases"] or 0) if retention else 0,
-                "eligible_artifacts": int(retention["eligible_artifacts"] or 0) if retention else 0,
-                "deleted_recordings": int(retention["deleted_recordings"] or 0) if retention else 0,
-                "deleted_cases": int(retention["deleted_cases"] or 0) if retention else 0,
-                "deleted_artifacts": int(retention["deleted_artifacts"] or 0) if retention else 0,
-                "oldest_recording_age_ms": retention["oldest_recording_age_ms"] if retention else None,
-                "oldest_case_age_ms": retention["oldest_case_age_ms"] if retention else None,
-                "oldest_artifact_age_ms": retention["oldest_artifact_age_ms"] if retention else None,
-                "last_error_code": retention["last_error_code"] if retention else None,
-                "updated_at_ms": int(retention["updated_at_ms"]) if retention else None,
             },
         }
 
@@ -463,7 +443,6 @@ class FeedStorage:
 
     def _funnel_24h(self, *, day_ago: int) -> dict[str, Any]:
         """One Event cohort and current notification decisions with distinct reviewer facts."""
-        suppressed = self.conn.execute(STATUS_FUNNEL_SUPPRESSED_SQL, (day_ago,)).fetchall()
         decisions = self.conn.execute(STATUS_FUNNEL_DECISIONS_SQL, (day_ago,)).fetchall()
         reviewed = self.conn.execute(STATUS_FUNNEL_REVIEWS_SQL, (day_ago, day_ago)).fetchone()
         ratios = self.conn.execute(STATUS_FUNNEL_REVIEW_RATIOS_SQL, (day_ago,)).fetchone()
@@ -475,7 +454,6 @@ class FeedStorage:
         events = int(totals["events"] or 0) if totals else 0
         admitted = int(totals["admitted"] or 0) if totals else 0
         return {
-            "suppressed_by_reason": {str(row["admission"]): int(row["n"]) for row in suppressed},
             "decision_actions_24h": {str(row["action"]): int(row["n"]) for row in decisions},
             "reviewed_decision_should_push_24h": int(reviewed["decision"] or 0) if reviewed else 0,
             "reviewed_external_miss_24h": int(reviewed["external"] or 0) if reviewed else 0,
@@ -624,7 +602,7 @@ def _owed_intent(queue: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str,
     """The Event's latest reader intent still owed with no ledger row -- `q` in the feed statement."""
 
     settled = {str(row["intent_id"]) for row in rows}
-    owed = [row for row in queue if row.get("kind") in {"first", "update"} and str(row["intent_id"]) not in settled]
+    owed = [row for row in queue if str(row["intent_id"]) not in settled]
     if not owed:
         return None
     return max(owed, key=lambda row: (int(row.get("enqueued_at_ms") or 0), str(row["intent_id"])))

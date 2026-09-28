@@ -9,111 +9,26 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from psycopg.errors import CheckViolation, RaiseException
+from psycopg.errors import RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_current_delivery import seed_delivery
 from tests.support.news_event_updates import first_update, persist_update
-from tests.support.news_legacy import (
-    LEGACY_PROGRAM_VERSION,
-    LEGACY_TRIAGE_POLICY_VERSION,
-    legacy_degraded_judgment,
-    legacy_judgment,
-)
-from tests.support.news_legacy_storage import legacy_news
 from tests.support.news_update_pg import Clock, StubAnalyzer, ThreadedDb, run_agent
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.market_review.instruments import Instrument
-from tracefold.news.market_review.pricing import QuoteRequest
-from tracefold.news.models import MarketAsset, TriageVerdict
 from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.search import compile_news_search
-from tracefold.news.storage.decisions import legacy_intent_id
 from tracefold.news.storage.event_update_store import PgNewsStore
 from tracefold.news.storage.operations import RECOVERY_BACKLOG_LIMIT
 from tracefold.news.updates.contracts import Extraction
 from tracefold.news.updates.judgment import ProviderUnavailable
 from tracefold.news.updates.service import NewsAgent
+from tracefold.platform.postgres.audit import NEWS_TABLES
 
 pytestmark = pytest.mark.integration
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
-NEWS_TABLES = {
-    "news_ingest_state",
-    "news_opennews_incidents",
-    "news_items",
-    "news_evidence_documents",
-    "news_events",
-    "news_event_members",
-    "news_event_bands",
-    "news_event_assets",
-    "news_verdicts",
-    "news_deliveries",
-    # #598 D2: the push Verdict's handoff to Delivery, written in the verdict's own
-    # transaction and claimed with `FOR UPDATE SKIP LOCKED`. Work still owed, never a ledger.
-    "news_delivery_queue",
-    # #706: EventUpdate adoption, semantic work, notification intents and the item-revision archive.
-    "news_item_revisions",
-    "news_semantic_work",
-    "news_semantic_checkpoints",
-    "news_semantic_observations",
-    "news_event_updates",
-    "news_head_scope_repairs",
-    "news_event_update_heads",
-    "news_judgment_cache",
-    "news_notification_work",
-    "news_notification_decisions",
-    "news_notification_feedback",
-    "news_notification_external_feedback",
-    "news_notification_review_tasks_v1",
-    "news_reviews",
-    "news_external_miss_snapshots",
-    "news_learning_artifacts",
-    "news_learning_epochs",
-    "news_learning_cases",
-    "news_model_recordings",
-    "news_canary_activations",
-    "news_agent_assignments",
-    "news_agent_runtime_manifests",
-    "news_learning_retention_state",
-    "news_review_task_source_v1",
-    # #112 security-barrier views expose only the rows each runtime role is
-    # allowed to read; information_schema reports views in this relation too.
-    "news_review_records_v1",
-    "news_review_external_source_v1",
-    "news_review_pairwise_tasks_v1",
-    "news_review_active_agent_v1",
-    # #75 instrument universe: a News-owned provider fact table plus its alias map, and the per-venue
-    # record of when a complete catalogue last answered (#570 A11).
-    "news_market_instruments",
-    "news_market_instrument_listing_events",
-    "news_market_instrument_snapshot_state",
-    "news_symbol_aliases",
-    # #88 price review plane: latest-only current quotes, versioned deterministic Event Reactions.
-    "news_quote_snapshots",
-    "news_event_reactions",
-    "news_oi_signals",
-    # #683 immutable catalyst/OI facts are handed to Trading independently of delivery.
-    "news_trade_events",
-    "news_market_liquidations",
-    "news_market_smart_money",
-    # #553 PR-2. The notification loop's two durable states: one track per group -- when is this group
-    # worth interrupting a reader again -- and one row per card, with its attempts and its receipt.
-    "news_market_tracks",
-    "news_market_deliveries",
-    # #572 PR-1. The Robinhood Chain wallet tape: the fills ledger, the versioned roster, and the one
-    # row that says how far the tape has been classified.
-    "news_market_wallet_fills",
-    "news_market_wallet_roster",
-    "news_market_wallet_tape_state",
-    # #641. Current token episodes, their price observations and immutable retired evidence.
-    "news_market_wallet_events",
-    "news_market_wallet_archive",
-    "news_market_wallet_outcomes",
-    # #112 immutable evidence actually read by the SemanticJudge.
-    "news_event_evidence_snapshots",
-}
 
 
 @pytest.fixture(scope="module")
@@ -135,10 +50,11 @@ def _events():
 
 def test_migration_creates_exact_news_tables_and_drops_legacy(conn) -> None:
     rows = conn.execute(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name LIKE 'news_%'"
+        "SELECT table_name FROM information_schema.tables WHERE table_schema='public' "
+        "AND table_type='BASE TABLE' AND table_name LIKE 'news_%'"
     ).fetchall()
     names = {r["table_name"] for r in rows}
-    assert names == NEWS_TABLES
+    assert names == set(NEWS_TABLES)
     for legacy in (
         "news_stories",
         "news_push_state",
@@ -190,467 +106,6 @@ def test_deduper_is_idempotent_and_merges_exact_and_near(conn) -> None:
     ).fetchall()
     assert {row["event_kind"] for row in cfx} == {"news", "listing"}
     assert all(row["member_count"] >= 4 for row in cfx)
-    conn.commit()
-
-
-def test_reader_ledger_and_verdict_idempotency(conn) -> None:
-    repos = repositories_for_connection(conn)
-    row = conn.execute(
-        "SELECT event_id, storyline_key, grounded_assets, admission, opened_at_ms, "
-        "comparison_title, comparison_fingerprint, dedupe_family"
-        " FROM news_events WHERE admission='candidate' AND queue_priority='normal' ORDER BY opened_at_ms LIMIT 1"
-    ).fetchone()
-    assert row is not None
-    now_ms = int(row["opened_at_ms"]) + 60_000
-    verdict = TriageVerdict(
-        novelty="new_fact",
-        assets=[],
-        direction="bullish",
-        scope="macro",
-        fact_kind="state_change",
-        evidence_ref="c1",
-        confidence=0.7,
-        headline_zh="测试",
-        why_zh="",
-    )
-    judgment = legacy_judgment(verdict)
-    evidence = repos.news.latest_evidence_snapshot(row["event_id"])
-    assert evidence is not None
-    runtime_manifest_sha = "b" * 64
-    trace = {
-        "judgment_contract_version": judgment.judgment_contract_version,
-        "judgment_origin": "model",
-        "judgment_sha256": judgment.scored_judgment_sha256,
-        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
-        "editorial_sha256": judgment.editorial.editorial_sha256,
-        "runtime_manifest_sha": runtime_manifest_sha,
-        "program_version": LEGACY_PROGRAM_VERSION,
-        "program_sha256": "a" * 64,
-        "evidence_version": int(evidence["evidence_version"]),
-        "evidence_sha256": str(evidence["evidence_sha256"]),
-        "focus_fact_id": str(evidence["focus_fact_id"]),
-        "told": [],
-        "told_count": 0,
-    }
-    with repos.transaction():
-        inserted = legacy_news(repos.news).insert_verdict(
-            event_id=row["event_id"],
-            stage="triage",
-            policy_version=LEGACY_TRIAGE_POLICY_VERSION,
-            judgment_contract_version=judgment.judgment_contract_version,
-            judgment_origin="model",
-            rule_baseline_decision="push",
-            final_decision="push",
-            override_rule="fact_kind_state_change",
-            throttled_by=None,
-            verdict=verdict.model_dump(),
-            model_editorial=judgment.editorial.document,
-            judgment_sha256=judgment.scored_judgment_sha256,
-            runtime_manifest_sha=runtime_manifest_sha,
-            model="test",
-            program_version=LEGACY_PROGRAM_VERSION,
-            program_sha256="a" * 64,
-            degraded=False,
-            error_code=None,
-            trace={**trace, "latency_ms": 5},
-            evidence_version=int(evidence["evidence_version"]),
-            evidence_sha256=str(evidence["evidence_sha256"]),
-            focus_fact_id=str(evidence["focus_fact_id"]),
-            now_ms=now_ms,
-        )
-        assert inserted is True
-        again = legacy_news(repos.news).insert_verdict(
-            event_id=row["event_id"],
-            stage="triage",
-            policy_version=LEGACY_TRIAGE_POLICY_VERSION,
-            judgment_contract_version=judgment.judgment_contract_version,
-            judgment_origin="model",
-            rule_baseline_decision="push",
-            final_decision="push",
-            override_rule="fact_kind_state_change",
-            throttled_by=None,
-            verdict=verdict.model_dump(),
-            model_editorial=judgment.editorial.document,
-            judgment_sha256=judgment.scored_judgment_sha256,
-            runtime_manifest_sha=runtime_manifest_sha,
-            model="test",
-            program_version=LEGACY_PROGRAM_VERSION,
-            program_sha256="a" * 64,
-            degraded=False,
-            error_code=None,
-            trace=trace,
-            evidence_version=int(evidence["evidence_version"]),
-            evidence_sha256=str(evidence["evidence_sha256"]),
-            focus_fact_id=str(evidence["focus_fact_id"]),
-            now_ms=now_ms,
-        )
-        assert again is False
-    # A decision is only a reservation.  With no settled first delivery there
-    # is no ReaderReceipt and therefore no semantic told memory.
-    assert not repos.news.reader_history(
-        event_id="candidate-reader-history", now_ms=now_ms + 1000, include_targeted=False
-    ).recent_seen_rows
-    assert not repos.news.reader_history(
-        event_id="candidate-reader-history", now_ms=now_ms + 5 * 3600_000, include_targeted=False
-    ).recent_seen_rows
-    # A card the reader never received (first delivery terminalised) leaves the ledger; a sent one stays; and the
-    # preliminary storyline's own cards are fetched even when the global limit would not reach them.
-    later = now_ms + 1000
-    with repos.transaction():
-        assert (
-            legacy_news(repos.news).begin_delivery(
-                event_id=row["event_id"],
-                kind="first",
-                card={},
-                now_ms=now_ms + 10,
-                history_context_json=json.dumps({**dict(row), **verdict.model_dump(mode="json")}),
-            )
-            == "new"
-        )
-        assert legacy_news(repos.news).settle_delivery(
-            event_id=row["event_id"],
-            kind="first",
-            state="terminal",
-            receipt=None,
-            error_code="delivery_unavailable",
-            now_ms=now_ms + 20,
-        )
-    assert not repos.news.reader_history(
-        event_id="candidate-reader-history", now_ms=later, include_targeted=False
-    ).recent_seen_rows
-    with repos.transaction():
-        conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (row["event_id"],))
-        assert (
-            legacy_news(repos.news).begin_delivery(
-                event_id=row["event_id"],
-                kind="first",
-                card={},
-                now_ms=now_ms + 10,
-                history_context_json=json.dumps({**dict(row), **verdict.model_dump(mode="json")}),
-            )
-            == "new"
-        )
-        assert legacy_news(repos.news).settle_delivery(
-            event_id=row["event_id"],
-            kind="first",
-            state="sent",
-            receipt={"ok": True},
-            error_code=None,
-            now_ms=now_ms + 20,
-        )
-    told = repos.news.reader_history(
-        event_id="candidate-reader-history", now_ms=later, include_targeted=False
-    ).recent_seen_rows
-    assert [t.event_id for t in told] == [row["event_id"]]
-    assert told[0].headline_zh == "测试" and told[0].direction == "bullish"
-    assert told[0].storyline_key == row["storyline_key"] and told[0].at_ms == now_ms + 20
-    # The projection is the band's input contract: everything it ranks on comes from this one query.
-    assert told[0].comparison_title and told[0].dedupe_family == "general"
-    assert list(told[0].grounded_assets) == list(row["grounded_assets"])
-    with repos.transaction():
-        conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (row["event_id"],))
-    # The storyline lock is a plain transaction-scoped advisory lock.
-    held_sql = (
-        "SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND classid = %s AND pid = pg_backend_pid()"
-    )
-    with repos.transaction():
-        repos.news.lock_storyline(row["storyline_key"])
-        held = conn.execute(held_sql, (0x4E455753,)).fetchone()
-        assert held is not None and int(held["n"]) == 1
-    released = conn.execute(held_sql, (0x4E455753,)).fetchone()
-    assert released is not None and int(released["n"]) == 0
-    conn.commit()
-
-
-def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
-    repos = repositories_for_connection(conn)
-    row = conn.execute("SELECT event_id FROM news_events ORDER BY opened_at_ms DESC LIMIT 1").fetchone()
-    event_id = row["event_id"]
-    target_sha256 = "a" * 64
-    initial_receipt = {
-        "provider": "telegram",
-        "message_id": 42,
-        "pushed_at_ms": 1_500,
-        "target_sha256": target_sha256,
-    }
-    updated_receipt = {**initial_receipt, "edited_at_ms": 2_500}
-    with repos.transaction():
-        assert (
-            legacy_news(repos.news).begin_delivery(event_id=event_id, kind="first", card={"x": 1}, now_ms=1_000)
-            == "new"
-        )
-        assert (
-            legacy_news(repos.news).begin_delivery(event_id=event_id, kind="first", card={"x": 1}, now_ms=1_000)
-            == "sending"
-        )
-        assert legacy_news(repos.news).settle_delivery(
-            event_id=event_id,
-            kind="first",
-            state="sent",
-            receipt=initial_receipt,
-            error_code=None,
-            now_ms=2_000,
-        )
-        assert not repos.news.begin_delivery_edit(
-            intent_id=legacy_intent_id(event_id, "first"),
-            card={"x": 99},
-            receipt={**initial_receipt, "source_url": "https://should-not-persist.test"},
-            now_ms=2_100,
-        )
-        assert repos.news.begin_delivery_edit(
-            intent_id=legacy_intent_id(event_id, "first"),
-            card={"x": 2, "market_data_state": "ready"},
-            receipt=initial_receipt,
-            now_ms=2_200,
-        )
-        editing = legacy_news(repos.news).delivery(event_id=event_id, kind="first")
-        assert editing is not None
-        assert editing["card"] == {"x": 1}
-        assert editing["pending_card"] == {"x": 2, "market_data_state": "ready"}
-        assert editing["edit_state"] == "editing"
-        assert not repos.news.settle_delivery_edit(
-            intent_id=legacy_intent_id(event_id, "first"),
-            receipt={**updated_receipt, "pushed_at_ms": 1_501},
-            now_ms=2_400,
-        )
-        assert not repos.news.settle_delivery_edit(
-            intent_id=legacy_intent_id(event_id, "first"),
-            receipt={**updated_receipt, "provider_response": "untrusted"},
-            now_ms=2_400,
-        )
-        assert not repos.news.settle_delivery_edit(
-            intent_id=legacy_intent_id(event_id, "first"),
-            receipt={**updated_receipt, "edited_at_ms": 1_499},
-            now_ms=2_400,
-        )
-        assert repos.news.settle_delivery_edit(
-            intent_id=legacy_intent_id(event_id, "first"),
-            receipt=updated_receipt,
-            now_ms=2_500,
-        )
-        assert legacy_news(repos.news).begin_delivery(event_id=event_id, kind="first", card={}, now_ms=3_000) == "sent"
-    delivery = legacy_news(repos.news).delivery(event_id=event_id, kind="first")
-    assert delivery is not None
-    assert delivery["card"] == {"x": 2, "market_data_state": "ready"}
-    assert delivery["receipt"] == updated_receipt
-    assert delivery["pending_card"] is None
-    assert delivery["edit_state"] == "edited"
-    with repos.transaction():
-        assert repos.news.begin_delivery_edit(
-            intent_id=legacy_intent_id(event_id, "first"),
-            card={"x": 3, "market_data_state": "newer"},
-            receipt=updated_receipt,
-            now_ms=3_000,
-        )
-        # A new process owns no edit task yet, so even a just-written inherited intent is unambiguously interrupted.
-        assert repos.news.terminalize_interrupted_delivery_edits(now_ms=3_001) == 1
-    interrupted = legacy_news(repos.news).delivery(event_id=event_id, kind="first")
-    assert interrupted is not None
-    assert interrupted["card"] == {"x": 2, "market_data_state": "ready"}
-    assert interrupted["pending_card"] == {"x": 3, "market_data_state": "newer"}
-    assert interrupted["edit_state"] == "ambiguous"
-    assert interrupted["edit_error_code"] == "edit_ambiguous_after_crash"
-    with pytest.raises(CheckViolation), repos.transaction():
-        conn.execute(
-            """
-            UPDATE news_deliveries
-               SET edit_state = NULL, pending_card = '{}'::jsonb,
-                   edit_error_code = NULL, edit_attempted_at_ms = 4_000,
-                   edit_settled_at_ms = NULL
-             WHERE event_id = %s AND kind = 'first'
-            """,
-            (event_id,),
-        )
-    with repos.transaction():
-        conn.execute(
-            """
-            UPDATE news_deliveries
-               SET edit_state = 'edited', pending_card = NULL, edit_error_code = NULL,
-                   edit_attempted_at_ms = 4_000, edit_settled_at_ms = 4_001
-             WHERE event_id = %s AND kind = 'first'
-            """,
-            (event_id,),
-        )
-        assert repos.news.begin_delivery_edit(
-            intent_id=legacy_intent_id(event_id, "first"),
-            card={"x": 4, "market_data_state": "stale-settlement"},
-            receipt=updated_receipt,
-            now_ms=5_000,
-        )
-        assert repos.news.terminalize_stale_delivery_edits(now_ms=65_001) == 1
-    stale = legacy_news(repos.news).delivery(event_id=event_id, kind="first")
-    assert stale is not None
-    assert stale["edit_state"] == "ambiguous"
-    assert stale["edit_error_code"] == "edit_settlement_unavailable"
-    detail = repos.news.event_detail(event_id)
-    assert detail is not None and detail["deliveries"][0]["state"] == "sent"
-    feed = repos.news.list_feed(
-        source_authority=None,
-        subject_code=None,
-        admission=None,
-        event_kind=None,
-        search=None,
-        limit=100,
-        cursor=None,
-    )
-    assert feed["events"] and any(e["event_id"] == event_id for e in feed["events"])
-    delivered_row = next(e for e in feed["events"] if e["event_id"] == event_id)
-    assert delivered_row["outcome"]["kind"] == "delivered" and delivered_row["outcome"]["group"] == "pushed"
-    assert detail["outcome"]["kind"] == "delivered"
-    # This test writes the delivery without a verdict, so the timeline has no triage/decide steps. The
-    # evidence version is the one admission committed semantic work for (#706).
-    assert [step["stage"] for step in detail["timeline"]] == ["received", "gate", "evidence", "delivery"]
-
-    def _feed(**over):
-        base = dict(
-            source_authority=None,
-            subject_code=None,
-            admission=None,
-            event_kind=None,
-            search=None,
-            limit=10_000,
-            cursor=None,
-        )
-        base.update(over)
-        return repos.news.list_feed(**base)
-
-    pushed_ids = {e["event_id"] for e in _feed(outcome="pushed")["events"]}
-    held_ids = {e["event_id"] for e in _feed(outcome="held")["events"]}
-    pending_ids = {e["event_id"] for e in _feed(outcome="pending")["events"]}
-    everything = _feed()["events"]
-    all_ids = {e["event_id"] for e in everything}
-    assert event_id in pushed_ids and pushed_ids.isdisjoint(held_ids) and pushed_ids.isdisjoint(pending_ids)
-    assert held_ids.isdisjoint(pending_ids) and pushed_ids | held_ids | pending_ids == all_ids
-    for group, ids in (("pushed", pushed_ids), ("held", held_ids), ("pending", pending_ids)):
-        assert all(e["outcome"]["group"] == group for e in everything if e["event_id"] in ids)
-    # The tab counts describe the whole filtered set, so they must agree with the per-group listings and stay
-    # unchanged when the reader picks one tab.
-    counts = _feed()["counts"]
-    assert counts == {
-        "total": len(all_ids),
-        "pushed": len(pushed_ids),
-        "held": len(held_ids),
-        "pending": len(pending_ids),
-    }
-    assert counts["total"] == counts["pushed"] + counts["held"] + counts["pending"]
-    assert _feed(outcome="held")["counts"] == counts
-    # A window the reader narrows narrows the counts with it; a paged request reuses the first page's.
-    assert _feed(hours=1, now_ms=10_000_000_000_000)["counts"] == {
-        "total": 0,
-        "pushed": 0,
-        "held": 0,
-        "pending": 0,
-    }
-    first = _feed(limit=1)
-    assert first["counts"] == counts and first["next_cursor"]
-    assert _feed(limit=1, cursor=first["next_cursor"])["counts"] is None
-    assert _feed(hours=1, now_ms=10_000_000_000_000)["events"] == []
-    status = repos.news.status_snapshot(now_ms=10_000_000_000_000)
-    assert status["delivery"]["sent_24h"] >= 0 and "pipeline" in status
-    assert {"e2e_p50_ms", "e2e_p95_ms"} <= status["delivery"].keys()
-    assert status["learning_retention"]["eligible_recordings"] == 0
-    conn.commit()
-
-
-def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(conn) -> None:
-    repos = repositories_for_connection(conn)
-    candidates = conn.execute(
-        """
-        SELECT e.event_id FROM news_events e
-         WHERE NOT EXISTS (SELECT 1 FROM news_verdicts v WHERE v.event_id = e.event_id)
-         ORDER BY e.opened_at_ms LIMIT 2
-        """
-    ).fetchall()
-    assert len(candidates) == 2
-    sent_event, ambiguous_event = str(candidates[0]["event_id"]), str(candidates[1]["event_id"])
-    evidence = repos.news.latest_evidence_snapshot(sent_event)
-    assert evidence is not None
-    degraded_judgment = legacy_degraded_judgment(
-        title="模型占位文字",
-        error_code="news_program_route_deadline",
-        final="push",
-        override_rule="degraded_watchlist_objective",
-        watchlist_hits=("BTC",),
-    )
-    verdict = degraded_judgment.verdict
-    runtime_manifest_sha = "b" * 64
-    trace = {
-        "judgment_contract_version": degraded_judgment.judgment_contract_version,
-        "judgment_origin": "degraded",
-        "judgment_sha256": degraded_judgment.judgment_sha256,
-        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
-        "runtime_manifest_sha": runtime_manifest_sha,
-        "program_version": LEGACY_PROGRAM_VERSION,
-        "program_sha256": "a" * 64,
-        "evidence_version": int(evidence["evidence_version"]),
-        "evidence_sha256": str(evidence["evidence_sha256"]),
-        "focus_fact_id": str(evidence["focus_fact_id"]),
-        "told": [],
-        "told_count": 0,
-        "judgment": degraded_judgment.judgment_atom,
-    }
-    degraded_card = {"header": {"title": {"tag": "plain_text", "content": "实际降级卡片"}}}
-    with repos.transaction():
-        assert legacy_news(repos.news).insert_verdict(
-            event_id=sent_event,
-            stage="triage",
-            policy_version=LEGACY_TRIAGE_POLICY_VERSION,
-            judgment_contract_version=degraded_judgment.judgment_contract_version,
-            judgment_origin="degraded",
-            rule_baseline_decision=degraded_judgment.decision.rule_baseline,
-            final_decision=degraded_judgment.decision.final,
-            override_rule=degraded_judgment.decision.override_rule,
-            throttled_by=degraded_judgment.decision.throttled_by,
-            verdict=verdict.model_dump(),
-            model_editorial=None,
-            judgment_sha256=degraded_judgment.judgment_sha256,
-            runtime_manifest_sha=runtime_manifest_sha,
-            model=None,
-            program_version=LEGACY_PROGRAM_VERSION,
-            program_sha256="a" * 64,
-            degraded=True,
-            error_code="news_program_route_deadline",
-            trace=trace,
-            evidence_version=int(evidence["evidence_version"]),
-            evidence_sha256=str(evidence["evidence_sha256"]),
-            focus_fact_id=str(evidence["focus_fact_id"]),
-            now_ms=10_000,
-        )
-        assert (
-            legacy_news(repos.news).begin_delivery(event_id=sent_event, kind="first", card=degraded_card, now_ms=10_100)
-            == "new"
-        )
-    # A sending reservation is not a receipt.
-    assert sent_event not in {
-        row.event_id
-        for row in repos.news.reader_history(
-            event_id="candidate-reader-history", now_ms=10_150, include_targeted=False
-        ).recent_seen_rows
-    }
-    with repos.transaction():
-        assert legacy_news(repos.news).settle_delivery(
-            event_id=sent_event, kind="first", state="sent", receipt={"ok": True}, error_code=None, now_ms=10_200
-        )
-        assert (
-            legacy_news(repos.news).begin_delivery(event_id=ambiguous_event, kind="first", card={}, now_ms=20_000)
-            == "new"
-        )
-        assert repos.news.terminalize_interrupted_deliveries(now_ms=81_001) == 1
-
-    told = [
-        row
-        for row in repos.news.reader_history(
-            event_id="candidate-reader-history", now_ms=10_300, include_targeted=False
-        ).recent_seen_rows
-        if row.event_id in {sent_event, ambiguous_event}
-    ]
-    assert told[0].provenance_status == "legacy_receipt_only"
-    assert len(told) == 1 and told[0].event_id == sent_event and told[0].headline_zh == "实际降级卡片"
-    sent_detail = repos.news.event_detail(sent_event)
-    ambiguous_detail = repos.news.event_detail(ambiguous_event)
-    assert sent_detail is not None and sent_detail["reader_receipt"]["state"] == "received"
-    assert sent_detail["reader_receipt"]["rendered_card"] == degraded_card
-    assert ambiguous_detail is not None and ambiguous_detail["reader_receipt"]["state"] == "unknown"
     conn.commit()
 
 
@@ -844,71 +299,6 @@ def _admit_test_events(conn, *, hit_base: int, titles: tuple[str, ...], hour: in
     return event_ids
 
 
-def _insert_test_verdict(
-    repos,
-    *,
-    event_id: str,
-    direction: str,
-    now_ms: int,
-    final_decision: str = "drop",
-) -> None:
-    verdict = TriageVerdict(
-        novelty="new_fact",
-        assets=[],
-        direction=direction,
-        scope="single_name",
-        fact_kind="state_change",
-        evidence_ref="c1",
-        confidence=0.5,
-        headline_zh="筛选测试",
-        why_zh="",
-    )
-    judgment = legacy_judgment(verdict)
-    evidence = repos.news.latest_evidence_snapshot(event_id)
-    assert evidence is not None
-    runtime_manifest_sha = "c" * 64
-    trace = {
-        "judgment_contract_version": judgment.judgment_contract_version,
-        "judgment_origin": "model",
-        "judgment_sha256": judgment.scored_judgment_sha256,
-        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
-        "editorial_sha256": judgment.editorial.editorial_sha256,
-        "runtime_manifest_sha": runtime_manifest_sha,
-        "program_version": LEGACY_PROGRAM_VERSION,
-        "program_sha256": "d" * 64,
-        "evidence_version": int(evidence["evidence_version"]),
-        "evidence_sha256": str(evidence["evidence_sha256"]),
-        "focus_fact_id": str(evidence["focus_fact_id"]),
-        "told": [],
-        "told_count": 0,
-    }
-    assert legacy_news(repos.news).insert_verdict(
-        event_id=event_id,
-        stage="triage",
-        policy_version=LEGACY_TRIAGE_POLICY_VERSION,
-        judgment_contract_version=judgment.judgment_contract_version,
-        judgment_origin="model",
-        rule_baseline_decision=final_decision,
-        final_decision=final_decision,
-        override_rule="fact_kind_state_change" if final_decision == "push" else "fact_kind_statement",
-        throttled_by=None,
-        verdict=verdict.model_dump(),
-        model_editorial=judgment.editorial.document,
-        judgment_sha256=judgment.scored_judgment_sha256,
-        runtime_manifest_sha=runtime_manifest_sha,
-        model="test",
-        program_version=LEGACY_PROGRAM_VERSION,
-        program_sha256="d" * 64,
-        degraded=False,
-        error_code=None,
-        trace=trace,
-        evidence_version=int(evidence["evidence_version"]),
-        evidence_sha256=str(evidence["evidence_sha256"]),
-        focus_fact_id=str(evidence["focus_fact_id"]),
-        now_ms=now_ms,
-    )
-
-
 _VENUES = ("binance", "hyperliquid", "okx", "bybit")
 
 
@@ -922,9 +312,9 @@ def _editorial_rows(conn: Any, item_ids: tuple[str, ...]) -> dict[str, int]:
                (SELECT count(*) FROM news_event_evidence_snapshots s
                  JOIN news_events e ON e.event_id = s.event_id
                 WHERE e.leader_item_id = ANY(%(items)s)) AS snapshots,
-               (SELECT count(*) FROM news_verdicts v
-                 JOIN news_events e ON e.event_id = v.event_id
-                WHERE e.leader_item_id = ANY(%(items)s)) AS verdicts
+               (SELECT count(*) FROM news_event_updates u
+                 JOIN news_events e ON e.event_id = u.event_id
+                WHERE e.leader_item_id = ANY(%(items)s)) AS updates
         """,
         {"items": list(item_ids)},
     ).fetchone()
@@ -1015,7 +405,7 @@ def test_two_records_with_the_same_values_and_time_are_two_observations(conn) ->
         "SELECT source_item_id FROM news_oi_signals WHERE source_item_id = ANY(%s)", (list(items),)
     ).fetchall()
     assert sorted(row["source_item_id"] for row in rows) == sorted(items)
-    assert _editorial_rows(conn, items) == {"events": 0, "members": 0, "snapshots": 0, "verdicts": 0}
+    assert _editorial_rows(conn, items) == {"events": 0, "members": 0, "snapshots": 0, "updates": 0}
     conn.commit()
 
 
@@ -1303,7 +693,7 @@ def test_a_market_item_that_accumulated_a_news_strategy_keeps_its_parser_and_its
         "provider_metadata"
     ]
     assert {strategy["id"] for strategy in stored["strategies"]} == {"1018", "1019"}
-    assert _editorial_rows(conn, (result.item_id,)) == {"events": 0, "members": 0, "snapshots": 0, "verdicts": 0}
+    assert _editorial_rows(conn, (result.item_id,)) == {"events": 0, "members": 0, "snapshots": 0, "updates": 0}
     conn.commit()
 
 
@@ -1322,7 +712,7 @@ def test_a_market_frame_bypasses_the_editorial_plane_entirely(conn) -> None:
         ),
     )
 
-    assert _editorial_rows(conn, (result.item_id,)) == {"events": 0, "members": 0, "snapshots": 0, "verdicts": 0}
+    assert _editorial_rows(conn, (result.item_id,)) == {"events": 0, "members": 0, "snapshots": 0, "updates": 0}
     conn.commit()
 
 
@@ -1859,28 +1249,6 @@ def test_evidence_snapshots_are_append_only_and_outlive_event_retention(conn) ->
     conn.commit()
 
 
-def test_explain_event_prints_the_chain_with_a_one_line_outcome(conn) -> None:
-    from tracefold.news.eval.why import explain_event
-
-    repos = repositories_for_connection(conn)
-    with_verdict = conn.execute(
-        "SELECT event_id FROM news_verdicts WHERE stage = 'triage' ORDER BY created_at_ms LIMIT 1"
-    ).fetchone()
-    assert with_verdict is not None
-    explained = explain_event(repos, with_verdict["event_id"])
-    assert explained is not None
-    stages = [step["stage"] for step in explained["chain"]]
-    assert stages[:2] == ["item", "gate"]
-    assert "triage" not in stages and "decide" not in stages
-    assert explained["chain"][0]["provider_coins"] is not None
-    assert explained["outcome"]
-    assert (
-        conn.execute("SELECT count(*) AS n FROM news_events WHERE admission = 'suppressed_pr_template'").fetchone()["n"]
-        == 0
-    )
-    assert explain_event(repos, "does-not-exist") is None
-
-
 def test_feed_event_kind_filters_compose_with_text_search(conn) -> None:
     repos = repositories_for_connection(conn)
     sentinel = "event-kind-filter-sentinel"
@@ -1934,22 +1302,12 @@ def test_event_feed_funnel_tracks_one_opened_event_cohort_across_durable_stages(
         )
         for offset, event_id in enumerate((old_event, current_event)):
             persist_update(conn, first_update(event_id, adopted_at_ms=now_ms - 10 * 60_000 + offset))
-            assert (
-                legacy_news(repos.news).begin_delivery(
-                    event_id=event_id,
-                    kind="first",
-                    card={"event_id": event_id},
-                    now_ms=now_ms - 5 * 60_000 + offset,
-                )
-                == "new"
-            )
-            assert legacy_news(repos.news).settle_delivery(
+            seed_delivery(
+                conn,
                 event_id=event_id,
-                kind="first",
-                state="sent",
-                receipt={"ok": True},
-                error_code=None,
-                now_ms=now_ms - 4 * 60_000 + offset,
+                at_ms=now_ms - 4 * 60_000 + offset,
+                history_context={"headline_zh": "Current notification"},
+                card={"header": {"title": {"content": "Current notification"}}},
             )
 
     status = repos.news.status_snapshot(now_ms=now_ms)
@@ -2061,14 +1419,6 @@ def test_feed_search_hard_cuts_asset_identity_from_full_text(conn) -> None:
             " WHERE item_id = (SELECT leader_item_id FROM news_events WHERE event_id = %s)",
             (tagged_new,),
         )
-        _insert_test_verdict(
-            repos,
-            event_id=tagged_old,
-            direction="neutral",
-            final_decision="drop",
-            now_ms=1_800_000_000_000,
-        )
-        # The old Event was settled by a verdict before the #706 cutover, so it has no semantic work.
         conn.execute("DELETE FROM news_semantic_work WHERE event_id = %s", (tagged_old,))
     as_of_ms = (
         int(
@@ -2126,164 +1476,4 @@ def test_feed_search_hard_cuts_asset_identity_from_full_text(conn) -> None:
     assert {tagged_new, tagged_old} <= text_ids
     assert plain_id not in text_ids
     assert text_page["counts"] == asset_page["counts"]
-    conn.commit()
-
-
-def test_a_typed_primary_survives_the_check_the_card_and_the_typed_quote_target(conn) -> None:
-    """Item -> verdict -> card -> quote target -> detail projection, with a market the tag contradicts.
-
-    The Event is the shape #651 §6.2 is about: one provider tag (`CRCL`), a subject the tag does not
-    name (`V`), and a catalogue that lists `V` under two markets. Every step here is a real seam --
-    PostgreSQL validates the verdict, the catalogue answers the candidates, the read model projects the
-    detail -- because every one of them used to lose the distinction somewhere.
-    """
-
-    repos = repositories_for_connection(conn)
-    event_id = "ev-typed-primary"
-    opened_at_ms = 1_796_600_000_000
-    with repos.transaction():
-        repos.instruments.apply_snapshot(
-            [
-                Instrument("binance.perp", "VUSDT", "V", "crypto", "USDT"),
-                Instrument("us.listed", "V", "V", "equity", None),
-                Instrument("us.listed", "CRCL", "CRCL", "equity", None),
-            ],
-            now_ms=opened_at_ms,
-        )
-        conn.execute(
-            """
-            INSERT INTO news_items (item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms,
-                                    provider_metadata, first_ingest_mode, created_at_ms, updated_at_ms)
-            VALUES (%s, 'opennews', %s, 'headline', %s, %s, '{}'::jsonb, 'live', %s, %s)
-            """,
-            (f"i-{event_id}", f"i-{event_id}", opened_at_ms, opened_at_ms, opened_at_ms, opened_at_ms),
-        )
-        conn.execute(
-            """
-            INSERT INTO news_events (
-              event_id, leader_item_id, dedupe_family, event_kind, comparison_fingerprint, comparison_title,
-              leader_title, focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method,
-              focus_span_start, focus_span_end, opened_at_ms, last_member_at_ms, expires_at_ms, admission,
-              storyline_key, grounded_assets, ingest_mode, created_at_ms, updated_at_ms
-            ) VALUES (
-              %s, %s, 'general', 'news', %s, 'visa adds on chain credit to its stablecoin card programme',
-              'Visa adds on-chain credit to its stablecoin card programme', %s,
-              'Visa adds on-chain credit to its stablecoin card programme', '', 'whole_item', 0, 15,
-              %s, %s, %s, 'candidate', 'asset:CRCL', '["CRCL"]'::jsonb, 'live', %s, %s
-            )
-            """,
-            (
-                event_id,
-                f"i-{event_id}",
-                event_id,
-                f"fact:{event_id}",
-                opened_at_ms,
-                opened_at_ms,
-                opened_at_ms + 3_600_000,
-                opened_at_ms,
-                opened_at_ms,
-            ),
-        )
-        conn.execute(
-            "INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms) VALUES ('CRCL', %s, NULL, %s)",
-            (event_id, opened_at_ms),
-        )
-        evidence = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=opened_at_ms)
-
-    # The catalogue answers what `V` could be, uncollapsed, so the model is shown the ambiguity.
-    candidates = repos.instruments.instrument_class_candidates(["V", "CRCL"])
-    assert candidates == {"V": ("crypto", "equity"), "CRCL": ("equity",)}
-    assert repos.instruments.instrument_classes()["V"] == "crypto", "the collapsed map is why this is needed"
-
-    verdict = TriageVerdict(
-        novelty="new_fact",
-        assets=[
-            {"symbol": "V", "market_type": "equity", "role": "primary"},
-            {"symbol": "CRCL", "market_type": "equity", "role": "mentioned"},
-        ],
-        direction="neutral",
-        scope="single_name",
-        fact_kind="state_change",
-        evidence_ref="c1",
-        confidence=0.8,
-        headline_zh="Visa 在稳定币卡业务中引入链上信贷",
-        why_zh="发卡方以链上借贷提供营运资金。",
-    )
-    judgment = legacy_judgment(verdict)
-    trace = {
-        "judgment_contract_version": judgment.judgment_contract_version,
-        "judgment_origin": "model",
-        "judgment_sha256": judgment.scored_judgment_sha256,
-        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
-        "editorial_sha256": judgment.editorial.editorial_sha256,
-        "runtime_manifest_sha": "b" * 64,
-        "program_version": LEGACY_PROGRAM_VERSION,
-        "program_sha256": "a" * 64,
-        "evidence_version": int(evidence["evidence_version"]),
-        "evidence_sha256": str(evidence["evidence_sha256"]),
-        "focus_fact_id": str(evidence["focus_fact_id"]),
-        "told": [],
-        "told_count": 0,
-    }
-
-    def _insert(payload: dict[str, Any]) -> None:
-        legacy_news(repos.news).insert_verdict(
-            event_id=event_id,
-            stage="triage",
-            policy_version=LEGACY_TRIAGE_POLICY_VERSION,
-            judgment_contract_version=judgment.judgment_contract_version,
-            judgment_origin="model",
-            rule_baseline_decision="push",
-            final_decision="push",
-            override_rule=None,
-            throttled_by=None,
-            verdict=payload,
-            model_editorial=judgment.editorial.document,
-            judgment_sha256=judgment.scored_judgment_sha256,
-            runtime_manifest_sha="b" * 64,
-            model="test",
-            program_version=LEGACY_PROGRAM_VERSION,
-            program_sha256="a" * 64,
-            degraded=False,
-            error_code=None,
-            trace=trace,
-            evidence_version=int(evidence["evidence_version"]),
-            evidence_sha256=str(evidence["evidence_sha256"]),
-            focus_fact_id=str(evidence["focus_fact_id"]),
-            now_ms=opened_at_ms + 1_000,
-        )
-
-    # PostgreSQL is where the typed contract is a fact rather than a promise: a v10 verdict carrying a
-    # market outside the vocabulary is refused by `news_current_typed_assets_valid`.
-    with pytest.raises(CheckViolation), repos.transaction():
-        _insert(
-            {
-                **verdict.model_dump(mode="json"),
-                "assets": [{"symbol": "V", "market_type": "token", "role": "primary"}],
-            }
-        )
-    with repos.transaction():
-        _insert(verdict.model_dump(mode="json"))
-
-    # The quote target is the judgment's own typed subject rather than the only tag the provider sent.
-    shown = [MarketAsset.of(asset) for asset in verdict.model_dump(mode="json")["assets"]]
-    assert shown == [MarketAsset("V", "equity"), MarketAsset("CRCL", "equity")]
-
-    # And the typed quote target refuses the same-name coin: `V/equity` is priced by an equity source or
-    # by nothing. The `us.listed` directory proves the ticker exists, so the answer is `unavailable`.
-    quotes = {
-        row["requested_symbol"]: row
-        for row in repos.price.quotes_for_symbols(
-            [QuoteRequest(asset.symbol, asset.market_type) for asset in shown], now_ms=opened_at_ms + 2_000
-        )
-    }
-    assert quotes["V"]["state"] == "unavailable" and quotes["V"]["venue"] is None
-    assert quotes["V"]["instrument_class"] == "equity"
-    assert repos.price.resolve_instruments([QuoteRequest("V")])[QuoteRequest("V")].venue == "binance.perp"
-
-    # Current public detail retains the original source tag without projecting the retired verdict.
-    detail = repos.news.event_detail(event_id)
-    assert detail is not None
-    assert detail["event"]["grounded_assets"] == ["CRCL"]
-    assert "legacy_verdict" not in detail
     conn.commit()

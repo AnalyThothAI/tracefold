@@ -113,7 +113,7 @@ class NewsEventMemberData(ExactApiSchema):
 
 
 class NewsDeliveryData(ExactApiSchema):
-    # A legacy card's deterministic `legacy_intent:*` id, or an EventUpdate intent's `intent:*` id (#706).
+    # The EventUpdate delivery intent identity.
     intent_id: str
     kind: str
     state: str

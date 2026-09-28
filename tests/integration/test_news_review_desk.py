@@ -10,11 +10,9 @@ from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.review.desk import (
     DecisionFeedbackSubmission,
-    DeskQuery,
     ExternalMissSubmission,
     Principal,
     ReviewDesk,
-    TaskRef,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -50,10 +48,9 @@ def test_external_miss_creates_snapshot_and_short_feedback(conn) -> None:
     assert again["idempotent"] is True and again["receipt"]["review_id"] == receipt["receipt"]["review_id"]
     counts = conn.execute(
         "SELECT (SELECT count(*) FROM news_external_miss_snapshots) AS snapshots, "
-        "(SELECT count(*) FROM news_notification_external_feedback) AS feedback, "
-        "(SELECT count(*) FROM news_reviews) AS legacy_reviews"
+        "(SELECT count(*) FROM news_notification_external_feedback) AS feedback"
     ).fetchone()
-    assert counts == {"snapshots": 1, "feedback": 1, "legacy_reviews": 0}
+    assert counts == {"snapshots": 1, "feedback": 1}
     assert (
         conn.execute("SELECT provenance FROM news_external_miss_snapshots").fetchone()["provenance"]
         == "operator_reported"
@@ -79,16 +76,3 @@ def test_external_miss_rejects_future_source_time(conn) -> None:
         pytest.raises(ValueError, match="news_review_external_miss_future"),
     ):
         ReviewDesk(conn).submit(None, submission, principal=PRINCIPAL, idempotency_key=str(uuid.uuid4()))
-
-
-def test_retired_event_task_has_one_rejection_boundary(conn) -> None:
-    desk = ReviewDesk(conn)
-    ref = TaskRef(task_id="evt.old.1.pin", task_version="1" * 64)
-    with pytest.raises(ValueError, match="news_review_legacy_task_retired"):
-        desk.open(DeskQuery(task=ref.task_id), principal=PRINCIPAL)
-    with pytest.raises(ValueError, match="news_review_task_kind_unsupported"):
-        desk.evidence(ref, principal=PRINCIPAL)
-    with pytest.raises(ValueError, match="news_review_legacy_task_retired"):
-        desk.submit(
-            ref, DecisionFeedbackSubmission(should_push="uncertain"), principal=PRINCIPAL, idempotency_key="old"
-        )

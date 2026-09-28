@@ -34,18 +34,14 @@ _RAW_RETENTION_PRESERVATION_SQL = """
               JOIN news_events e ON e.event_id = m.event_id
              WHERE m.item_id = i.item_id
                AND e.opened_at_ms >= %s
-               AND (EXISTS (SELECT 1 FROM news_verdicts v WHERE v.event_id = e.event_id)
-                 OR EXISTS (SELECT 1 FROM news_reviews r WHERE r.event_id = e.event_id)
-                 OR EXISTS (SELECT 1 FROM news_learning_cases c WHERE c.event_id = e.event_id))
+               AND EXISTS (SELECT 1 FROM news_event_updates u WHERE u.event_id = e.event_id)
           )
           AND NOT EXISTS (
             SELECT 1
               FROM news_events e2
              WHERE e2.leader_item_id = i.item_id
                AND e2.opened_at_ms >= %s
-               AND (EXISTS (SELECT 1 FROM news_verdicts v WHERE v.event_id = e2.event_id)
-                 OR EXISTS (SELECT 1 FROM news_reviews r WHERE r.event_id = e2.event_id)
-                 OR EXISTS (SELECT 1 FROM news_learning_cases c WHERE c.event_id = e2.event_id))
+               AND EXISTS (SELECT 1 FROM news_event_updates u WHERE u.event_id = e2.event_id)
           )
         )
       )
@@ -487,25 +483,6 @@ class OperationsStorage:
         )
         return int(cursor.rowcount or 0)
 
-    def purge_learning_retention(self, *, batch_size: int = 500) -> dict[str, Any]:
-        """Run the database-owned bounded learning-evidence retention policy."""
-
-        row = self.conn.execute(
-            "SELECT purge_news_learning_retention(%s) AS result",
-            (int(batch_size),),
-        ).fetchone()
-        return dict(row["result"] or {})
-
-    def record_learning_retention_error(self, *, error_code: str, now_ms: int) -> None:
-        self.conn.execute(
-            """
-            UPDATE news_learning_retention_state
-               SET last_error_code = %s, updated_at_ms = %s
-             WHERE singleton
-            """,
-            (str(error_code)[:200], int(now_ms)),
-        )
-
     def purge_before(
         self,
         *,
@@ -515,18 +492,14 @@ class OperationsStorage:
     ) -> dict[str, Any]:
         """Delete one stable batch of raw Items older than ``cutoff_ms``.
 
-        Items that are evidence for a judged or reviewed Event newer than ``judged_cutoff_ms`` remain. The
+        Items that are evidence for an adopted EventUpdate newer than ``judged_cutoff_ms`` remain. The
         caller owns the transaction and repeats this method across transactions until ``backlog_capped`` is
         false or its turn budget is exhausted.
 
-        Deleting `news_items` cascades to `news_events` (leader FK) and from there to verdicts, deliveries,
-        members, assets, bands, snapshots and reviews, so one retention number decides the lifetime of the
-        whole learning plane. It also cascades to all three market fact tables, each of which now has its
-        own foreign key, so a typed fact cannot outlive the record it was parsed from. An Item is evidence
-        when *any* Event it belongs to — as leader or as a later member, which is what a rebuild of the
-        Triage input needs — carries a verdict or review. A market Item is kept for the judged period
-        outright. Passing no ``judged_cutoff_ms`` keeps the old one-tier behaviour for callers that do not
-        care.
+        Deleting `news_items` cascades to their Events and dependent evidence, updates, and deliveries.
+        It also cascades to market facts whose source Item is removed. An Item is evidence when any Event
+        it belongs to, as leader or later member, has an adopted update. A market Item is kept for the
+        adopted period outright. Passing no ``judged_cutoff_ms`` uses the raw cutoff alone.
         """
 
         size = int(batch_size)

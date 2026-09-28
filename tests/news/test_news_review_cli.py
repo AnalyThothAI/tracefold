@@ -74,31 +74,6 @@ def test_review_submit_requires_and_uses_the_named_reviewer(monkeypatch: pytest.
     assert captured["idempotency_key"]
 
 
-def test_retired_event_submission_is_rejected_before_model_validation(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    parser = build_parser()
-    review_file = tmp_path / "retired.json"
-    review_file.write_text(json.dumps({"kind": "event_rubric"}), encoding="utf-8")
-    monkeypatch.setattr(news_review, "load_settings", lambda **_kwargs: object())
-    args = parser.parse_args(
-        [
-            "news",
-            "review",
-            "submit",
-            "evt.old.1.pin",
-            "--version",
-            "1" * 64,
-            "--file",
-            str(review_file),
-            "--reviewer",
-            "reviewer-alice",
-        ]
-    )
-    code, payload = news_review._handle_review(args)
-    assert code == 2 and payload["error"] == "news_review_legacy_task_retired"
-
-
 def test_the_review_group_has_no_draft_pairwise_or_proposal_surface() -> None:
     parser = build_parser()
 

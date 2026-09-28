@@ -716,53 +716,6 @@ class EventStorage:
         )
         return bool(cursor.rowcount)
 
-    def upgrade_event_admission(
-        self,
-        *,
-        event_id: str,
-        admission: str,
-        queue_priority: str,
-        asset_class: str,
-        grounded_assets: Sequence[str],
-        grounded_assets_json: str,
-        watchlist_hits: Sequence[str],
-        watchlist_hits_json: str,
-        macro_lexicon: bool,
-        now_ms: int,
-    ) -> None:
-        """A later, stronger member re-gated a suppressed Event: record the new Gate facts in place (idempotent)."""
-
-        row = self.conn.execute(
-            """
-            UPDATE news_events
-               SET admission = %s, queue_priority = %s, asset_class = %s, grounded_assets = %s::jsonb,
-                   watchlist_hits = %s::jsonb, macro_lexicon = %s, updated_at_ms = %s
-             WHERE event_id = %s
-             RETURNING opened_at_ms
-            """,
-            (
-                admission,
-                queue_priority,
-                asset_class,
-                grounded_assets_json,
-                watchlist_hits_json,
-                bool(macro_lexicon),
-                int(now_ms),
-                event_id,
-            ),
-        ).fetchone()
-        if row is None:
-            raise ValueError("news_event_missing")
-        opened_at_ms = int(row["opened_at_ms"])
-        for symbol in grounded_assets:
-            self.conn.execute(
-                """
-                INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms)
-                VALUES (%s, %s, NULL, %s) ON CONFLICT DO NOTHING
-                """,
-                (symbol.upper().replace("XYZ-", ""), event_id, opened_at_ms),
-            )
-
     def _current_event_card(self, event_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(CURRENT_EVENT_CARD_SQL, (event_id,)).fetchone()
         return dict(row) if row else None
@@ -997,7 +950,7 @@ class EventStorage:
             "observed_at_ms": int(data["observed_at_ms"]),
         }
 
-    def event_regate_context(self, event_id: str) -> Mapping[str, Any] | None:
+    def event_member_context(self, event_id: str) -> Mapping[str, Any] | None:
         """Leader evidence needed to decide whether a later Event member is stronger."""
 
         return cast(

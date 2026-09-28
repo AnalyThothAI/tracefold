@@ -6,20 +6,13 @@ retention cascade, and the shape of the bounded review aggregates over the actua
 
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_legacy import (
-    LEGACY_PROGRAM_VERSION,
-    LegacyDecision,
-    LegacyDegradedJudgment,
-    legacy_judgment,
-)
-from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import (
     HORIZON_MS,
@@ -28,9 +21,7 @@ from tracefold.news.market_review.pricing import (
     Quote,
     QuoteRequest,
 )
-from tracefold.news.models import TriageVerdict
 from tracefold.news.reader_card import quote_line, reader_quotes
-from tracefold.news.storage.decisions import legacy_intent_id
 
 pytestmark = pytest.mark.integration
 
@@ -52,8 +43,7 @@ def _clean(conn):
         "news_quote_snapshots",
         "news_oi_signals",
         "news_event_assets",
-        "news_verdicts",
-        "news_deliveries",
+        "news_semantic_observations",
         "news_events",
         "news_items",
         "news_market_instrument_listing_events",
@@ -82,11 +72,6 @@ def _event(
     *,
     symbols: tuple[str, ...],
     opened_at_ms: int,
-    decision: str = "push",
-    direction: str = "bullish",
-    delivered: bool = True,
-    degraded: bool = False,
-    fact_kind: str = "state_change",
     ingest_mode: str = "live",
     admission: str = "candidate",
     event_kind: str = "news",
@@ -135,97 +120,43 @@ def _event(
             "INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms) VALUES (%s, %s, NULL, %s)",
             (symbol, event_id, opened_at_ms),
         )
-    repos = repositories_for_connection(conn)
-    evidence = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=opened_at_ms)
-    verdict = TriageVerdict(
-        novelty="new_fact",
-        assets=[{"symbol": symbol, "role": "primary"} for symbol in symbols],
-        direction=direction,
-        scope="single_name",
-        # The degraded fallback is code-owned and observed nothing, so it states no kind and cites no
-        # evidence span; a model verdict always states both (#675 §1).
-        fact_kind=None if degraded else fact_kind,
-        evidence_ref="" if degraded else "c1",
-        confidence=1.0,
-        headline_zh="价格复盘测试",
-    )
-    decision_result = LegacyDecision(
-        final=decision,
-        override_rule="recorded_fixture",
-        throttled_by=None,
-        rule_baseline=decision,
-    )
-    if degraded:
-        judgment = LegacyDegradedJudgment(
-            verdict=verdict,
-            decision=decision_result,
-            error_code="news_semantic_program_unconfigured",
-        )
-        origin = "degraded"
-        judgment_sha256 = judgment.judgment_sha256
-        model_editorial = None
-        model = None
-        error_code = judgment.error_code
-        trace_extra = {"judgment": judgment.judgment_atom}
-    else:
-        judgment = legacy_judgment(verdict)
-        origin = "model"
-        judgment_sha256 = judgment.scored_judgment_sha256
-        model_editorial = judgment.editorial.document
-        model = "test"
-        error_code = None
-        trace_extra = {"editorial_sha256": judgment.editorial.editorial_sha256}
-    runtime_manifest_sha = "b" * 64
-    program_sha256 = "a" * 64
-    trace = {
-        **trace_extra,
-        "judgment_contract_version": judgment.judgment_contract_version,
-        "judgment_origin": origin,
-        "judgment_sha256": judgment_sha256,
-        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
-        "runtime_manifest_sha": runtime_manifest_sha,
-        "evidence_version": int(evidence["evidence_version"]),
-        "evidence_sha256": str(evidence["evidence_sha256"]),
-        "focus_fact_id": str(evidence["focus_fact_id"]),
-        "program_version": LEGACY_PROGRAM_VERSION,
-        "program_sha256": program_sha256,
-        "told": [],
-        "told_count": 0,
+    revision = "a" * 64
+    result_id = f"result:{event_id}"
+    document = {
+        "schema_version": "news_event_update_v2",
+        "event_id": event_id,
+        "content_revision": revision,
+        "input_revision": 1,
+        "previous_content_revision": None,
+        "claims": [
+            {
+                "ref": f"cl:{event_id}",
+                "fields": {
+                    "assets": [
+                        {"symbol": symbol, "market_type": "crypto_perp", "role": "primary"} for symbol in symbols
+                    ]
+                },
+            }
+        ],
     }
-    legacy_news(repos.news).insert_verdict(
-        event_id=event_id,
-        stage="triage",
-        policy_version="news_triage_policy_v13",
-        judgment_contract_version=judgment.judgment_contract_version,
-        judgment_origin=origin,
-        rule_baseline_decision=decision_result.rule_baseline,
-        final_decision=decision_result.final,
-        override_rule=decision_result.override_rule,
-        throttled_by=decision_result.throttled_by,
-        verdict=verdict.model_dump(mode="json"),
-        model_editorial=model_editorial,
-        judgment_sha256=judgment_sha256,
-        runtime_manifest_sha=runtime_manifest_sha,
-        model=model,
-        program_version=LEGACY_PROGRAM_VERSION,
-        program_sha256=program_sha256,
-        degraded=degraded,
-        error_code=error_code,
-        trace=trace,
-        evidence_version=int(evidence["evidence_version"]),
-        evidence_sha256=str(evidence["evidence_sha256"]),
-        focus_fact_id=str(evidence["focus_fact_id"]),
-        now_ms=opened_at_ms,
+    conn.execute(
+        """INSERT INTO news_semantic_observations
+             (result_id,work_id,event_id,input_revision,input_sha256,program_identity,completed_at_ms,understanding)
+           VALUES (%s,%s,%s,1,%s,'price-fixture',%s,'{}'::jsonb)""",
+        (result_id, result_id, event_id, revision, opened_at_ms),
     )
-    if delivered:
-        conn.execute(
-            """
-            INSERT INTO news_deliveries (intent_id, event_id, kind, state, card, attempted_at_ms, settled_at_ms,
-                                         created_at_ms)
-            VALUES (%s, %s, 'first', 'sent', '{}'::jsonb, %s, %s, %s)
-            """,
-            (legacy_intent_id(event_id, "first"), event_id, opened_at_ms, opened_at_ms, opened_at_ms),
-        )
+    conn.execute(
+        """INSERT INTO news_event_updates
+             (event_id,content_revision,input_revision,adopted_at_ms,observation_result_id,document)
+           VALUES (%s,%s,1,%s,%s,%s::jsonb)""",
+        (event_id, revision, opened_at_ms, result_id, json.dumps(document)),
+    )
+    conn.execute(
+        """INSERT INTO news_event_update_heads
+             (event_id,content_revision,input_revision,update_ref,adopted_at_ms)
+           VALUES (%s,%s,1,news_identity('update',jsonb_build_array(%s::text,%s::text)),%s)""",
+        (event_id, revision, event_id, revision, opened_at_ms),
+    )
     conn.commit()
 
 
@@ -304,7 +235,7 @@ def test_quote_working_set_includes_recent_oi_ledger_symbols(conn) -> None:
     _universe(conn, _instrument("binance.perp", "DOGEUSDT", "DOGE"))
     # The ordinary grounded lane also names DOGE; the UNION must still return one symbol and obey the
     # caller's existing bound rather than multiplying provider work.
-    _event(conn, "ev-news-doge", symbols=("DOGE",), opened_at_ms=NOW - 1, delivered=False)
+    _event(conn, "ev-news-doge", symbols=("DOGE",), opened_at_ms=NOW - 1)
     # The OI arm reaches the ledger through the Item that produced it (#553). There is no Event: a
     # market observation opens none, and the working set was reading one only because the foreign key
     # forced it to.
@@ -638,7 +569,7 @@ def test_duplicate_request_symbols_cannot_multiply_repository_work(conn) -> None
 def test_the_due_scan_covers_held_events_and_stops_at_terminal_rows(conn) -> None:
     _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"))
     _event(conn, "pushed", symbols=("BTC",), opened_at_ms=NOW - 2 * HOUR)
-    _event(conn, "dropped", symbols=("BTC",), opened_at_ms=NOW - 2 * HOUR, decision="drop", delivered=False)
+    _event(conn, "dropped", symbols=("BTC",), opened_at_ms=NOW - 2 * HOUR)
     _event(conn, "fresh", symbols=("BTC",), opened_at_ms=NOW - 60_000)  # 1H not due yet
     _event(conn, "recovered", symbols=("BTC",), opened_at_ms=NOW - 2 * HOUR, ingest_mode="recovery")
     repos = repositories_for_connection(conn)

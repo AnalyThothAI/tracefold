@@ -108,14 +108,6 @@
 
 [News 文档](modules/news.md)解释抽取与采用，[主题和来源](modules/news.md#topics-and-cited-source-authority)解释 IPTC 与引用来源身份，不将来源权威、事实已兑现和交易授权混成一个字段。
 
-### 历史事实中的判断词表
-
-`FACT_KINDS` 的代码顺序用于解释既存原始 verdict 事实；当前 ReviewDesk 只接受通知决策反馈与外部漏报：
-
-`state_change|new_quantity|level_crossed|period_record|quantified_flow|official_measure|statement|recap|schedule|promotion`
-
-它不是新 Claim 的完整语义模型。Jev 抽取同时给出 `mode`、`phase`、`content_kind` 与逐命题主题；通知判断独立于这些字段的硬编码分类，不能把旧 `statement` 一律删掉。
-
 <a id="section-市场钱包与价格"></a>
 ## 04 · 市场、钱包与价格
 

@@ -17,7 +17,6 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_attention import FeedOnly, NotifyAll
-from tests.support.news_legacy_storage import legacy_news
 from tests.support.news_update_pg import (
     EVENT,
     STAMP,
@@ -41,7 +40,6 @@ from tracefold.news.delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHAS
 from tracefold.news.models import ReaderDeliveryPresentation
 from tracefold.news.pipeline.delivery import DelivererLoop
 from tracefold.news.reader_card import ReaderCard
-from tracefold.news.storage.decisions import legacy_intent_id
 from tracefold.news.storage.event_update_store import PgJudgmentCache, PgNewsStore
 from tracefold.news.updates.contracts import (
     Asset,
@@ -612,34 +610,3 @@ def test_the_telegram_edit_enriches_the_intents_receipt_and_keeps_the_frozen_car
     # The edit is fenced by the intent and its receipt; the frozen card, body and digest do not move.
     assert ledger["receipt"]["payload_sha256"] == ledger["payload_sha256"]
     assert FrozenCard.model_validate(ledger["card"]).body == ledger["body"]
-
-
-def test_a_sent_historical_card_still_edits() -> None:
-    seed_event("ev-legacy-sent", fingerprint="fp-legacy")
-    receipt = {"provider": "telegram", "message_id": 7, "pushed_at_ms": STAMP, "target_sha256": TELEGRAM_TARGET}
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repos = repositories_for_connection(conn)
-        with repos.transaction():
-            assert legacy_news(repos.news).begin_delivery(
-                event_id="ev-legacy-sent", kind="first", card={"x": 1}, now_ms=STAMP
-            )
-            assert legacy_news(repos.news).settle_delivery(
-                event_id="ev-legacy-sent", kind="first", state="sent", receipt=receipt, error_code=None, now_ms=STAMP
-            )
-    finally:
-        conn.close()
-    # A settled legacy card keeps its edit reconciliation, keyed by its legacy intent id.
-    legacy = legacy_intent_id("ev-legacy-sent", "first")
-    conn = connect_postgres_test(read_only=False)
-    try:
-        repos = repositories_for_connection(conn)
-        with repos.transaction():
-            assert repos.news.begin_delivery_edit(intent_id=legacy, card={"x": 2}, receipt=receipt, now_ms=STAMP + 1)
-            assert repos.news.settle_delivery_edit(
-                intent_id=legacy, receipt={**receipt, "edited_at_ms": STAMP + 2}, now_ms=STAMP + 2
-            )
-    finally:
-        conn.close()
-    edited = sql("SELECT card, receipt, edit_state FROM news_deliveries WHERE intent_id = %s", (legacy,))[0]
-    assert edited == {"card": {"x": 2}, "receipt": {**receipt, "edited_at_ms": STAMP + 2}, "edit_state": "edited"}

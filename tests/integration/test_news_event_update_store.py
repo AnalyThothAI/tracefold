@@ -10,6 +10,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_attention import NotifyAll
+from tests.support.news_current_delivery import seed_delivery
 from tests.support.news_update_pg import (
     EVENT,
     STAMP,
@@ -37,7 +38,6 @@ from tests.support.news_update_pg import (
     trade_rows,
 )
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.storage.decisions import legacy_intent_id
 from tracefold.news.storage.event_update_store import PgJudgmentCache, PgNewsStore
 from tracefold.news.storage.event_updates import EventUpdateConflict, IntentLeaseLost, frozen_input
 from tracefold.news.updates.contracts import (
@@ -69,17 +69,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_d
 # ------------------------------------------------------------------ identities
 
 
-def test_legacy_intent_and_text_digest_match_the_python_identities() -> None:
-    for event_id, kind in (("ev-1", "first"), ('e"x\\y', "followup"), ("ev-中文", "first")):
-        row = sql(
-            "SELECT news_identity('legacy_intent', jsonb_build_array(%s::text, %s::text)) AS intent",
-            (event_id, kind),
-        )[0]
-        assert row["intent"] == legacy_intent_id(event_id, kind)
+def test_text_digest_matches_the_python_identity() -> None:
     for body in ('标题\n\n第一行 "引号" \\ tab\t', "é combining", "emoji 🚀  "):
         assert sql("SELECT news_text_digest(%s) AS sha", (body,))[0]["sha"] == digest(body)
-    with pytest.raises(ValueError, match="news_legacy_delivery_kind_invalid"):
-        legacy_intent_id("ev-1", "update")
 
 
 # ------------------------------------------------------------------ semantic turn
@@ -565,15 +557,13 @@ def test_a_reader_ledger_change_is_a_version_race_that_leaves_work_pending() -> 
     head = adopted_head(pg, clock)
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
-    seed_event("ev-legacy", fingerprint="fp-legacy")
-    sql(
-        """
-        INSERT INTO news_deliveries (intent_id, event_id, kind, state, card, attempted_at_ms, settled_at_ms,
-                                     created_at_ms)
-        VALUES (%s, 'ev-legacy', 'first', 'sent', '{}'::jsonb, %s, %s, %s)
-        """,
-        (legacy_intent_id("ev-legacy", "first"), clock.now_ms - 5_000, clock.now_ms - 5_000, clock.now_ms - 5_000),
-    )
+    seed_event("ev-other", fingerprint="fp-other")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            seed_delivery(conn, event_id="ev-other", at_ms=clock.now_ms - 5_000, history_context={})
+    finally:
+        conn.close()
     assert not asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision))).recorded
     assert sql("SELECT state, plan FROM news_notification_work WHERE event_id = %s", (EVENT,))[0] == {
         "state": "pending",
@@ -701,39 +691,30 @@ def test_begin_send_rechecks_the_head_and_keeps_the_frozen_card_for_the_same_ide
         asyncio.run(save_card(pg, lease, card))
 
 
-def test_snapshot_keeps_legacy_sent_ledger_without_inventing_exact_reader_coverage() -> None:
+def test_snapshot_reads_current_sent_ledger() -> None:
     pg, _db, clock = store()
     head = adopted_head(pg, clock)
-    seed_event("ev-legacy", title="Agency orders steel tariff", fingerprint="fp-tariff", at_ms=STAMP - 7_200_000)
+    seed_event("ev-other", title="Agency orders steel tariff", fingerprint="fp-tariff", at_ms=STAMP - 7_200_000)
     card = {"header": {"title": {"content": "机构加征钢铁关税"}}}
     context = {"why_zh": "影响钢铁进口", "dedupe_family": "general", "comparison_fingerprint": "fp-tariff"}
-    sql(
-        """
-        INSERT INTO news_deliveries (intent_id, event_id, kind, state, card, receipt, attempted_at_ms,
-                                     settled_at_ms, created_at_ms, history_context)
-        VALUES (%s, 'ev-legacy', 'first', 'sent', %s::jsonb, '{"message_id": 7}'::jsonb, %s, %s, %s, %s::jsonb)
-        """,
-        (
-            legacy_intent_id("ev-legacy", "first"),
-            json.dumps(card),
-            STAMP - 3_600_000,
-            STAMP - 3_600_000,
-            STAMP - 3_600_000,
-            json.dumps(context),
-        ),
-    )
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            seed_delivery(conn, event_id="ev-other", at_ms=STAMP - 3_600_000, history_context=context, card=card)
+    finally:
+        conn.close()
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None and snapshot.update == head
-    assert snapshot.reader.receipts == ()
-    legacy = sql("SELECT kind,state,card,receipt,body,payload_sha256 FROM news_deliveries WHERE event_id='ev-legacy'")
-    assert legacy == [
+    assert len(snapshot.reader.receipts) == 1
+    assert snapshot.reader.receipts[0].intent_id.startswith("intent:")
+    receipts = sql("SELECT kind,state,card,body,payload_sha256 FROM news_deliveries WHERE event_id='ev-other'")
+    assert receipts == [
         {
-            "kind": "first",
+            "kind": "update",
             "state": "sent",
             "card": card,
-            "receipt": {"message_id": 7},
-            "body": None,
-            "payload_sha256": None,
+            "body": "机构加征钢铁关税",
+            "payload_sha256": digest("机构加征钢铁关税"),
         }
     ]
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import Any, Final, cast
+from typing import Any, cast
 
 # S608 exemptions below interpolate only closed, module-owned history predicates; all values stay bound.
 from ..liquidations import LiquidationFact
@@ -23,54 +23,32 @@ from ..reader_history import (
 )
 from ..smart_money import SmartMoneyFact
 from ..source_contracts import MARKET_PROVIDER
-from ..updates.identity import identity
 from .feed_sql import EDITORIAL_EVENT_SQL
 from .sql_values import _dumps
 from .trade_projection import TradeProjectionStorage
 
 _STORYLINE_LOCK_NAMESPACE = 0x4E455753  # 'NEWS', distinct from App session-lock namespaces.
-LEGACY_DELIVERY_KINDS: Final = ("first", "followup")
-
-
-def legacy_intent_id(event_id: str, kind: str) -> str:
-    """The historical identity of a `first`/`followup` card (#706).
-
-    Migration `20260926_0404` backfilled exactly this value with `news_identity('legacy_intent', ...)` and
-    its CHECK holds every legacy row to it, so a legacy `(event_id, kind)` pair still names one intent.
-    """
-
-    if kind not in LEGACY_DELIVERY_KINDS:
-        raise ValueError("news_legacy_delivery_kind_invalid")
-    return identity("legacy_intent", event_id, kind)
-
-
-# Migration 0406 marks pending historical intents dead; settled receipts remain readable.
-LEGACY_INTENT_RETIRED: Final = "legacy_intent_retired"
-
 _READER_HISTORY_PROJECTION = """
     SELECT d.event_id, d.settled_at_ms AS at_ms,
            COALESCE(d.history_context ->> 'storyline_key', '') AS storyline_key,
-           COALESCE(d.history_context ->> 'comparison_title',
-                    d.card #>> '{header,title,content}', '') AS comparison_title,
+           COALESCE(d.history_context ->> 'comparison_title', '') AS comparison_title,
            COALESCE(d.history_context ->> 'comparison_fingerprint', '') AS comparison_fingerprint,
            COALESCE(d.history_context ->> 'dedupe_family', 'general') AS dedupe_family,
            COALESCE(d.history_context ->> 'direction', 'unclear') AS direction,
-           COALESCE(NULLIF(d.card #>> '{header,title,content}', ''),
-                    d.history_context ->> 'headline_zh', '') AS headline_zh,
+           COALESCE(d.history_context ->> 'headline_zh', '') AS headline_zh,
            COALESCE(d.history_context ->> 'why_zh', '') AS why_zh,
            COALESCE(d.history_context -> 'grounded_assets', '[]'::jsonb) AS grounded_assets,
            COALESCE(d.history_context -> 'assets', '[]'::jsonb) AS assets,
-           COALESCE(d.history_context -> 'canonical_assets', '[]'::jsonb) AS canonical_assets,
-           CASE WHEN d.history_context IS NULL THEN 'legacy_receipt_only' ELSE 'delivery_bound' END AS provenance_status
+           COALESCE(d.history_context -> 'canonical_assets', '[]'::jsonb) AS canonical_assets
       FROM news_events e
-      JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind IN ('first', 'update') AND d.state = 'sent'
+      JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'update' AND d.state = 'sent'
                             AND d.delete_state IS DISTINCT FROM 'deleted'
 """
 
 
 # #582 §3.3. The News an OI card's instrument already has, in the two numbers that card prints. Here
 # rather than beside the market statements because this is the *delivered-card* ledger -- the same
-# rows, the same `first` / `sent` / not-deleted predicate and the same headline the reader-history
+# rows, the same `update` / `sent` / not-deleted predicate and the same headline the reader-history
 # bands above are built from -- and a second answer to "what has this reader been told" is exactly
 # what one file of this SQL exists to prevent.
 #
@@ -127,11 +105,11 @@ class DecisionStorage:
     conn: Any
 
     def reader_history_revision(self, *, now_ms: int) -> tuple[int, int, str]:
-        """Return a primitive CAS token for the delivered-card ledger used by Triage.
+        """Return a primitive CAS token for the delivered-card ledger.
 
         Open above `now_ms` on purpose, unlike the snapshot bands below. This answers "has the ledger
         changed since I read it", and the change it exists to catch is precisely a card that settled
-        *after* the stamp the snapshot was taken at: Triage refreshes the ledger outside any transaction
+        *after* the stamp the snapshot was taken at: the planner refreshes the ledger outside any transaction
         and re-reads this token inside `lock_storyline`, both at the same stamp, so an upper bound at that
         stamp would hide the racing delivery from both reads and buy the lost CAS nothing.
         """
@@ -142,7 +120,7 @@ class DecisionStorage:
                    COALESCE(max(settled_at_ms), 0) AS newest_at_ms,
                    COALESCE(max(event_id), '') AS greatest_event_id
               FROM news_deliveries
-             WHERE kind IN ('first', 'update') AND state = 'sent'
+             WHERE kind = 'update' AND state = 'sent'
                AND delete_state IS DISTINCT FROM 'deleted'
                AND settled_at_ms >= %s
             """,
@@ -225,16 +203,6 @@ class DecisionStorage:
                  d.history_context ->> 'dedupe_family' = current.dedupe_family
                  AND d.history_context ->> 'comparison_fingerprint' = current.comparison_fingerprint
                )
-               -- The targeted band asks "what *story* about this asset has the reader already been
-               -- told", and a deterministic telemetry frame is a measurement rather than a story.
-               -- Excluded explicitly rather than by accident (#267): these Events carried no
-               -- `news_event_assets` row until the deterministic judge's own primary was recorded
-               -- there, so before that they could never be candidates. Letting them in would have
-               -- changed the model lane's `told` selection — up to `TARGETED_ASSET_MAX` slots of it —
-               -- as a side effect of a fix to the price plane, with no measurement behind the change.
-               -- The 4 h `recent` window is untouched and still shows every delivered card, telemetry
-               -- included, which is where a just-pushed OI card belongs.
-               AND e.admission NOT IN ('telemetry_deterministic', 'liquidation_deterministic')
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
                AND EXISTS (
                  SELECT 1 FROM jsonb_array_elements_text(d.history_context -> 'canonical_assets')
@@ -270,7 +238,7 @@ class DecisionStorage:
             WITH delivered AS MATERIALIZED (
               SELECT d.event_id, d.settled_at_ms, d.history_context, d.card
                 FROM news_deliveries d
-               WHERE d.kind IN ('first', 'update') AND d.state = 'sent'
+               WHERE d.kind = 'update' AND d.state = 'sent'
                  AND d.delete_state IS DISTINCT FROM 'deleted'
                  AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
                  AND d.event_id <> ALL(%s)
@@ -279,7 +247,6 @@ class DecisionStorage:
                      w.card #>> '{header,title,content}', '') AS comparison_title, w.settled_at_ms
                 FROM delivered w
                 JOIN news_events e ON e.event_id = w.event_id
-               WHERE e.admission NOT IN ('telemetry_deterministic', 'liquidation_deterministic')
             ), band AS MATERIALIZED (
               SELECT event_id
                 FROM delivered_titles
@@ -593,8 +560,7 @@ class DecisionStorage:
     ) -> bool:
         """Persist the desired replacement before mutating one provider message.
 
-        Keyed by the delivery intent, legacy `first` rows and `update` intents alike. The body of an
-        update intent is its frozen payload and is never touched by an edit.
+        Keyed by the delivery intent. The frozen payload is never touched by an edit.
         """
 
         parsed = _telegram_receipt(receipt)
@@ -634,10 +600,8 @@ class DecisionStorage:
         """CAS a confirmed provider edit over its already-durable desired card.
 
         The provider's edited receipt is merged over the stored one, so the fields an update intent's
-        settlement recorded beside it (channel, payload digest, message id) survive the edit. A legacy
-        row's `card` becomes the edited rendering; an update intent's `card` is its frozen card (the
-        headline, claim refs, body and digest the reader was sent) and an edit never replaces it -- the
-        enrichment is display around that copy, not a new payload.
+        settlement recorded beside it (channel, payload digest, message id) survive the edit. The
+        frozen card retains the headline, claim refs, body and digest the reader was sent.
         """
 
         parsed = _telegram_receipt(receipt, require_edited=True)
@@ -646,8 +610,7 @@ class DecisionStorage:
         cursor = self.conn.execute(
             """
             UPDATE news_deliveries
-               SET card = CASE WHEN kind = 'update' THEN card ELSE pending_card END,
-                   pending_card = NULL, receipt = receipt || %s::jsonb,
+               SET pending_card = NULL, receipt = receipt || %s::jsonb,
                    edit_state = 'edited', edit_error_code = NULL, edit_settled_at_ms = %s
              WHERE intent_id = %s AND state = 'sent' AND edit_state = 'editing'
                AND receipt ->> 'provider' = %s
@@ -704,20 +667,19 @@ class DecisionStorage:
         return bool(cursor.rowcount)
 
     def terminalize_interrupted_deliveries(self, *, now_ms: int) -> int:
-        """A send nobody settled is ambiguous. A legacy card becomes `terminal`; an update intent is held
-        `ambiguous` and its queue reservation leaves the queue, exactly as a settled ambiguous send does."""
+        """An unsettled send is ambiguous; remove its queue reservation without resending."""
 
         row = self.conn.execute(
             """
             WITH settled AS (
               UPDATE news_deliveries
-                 SET state = CASE WHEN kind = 'update' THEN 'ambiguous' ELSE 'terminal' END,
+                 SET state = 'ambiguous',
                      error_code = 'ambiguous_after_crash', settled_at_ms = %s
                WHERE state = 'sending' AND attempted_at_ms < %s
-              RETURNING intent_id, kind
+              RETURNING intent_id
             ), released AS (
               DELETE FROM news_delivery_queue q USING settled s
-               WHERE q.intent_id = s.intent_id AND s.kind = 'update'
+               WHERE q.intent_id = s.intent_id
               RETURNING q.intent_id
             )
             SELECT (SELECT count(*) FROM settled) AS settled, (SELECT count(*) FROM released) AS released

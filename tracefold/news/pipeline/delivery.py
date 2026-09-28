@@ -8,7 +8,7 @@ enrichment edit that fills quotes and tradability into the message already sent.
 that intent's card attempt and nothing else; an outcome the provider did not report is held ambiguous
 and never sent again.
 
-Historical settled `first`/`followup` receipts keep their edit reconciliation by intent id.
+Settled EventUpdate receipts keep their edit reconciliation by intent id.
 """
 
 from __future__ import annotations

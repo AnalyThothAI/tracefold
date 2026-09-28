@@ -31,12 +31,10 @@ from tracefold.news.events.storyline import (
     STORYLINE_REGISTRY_SHA256,
     STORYLINE_REGISTRY_VERSION,
     StorylineRegistry,
-    final_storyline_key,
     load_storyline_registry,
     match_storyline,
     preliminary_storyline_key,
     registry_storyline_key,
-    symbol_in_text,
 )
 from tracefold.news.events.titles import extract_title
 from tracefold.news.events.tokens import comparison_tokens, jaccard
@@ -333,27 +331,6 @@ def test_gate_grounds_provider_grades_and_cashtags_without_a_name_table() -> Non
         )
         == ()
     )
-
-
-def test_market_telemetry_without_a_provider_score_is_held_back() -> None:
-    """#126: a missing score is `0.0`, and the old `and score` guard read that as "skip this rule".
-
-    It never mattered while an allowlist decided which Strategies reached the Gate. Without one, an unscored
-    market frame would otherwise be admitted, cost a Triage call, and could reach a reader.
-    """
-
-    base = dict(coins=(), ingest_mode="live", watchlist_symbols=frozenset())
-    unscored = evaluate_gate(
-        GateInput(title="BTC open interest +3.4% in 3 minutes", engine_type="market", provider_score=None, **base)
-    )
-    assert unscored.admission == "suppressed_low_signal"
-    assert "market_telemetry_below_min_score" in unscored.reasons
-
-    # A market frame the provider does rate highly is still ordinary work.
-    scored = evaluate_gate(
-        GateInput(title="BTC open interest +3.4% in 3 minutes", engine_type="market", provider_score=85.0, **base)
-    )
-    assert scored.admission == "candidate"
 
 
 def test_gate_admission_rules() -> None:
@@ -658,57 +635,6 @@ def test_a_us_dateline_is_matched_but_never_becomes_the_key_on_its_own() -> None
     assert _prelim("US strikes Iran nuclear site") == "conflict:mideast_2026"
 
 
-def test_preliminary_key_does_not_let_an_unverified_provider_tag_take_a_geopolitical_headline() -> None:
-    """#509: the preliminary rank drops the final key's first step, and this is why.
-
-    A provider tag is an *affected* asset until Triage names a primary, and every Middle East headline in the
-    recall corpus carries a BTC tag. Letting the tag win before Triage keyed a war headline `asset:BTC`, and the
-    told ledger's exact-storyline tier then answered a war card with Bitcoin cards. After Triage the model has
-    named its primary against the Gate's grounding, so the asset goes back on top."""
-
-    title = "Iran attacked another ship outside the Strait of Hormuz this morning"
-    assert (
-        preliminary_storyline_key(
-            title=title,
-            strong_assets=("BTC", "CL", "XYZ-CL"),
-            asset_class="equity_or_commodity",
-            dedupe_family="general",
-        )
-        == "conflict:mideast_2026"
-    )
-    assert (
-        final_storyline_key(
-            title=title,
-            headline_zh="伊朗在霍尔木兹海峡外袭击另一艘船只",
-            scope="single_name",
-            verdict_primaries=[MarketAsset("BTC")],
-            grounded_assets=["BTC", "CL", "XYZ-CL"],
-            dedupe_family="general",
-        )
-        == "asset:BTC"
-    )
-    # A strong tag still opens a preliminary storyline when the registry has nothing to say about the title.
-    assert (
-        preliminary_storyline_key(
-            title="Home Depot Shares Up 3% Premarket",
-            strong_assets=("HD",),
-            asset_class="equity_or_commodity",
-            dedupe_family="general",
-        )
-        == "asset:HD"
-    )
-    # ... and `CL` is never its own storyline, preliminary or final.
-    assert (
-        preliminary_storyline_key(
-            title="Refinery outage in Rotterdam",
-            strong_assets=("CL",),
-            asset_class="equity_or_commodity",
-            dedupe_family="general",
-        )
-        == "topic:energy"
-    )
-
-
 def test_storyline_key_reads_the_scripts_the_desk_actually_receives() -> None:
     """#509 D1. TASS, Fars and Israeli channels contributed 109 pushes a day that all fell to one fallback
     bucket. Non-Latin aliases match as substrings, so an inflected form still lands on its entry."""
@@ -757,85 +683,6 @@ def test_storyline_key_does_not_depend_on_the_order_of_the_registry_entries(monk
         module._matchers.cache_clear()
         module._entry_index.cache_clear()
     assert {title: registry_storyline_key(title) for title in cases} == cases
-
-
-def test_storyline_keys_follow_the_verdict_before_the_registry() -> None:
-    """#509 D2 steps 1, 6, 7 and 8: a grounded primary is the storyline, then the registry, then the model's
-    own symbol-shaped primary (#100), then a grounded tag the text actually names, then `none`."""
-
-    assert (
-        final_storyline_key(
-            title="Nvidia to invest $100bn",
-            headline_zh="",
-            scope="single_name",
-            verdict_primaries=[MarketAsset("NVDA")],
-            grounded_assets=["NVDA"],
-            dedupe_family="general",
-        )
-        == "asset:NVDA"
-    )
-    # A BTC market wrap that mentions oil is BTC's storyline once Triage names BTC as primary.
-    assert (
-        final_storyline_key(
-            title="Bitcoin pauses at $64,000 as rising yields, oil drag equities lower",
-            headline_zh="",
-            scope="sector",
-            verdict_primaries=[MarketAsset("BTC")],
-            grounded_assets=["BTC", "CL", "XYZ-CL"],
-            dedupe_family="general",
-        )
-        == "asset:BTC"
-    )
-    # A primary the Gate did not ground cannot open its own storyline (verify only trusts code facts).
-    assert (
-        final_storyline_key(
-            title="FOMC minutes tomorrow",
-            headline_zh="",
-            scope="macro",
-            verdict_primaries=[MarketAsset("BTC")],
-            grounded_assets=[],
-            dedupe_family="general",
-        )
-        == "actor:fed"
-    )
-    # Bitcoin treasury companies are their own subject; the composed key still follows the verdict first.
-    assert (
-        final_storyline_key(
-            title="Hyperscale Data Bitcoin Treasury at 276 Bitcoin",
-            headline_zh="",
-            scope="macro",
-            verdict_primaries=[],
-            grounded_assets=[],
-            dedupe_family="general",
-        )
-        == "topic:crypto_treasury"
-    )
-    # #509 P4: an exchange-qualified primary is exactly as groupable as `NVDA`. It used to fail the symbol
-    # shape and send every Hong Kong and German single name to the fallback bucket.
-    for symbol in ("02015.HK", "DTE.DE"):
-        assert (
-            final_storyline_key(
-                title="Company reports half-year results",
-                headline_zh="",
-                scope="single_name",
-                verdict_primaries=[MarketAsset(symbol)],
-                grounded_assets=[],
-                dedupe_family="general",
-            )
-            == f"asset:{symbol}"
-        )
-    # Nothing anywhere: the key is `none`, and the dedupe family stays a column instead of becoming a bucket.
-    assert (
-        final_storyline_key(
-            title="Local official visits a factory",
-            headline_zh="",
-            scope="macro",
-            verdict_primaries=[],
-            grounded_assets=[],
-            dedupe_family="general",
-        )
-        == NO_STORYLINE_KEY
-    )
 
 
 def test_storyline_labels_come_from_the_registry() -> None:
@@ -1364,129 +1211,3 @@ def test_gate_expectations_over_the_recall_corpus() -> None:
     assert failures == []
     # Most source items reach semantic understanding, including solicitation templates.
     assert report["candidate_share_of_items"] >= 0.7
-    assert report["counts"].get("admission:suppressed_pr_template", 0) == 0
-
-
-def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -> None:
-    """#100: the fallback used to take *any* grounded tag, so OKX's listing notices (every one of them tagged
-    OKB) all landed in `asset:OKB`, and a VeChain upgrade vote landed in `asset:SKHY`. 16% of a live day's
-    asset-keyed cards sat in a bucket that was not about them (alias-resolved; 20% counting raw symbols)."""
-
-    # The model named the subject; the provider only tagged the venue's own token.
-    assert (
-        final_storyline_key(
-            title="Johnson & Johnson ($JNJx) Found in OKX",
-            headline_zh="强生（$JNJx）出现在 OKX",
-            scope="single_name",
-            verdict_primaries=[MarketAsset("JNJ")],
-            grounded_assets=["OKB"],
-            dedupe_family="general",
-        )
-        == "asset:JNJ"
-    )
-    # The model named nothing and the tag is not what the text is about: the family bucket, not `asset:BTC`.
-    assert (
-        final_storyline_key(
-            title="Poland scrambles jets after unidentified drones cross its border",
-            headline_zh="波兰启动预防性军机行动",
-            scope="macro",
-            verdict_primaries=[],
-            grounded_assets=["BTC"],
-            dedupe_family="general",
-        )
-        == NO_STORYLINE_KEY
-    )
-    # The model named nothing but the text names the tag as its own token: still that asset's storyline.
-    assert (
-        final_storyline_key(
-            title="OKB burn completed",
-            headline_zh="OKB 完成销毁",
-            scope="macro",
-            verdict_primaries=[],
-            grounded_assets=["OKB"],
-            dedupe_family="general",
-        )
-        == "asset:OKB"
-    )
-    # A full-token match only: a tag that merely prefixes a longer word is not evidence.
-    assert (
-        final_storyline_key(
-            title="Elon Musk sells another stake",
-            headline_zh="马斯克再度减持",
-            scope="macro",
-            verdict_primaries=[],
-            grounded_assets=["MU"],
-            dedupe_family="general",
-        )
-        == NO_STORYLINE_KEY
-    )
-    # A degraded verdict has no `assets` by construction, so "named nothing" says nothing: keep the old fallback.
-    assert (
-        final_storyline_key(
-            title="NVIDIA to invest $100bn in OpenAI data centre",
-            headline_zh="NVIDIA 投资 OpenAI",
-            scope="macro",
-            verdict_primaries=[],
-            grounded_assets=["NVDA"],
-            dedupe_family="general",
-            degraded=True,
-        )
-        == "asset:NVDA"
-    )
-    # A grounded primary still wins outright, and a registry hit still beats both fallbacks.
-    assert (
-        final_storyline_key(
-            title="Iran halts oil exports",
-            headline_zh="伊朗停止石油出口",
-            scope="macro",
-            verdict_primaries=[MarketAsset("XOM")],
-            grounded_assets=["XOM"],
-            dedupe_family="general",
-        )
-        == "conflict:mideast_2026"
-    )
-
-
-def test_final_storyline_key_only_accepts_symbol_shaped_primaries() -> None:
-    """`TriageAsset.symbol` is free text and this fallback is reached when nothing grounded it, so it is the least
-    validated string in the pipeline — and it becomes a duplicate-comparison group, an advisory-lock key and a
-    console label."""
-
-    def key(primaries: list[str], **over: object) -> str:
-        return final_storyline_key(
-            title=str(over.get("title", "Some exchange notice")),
-            headline_zh="",
-            scope="single_name",
-            verdict_primaries=[MarketAsset(symbol) for symbol in primaries],
-            grounded_assets=["OKB"],
-            dedupe_family="general",
-        )
-
-    assert key(["TSLA"]) == "asset:TSLA"
-    # #509 P4: an exchange-qualified identifier is groupable and now mints its own key. Anything else the
-    # shape rejects still falls through rather than becoming an advisory-lock key.
-    assert key(["0001.HK"]) == "asset:0001.HK"
-    assert key(["0001.NASDAQ"]) == NO_STORYLINE_KEY
-    assert key(["a" * 11]) == NO_STORYLINE_KEY
-
-
-def test_symbol_in_text_does_not_match_ordinary_english_words() -> None:
-    """`NOT`, `ME`, `ID`, `IO`, `ON` and `AI` are all real provider tags. A case-insensitive match turned "he will
-    not sell his stake" into evidence for `asset:NOT` — the exact mis-bucketing this fallback exists to prevent."""
-
-    assert not symbol_in_text("NOT", "Trump says he will not raise tariffs on Canada")
-    assert not symbol_in_text("ME", "show me the money")
-    assert not symbol_in_text("ID", "no id required")
-    assert symbol_in_text("NOT", "NOT holders vote on the treasury")
-    assert symbol_in_text("OKB", "强生（$OKB）出现在 OKX")
-    assert (
-        final_storyline_key(
-            title="Musk says he will not sell his stake",
-            headline_zh="马斯克称不会减持",
-            scope="macro",
-            verdict_primaries=[],
-            grounded_assets=["NOT"],
-            dedupe_family="general",
-        )
-        == NO_STORYLINE_KEY
-    )

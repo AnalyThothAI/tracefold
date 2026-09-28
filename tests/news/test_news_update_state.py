@@ -205,37 +205,6 @@ def test_unproductive_source_replacement_removes_old_authority_without_inventing
     assert public.kind == "source_update" and not public.retired_claim_refs
 
 
-def test_v1_archive_identity_survives_v2_topic_transition():
-    from tracefold.news.updates.contracts import EventUpdate, content_revision_for
-    from tracefold.news.updates.identity import digest
-
-    head = first_update("E1")
-    legacy = head.model_copy(
-        update={
-            "schema_version": "news_event_update_v1",
-            "claims": tuple(c.model_copy(update={"topics": ()}) for c in head.claims),
-        }
-    )
-    sha = digest(legacy.content_material())
-    document = legacy.model_dump(mode="json")
-    document.update(content_sha=sha, content_revision=content_revision_for(sha, None))
-    for claim in document["claims"]:
-        del claim["topics"]
-    for evidence in document["evidence"]:
-        del evidence["source"]["record_id"]
-        del evidence["source"]["revision_sequence"]
-    del document["superseded_claim_refs"]
-    legacy = EventUpdate.model_validate(document)
-    assert legacy.content_sha == sha
-    assert legacy.topics == head.topics
-    ev = material("Agency adds a separate provision.", publisher="new")
-    updated = assemble_update(source_for(legacy, ev), Extraction(claims=()), legacy, adopted_at_ms=STAMP + 100)
-    assert updated is not None and updated.schema_version == "news_event_update_v2"
-    assert updated.topics == legacy.topics
-    assert updated.open_questions == legacy.open_questions
-    assert legacy.model_dump(mode="json")["claims"][0]["topics"] == []
-
-
 def test_added_parameter_information_does_not_retire_the_previous_claim():
     head = first_update("E1")
     ev = material("The existing tariff also has a 10% exemption.", publisher="detail")

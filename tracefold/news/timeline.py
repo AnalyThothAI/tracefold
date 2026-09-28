@@ -9,7 +9,7 @@ shows the sentence and keeps the fields one click away. ``tracefold news why`` p
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Final
+from typing import Any
 
 from .outcome import (
     Outcome,
@@ -21,17 +21,15 @@ from .outcome import (
 )
 from .update_view import CHANGE_KIND_ZH, INTENT_STATE_ZH, semantic_state
 
-_READER_DELIVERY_KINDS: Final = frozenset({"first", "update"})
-
 
 def reader_delivery(deliveries: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     """The Event's representative reader card: its latest sent one, else its latest attempt.
 
     The same order `storage.feed_sql` picks the feed row's `d` by, so the feed row and the detail agree.
-    Legacy `followup` cards were never an Event's outcome and stay out.
+    Market follow-up notifications use a separate ledger.
     """
 
-    readers = [(index, row) for index, row in enumerate(deliveries) if row.get("kind") in _READER_DELIVERY_KINDS]
+    readers = list(enumerate(deliveries))
     if not readers:
         return None
     return max(
@@ -63,7 +61,7 @@ def event_timeline(
     """Return ``(outcome, steps)``; steps are in pipeline order and only include stages that happened.
 
     Current semantic work contributes evidence, adoption, notification and intent steps in clock order.
-    Historical deliveries retain their actual receipt step.
+    Each intent carries its own receipt step.
     """
 
     delivery = reader_delivery(deliveries)
@@ -139,32 +137,6 @@ def event_timeline(
     )
     steps.extend(sorted(update_steps, key=lambda step: step["at_ms"]))
 
-    for row in deliveries:
-        if row.get("kind") == "update":
-            # An update intent is one step with its queue and its ledger row, above.
-            continue
-        state = str(row.get("state") or "")
-        if state == "sent":
-            summary = "已送达"
-        elif state == "terminal":
-            summary = "未送达：" + (delivery_error_zh(row.get("error_code")) or "未知原因")
-        else:
-            summary = "推送中"
-        steps.append(
-            {
-                "stage": "delivery",
-                "title_zh": "推送" if row.get("kind") == "first" else "跟进推送",
-                "at_ms": int(row.get("settled_at_ms") or row.get("attempted_at_ms") or 0),
-                "summary_zh": summary,
-                "facts": {
-                    "kind": row.get("kind"),
-                    "state": state,
-                    "error_code": row.get("error_code"),
-                    "attempted_at_ms": row.get("attempted_at_ms"),
-                    "settled_at_ms": row.get("settled_at_ms"),
-                },
-            }
-        )
     return outcome, steps
 
 

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import json
 from contextlib import closing
 
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.evidence import query_for, text_sha
 from tracefold.news.opennews import parse_opennews_message
@@ -82,40 +80,6 @@ def test_raw_payload_late_fill_and_evidence_revisions(postgres_clone_dsn):
         assert [(r["evidence_text"], r["received_at_ms"]) for r in revisions] == [
             ("BTC acquisition agreement announced.\nConflicting executed status.", 4000)
         ]
-
-
-def test_delivery_history_uses_sent_context_not_mutable_verdict_or_event(postgres_clone_dsn):
-    with closing(connect_postgres_test(read_only=False)) as conn:
-        repos = repositories_for_connection(conn)
-        event_id = admit(repos, "BTC acquisition agreement approved.").results[0].event_id
-        history = dict(
-            storyline_key="asset:crypto:BTC",
-            comparison_title="original fact",
-            comparison_fingerprint="old",
-            dedupe_family="general",
-            assets=[dict(symbol="BTC", market_type="crypto")],
-            canonical_assets=["BTC"],
-            grounded_assets=["BTC"],
-            direction="bullish",
-            headline_zh="已发送原卡片",
-            why_zh="原判断",
-            policy_version="bound-policy",
-        )
-        assert (
-            legacy_news(repos.news).begin_delivery(
-                event_id=event_id, kind="first", card={}, now_ms=1500, history_context_json=json.dumps(history)
-            )
-            == "new"
-        )
-        conn.execute("UPDATE news_deliveries SET state='sent', settled_at_ms=2000 WHERE event_id=%s", (event_id,))
-        conn.execute(
-            "UPDATE news_events SET storyline_key='changed', comparison_title='changed' WHERE event_id=%s", (event_id,)
-        )
-        actual = repos.news.reader_history(event_id="candidate", now_ms=2001)
-        assert actual.recent_seen_rows[0].comparison_title == "original fact"
-        assert actual.recent_seen_rows[0].storyline_key == "asset:crypto:BTC"
-        assert repos.news.reader_history(event_id="candidate", now_ms=2000).told_source_rows == ()
-        assert repos.news.reader_history_revision(now_ms=1999)[0] == 1
 
 
 def test_real_candidate_channels_keep_unknown_and_exclude_known_symbol_conflict(postgres_clone_dsn):

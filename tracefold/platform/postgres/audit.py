@@ -92,7 +92,6 @@ NEWS_TABLES = (
     "news_event_members",
     "news_event_bands",
     "news_event_assets",
-    "news_verdicts",
     "news_deliveries",
     "news_delivery_queue",
     "news_item_revisions",
@@ -107,7 +106,6 @@ NEWS_TABLES = (
     "news_notification_decisions",
     "news_notification_feedback",
     "news_notification_external_feedback",
-    "news_reviews",
     "news_external_miss_snapshots",
     "news_market_instruments",
     "news_market_instrument_listing_events",
@@ -128,14 +126,6 @@ NEWS_TABLES = (
     "news_market_wallet_archive",
     "news_market_wallet_outcomes",
     "news_event_evidence_snapshots",
-    "news_learning_epochs",
-    "news_learning_artifacts",
-    "news_learning_cases",
-    "news_model_recordings",
-    "news_canary_activations",
-    "news_agent_assignments",
-    "news_agent_runtime_manifests",
-    "news_learning_retention_state",
 )
 
 # #104: the Trading bounded context's own registry. Kept beside `NEWS_TABLES` rather than merged into
@@ -152,7 +142,6 @@ TRADING_TABLES = (
     "trading_case_attempts",
     "trading_model_calls",
     "trading_watch_observations",
-    "trading_case_evaluations",
     "trading_signal_retirements",
     "trading_entry_validity_checks",
     "trading_trade_signals",
@@ -163,10 +152,6 @@ TRADING_TABLES = (
     "trading_execution_runtime_state",
     "trading_source_amendments",
 )
-
-# Durable rows from migration 0396 are preserved, but no runtime reads or writes this retired tape.
-# It belongs to the physical schema check, not the required online table/read-count registry.
-HISTORICAL_TRADING_TABLES = frozenset({"trading_root_market_tapes"})
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
     {
@@ -209,9 +194,9 @@ class PostgresOperationalAudit:
         }
         actual_trading_tables = self._tables_with_prefix("trading_")
         trading_schema = {
-            "expected_tables": sorted((*TRADING_TABLES, *HISTORICAL_TRADING_TABLES)),
+            "expected_tables": list(TRADING_TABLES),
             "actual_tables": sorted(actual_trading_tables),
-            "exact": actual_trading_tables == set(TRADING_TABLES) | HISTORICAL_TRADING_TABLES,
+            "exact": actual_trading_tables == set(TRADING_TABLES),
         }
         migration_version = self._migration_version()
         migration_ready = migration_version == self.expected_migration_version

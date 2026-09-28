@@ -483,10 +483,6 @@ def _assessment_document(
 _MAX_SOURCE_ASSETS = 8
 
 
-class LegacyCatalystPayload(ValueError):
-    """A pre-EventUpdate catalyst (headline/why). The outbox is drained before cutover; none is read."""
-
-
 def _assets(payload: dict[str, Any]) -> tuple[SourceAsset, ...]:
     raw_assets = payload.get("assets")
     if not isinstance(raw_assets, list):
@@ -497,16 +493,9 @@ def _assets(payload: dict[str, Any]) -> tuple[SourceAsset, ...]:
 
 
 def public_update(event: dict[str, Any]) -> PublicUpdate:
-    """Map one News outbox row to its exact public contract, or refuse it by name.
-
-    The row identity is News' (Event, content revision); the payload must name the same
-    Event, revision and public kind. A catalyst row without a schema version is the retired
-    headline/why shape and has no second reading path.
-    """
+    """Map one News outbox row to its exact public contract."""
 
     payload = event["payload"]
-    if event["kind"] == "catalyst" and "schema_version" not in payload:
-        raise LegacyCatalystPayload("legacy_catalyst_payload")
     update = PublicUpdate.model_validate(payload)
     expected = "source_update" if event["kind"] == "source_update" else CATALYST_SOURCE_KIND
     if (
@@ -722,7 +711,7 @@ class AnalysisRunner:
             snapshot.get("snapshot_version") != "evidence_snapshot_v2"
             or brief_payload.get("brief_version") != "trade_brief_v5"
         ):
-            raise ValueError("frozen_analysis_version_retired")
+            raise ValueError("frozen_analysis_version_invalid")
         menu = snapshot.get("plan_menu")
         if (
             snapshot["case_id"] != case["case_id"]
@@ -766,8 +755,6 @@ class AnalysisRunner:
                 disposition = await self._receive_trade_event(event, environment=environment)
             except TimeoutError:
                 continue
-            except LegacyCatalystPayload:
-                reason = "legacy_catalyst_payload"
             except (KeyError, TypeError, ValueError):
                 reason = "trade_event_payload_invalid"
             else:

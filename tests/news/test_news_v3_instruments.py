@@ -13,7 +13,6 @@ from tracefold.integrations.venues.errors import VenueExpectedError
 from tracefold.integrations.venues.okx import fetch_okx_instruments
 from tracefold.integrations.venues.us_reference import fetch_us_reference_instruments
 from tracefold.news.events.gate import GateInput, asset_class_of, evaluate_gate, grounded_assets
-from tracefold.news.events.storyline import final_storyline_key
 from tracefold.news.market_review.instruments import (
     ALIAS_SEEDS,
     classify,
@@ -24,7 +23,6 @@ from tracefold.news.market_review.instruments import (
     resolve_base_symbol,
     strip_quote_suffix,
 )
-from tracefold.news.models import MarketAsset
 
 
 def test_normalize_strips_provider_prefix_and_dex_namespace() -> None:
@@ -118,37 +116,6 @@ def test_alias_seeds_point_at_symbols_a_venue_actually_lists() -> None:
     assert resolve_base_symbol("BTT") == "BTTC"
     # A seed must never point at another seed's alias, or one hop is not enough to resolve it.
     assert not set(ALIAS_SEEDS.values()) & set(ALIAS_SEEDS)
-
-
-def test_storyline_key_buckets_one_issuer_together() -> None:
-    def key(symbol: str) -> str:
-        return final_storyline_key(
-            title="SK Hynix approves buyback",
-            headline_zh="SK海力士回购",
-            scope="single_name",
-            verdict_primaries=[MarketAsset(symbol)],
-            grounded_assets=[symbol],
-            dedupe_family="general",
-        )
-
-    # The 2026-08-19 failure: one 40T KRW buyback shipped nine cards because the symbol alternated.
-    assert key("SKHY") == key("SKHX") == key("SKHYNIX") == "asset:SKHY"
-    assert key("XAU") == "asset:GOLD"
-
-
-def test_final_storyline_key_resolves_aliases_on_both_sides() -> None:
-    # The verdict says SKHX, the Gate grounded XYZ-SKHY: they must still match and bucket together.
-    assert (
-        final_storyline_key(
-            title="SK Hynix buyback",
-            headline_zh="SK海力士回购",
-            scope="single_name",
-            verdict_primaries=[MarketAsset("SKHX")],
-            grounded_assets=["XYZ-SKHY"],
-            dedupe_family="general",
-        )
-        == "asset:SKHY"
-    )
 
 
 # --------------------------------------------------------- venue-declared classes

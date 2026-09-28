@@ -9,7 +9,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support import news_novelty_sequences as sequences
-from tests.support.news_legacy_storage import _persist_triage_verdict, legacy_news
+from tests.support.news_current_delivery import seed_delivery
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_review.instrument_storage import InstrumentsRepository
 from tracefold.news.models import base_symbol
@@ -69,7 +69,7 @@ def _canonical_assets(repos, symbols: list[str]) -> list[str]:
     return sorted({aliases.get(symbol, aliases.get(base_symbol(symbol), base_symbol(symbol))) for symbol in symbols})
 
 
-def _persist_sent_triage_card(
+def _persist_sent_update_card(
     repos,
     *,
     event_id: str,
@@ -79,35 +79,25 @@ def _persist_sent_triage_card(
     headline_zh: str = "阿里巴巴配售新股",
     state: str = "sent",
 ) -> None:
-    _persist_triage_verdict(
-        repos,
-        event_id=event_id,
-        at_ms=at_ms,
-        symbol=symbol,
-        direction=direction,
-        headline_zh=headline_zh,
-    )
     event = repos.news.event_card(event_id)
-    verdict = legacy_news(repos.news).latest_verdict(event_id=event_id, stage="triage")
     bound = {
         key: event.get(key)
         for key in ("storyline_key", "comparison_title", "comparison_fingerprint", "dedupe_family", "grounded_assets")
     }
-    bound.update({key: verdict["verdict"].get(key) for key in ("direction", "headline_zh", "why_zh", "assets")})
-    bound["canonical_assets"] = _canonical_assets(repos, [symbol])
-    assert (
-        legacy_news(repos.news).begin_delivery(
-            event_id=event_id, kind="first", card={}, now_ms=at_ms - 1, history_context_json=json.dumps(bound)
-        )
-        == "new"
+    bound.update(
+        direction=direction,
+        headline_zh=headline_zh,
+        why_zh="",
+        assets=[{"symbol": symbol, "market_type": "crypto", "role": "primary"}],
+        canonical_assets=_canonical_assets(repos, [symbol]),
     )
-    assert legacy_news(repos.news).settle_delivery(
+    seed_delivery(
+        repos.conn,
         event_id=event_id,
-        kind="first",
+        at_ms=at_ms,
+        history_context=bound,
+        card={"header": {"title": {"content": headline_zh}}},
         state=state,
-        receipt={"ok": True} if state == "sent" else None,
-        error_code=None if state == "sent" else "provider_rejected",
-        now_ms=at_ms,
     )
 
 
@@ -133,7 +123,7 @@ def test_reader_history_recalls_a_sent_cross_source_alias_after_four_hours(conn)
         )
         current_opened = conn.execute("SELECT opened_at_ms FROM news_events WHERE event_id=%s", (current,)).fetchone()
         assert current_opened is not None
-        _persist_sent_triage_card(
+        _persist_sent_update_card(
             repos,
             event_id=prior,
             at_ms=int(current_opened["opened_at_ms"]) - 6 * 3_600_000,
@@ -150,57 +140,6 @@ def test_reader_history_recalls_a_sent_cross_source_alias_after_four_hours(conn)
     assert [(row.event_id, row.reason, row.canonical_assets) for row in history.targeted_told_rows] == [
         (prior, "canonical_asset_overlap", ("BABA",))
     ]
-    conn.commit()
-
-
-def test_a_telemetry_card_never_becomes_a_targeted_asset_candidate(conn) -> None:
-    """#267 gave the deterministic lanes Event assets. The targeted band must not notice.
-
-    The 4 h to 48 h band asks "what *story* about this asset has the reader already been told", and a
-    telemetry frame is a measurement rather than a story. Before #267 these Events had no
-    `news_event_assets` row and could never be candidates; letting them in would have changed the model
-    lane's `told` selection — and through it `decide()`'s novelty measurement — as a side effect of a
-    price-plane fix, with nothing measured behind the change. The 4 h `recent` window is untouched.
-    """
-
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        prior = _admit(
-            repos,
-            hit_id=175401,
-            text="TRUMP OI Rise 4.55 percent, OI Value 32.17M",
-            symbol="TRUMP",
-            ts="2026-08-24T06:00:00+08:00",
-        )
-        current = _admit(
-            repos,
-            hit_id=175402,
-            text="TRUMP token unlocks a large tranche to early backers",
-            symbol="TRUMP",
-            ts="2026-08-24T12:00:00+08:00",
-        )
-        current_opened = conn.execute("SELECT opened_at_ms FROM news_events WHERE event_id=%s", (current,)).fetchone()
-        assert current_opened is not None
-        _persist_sent_triage_card(
-            repos,
-            event_id=prior,
-            at_ms=int(current_opened["opened_at_ms"]) - 6 * 3_600_000,
-            symbol="TRUMP",
-        )
-        conn.execute(
-            "UPDATE news_events SET admission = 'telemetry_deterministic' WHERE event_id = %s",
-            (prior,),
-        )
-
-    history = repos.news.reader_history(event_id=current, now_ms=int(current_opened["opened_at_ms"]))
-    assert history.targeted_told_rows == ()
-
-    # And it is the admission that excludes it, not a missing asset row: the same delivered card on the
-    # ordinary lane is exactly the candidate this band exists to find.
-    with repos.transaction():
-        conn.execute("UPDATE news_events SET admission = 'candidate' WHERE event_id = %s", (prior,))
-    recalled = repos.news.reader_history(event_id=current, now_ms=int(current_opened["opened_at_ms"]))
-    assert [(row.event_id, row.reason) for row in recalled.targeted_told_rows] == [(prior, "canonical_asset_overlap")]
     conn.commit()
 
 
@@ -225,7 +164,7 @@ def test_sent_asset_binding_survives_later_grounding_removal(conn) -> None:
         assert current_opened is not None
         now_ms = int(current_opened["opened_at_ms"])
         sent_at_ms = now_ms - 6 * 3_600_000
-        _persist_sent_triage_card(repos, event_id=prior, at_ms=sent_at_ms, symbol="BABA")
+        _persist_sent_update_card(repos, event_id=prior, at_ms=sent_at_ms, symbol="BABA")
         conn.execute("DELETE FROM news_event_assets WHERE event_id=%s", (prior,))
         conn.execute("UPDATE news_events SET grounded_assets='[]'::jsonb WHERE event_id=%s", (prior,))
 
@@ -266,7 +205,7 @@ def test_reader_history_exact_target_requires_a_settled_sent_receipt(conn) -> No
                 ts=f"2026-08-25T0{index}:00:00+08:00",
             )
             conn.execute("UPDATE news_events SET comparison_fingerprint=%s WHERE event_id=%s", ("f" * 64, event_id))
-            _persist_sent_triage_card(
+            _persist_sent_update_card(
                 repos,
                 event_id=event_id,
                 at_ms=now_ms - (5 + index) * 3_600_000,
@@ -323,7 +262,7 @@ def test_targeted_history_is_not_displaced_by_more_than_128_recent_cards(conn) -
             symbol="BABA",
             ts="2026-08-28T05:00:00+08:00",
         )
-        _persist_sent_triage_card(repos, event_id=prior, at_ms=now_ms - 6 * 3_600_000, symbol="BABA")
+        _persist_sent_update_card(repos, event_id=prior, at_ms=now_ms - 6 * 3_600_000, symbol="BABA")
         for index in range(129):
             symbol = f"RH{index:03d}"
             event_id = _admit(
@@ -333,7 +272,7 @@ def test_targeted_history_is_not_displaced_by_more_than_128_recent_cards(conn) -
                 symbol=symbol,
                 ts="2026-08-28T11:00:00+08:00",
             )
-            _persist_sent_triage_card(repos, event_id=event_id, at_ms=now_ms - index * 1_000, symbol=symbol)
+            _persist_sent_update_card(repos, event_id=event_id, at_ms=now_ms - index * 1_000, symbol=symbol)
 
     history = repos.news.reader_history(event_id=current, now_ms=now_ms)
 
@@ -367,7 +306,7 @@ def test_title_similarity_band_recalls_a_same_story_card_the_recent_cap_and_targ
             symbol="XOM",
             ts="2026-09-01T07:00:00+08:00",
         )
-        _persist_sent_triage_card(repos, event_id=prior, at_ms=now_ms - 12 * 3_600_000, symbol="XOM")
+        _persist_sent_update_card(repos, event_id=prior, at_ms=now_ms - 12 * 3_600_000, symbol="XOM")
         unrelated_old = _admit(
             repos,
             hit_id=491002,
@@ -375,7 +314,7 @@ def test_title_similarity_band_recalls_a_same_story_card_the_recent_cap_and_targ
             symbol="JPY",
             ts="2026-09-01T07:30:00+08:00",
         )
-        _persist_sent_triage_card(repos, event_id=unrelated_old, at_ms=now_ms - 11 * 3_600_000, symbol="JPY")
+        _persist_sent_update_card(repos, event_id=unrelated_old, at_ms=now_ms - 11 * 3_600_000, symbol="JPY")
         for index in range(129):
             symbol = f"RH{index:03d}"
             event_id = _admit(
@@ -385,7 +324,7 @@ def test_title_similarity_band_recalls_a_same_story_card_the_recent_cap_and_targ
                 symbol=symbol,
                 ts="2026-09-01T19:00:00+08:00",
             )
-            _persist_sent_triage_card(repos, event_id=event_id, at_ms=now_ms - index * 1_000, symbol=symbol)
+            _persist_sent_update_card(repos, event_id=event_id, at_ms=now_ms - index * 1_000, symbol=symbol)
 
     history = repos.news.reader_history(event_id=current, now_ms=now_ms)
 
@@ -494,7 +433,7 @@ def test_sql_history_holds_exactly_the_receipts_of_a_frozen_sequence(conn, seque
         for row in admitted[:-1]:
             if row["settled_at_ms"] is None:
                 continue
-            _persist_sent_triage_card(
+            _persist_sent_update_card(
                 repos,
                 event_id=str(row["event_id"]),
                 at_ms=int(row["settled_at_ms"]),
@@ -519,7 +458,7 @@ def test_sql_history_holds_exactly_the_receipts_of_a_frozen_sequence(conn, seque
                 symbol=symbol,
                 ts=datetime.fromtimestamp((now_ms - 1_800_000) / 1000, tz=UTC).isoformat(),
             )
-            _persist_sent_triage_card(repos, event_id=event_id, at_ms=at_ms, symbol=symbol, state=state)
+            _persist_sent_update_card(repos, event_id=event_id, at_ms=at_ms, symbol=symbol, state=state)
             excluded[label] = event_id
         # A `sending` row carries no settle stamp at all, which is what "not proven delivered" means.
         conn.execute("UPDATE news_deliveries SET settled_at_ms = NULL WHERE event_id = %s", (excluded["queued"],))
@@ -534,7 +473,7 @@ def test_sql_history_holds_exactly_the_receipts_of_a_frozen_sequence(conn, seque
                 symbol=symbol,
                 ts=datetime.fromtimestamp((now_ms - 2_400_000) / 1000, tz=UTC).isoformat(),
             )
-            _persist_sent_triage_card(
+            _persist_sent_update_card(
                 repos,
                 event_id=filler,
                 at_ms=now_ms - (index + 1) * 120_000,

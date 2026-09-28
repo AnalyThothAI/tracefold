@@ -31,7 +31,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20260928_0410`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20260928_0411`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序
@@ -85,8 +85,9 @@ class Runtime execution;
 | `20260928_0408` | Trading 同资产来源检索索引与模型请求截止前未派发状态，不改写历史调用或交易事实 | [0408](../tracefold/platform/postgres/alembic/versions/20260928_0408_trading_not_dispatched.py) |
 | `20260928_0409` | News 任务级已处理阅读身份、定向重分析谱系与通知文案复用字段；删除来源级已处理跳过字段 | [0409](../tracefold/platform/postgres/alembic/versions/20260928_0409_news_task_reads.py) |
 | `20260928_0410` | 历史编号事实归属修复证明；EventUpdate 来源明确区分模型观察与确定性修复 | [0410](../tracefold/platform/postgres/alembic/versions/20260928_0410_news_head_scope_repairs.py) |
+| `20260928_0411` | 清除退役的 News verdict / Review / 学习表及 Trading root tape / Case evaluation；旧市场 Event、v1 EventUpdate 所属 Event 与 `first` / `followup` 发送行删除；Wallet 旧快照字段一次性改写，收紧当前约束 | [0411](../tracefold/platform/postgres/alembic/versions/20260928_0411_retire_historical_contracts.py) |
 
-这些切换是前向迁移，不提供通过旧卡片 / verdict 伪造新 Claim 的降级路径。旧 v1 保留原始 hash 与语义，新内容才使用 v2；不得批量改历史 JSON 让它“看起来都是最新版本”。0407 将已有工作计划按原字节标记为 `legacy_work_plan`，不捏造历史模型判断；旧 pending `first`/`followup` 意图以 `legacy_intent_retired` 结算为 dead，已发送及状态不明的账本行保持原样。新 intent 的发送账本保留决策引用。
+这些切换是前向迁移，不通过旧卡片 / verdict 伪造新 Claim。0407 曾将旧 pending `first` / `followup` 意图结算；0411 将它们连同旧发送行删除。当前 intent 只接受 `update`，发送账本保留决策引用。EventUpdate 的不可变版本与已发送的当前通知保留。
 
 `20260927_0406` 为 [执行硬切 Signal 退休原因](../tracefold/platform/postgres/alembic/versions/20260927_0406_execution_hard_cut_retirement.py) 增加约束取值；它自身不清理账户数据。数据切换步骤见 [#719 运行说明](OPERATIONS.md#719-一次性执行基线硬切)。
 
@@ -98,14 +99,16 @@ class Runtime execution;
 | 原始证据 | 来源正文修订与前驱不丢失，不把相同正文的再次出现当旧版本重投 |
 | 语义工作 | wanted / done、owner / lease、耗尽结算与新版本预算隔离 |
 | 知识 | EventUpdate 不可变，head 不倒退，未变的命题 / 问题保留 |
-| 通知 | 旧实际回执和原卡片继续留在账本；缺少精确正文及摘要的旧 `first` 记录不能作为全文覆盖证据。新决策与工作 / intent 引用一致，不因 schema 迁移重复推送 |
+| 通知 | 当前 `update` 回执和冻结卡片保留；旧 `first` / `followup` 数据按 0411 删除。新决策与工作 / intent 引用一致，不因 schema 迁移重复推送 |
 | Trading | 旧公开 payload 与新契约明确区分；来源更正不制造新 TTL |
 
-迁移不是整库重新分析。保留的 legacy verdict / historical review 只具有其原来含义；也不能把旧静态 Program 资产重新挂回运行时以掩盖切换缺口。
+迁移不是整库重新分析。0411 丢弃退役 verdict / Review / 学习数据；旧静态 Program 资产不接回运行时。
 
 0409 不把旧 `processed_evidence_refs` 推断成所有任务范围已完成：新 `processed_read_refs` 从空开始，由实际完成的阅读写入。切换前排空旧 News writers 和发送 owner，记录 pending、failed、sending、ambiguous 及受影响范围，保存可恢复备份。迁移后 API、Workers 与前端使用同一新契约，不让旧镜像写新 schema。对确证漏范围且仍需修复的 Event 逐项预览并执行 `news reanalyze`；不批量唤醒历史 Event。回退依赖匹配旧镜像的已验证备份或前向修复，不能重新启动旧 writer 对新 schema 写入。
 
 0410 先新增插入式修复证明表，再允许新 EventUpdate 以 `scope_repair_id` 代替 `observation_result_id`；恰好一个来源必须存在。既有 EventUpdate 和发送账本不回填。历史 head 的实质清理通过[运维命令](OPERATIONS.md#历史编号事实的-head-归属清理)另行执行，采用精确 head CAS 和整批事务；迁移自身不退休 Claim。
+
+0411 是一次性破坏性清理。停用 News 与 Trading 写进程并核实备份后再升级；迁移使用 `lock_timeout=5s`、`statement_timeout=1800s`，无法取得锁时整笔回滚，可待写进程停稳后重试。旧市场 Event、非当前准入 Event、含 v1 EventUpdate 的 Event 及旧投递行被删除；旧 verdict、Review、学习、root tape 与 Case evaluation 表及其专用 SQL 函数 / 视图被删除。原始 Item、类型化市场事实、v2 EventUpdate / head、当前通知回执、Trading Case 与执行证据保留。旧 Wallet JSON 中三个退役成员字段在迁移事务内改写，运行时只读取严格当前形状。此 revision 不支持数据库降级；需要旧数据时从已验证的迁移前备份恢复，不把旧镜像接到新 schema。
 
 <a id="section-基线之前的备份与严格拒绝"></a>
 ## 04 · 基线之前的备份与严格拒绝

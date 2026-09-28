@@ -1,9 +1,8 @@
 """The read projection of one Event's adopted EventUpdate and of the work that produced and sent it (#706).
 
 Pure: storage hands in the rows it read, this module names every business word in Chinese beside the raw
-enum, so no browser owns a vocabulary table (the same rule `outcome.py` states for the legacy verdict
-words). A stored document is decoded with the exact `EventUpdate` contract and never adapted: a row the
-contract rejects is reported as undecodable rather than rendered from guessed fields, and a field the
+enum, so no browser owns a vocabulary table. A stored document uses the exact `EventUpdate` contract.
+A row the contract rejects is reported as undecodable rather than rendered from guessed fields, and a field the
 contract leaves unset stays unknown.
 """
 
@@ -468,8 +467,8 @@ def intent_views(
 ) -> list[dict[str, Any]]:
     """Every `update` intent of one Event, from its queue row, its ledger row, or both."""
 
-    queue = {str(row["intent_id"]): row for row in queue_rows if row.get("kind") == "update"}
-    ledger = {str(row["intent_id"]): row for row in delivery_rows if row.get("kind") == "update"}
+    queue = {str(row["intent_id"]): row for row in queue_rows}
+    ledger = {str(row["intent_id"]): row for row in delivery_rows}
     views = []
     for intent_id in sorted(
         queue.keys() | ledger.keys(),

@@ -95,18 +95,6 @@ it("shows a real WATCH condition and replays the selected failed attempt", async
 });
 
 it.each([
-  {
-    source: { kind: "catalyst", headline: "公开标题", title: "不应使用的别名" },
-    expected: "公开标题",
-  },
-  {
-    source: { kind: "catalyst", why: "公开说明", title: "不应使用的别名" },
-    expected: "公开说明",
-  },
-  {
-    source: { kind: "catalyst", title: "不应使用的别名" },
-    expected: "catalyst",
-  },
   // #706: a News EventUpdate source has claims and a deterministic text, and no headline at all.
   {
     source: {

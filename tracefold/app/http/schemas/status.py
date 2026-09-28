@@ -146,7 +146,6 @@ class NewsPipelineStatusData(ExactApiSchema):
     semantic_in_progress: int = 0
     semantic_failed_exhausted: int = 0
     semantic_failed_by_code_24h: dict[str, int] = Field(default_factory=dict)
-    suppressed_by_reason: dict[str, int] = Field(default_factory=dict)
     decision_actions_24h: dict[str, int] = Field(default_factory=dict)
     reviewed_decision_should_push_24h: int = 0
     reviewed_external_miss_24h: int = 0
@@ -176,21 +175,6 @@ class NewsDeliveryStatusData(ExactApiSchema):
     e2e_p50_ms: float | None = None
     e2e_p95_ms: float | None = None
     delivery_available: bool
-
-
-class NewsLearningRetentionStatusData(ExactApiSchema):
-    last_run_at_ms: int | None = None
-    eligible_recordings: int = 0
-    eligible_cases: int = 0
-    eligible_artifacts: int = 0
-    deleted_recordings: int = 0
-    deleted_cases: int = 0
-    deleted_artifacts: int = 0
-    oldest_recording_age_ms: int | None = None
-    oldest_case_age_ms: int | None = None
-    oldest_artifact_age_ms: int | None = None
-    last_error_code: str | None = None
-    updated_at_ms: int | None = None
 
 
 class NewsHealthItemData(ExactApiSchema):
@@ -263,7 +247,6 @@ class NewsStatusData(ExactApiSchema):
     broker: NewsBrokerStatusData
     pipeline: NewsPipelineStatusData
     delivery: NewsDeliveryStatusData
-    learning_retention: NewsLearningRetentionStatusData
     watchlist: list[str] = Field(default_factory=list)
     instruments: NewsInstrumentUniverse = Field(default_factory=NewsInstrumentUniverse)
     price: NewsPriceStatusData = Field(default_factory=NewsPriceStatusData)
@@ -281,7 +264,6 @@ __all__ = [
     "NewsIncidentData",
     "NewsIngestStatusData",
     "NewsInstrumentUniverse",
-    "NewsLearningRetentionStatusData",
     "NewsPipelineStatusData",
     "NewsPriceStatusData",
     "NewsQuoteVenueData",

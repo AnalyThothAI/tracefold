@@ -1,4 +1,4 @@
-"""#706 read side over PostgreSQL: the Event detail and feed of News Agent Events beside legacy ones.
+"""EventUpdate read side over PostgreSQL: Event detail and feed.
 
 The EventUpdate rows are written exactly as the store writes them (an observation, an insert-only revision,
 the CAS head, semantic work, the notification plan and the intent ledger), from documents the real core
@@ -26,11 +26,8 @@ from tests.support.news_event_updates import (
     settle_intent,
     silent_plan,
 )
-from tests.support.news_legacy import LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
-from tests.support.news_legacy_storage import legacy_news
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.artifact_identity import canonical_json, canonical_sha
-from tracefold.news.models import TriageVerdict
+from tracefold.news.artifact_identity import canonical_json
 from tracefold.news.updates.contracts import Extraction, FrozenInput, PriorClaim, RelationDraft, SupportDraft
 from tracefold.news.updates.semantics import assemble_update
 
@@ -108,71 +105,13 @@ def _event(news: Any, event_id: str, *, opened_at_ms: int) -> None:
     news.mark_event_published(event_id=event_id, now_ms=opened_at_ms)
 
 
-def _legacy_verdict(news: Any, event_id: str, *, now_ms: int) -> None:
-    """One `news_judgment_v3` Triage verdict, the history an Event judged before #706 keeps."""
-
-    evidence = news.latest_evidence_snapshot(event_id)
-    judgment = legacy_judgment(
-        TriageVerdict(
-            novelty="new_fact",
-            assets=[],
-            direction="bearish",
-            scope="macro",
-            fact_kind="official_measure",
-            evidence_ref="c1",
-            confidence=0.8,
-            headline_zh="央行政策转向，风险资产承压",
-        ),
-        source_authority="reputable_secondary",
-    )
-    legacy_news(news).insert_verdict(
-        event_id=event_id,
-        stage="triage",
-        policy_version=LEGACY_TRIAGE_POLICY_VERSION,
-        judgment_contract_version=judgment.judgment_contract_version,
-        judgment_origin="model",
-        rule_baseline_decision="drop",
-        final_decision="drop",
-        override_rule=None,
-        throttled_by=None,
-        verdict=judgment.verdict.model_dump(mode="json"),
-        model_editorial=judgment.editorial.document,
-        judgment_sha256=judgment.scored_judgment_sha256,
-        runtime_manifest_sha="b" * 64,
-        model="test",
-        program_version="news_semantic_program_v13",
-        program_sha256="c" * 64,
-        degraded=False,
-        error_code=None,
-        trace={
-            "editorial_sha256": judgment.editorial.editorial_sha256,
-            "judgment_contract_version": judgment.judgment_contract_version,
-            "judgment_origin": "model",
-            "judgment_sha256": judgment.scored_judgment_sha256,
-            "verdict_sha256": canonical_sha(judgment.verdict.model_dump(mode="json")),
-            "runtime_manifest_sha": "b" * 64,
-            "program_version": "news_semantic_program_v13",
-            "program_sha256": "c" * 64,
-            "evidence_version": int(evidence["evidence_version"]),
-            "evidence_sha256": str(evidence["evidence_sha256"]),
-            "focus_fact_id": str(evidence["focus_fact_id"]),
-            "told": [],
-            "told_count": 0,
-        },
-        evidence_version=int(evidence["evidence_version"]),
-        evidence_sha256=str(evidence["evidence_sha256"]),
-        focus_fact_id=str(evidence["focus_fact_id"]),
-        now_ms=now_ms,
-    )
-
-
 def _seed(conn: Any) -> dict[str, Any]:
-    """Four Events: sent update, silent update, semantic work pending, and a legacy verdict."""
+    """Four Events: sent update, silent update, semantic work pending, and one source-only Event."""
 
     repos = repositories_for_connection(conn)
     news = repos.news
     with repos.transaction():
-        for index, event_id in enumerate(("agent-sent", "agent-silent", "agent-pending", "legacy")):
+        for index, event_id in enumerate(("agent-sent", "agent-silent", "agent-pending", "source-only")):
             _event(news, event_id, opened_at_ms=NOW - (index + 1) * 60_000)
 
         head = first_update("agent-sent", adopted_at_ms=NOW - 50_000)
@@ -200,7 +139,6 @@ def _seed(conn: Any) -> dict[str, Any]:
 
         persist_semantic_work(conn, "agent-pending", wanted=1, done=None, now_ms=NOW - 170_000)
 
-        _legacy_verdict(news, "legacy", now_ms=NOW - 230_000)
     return {"head": head, "raised": raised, "plan": plan, "silent": silent}
 
 
@@ -227,7 +165,7 @@ def test_a_news_agent_event_detail_reads_its_update_processing_and_timeline(conn
     detail = news.event_detail("agent-sent")
 
     assert detail is not None
-    assert "legacy_verdict" not in detail and "verdicts" not in detail
+    assert "event_update" in detail
     update = detail["event_update"]
     assert update["content_revision"] == raised.content_revision
     assert update["previous_content_revision"] == head.content_revision
@@ -270,14 +208,14 @@ def test_a_news_agent_event_detail_reads_its_update_processing_and_timeline(conn
     assert [step["facts"]["change_kinds"] for step in adoptions] == [["new_fact"], ["parameter_change"]]
 
 
-def test_a_historical_event_reads_source_and_receipts_without_verdict_projection(conn) -> None:
+def test_a_source_only_event_reads_source_without_update(conn) -> None:
     _seed(conn)
     news = repositories_for_connection(conn).news
-    detail = news.event_detail("legacy")
+    detail = news.event_detail("source-only")
     assert detail is not None
     assert detail["event_update"] is None and detail["processing"] is None
     assert detail["feedback"] == {"feedback_n": 0, "latest": None}
-    assert "legacy_verdict" not in detail and "verdicts" not in detail
+    assert "event_update" in detail
     assert [step["stage"] for step in detail["timeline"]] == ["received", "gate"]
     assert detail["outcome"]["kind"] == "no_update"
 
@@ -289,12 +227,12 @@ def test_a_mixed_feed_page_partitions_into_the_same_tabs_its_rows_report(conn) -
     page = _feed(news)
 
     rows = {row["event_id"]: row for row in page["events"]}
-    assert list(rows) == ["agent-sent", "agent-silent", "agent-pending", "legacy"]
+    assert list(rows) == ["agent-sent", "agent-silent", "agent-pending", "source-only"]
     assert {event_id: row["outcome"]["kind"] for event_id, row in rows.items()} == {
         "agent-sent": "delivered",
         "agent-silent": "not_notified",
         "agent-pending": "queued_semantic",
-        "legacy": "no_update",
+        "source-only": "no_update",
     }
     assert rows["agent-sent"]["update"]["headline"] == SENT_HEADLINE
     assert rows["agent-sent"]["update"]["headline_source"] == "sent_card"
@@ -303,8 +241,8 @@ def test_a_mixed_feed_page_partitions_into_the_same_tabs_its_rows_report(conn) -
     assert rows["agent-silent"]["update"]["headline_source"] == "claim"
     assert rows["agent-silent"]["outcome"]["reason_zh"] == "仅进入信息流"
     assert rows["agent-pending"]["update"] is None
-    assert rows["legacy"]["update"] is None
-    assert "legacy_verdict" not in rows["legacy"]
+    assert rows["source-only"]["update"] is None
+    assert rows["source-only"]["update"] is None
 
     assert page["counts"] == {"total": 4, "pushed": 1, "held": 2, "pending": 1}
     for group in ("pushed", "held", "pending"):
@@ -347,13 +285,13 @@ def test_an_owed_intent_and_a_new_revision_move_the_row_back_to_pending(conn) ->
         silent = seeded["silent"]
         persist_plan(conn, silent, notify_plan(silent), state="done", now_ms=NOW - 10_000)
         queue_intent(conn, silent, notify_plan(silent), now_ms=NOW - 10_000)
-        persist_semantic_work(conn, "legacy", wanted=2, done=1, now_ms=NOW - 5_000)
+        persist_semantic_work(conn, "source-only", wanted=2, done=1, now_ms=NOW - 5_000)
 
     rows = {row["event_id"]: row for row in _feed(repos.news)["events"]}
 
     assert rows["agent-silent"]["outcome"]["kind"] == "pending_delivery"
     # A historical Event re-opened by new evidence enters the current semantic work path.
-    assert rows["legacy"]["outcome"]["kind"] == "queued_semantic"
+    assert rows["source-only"]["outcome"]["kind"] == "queued_semantic"
     counts = _feed(repos.news)["counts"]
     assert counts == {"total": 4, "pushed": 1, "held": 0, "pending": 3}
 

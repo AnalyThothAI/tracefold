@@ -278,28 +278,6 @@ _CL_SYMBOLS: Final = frozenset({"CL", "XYZ-CL"})
 _ASSET_KEY_PREFIX: Final = "asset:"
 
 
-# A model primary is free text (`TriageAsset.symbol` is any 1-16 characters) and this fallback is reached
-# precisely when nothing grounded it, so it is the least validated string in the pipeline — and it becomes a
-# duplicate-comparison group, an advisory-lock key and a console label. Accept only something shaped like a
-# symbol. #509 widened it by one optional exchange suffix: `02015.HK` and `DTE.DE` are exactly as groupable as
-# `NVDA`, and rejecting them sent every Hong Kong and German single-name card to the fallback bucket instead.
-_SYMBOL_SHAPE: Final = re.compile(r"^[A-Z0-9]{1,10}(\.[A-Z]{1,4})?$")
-
-
-def symbol_in_text(symbol: str, text: str) -> bool:
-    """True when the base symbol appears in the text as its own uppercase token (a `$TICKER` cashtag counts: `$`
-    is not a word character).
-
-    Case-sensitive on purpose. Provider tags collide with ordinary English words — `NOT`, `ME`, `ID`, `IO`, `ON`,
-    `AI` are all real symbols — and a case-insensitive match turned "he will not sell his stake" into evidence for
-    `asset:NOT`, which is the exact mis-bucketing this fallback exists to prevent. A Chinese headline carrying the
-    ticker still matches, because it carries it in caps. Strict on token boundaries too: `ETH` does not match
-    `ETHEREUM`, `MU` does not match `MUSK`."""
-
-    base = re.escape(symbol.replace("XYZ-", "").upper())
-    return re.search(rf"(?<![A-Za-z0-9]){base}(?![A-Za-z0-9])", text) is not None
-
-
 def _asset_key(assets: Sequence[MarketAsset], aliases: Mapping[str, str] | None) -> str:
     """``asset:<market>:<SYM>``, or ``asset:<SYM>`` when the market is unknown (#651 §6.2).
 
@@ -349,15 +327,10 @@ def same_storyline_key(left: str, right: str) -> bool:
 
 
 def preliminary_storyline_key(*, title: str, strong_assets: Sequence[str], asset_class: str, dedupe_family: str) -> str:
-    """Key computed before Triage, from the title alone plus the Gate's *strong* tags.
+    """Key computed before semantic analysis, from the title and the Gate's strong tags.
 
-    The rank is the final key's rank with its first step removed: `conflict:` > `actor:` > `geo:` > `topic:` >
-    `asset:<strong tag>` > `none`. The registry deliberately outranks the tag here, and only here. At Gate time
-    nothing has verified that a provider tag is what the headline is *about* — it marks an affected asset — so
-    letting it win would key "Iran attacked another ship outside the Strait of Hormuz" as `asset:BTC` on the
-    strength of a BTC tag, and the told ledger's exact-storyline tier would then answer a war card with Bitcoin
-    cards. After Triage the model has named its primaries and the evidence is real, so ``final_storyline_key``
-    puts the asset back on top.
+    Rank: `conflict:` > `actor:` > `geo:` > `topic:` > `asset:<strong tag>` > `none`.
+    The registry outranks tags because a provider tag can name an affected asset without naming the subject.
 
     ``strong_assets`` are ``events.gate.grounded_assets(..., strong_only=True)``: an A/A+ grade or a literal
     ``$TICKER`` cashtag. A B+ tag may not open a preliminary storyline. ``asset_class`` still gates that last
@@ -368,87 +341,12 @@ def preliminary_storyline_key(*, title: str, strong_assets: Sequence[str], asset
     if key is not None:
         return key
     if asset_class not in {"macro", "none"}:
-        # Untyped on purpose: at Gate time no judgment has said what this Event is about, so the market is
-        # not known and inventing one from the catalogue would key an equity story as a coin story on the
-        # strength of a same-name token. `same_storyline_key` is what makes this key still meet the typed
-        # final keys of the cards it is compared against (#651 §6.2).
+        # Untyped on purpose: the Gate does not yet know whether a same-name asset is an equity or a coin.
         named = [
             MarketAsset(base_symbol(symbol), "unknown") for symbol in strong_assets if symbol.upper() not in _CL_SYMBOLS
         ]
         if named:
             return _asset_key(named, None)
-    return NO_STORYLINE_KEY
-
-
-def final_storyline_key(
-    *,
-    title: str,
-    headline_zh: str,
-    scope: str,
-    verdict_primaries: Sequence[MarketAsset],
-    grounded_assets: Sequence[str],
-    dedupe_family: str,
-    aliases: Mapping[str, str] | None = None,
-    degraded: bool = False,
-) -> str:
-    """Key computed after Triage, by the fixed #509 rank:
-
-    1. ``asset:<SYM>`` — a verdict primary the Gate grounded, when the scope is not macro;
-    2. ``conflict:<id>`` — an active conflict whose members the text names;
-    3. ``actor:<id>``, 4. ``geo:<id>``, 5. ``topic:<id>`` — earliest mention inside the kind;
-    6. the model's own symbol-shaped primary, even when the provider did not tag it (#100);
-    7. a grounded tag the text actually names (#100);
-    8. ``none`` — no storyline.
-
-    ``aliases`` resolves symbols to one issuer first (#75). ``dedupe_family`` is accepted and unused: the
-    fallback key is now ``none``, so the family stays a column instead of becoming a budget bucket (#509 D2).
-
-    ``degraded`` marks a rule-baseline verdict, whose ``assets`` are empty by construction (the legacy
-    degraded fallback). "The model named no primary" is evidence only when a model actually
-    answered, so a degraded card keeps the pre-#100 fallback: the provider's tags are the only evidence there is.
-
-    This key is a duplicate-comparison and operator-facing grouping, never a claim shown to the reader — the
-    card's tickers come from ``delivery.card_assets`` (this judgment's own typed assets), which this does not
-    touch. Since #651 §6.2 the key carries the primary's market when it names one, and
-    :func:`same_storyline_key` is what compares two of these."""
-
-    grounded = {resolve_base_symbol(a, aliases) for a in grounded_assets}
-    primaries = [
-        a
-        for a in verdict_primaries
-        if a.symbol.upper() not in _CL_SYMBOLS and resolve_base_symbol(a.symbol, aliases) in grounded
-    ]
-    if primaries and scope != "macro":
-        return _asset_key(primaries, aliases)
-    text = f"{title} {headline_zh}"
-    key = registry_storyline_key(text)
-    if key is not None:
-        return key
-    # Nothing in the registry matched. The model named the subject even when the provider did not tag it, and its
-    # own primary is a better bucket than an arbitrary grounded tag: OKX's listing notices all carry an `OKB` tag,
-    # so "Johnson & Johnson appears on OKX" was keyed `asset:OKB`; VeChain's upgrade vote was keyed `asset:SKHY`.
-    # 16% of the asset-keyed cards of a live day sat in a bucket that was not about them (#100).
-    named = [
-        a
-        for a in verdict_primaries
-        if a.symbol.upper() not in _CL_SYMBOLS and _SYMBOL_SHAPE.match(a.symbol.upper().replace("XYZ-", ""))
-    ]
-    if named:
-        return _asset_key(named, aliases)
-    # A model that answered and still named nothing is saying the headline has no tradable subject, so a provider
-    # tag is only a storyline when the text is actually about it — the symbol appearing as its own token is the
-    # cheap evidence for that. Everything else has no storyline at all: `asset:BTC` was collecting Polish jets
-    # scrambling and a lending protocol being drained, which polluted duplicate evidence for real BTC cards. A
-    # false negative here costs a coarser group; a false positive contaminates another card's comparison set. A
-    # degraded verdict is exempt: it has no `assets` to begin with, and "NVIDIA to invest $100bn" never spells
-    # `NVDA`.
-    fallback = [
-        MarketAsset(base_symbol(a), "unknown")
-        for a in grounded_assets
-        if a.upper() not in _CL_SYMBOLS and (degraded or symbol_in_text(a, text))
-    ]
-    if fallback:
-        return _asset_key(fallback, aliases)
     return NO_STORYLINE_KEY
 
 
@@ -461,7 +359,6 @@ __all__ = [
     "StorylineGate",
     "StorylineHit",
     "StorylineRegistry",
-    "final_storyline_key",
     "load_storyline_registry",
     "match_storyline",
     "normalize_storyline_text",
@@ -470,5 +367,4 @@ __all__ = [
     "same_storyline_key",
     "storyline_asset",
     "storyline_entry",
-    "symbol_in_text",
 ]

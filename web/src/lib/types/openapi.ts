@@ -1738,51 +1738,6 @@ export interface components {
             /** Total Events */
             total_events: number;
         };
-        /** NewsLearningRetentionStatusData */
-        NewsLearningRetentionStatusData: {
-            /**
-             * Deleted Artifacts
-             * @default 0
-             */
-            deleted_artifacts: number;
-            /**
-             * Deleted Cases
-             * @default 0
-             */
-            deleted_cases: number;
-            /**
-             * Deleted Recordings
-             * @default 0
-             */
-            deleted_recordings: number;
-            /**
-             * Eligible Artifacts
-             * @default 0
-             */
-            eligible_artifacts: number;
-            /**
-             * Eligible Cases
-             * @default 0
-             */
-            eligible_cases: number;
-            /**
-             * Eligible Recordings
-             * @default 0
-             */
-            eligible_recordings: number;
-            /** Last Error Code */
-            last_error_code?: string | null;
-            /** Last Run At Ms */
-            last_run_at_ms?: number | null;
-            /** Oldest Artifact Age Ms */
-            oldest_artifact_age_ms?: number | null;
-            /** Oldest Case Age Ms */
-            oldest_case_age_ms?: number | null;
-            /** Oldest Recording Age Ms */
-            oldest_recording_age_ms?: number | null;
-            /** Updated At Ms */
-            updated_at_ms?: number | null;
-        };
         /** NewsMarketData */
         NewsMarketData: {
             filters: components["schemas"]["NewsMarketFiltersData"];
@@ -2344,10 +2299,6 @@ export interface components {
              */
             source_classifier_version: string;
             source_contracts_24h?: components["schemas"]["NewsSourceContracts24hData"];
-            /** Suppressed By Reason */
-            suppressed_by_reason?: {
-                [key: string]: number;
-            };
             /**
              * Tagged 24H
              * @default 0
@@ -2739,7 +2690,6 @@ export interface components {
             health: components["schemas"]["NewsHealthData"];
             ingest: components["schemas"]["NewsIngestStatusData"];
             instruments?: components["schemas"]["NewsInstrumentUniverse"];
-            learning_retention: components["schemas"]["NewsLearningRetentionStatusData"];
             /** Measured At Ms */
             measured_at_ms: number;
             pipeline: components["schemas"]["NewsPipelineStatusData"];
@@ -3516,8 +3466,6 @@ export interface components {
             /** Analysis Attempts */
             analysis_attempts?: components["schemas"]["TradingAnalysisAttemptData"][];
             analysis_decision?: components["schemas"]["TradingAnalysisDecisionData"] | null;
-            /** Analysis Evaluations */
-            analysis_evaluations?: components["schemas"]["TradingCaseEvaluationData"][];
             /** Analysis Outcomes */
             analysis_outcomes?: components["schemas"]["TradingAnalysisOutcomeData"][];
             /** Analysis Publish Status */
@@ -3591,42 +3539,6 @@ export interface components {
             /** Trigger Kind */
             trigger_kind?: string | null;
             watch_observation?: components["schemas"]["TradingWatchObservationData"] | null;
-        };
-        /** TradingCaseEvaluationData */
-        TradingCaseEvaluationData: {
-            /** Decision At Ms */
-            decision_at_ms: number;
-            /** Decision Quote Ref */
-            decision_quote_ref?: string | null;
-            /** Due At Ms */
-            due_at_ms: number;
-            /** Evaluated At Ms */
-            evaluated_at_ms?: number | null;
-            /** Evaluation Version */
-            evaluation_version: string;
-            /** Funding Ref */
-            funding_ref?: string | null;
-            /** Mark Path Ref */
-            mark_path_ref?: string | null;
-            /** Planned Quote Ref */
-            planned_quote_ref?: string | null;
-            /** Reason */
-            reason?: string | null;
-            /** Result */
-            result?: {
-                [key: string]: unknown;
-            } | null;
-            /** Scheduled At Ms */
-            scheduled_at_ms: number;
-            /**
-             * Source
-             * @enum {string}
-             */
-            source: "shadow_simulation" | "paper_venue";
-            /** Status */
-            status: string;
-            /** Venue Receipt Ref */
-            venue_receipt_ref?: string | null;
         };
         /**
          * TradingCasesData

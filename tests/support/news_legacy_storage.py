@@ -5,11 +5,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
+from tests.support.news_legacy import (
+    LEGACY_PROGRAM_VERSION,
+    LEGACY_TRIAGE_POLICY_VERSION,
+    TriageVerdict,
+    legacy_judgment,
+)
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.models import TriageVerdict
-from tracefold.news.storage.decisions import LEGACY_INTENT_RETIRED, legacy_intent_id
 from tracefold.news.storage.sql_values import _dumps
+from tracefold.news.updates.identity import identity
 
 
 class LegacyFixtureStorage:
@@ -281,3 +285,12 @@ def _persist_triage_verdict(
         focus_fact_id=str(evidence["focus_fact_id"]),
         now_ms=at_ms - 1,
     )
+
+
+LEGACY_INTENT_RETIRED = "legacy_intent_retired"
+
+
+def legacy_intent_id(event_id: str, kind: str) -> str:
+    if kind not in {"first", "followup"}:
+        raise ValueError("news_legacy_delivery_kind_invalid")
+    return identity("legacy_intent", event_id, kind)

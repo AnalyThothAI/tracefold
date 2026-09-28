@@ -207,7 +207,7 @@ def test_retired_headline_why_catalyst_is_rejected_by_name(tmp_path, monkeypatch
         rows = conn.execute(
             "SELECT kind,acknowledged_at_ms,rejected_reason FROM news_trade_events ORDER BY event_id"
         ).fetchall()
-        assert rows[0]["rejected_reason"] == "legacy_catalyst_payload" and rows[0]["acknowledged_at_ms"] is None
+        assert rows[0]["rejected_reason"] == "trade_event_payload_invalid" and rows[0]["acknowledged_at_ms"] is None
         assert rows[1]["rejected_reason"] is None and rows[1]["acknowledged_at_ms"] is not None
         assert [kind for kind, _ in selections] == ["oi"]
         assert conn.execute("SELECT kind FROM trading_triggers").fetchall() == [{"kind": "oi"}]

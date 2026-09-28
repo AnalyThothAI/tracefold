@@ -44,7 +44,6 @@ _READER_HISTORY_ROW_FIELDS: Final = frozenset(
         "why_zh",
         "history_scope",
         "retrieval_reason",
-        "provenance_status",
     }
 )
 
@@ -66,7 +65,6 @@ class ReaderHistoryRow:
     direction: str
     headline_zh: str
     why_zh: str
-    provenance_status: str = "delivery_bound"
     scope: HistoryScope = "recent"
     reason: HistoryReason = "recent"
 
@@ -188,7 +186,7 @@ def _history_row(row: Mapping[str, Any]) -> ReaderHistoryRow:
     unexpected = set(row).difference(_READER_HISTORY_ROW_FIELDS)
     if unexpected:
         raise ValueError(f"news_reader_history_fields_unexpected:{','.join(sorted(unexpected))}")
-    required = _READER_HISTORY_ROW_FIELDS.difference({"history_scope", "retrieval_reason", "provenance_status"})
+    required = _READER_HISTORY_ROW_FIELDS.difference({"history_scope", "retrieval_reason"})
     missing = required.difference(row)
     if missing:
         raise ValueError(f"news_reader_history_fields_missing:{','.join(sorted(missing))}")
@@ -201,7 +199,6 @@ def _history_row(row: Mapping[str, Any]) -> ReaderHistoryRow:
     canonical = tuple(sorted({base_symbol(str(value)) for value in row["canonical_assets"] or () if value}))
     return ReaderHistoryRow(
         event_id=str(row["event_id"]),
-        provenance_status=str(row.get("provenance_status") or "delivery_bound"),
         at_ms=int(row["at_ms"]),
         storyline_key=str(row["storyline_key"]),
         comparison_title=str(row["comparison_title"]),
