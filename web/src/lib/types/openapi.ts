@@ -811,7 +811,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "new_fact" | "possible_new" | "parameter_change" | "phase_change" | "scope_change" | "correction" | "conflict" | "evidence_change" | "restatement";
+            kind: "new_fact" | "possible_new" | "parameter_change" | "phase_change" | "scope_change" | "correction" | "conflict" | "evidence_change" | "scope_retraction" | "restatement";
             /**
              * Kind Zh
              * @default
@@ -1315,6 +1315,8 @@ export interface components {
             previous_content_revision?: string | null;
             /** Retired Claim Refs */
             retired_claim_refs?: string[];
+            /** Scope Repair Id */
+            scope_repair_id?: string | null;
             /** Sources */
             sources?: components["schemas"]["NewsUpdateEvidenceData"][];
             /** Topics */

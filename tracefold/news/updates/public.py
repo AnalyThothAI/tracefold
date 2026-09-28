@@ -13,7 +13,9 @@ PublicKind = Literal["catalyst_delta", "source_update"]
 CATALYST_CHANGES: Final[frozenset[ChangeKind]] = frozenset(
     {"new_fact", "parameter_change", "phase_change", "scope_change"}
 )
-SOURCE_CHANGES: Final[frozenset[ChangeKind]] = frozenset({"correction", "conflict", "evidence_change"})
+SOURCE_CHANGES: Final[frozenset[ChangeKind]] = frozenset(
+    {"correction", "conflict", "evidence_change", "scope_retraction"}
+)
 
 
 def claim_text(claim: Claim) -> str:
@@ -64,7 +66,10 @@ def _retired(changes: tuple[Change, ...]) -> tuple[str, ...]:
             {
                 change.previous_ref
                 for change in changes
-                if change.kind == "correction" and change.relation == "corrects" and change.previous_ref is not None
+                if change.previous_ref is not None
+                and (
+                    (change.kind == "correction" and change.relation == "corrects") or change.kind == "scope_retraction"
+                )
             }
         )
     )
