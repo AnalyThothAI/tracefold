@@ -27,10 +27,10 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'issue719_scope_or_stopped_runtime_unverified';
   END IF;
-  -- 0407 adds News decisions; 0408 adds Trading source lookup and call audit only.
-  -- Neither changes the execution cut contract.
+  -- 0407 adds News decisions; 0408 adds Trading source lookup and call audit;
+  -- 0409 adds News task reads and copy metadata. None changes this execution cut.
   IF (SELECT version_num FROM public.alembic_version) NOT IN
-      ('20260927_0406', '20260927_0407', '20260928_0408') THEN
+      ('20260927_0406', '20260927_0407', '20260928_0408', '20260928_0409') THEN
     RAISE EXCEPTION 'issue719_schema_head_mismatch';
   END IF;
   -- A late retry of an old command keeps its original expiry. Once every old
