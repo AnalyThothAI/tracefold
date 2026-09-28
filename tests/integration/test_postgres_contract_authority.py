@@ -11,7 +11,6 @@ from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_legacy import legacy_editorial, legacy_taxonomy
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.models import TriageVerdict
-from tracefold.news.review.desk import EventRubricSubmission
 
 # Frozen v8 historical row shape. The current ReviewDesk no longer writes this retired taxonomy.
 _HISTORICAL_V8_TAXONOMY: Final[dict[str, Any]] = {
@@ -103,20 +102,31 @@ _HISTORICAL_LIQUIDATION_METADATA: Final[dict[str, Any]] = {
 }
 
 
-def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]:
-    evidence_refs = []
-    note = ""
-    dimensions = {"factual_fidelity": "pass"}
-    expected: dict[str, Any] | None = None
+def _historical_review_payload(*, production_sized: bool = False) -> dict[str, Any]:
+    """Raw persisted v8 row for historical database constraint checks."""
+    payload = {
+        "kind": "event_rubric",
+        "should_push": "should_hold",
+        "dimensions": {"factual_fidelity": "pass"},
+        "novelty": {"judgment": "new_fact", "equivalent_targets": [], "duplicate_of": ""},
+        "first_bad_owner": "triage_prompt",
+        "evidence_refs": [],
+        "expected": None,
+        "explanation": None,
+        "explanation_supervision": "not_applicable",
+        "expected_correction": "",
+        "note": "",
+    } | _HISTORICAL_V8_TAXONOMY
     if production_sized:
-        evidence_refs = [f"ref-{index:02d}-" + "x" * 493 for index in range(32)]
-        note = "n" * 2_000
-        dimensions |= {
+        payload["evidence_refs"] = [f"ref-{index:02d}-" + "x" * 493 for index in range(32)]
+        payload["note"] = "n" * 2_000
+        payload["dimensions"] = {
+            "factual_fidelity": "pass",
             "direction": "fail",
             "asset_grounding": "fail",
             "fact_kind": "fail",
         }
-        expected = {
+        payload["expected"] = {
             "direction": "bullish",
             "assets": [
                 {"symbol": f"ASSET{index:02d}".ljust(32, "X"), "market_type": "equity", "role": "primary"}
@@ -124,27 +134,7 @@ def _current_review_payload(*, production_sized: bool = False) -> dict[str, Any]
             ],
             "fact_kind": "official_measure",
         }
-    return (
-        EventRubricSubmission(
-            should_push="should_hold",
-            dimensions=dimensions,
-            novelty={"judgment": "new_fact"},
-            first_bad_owner="triage_prompt",
-            evidence_refs=evidence_refs,
-            expected=expected,
-            note=note,
-        ).model_dump(mode="json")
-        | _HISTORICAL_V8_TAXONOMY
-    )
-
-
-def _review_row_accepted_by_python(payload: dict[str, Any]) -> bool:
-    """The old ReviewDesk wrote a v8 submission plus two required taxonomy placeholders."""
-
-    if any(key not in payload or payload[key] != value for key, value in _HISTORICAL_V8_TAXONOMY.items()):
-        return False
-    submission = {key: value for key, value in payload.items() if key not in _HISTORICAL_V8_TAXONOMY}
-    return _python_persisted_form_accepts(EventRubricSubmission, submission)
+    return payload
 
 
 def test_news_current_json_validators_match_the_python_contract() -> None:
@@ -247,7 +237,7 @@ def test_news_canonical_json_hash_matches_python_for_nested_unicode_payload() ->
 
 
 def test_retained_telemetry_and_review_validators_match_python_owned_shapes() -> None:
-    """The review validator still mirrors its Python shape; the market ones still hold history.
+    """Historical review and market validators still protect stored rows.
 
     A market judgment is no longer written (#553), so the two market validators are asked one
     question here: do they still accept exactly the shape that is stored, and still refuse a drifted
@@ -257,7 +247,7 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
 
     oi, oi_metadata = _HISTORICAL_OI_SIGNAL, _HISTORICAL_OI_METADATA
     liquidation, liquidation_metadata = _HISTORICAL_LIQUIDATION_FACT, _HISTORICAL_LIQUIDATION_METADATA
-    review = _current_review_payload()
+    review = _historical_review_payload()
     oi_corpus = [(oi, True), (oi | {"retired": True}, False), (oi | {"symbol": ["SOL"]}, False)]
     oi_corpus.extend(({key: value for key, value in oi.items() if key != removed}, False) for removed in oi)
     liquidation_corpus = [
@@ -270,8 +260,13 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
     )
     taxonomy_drift = review | {"taxonomy_review": review["taxonomy_review"] | {"retired": True}}
     stated_taxonomy = review | {"taxonomy": {"event_family": "market_access"}}
-    review_corpus = [review, review | {"retired": True}, taxonomy_drift, stated_taxonomy]
-    review_corpus.extend({key: value for key, value in review.items() if key != removed} for removed in review)
+    review_corpus = [
+        (review, True),
+        (review | {"retired": True}, False),
+        (taxonomy_drift, False),
+        (stated_taxonomy, True),
+    ]
+    review_corpus.extend(({key: value for key, value in review.items() if key != removed}, False) for removed in review)
     selection = {
         "stratum": "random_control",
         "stratum_zh": "随机对照",
@@ -309,7 +304,7 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
             ).fetchone()
             assert bool(valid["valid"]) is True
             assert bool(drift["valid"]) is False
-        for index, payload in enumerate(review_corpus):
+        for index, (payload, expected) in enumerate(review_corpus):
             row = conn.execute(
                 """
                     SELECT news_current_review_valid(
@@ -332,8 +327,6 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
                     "selection": Jsonb(selection),
                 },
             ).fetchone()
-            # A stated taxonomy is still a shape the v8 row contract admits; the desk can no longer write one.
-            expected = _review_row_accepted_by_python(payload) or payload is stated_taxonomy
             assert bool(row["valid"]) is expected, (index, payload)
     finally:
         conn.close()
@@ -342,7 +335,7 @@ def test_retained_telemetry_and_review_validators_match_python_owned_shapes() ->
 def test_retained_json_validators_meet_native_insert_and_update_budget() -> None:
     oi, oi_metadata = _HISTORICAL_OI_SIGNAL, _HISTORICAL_OI_METADATA
     liquidation, liquidation_metadata = _HISTORICAL_LIQUIDATION_FACT, _HISTORICAL_LIQUIDATION_METADATA
-    review = _current_review_payload(production_sized=True)
+    review = _historical_review_payload(production_sized=True)
     selection = {
         "stratum": "random_control",
         "stratum_zh": "随机对照",

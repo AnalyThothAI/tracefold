@@ -40,17 +40,6 @@ dev = [
     "types-defusedxml>=0.7.0",
     "types-regex>=2024.11.6",
 ]
-# The `notebooks/` research workspace (#274). Not a default group: `uv run`, `make test` and the
-# Docker image never install it, so a Jupyter stack cannot reach a worker, a release path, or the
-# service dependency set. `uv sync --group research` is the one way in.
-research = [
-    "ipykernel>=6.29",
-    "jupyterlab>=4.6",
-    "matplotlib>=3.10",
-    "nbclient>=0.10",
-    "nbconvert>=7.16",
-    "pandas>=2.2",
-]
 
 [project.scripts]
 tracefold = "tracefold.cli:main"
@@ -113,7 +102,6 @@ source = ["tracefold", "*/tracefold"]
 [tool.ruff]
 line-length = 120
 target-version = "py313"
-extend-exclude = ["notebooks/*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "S", "ASYNC", "RUF", "PERF", "PL"]
@@ -155,12 +143,6 @@ ignore = [
 "scripts/**" = [
   "S603",   # subprocess inputs are local CLI args
   "S607",
-]
-# The research workspace's own self-tests (#537 PR-1). They are not in `tests/`, so `testpaths` never
-# collects them and CI never runs them — but they are still tests, and `assert` is still their contract.
-"notebooks/research/test_*.py" = [
-  "S101",
-  "PLR2004",
 ]
 [tool.ruff.format]
 # Default settings; line-length inherited from [tool.ruff] = 120

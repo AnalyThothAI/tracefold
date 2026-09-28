@@ -12,6 +12,7 @@ import pytest
 from psycopg.errors import CheckViolation, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_event_updates import first_update, persist_update
 from tests.support.news_legacy import (
     LEGACY_PROGRAM_VERSION,
     LEGACY_TRIAGE_POLICY_VERSION,
@@ -486,7 +487,6 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
         source_authority=None,
         subject_code=None,
         admission=None,
-        final_decision=None,
         event_kind=None,
         search=None,
         limit=100,
@@ -505,7 +505,6 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
             source_authority=None,
             subject_code=None,
             admission=None,
-            final_decision=None,
             event_kind=None,
             search=None,
             limit=10_000,
@@ -1870,7 +1869,8 @@ def test_explain_event_prints_the_chain_with_a_one_line_outcome(conn) -> None:
     explained = explain_event(repos, with_verdict["event_id"])
     assert explained is not None
     stages = [step["stage"] for step in explained["chain"]]
-    assert stages[:4] == ["item", "gate", "triage", "decide"]
+    assert stages[:2] == ["item", "gate"]
+    assert "triage" not in stages and "decide" not in stages
     assert explained["chain"][0]["provider_coins"] is not None
     assert explained["outcome"]
     assert (
@@ -1880,55 +1880,33 @@ def test_explain_event_prints_the_chain_with_a_one_line_outcome(conn) -> None:
     assert explain_event(repos, "does-not-exist") is None
 
 
-def test_feed_direction_and_event_kind_filters_compose_over_the_authoritative_query(conn) -> None:
+def test_feed_event_kind_filters_compose_with_text_search(conn) -> None:
     repos = repositories_for_connection(conn)
-    sentinel = "direction-channel-filter-sentinel"
-    bullish_id, bearish_listing_id = _admit_test_events(
+    sentinel = "event-kind-filter-sentinel"
+    news_id, listing_id = _admit_test_events(
         conn,
         hit_base=1_795_200,
-        titles=(
-            f"{sentinel} semiconductor orders accelerate after a capacity expansion",
-            f"{sentinel} an exchange delists a perpetual contract",
-        ),
+        titles=(f"{sentinel} semiconductor orders accelerate", f"{sentinel} an exchange delists a contract"),
         hour=11,
     )
-    assert bullish_id != bearish_listing_id
     with repos.transaction():
-        conn.execute(
-            "UPDATE news_events SET event_kind = 'listing' WHERE event_id = %s",
-            (bearish_listing_id,),
-        )
-        for offset, (event_id, direction) in enumerate(((bullish_id, "bullish"), (bearish_listing_id, "bearish"))):
-            _insert_test_verdict(
-                repos,
-                event_id=event_id,
-                direction=direction,
-                now_ms=1_790_000_100_000 + offset,
-            )
+        conn.execute("UPDATE news_events SET event_kind='listing' WHERE event_id=%s", (listing_id,))
 
-    def ids(**filters):
-        params = dict(
+    def ids(*kinds: str) -> set[str]:
+        page = repos.news.list_feed(
             source_authority=None,
             subject_code=None,
             admission=None,
-            final_decision=None,
-            event_kind=None,
-            # The integration database is intentionally shared across this module. Scope the assertion to
-            # this test's Events so unrelated, valid verdicts cannot make an exact-set assertion flaky.
+            event_kind=kinds,
             search=compile_news_search(q=sentinel, symbol=None, instruments=repos.instruments),
             limit=10,
             cursor=None,
         )
-        params.update(filters)
-        page = repos.news.list_feed(**params)
         return {event["event_id"] for event in page["events"]}
 
-    assert ids(directions=("bullish",)) == {bullish_id}
-    assert ids(directions=("bearish",)) == {bearish_listing_id}
-    assert ids(event_kind=("news",)) == {bullish_id}
-    assert ids(event_kind=("listing",)) == {bearish_listing_id}
-    assert ids(event_kind=("news", "listing")) == {bullish_id, bearish_listing_id}
-    assert ids(directions=("bullish",), event_kind=("listing",)) == set()
+    assert ids("news") == {news_id}
+    assert ids("listing") == {listing_id}
+    assert ids("news", "listing") == {news_id, listing_id}
     conn.commit()
 
 
@@ -1954,13 +1932,7 @@ def test_event_feed_funnel_tracks_one_opened_event_cohort_across_durable_stages(
             (now_ms - 3600_000, current_event),
         )
         for offset, event_id in enumerate((old_event, current_event)):
-            _insert_test_verdict(
-                repos,
-                event_id=event_id,
-                direction="bullish",
-                final_decision="push",
-                now_ms=now_ms - 10 * 60_000 + offset,
-            )
+            persist_update(conn, first_update(event_id, adopted_at_ms=now_ms - 10 * 60_000 + offset))
             assert (
                 legacy_news(repos.news).begin_delivery(
                     event_id=event_id,
@@ -1981,8 +1953,7 @@ def test_event_feed_funnel_tracks_one_opened_event_cohort_across_durable_stages(
 
     status = repos.news.status_snapshot(now_ms=now_ms)
     pipeline = status["pipeline"]
-    # Throughput ledgers keep their own 24 h clocks and therefore see both late completions.
-    assert pipeline["triage_24h"] == 2
+    # Delivery throughput sees both late completions; the opened Event cohort sees one.
     assert status["delivery"]["sent_24h"] == 2
     # The reader funnel follows only Events opened in its one intake cohort, so every stage remains monotonic.
     assert {
@@ -1990,13 +1961,13 @@ def test_event_feed_funnel_tracks_one_opened_event_cohort_across_durable_stages(
         for key in (
             "funnel_received_24h",
             "funnel_admitted_24h",
-            "funnel_triaged_24h",
+            "funnel_adopted_24h",
             "funnel_delivered_24h",
         )
     } == {
         "funnel_received_24h": 1,
         "funnel_admitted_24h": 1,
-        "funnel_triaged_24h": 1,
+        "funnel_adopted_24h": 1,
         "funnel_delivered_24h": 1,
     }
     conn.commit()
@@ -2036,7 +2007,6 @@ def test_the_symbol_filter_names_an_identity_rather_than_one_spelling(conn) -> N
             source_authority=None,
             subject_code=None,
             admission=None,
-            final_decision=None,
             event_kind=None,
             search=compile_news_search(q=None, symbol=symbol, instruments=repos.instruments),
             limit=10_000,
@@ -2121,7 +2091,6 @@ def test_feed_search_hard_cuts_asset_identity_from_full_text(conn) -> None:
             source_authority=None,
             subject_code=None,
             admission=None,
-            final_decision=None,
             event_kind=None,
             search=compile_news_search(q=q, symbol=symbol, instruments=repos.instruments),
             limit=limit,
@@ -2311,11 +2280,9 @@ def test_a_typed_primary_survives_the_check_the_card_and_the_typed_quote_target(
     assert quotes["V"]["instrument_class"] == "equity"
     assert repos.price.resolve_instruments([QuoteRequest("V")])[QuoteRequest("V")].venue == "binance.perp"
 
-    # The public detail projection carries the market, so the browser can tell the two `V`s apart too.
+    # Current public detail retains the original source tag without projecting the retired verdict.
     detail = repos.news.event_detail(event_id)
     assert detail is not None
-    assert detail["legacy_verdict"]["assets"] == [
-        {"symbol": "V", "market_type": "equity", "role": "primary"},
-        {"symbol": "CRCL", "market_type": "equity", "role": "mentioned"},
-    ]
+    assert detail["event"]["grounded_assets"] == ["CRCL"]
+    assert "legacy_verdict" not in detail
     conn.commit()

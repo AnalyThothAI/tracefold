@@ -8,7 +8,7 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 from decimal import Decimal, InvalidOperation
-from typing import Any, cast
+from typing import Any, Protocol, cast
 
 import dspy  # type: ignore[import-untyped]
 from dspy.adapters.types.decision import Choice  # type: ignore[import-untyped]
@@ -21,6 +21,7 @@ from typesafe_sdk import (
 from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.system_one import SystemOneConnection, SystemOneReceipt
 from tracefold.app.trading_analyst import PhysicalModelCall
+from tracefold.app.trading_prepared import PreparedAnalysis
 from tracefold.trading.engine.features import (
     PROFILE_VERSION,
     WINDOW_VERSION,
@@ -30,9 +31,26 @@ from tracefold.trading.engine.features import (
     price_plan_window,
     window_ref,
 )
-from tracefold.trading.engine.marketdata import Dataset, MarketDataPort, MarketDataResult, analysis_market_request
+from tracefold.trading.engine.marketdata import (
+    Dataset,
+    MarketDataPort,
+    MarketDataRequest,
+    MarketDataResult,
+    analysis_market_request,
+)
 from tracefold.trading.engine.plans import EntryPlan, build_entry_plans
 from tracefold.trading.engine.policy import is_citable_evidence
+
+
+class ToolBudget(Protocol):
+    deadline_at_monotonic: float
+
+    def remaining_ms(self) -> int: ...
+
+    async def start(self, request_payload: dict[str, Any]) -> tuple[int, int]: ...
+
+    async def finish(self, call_index: int, call: PhysicalModelCall) -> None: ...
+
 
 _BAR_MS = 60_000
 _OI_PERIOD_MS = 300_000
@@ -73,6 +91,97 @@ def _source_text(payload: dict[str, Any]) -> str:
     return text if text is not None else _json(payload)
 
 
+def _market_projection(
+    *,
+    dataset: str,
+    effective_window: int,
+    end: int | None,
+    available: int,
+    request: MarketDataRequest,
+    result: MarketDataResult,
+    source_fact: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], tuple[dict[str, Any], ...]]:
+    """Normalize one fetched dataset and derive only features supported by its closed window."""
+    last = result.payload[-1] if result.payload else {}
+    values = {
+        key: last[key]
+        for key in (
+            "close",
+            "open_interest_quantity",
+            "sum_open_interest_quantity",
+            "sum_open_interest_value",
+            "mark_price",
+            "index_price",
+            "last_funding_rate",
+        )
+        if key in last
+    }
+    if dataset == "open_interest_history" and result.status == "ok" and len(result.payload) >= 2:
+        try:
+            first = Decimal(str(result.payload[0]["sum_open_interest_quantity"]))
+            final = Decimal(str(result.payload[-1]["sum_open_interest_quantity"]))
+            if first.is_finite() and final.is_finite() and first > 0 and final >= 0:
+                values["oi_change_bps"] = str((final / first - 1) * 10_000)
+        except (KeyError, InvalidOperation, TypeError):
+            pass
+    derived: dict[str, Any] = {}
+    covered_rows: tuple[dict[str, Any], ...] = ()
+    missing = MarketDataResult(
+        status="missing",
+        payload=(),
+        schema_version=result.schema_version,
+        source_version=result.source_version,
+        unit_definition=result.unit_definition,
+        source_identity=result.source_identity,
+        event_start_ms=None,
+        event_end_ms=None,
+        received_at_ms=None,
+        missing_reasons=("not_requested",),
+        request_receipts=(),
+    )
+    if dataset in ("perp_bars", "spot_bars", "market_bars"):
+        if end is None:
+            raise ValueError("market_window_invalid")
+        covered_rows = closed_bar_window(
+            result,
+            count=effective_window + 1,
+            end_ms=end,
+            cutoff_ms=available,
+            source_identity=request.source_identity,
+            unit_definition=request.unit_definition,
+        )
+        feature_set = extract_features(
+            {
+                name: result if name == dataset else missing
+                for name in ("perp_bars", "spot_bars", "market_bars", "open_interest", "funding_basis")
+            },
+            source_fact,
+            expected_ends={dataset: end},
+            cutoff_ms=available,
+        )
+        prefixes = {"perp_bars": ("perp_",), "spot_bars": ("spot_",), "market_bars": ("btc_",)}
+        derived = {
+            key: value for key, value in feature_set.items() if key.startswith(prefixes[dataset]) and value is not None
+        }
+        values.update(derived)
+    elif dataset in ("open_interest", "funding_basis"):
+        feature_set = extract_features(
+            {
+                name: result if name == dataset else missing
+                for name in _MARKET_DATASETS
+                if name != "open_interest_history"
+            },
+            source_fact,
+            cutoff_ms=available,
+        )
+        names = (
+            ("binance_open_interest_quantity",) if dataset == "open_interest" else ("funding_rate_bps", "premium_bps")
+        )
+        derived = {name: feature_set[name] for name in names if feature_set[name] is not None}
+        values.update(derived)
+    return values, derived, covered_rows
+
+
 class CaseToolContext:
     def __init__(
         self,
@@ -80,7 +189,7 @@ class CaseToolContext:
         case: dict[str, Any],
         source: dict[str, Any],
         source_first_visible_at_ms: int,
-        prepared: Any,
+        prepared: PreparedAnalysis,
         market_data: MarketDataPort,
         files: AnalysisFiles,
         file_io: Callable[..., Awaitable[Any]],
@@ -107,15 +216,15 @@ class CaseToolContext:
         self.event_materials: dict[str, dict[str, Any]] = {}
         self.amendment_materials: dict[str, dict[str, Any]] = {}
         self._fatal: str | None = None
-        self._ledger: Any = None
-        seed = json.loads(getattr(prepared.brief, "text", "{}"))
-        for item in getattr(prepared, "source_history", ()):
+        self._ledger: ToolBudget | None = None
+        seed = json.loads(prepared.brief.text)
+        for item in prepared.source_history:
             self._register_event(
                 item,
                 prepared.evidence_ref,
                 int(seed.get("evidence", {}).get("source", {}).get("knowledge_cutoff_ms") or time.time() * 1000),
             )
-        for item in getattr(prepared, "source_amendments", ()):
+        for item in prepared.source_amendments:
             self.amendment_materials["amendment:" + _content_sha(item)] = item
 
     def _register_plan(self, plan: EntryPlan, now_ms: int) -> bool:
@@ -186,7 +295,10 @@ class CaseToolContext:
             if is_citable_evidence(item)
         }
 
-    def tools(self, ledger: Any) -> list[dspy.Tool]:
+    def tools(self, ledger: ToolBudget) -> list[dspy.Tool]:
+        if ledger.deadline_at_monotonic <= time.monotonic():
+            raise TimeoutError("analysis_tool_budget_expired")
+        ledger.remaining_ms()
         self._ledger = ledger
         result = [
             dspy.Tool(self.get_event_context),
@@ -197,11 +309,15 @@ class CaseToolContext:
             result.append(dspy.Tool(self.assess_claims))
         return result
 
+    def _budget(self) -> ToolBudget:
+        if self._ledger is None:
+            raise RuntimeError("analysis_tool_budget_required")
+        return self._ledger
+
     async def _check(self) -> None:
         if self._fatal is not None:
             raise _ToolFatal(self._fatal)
-        if hasattr(self._ledger, "remaining_ms"):
-            self._ledger.remaining_ms()
+        self._budget().remaining_ms()
         if not await self.authorize():
             self._fatal = "analysis_tool_scope_expired"
             raise _ToolFatal(self._fatal)
@@ -214,14 +330,7 @@ class CaseToolContext:
     ) -> str:
         await self._check()
         try:
-            result = (
-                await asyncio.wait_for(
-                    operation(),
-                    timeout=self._ledger.remaining_ms() / 1_000,
-                )
-                if hasattr(self._ledger, "remaining_ms")
-                else await operation()
-            )
+            result = await asyncio.wait_for(operation(), timeout=self._budget().remaining_ms() / 1_000)
         except ValueError as exc:
             result = {"status": "error", "reason": str(exc)[:96]}
         except (TypeSafeAPIError, TypeSafeAPIConnectionError, TypeSafeAPIResponseValidationError) as exc:
@@ -321,10 +430,7 @@ class CaseToolContext:
                 instrument_environment=str(instrument["environment"]),
                 end_ms=end,
                 window_minutes=effective_window if end is not None else None,
-                deadline_at_monotonic=min(
-                    time.monotonic() + 5.0,
-                    getattr(self._ledger, "deadline_at_monotonic", float("inf")),
-                ),
+                deadline_at_monotonic=min(time.monotonic() + 5.0, self._budget().deadline_at_monotonic),
             )
             native = request.native_symbol
             environment = request.environment
@@ -344,87 +450,15 @@ class CaseToolContext:
             artifact_ref = await self.file_io(self.files.write, raw)
             ref = f"market:{dataset}:{artifact_ref}"
             self.market_artifacts[ref] = artifact_ref
-            last = result.payload[-1] if result.payload else {}
-            values = {
-                key: last[key]
-                for key in (
-                    "close",
-                    "open_interest_quantity",
-                    "sum_open_interest_quantity",
-                    "sum_open_interest_value",
-                    "mark_price",
-                    "index_price",
-                    "last_funding_rate",
-                )
-                if key in last
-            }
-            if dataset == "open_interest_history" and result.status == "ok" and len(result.payload) >= 2:
-                try:
-                    first = Decimal(str(result.payload[0]["sum_open_interest_quantity"]))
-                    final = Decimal(str(result.payload[-1]["sum_open_interest_quantity"]))
-                    if first.is_finite() and final.is_finite() and first > 0 and final >= 0:
-                        values["oi_change_bps"] = str((final / first - 1) * 10_000)
-                except (KeyError, InvalidOperation, TypeError):
-                    pass
-            derived: dict[str, Any] = {}
-            covered_rows: tuple[dict[str, Any], ...] = ()
-            missing = MarketDataResult(
-                status="missing",
-                payload=(),
-                schema_version=result.schema_version,
-                source_version=result.source_version,
-                unit_definition=result.unit_definition,
-                source_identity=result.source_identity,
-                event_start_ms=None,
-                event_end_ms=None,
-                received_at_ms=None,
-                missing_reasons=("not_requested",),
-                request_receipts=(),
+            values, derived, covered_rows = _market_projection(
+                dataset=dataset,
+                effective_window=effective_window,
+                end=end,
+                available=available,
+                request=request,
+                result=result,
+                source_fact=self.source["payload"],
             )
-            if dataset in ("perp_bars", "spot_bars", "market_bars"):
-                if end is None:
-                    raise ValueError("market_window_invalid")
-                covered_rows = closed_bar_window(
-                    result,
-                    count=effective_window + 1,
-                    end_ms=end,
-                    cutoff_ms=available,
-                    source_identity=request.source_identity,
-                    unit_definition=request.unit_definition,
-                )
-                feature_set = extract_features(
-                    {
-                        name: result if name == dataset else missing
-                        for name in ("perp_bars", "spot_bars", "market_bars", "open_interest", "funding_basis")
-                    },
-                    self.source["payload"],
-                    expected_ends={dataset: end},
-                    cutoff_ms=available,
-                )
-                prefixes = {"perp_bars": ("perp_",), "spot_bars": ("spot_",), "market_bars": ("btc_",)}
-                derived = {
-                    key: value
-                    for key, value in feature_set.items()
-                    if key.startswith(prefixes[dataset]) and value is not None
-                }
-                values.update(derived)
-            elif dataset in ("open_interest", "funding_basis"):
-                feature_set = extract_features(
-                    {
-                        name: result if name == dataset else missing
-                        for name in _MARKET_DATASETS
-                        if name != "open_interest_history"
-                    },
-                    self.source["payload"],
-                    cutoff_ms=available,
-                )
-                names = (
-                    ("binance_open_interest_quantity",)
-                    if dataset == "open_interest"
-                    else ("funding_rate_bps", "premium_bps")
-                )
-                derived = {name: feature_set[name] for name in names if feature_set[name] is not None}
-                values.update(derived)
             self.evidence_catalog.setdefault(
                 ref,
                 {
@@ -703,13 +737,13 @@ class CaseToolContext:
             holder: dict[str, int] = {}
 
             async def before(request: dict[str, Any]) -> None:
-                index, _timeout = await self._ledger.start(request)
+                index, _timeout = await self._budget().start(request)
                 holder["index"] = index
 
             async def after(receipt: SystemOneReceipt) -> None:
                 index = holder["index"]
                 try:
-                    await self._ledger.finish(
+                    await self._budget().finish(
                         index,
                         PhysicalModelCall(
                             request_payload=receipt.request_payload,
@@ -742,7 +776,7 @@ class CaseToolContext:
             lm = self.semantics.bind(
                 before_call=before,
                 after_call=after,
-                deadline_at_monotonic=self._ledger.deadline_at_monotonic,
+                deadline_at_monotonic=self._budget().deadline_at_monotonic,
             )
             answer = await dspy.Predict(ClaimSupport).acall(claim=claim, evidence=evidence, lm=lm)
             verdict = answer.verdict

@@ -11,7 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.test_wallet_net_buy import (
+from tests.postgres_test_utils import connect_postgres_test
+from tests.support.wallet_net_buy import (
     CHAIN_ID,
     NOW,
     TOKEN,
@@ -23,7 +24,6 @@ from tests.integration.test_wallet_net_buy import (
     run,
     seed,
 )
-from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_notifications import MarketNotificationLoop
 from tracefold.news.storage.wallet_events import NET_BUY_WINDOW_SQL, WALLET_PENDING_RECEIPTS_SQL

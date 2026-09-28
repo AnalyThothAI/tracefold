@@ -211,7 +211,7 @@ sequenceDiagram
 
 [taxonomy.py](../../tracefold/news/taxonomy.py)保留来源权威类别，例如 `regulatory_filing`、`issuer_first_party`、`reputable_secondary` 与 `unknown`，依据已识别的来源身份。来源权威不是对其引用的第三方说法进行独立核验，更不是交易指令。
 
-新写入使用 `news_event_update_v2`；旧 v1 保留其原始内容和哈希。旧四轴 taxonomy、旧 Program 的 `fact_kind` 输出不是新 Claim 契约。历史 verdict / ReviewDesk 词表仅保留明确的历史读取语义。
+新写入使用 `news_event_update_v2`；旧 v1 保留其原始内容和哈希。旧四轴 taxonomy、旧 Program 的 `fact_kind` 输出不是新 Claim 契约。当前 ReviewDesk 只处理通知决策反馈及外部漏报；历史 verdict 仍是数据库中的原始事实，不再提供旧审核任务或丰富详情投影。
 
 <a id="state"></a>
 <a id="5-work-progress-and-recovery"></a>
@@ -376,7 +376,7 @@ T2 的卡片生成失败不应回滚 T2 的知识；T3 更正不会改写 T0 冻
 
 先定位 `event_id`、来源修订、wanted / done、content revision、intent，再看[输入范围](../../tests/news/test_news_update_input_scope.py)、[语义 Worker](../../tests/news/test_news_semantic_worker.py)、[通知规则](../../tests/news/test_news_event_update_notifications.py)以及[修订存储](../../tests/integration/test_news_revision_ownership.py)、[EventUpdate 存储](../../tests/integration/test_news_event_update_store.py)、[发送集成](../../tests/integration/test_news_update_delivery.py)。
 
-前端通过新闻流与 Event 详情读取这些维度；历史 verdict 明确标为 `legacy_verdict`，不能由 UI 合成新命题。列表计数与卡片成功率、语义采用率的分母不同，不应混算。
+前端通过新闻流与 Event 详情读取这些维度；只有旧记录的 Event 显示来源与实际发送回执，不由 UI 合成新命题。列表计数与卡片成功率、语义采用率的分母不同，不应混算。
 
 代码测试证明状态、身份、引用与副作用边界；真实新闻理解质量仍需独立复核。保留的[ReviewDesk / 校准](review.md)不是自动优化发布系统。
 

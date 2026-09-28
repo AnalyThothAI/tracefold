@@ -77,7 +77,7 @@ def test_membership_cutover_archives_statistics_repairs_unsafe_cursor_and_preser
         assert "rank_quality" not in projected["initial_snapshot"]["window"]["members"][0]
         assert original["initial_snapshot"]["window"]["members"][0]["rank_quality"] == 1
         # Recovery re-reads from the conservative old block rather than jumping to head.
-        from tests.integration.test_news_chain_tape import _Chain, _loop
+        from tests.support.wallet_chain import _Chain, _loop
 
         chain = _Chain([], head=150)
         asyncio.run(_loop(conn, chain).advance())

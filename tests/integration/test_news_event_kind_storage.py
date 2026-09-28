@@ -454,7 +454,6 @@ def test_feed_detail_filters_counts_and_status_project_the_closed_event_kinds(co
             source_authority=None,
             subject_code=None,
             admission=None,
-            final_decision=None,
             search=None,
             limit=limit,
             cursor=cursor,
@@ -488,8 +487,8 @@ def test_feed_detail_filters_counts_and_status_project_the_closed_event_kinds(co
     # The funnel is the editorial one. Market intake is a market question and `market_sources`
     # answers it from the facts themselves (#553), so nothing here reports a lane it cannot see.
     assert status["source_contracts_24h"] == {
-        "news_v1": {"received": 2, "parsed": 2, "verdict": 1},
-        "listing_v1": {"received": 2, "parsed": 2, "verdict": 0},
+        "news_v1": {"received": 2, "parsed": 2, "adopted": 0},
+        "listing_v1": {"received": 2, "parsed": 2, "adopted": 0},
     }
     assert {"telemetry_received_24h", "telemetry_parsed_24h", "oi"}.isdisjoint(status)
 
@@ -514,7 +513,6 @@ def test_terminal_delivery_without_a_verdict_is_held_in_both_row_and_tab_partiti
         source_authority=None,
         subject_code=None,
         admission=None,
-        final_decision=None,
         event_kind=None,
         search=None,
         limit=20,

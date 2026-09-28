@@ -21,9 +21,9 @@ them together means every re-scoring silently re-collects, and no receipt can na
 
 Run:
 
-    uv run python notebooks/research/oi_research_cli.py oi-corpus pull [--out DIR] [--days 29]
-    uv run python notebooks/research/oi_research_cli.py oi-corpus seal [--out DIR]
-    uv run python notebooks/research/oi_research_cli.py oi-replay [--corpus DIR] [--out RECEIPT]
+    uv run python -m notebooks.research.oi_research_cli oi-corpus pull [--out DIR] [--days 29]
+    uv run python -m notebooks.research.oi_research_cli oi-corpus seal [--out DIR]
+    uv run python -m notebooks.research.oi_research_cli oi-replay [--corpus DIR] [--out RECEIPT]
 
 Until #537 PR-1 these were `tracefold trading oi-corpus|oi-replay`. They were the only callers of
 `tracefold/trading/research/` and `integrations/venues/open_interest_history.py`, and research code
@@ -37,13 +37,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from oi_corpus import (
+from notebooks.research.oi_corpus import (
     SymbolRecord,
     append_progress,
     dated_corpus_dir,
@@ -54,8 +51,8 @@ from oi_corpus import (
     window_now,
     write_payload,
 )
-from oi_replay import render_table, run_replay
-from open_interest_history import (
+from notebooks.research.oi_replay import render_table, run_replay
+from notebooks.research.open_interest_history import (
     CANDLE_WEIGHT_PER_MIN,
     OPEN_INTEREST_REQUESTS_PER_MIN,
     Budget,
@@ -117,6 +114,8 @@ async def _pull(
     concurrency: int,
     now_ms: int,
 ) -> dict[str, object]:
+    if not 1 <= concurrency <= 32:
+        raise ValueError("oi_corpus_concurrency_out_of_range")
     raw_root = corpus_dir / "raw"
     raw_root.mkdir(parents=True, exist_ok=True)
     window = fix_window(corpus_dir, window_now(days=days, now_ms=now_ms))
@@ -142,65 +141,74 @@ async def _pull(
             flush=True,
         )
 
-        gate = asyncio.Semaphore(concurrency)
         lock = asyncio.Lock()
         completed = 0
         failures: list[str] = []
 
         async def run(symbol: str) -> None:
             nonlocal completed
-            async with gate:
-                try:
-                    oi_task = asyncio.create_task(
-                        fetch_open_interest_history(
-                            client, symbol, start_ms=window.start_ms, end_ms=window.end_ms, budget=oi_budget
-                        )
+            try:
+                oi_task = asyncio.create_task(
+                    fetch_open_interest_history(
+                        client, symbol, start_ms=window.start_ms, end_ms=window.end_ms, budget=oi_budget
                     )
-                    candle_task = asyncio.create_task(
-                        fetch_candle_history(
-                            client,
-                            symbol,
-                            start_ms=window.candle_start_ms,
-                            end_ms=window.candle_end_ms,
-                            budget=candle_budget,
-                        )
-                    )
-                    oi_rows = await oi_task
-                    candle_rows = await candle_task
-                except OpenInterestHistoryError as error:
-                    async with lock:
-                        failures.append(f"{symbol}: {error}")
-                        print(f"[oi-corpus] FAILED {symbol}: {error}", flush=True)
-                    return
-                oi_sha, oi_bytes = write_payload(raw_root, oi_rows)
-                candle_sha, candle_bytes = write_payload(raw_root, candle_rows)
-                record = SymbolRecord(
-                    symbol=symbol,
-                    oi_sha256=oi_sha,
-                    oi_points=len(oi_rows),
-                    oi_first_ms=int(oi_rows[0]["timestamp"]) if oi_rows else None,
-                    oi_last_ms=int(oi_rows[-1]["timestamp"]) if oi_rows else None,
-                    candle_sha256=candle_sha,
-                    candle_points=len(candle_rows),
-                    candle_first_ms=int(candle_rows[0][0]) if candle_rows else None,
-                    candle_last_ms=int(candle_rows[-1][0]) if candle_rows else None,
-                    stored_bytes=oi_bytes + candle_bytes,
-                    pulled_at_ms=int(time.time() * 1000),
                 )
+                candle_task = asyncio.create_task(
+                    fetch_candle_history(
+                        client,
+                        symbol,
+                        start_ms=window.candle_start_ms,
+                        end_ms=window.candle_end_ms,
+                        budget=candle_budget,
+                    )
+                )
+                try:
+                    oi_rows, candle_rows = await asyncio.gather(oi_task, candle_task)
+                finally:
+                    for task in (oi_task, candle_task):
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(oi_task, candle_task, return_exceptions=True)
+            except OpenInterestHistoryError as error:
                 async with lock:
-                    append_progress(corpus_dir, record)
-                    completed += 1
-                    if completed % 10 == 0 or completed == len(todo):
-                        elapsed = time.monotonic() - started
-                        rate = completed / elapsed if elapsed else 0.0
-                        remaining = (len(todo) - completed) / rate if rate else 0.0
-                        print(
-                            f"[oi-corpus] {completed}/{len(todo)} ({symbol} oi={record.oi_points} "
-                            f"k={record.candle_points}) elapsed={elapsed / 60:.1f}m eta={remaining / 60:.1f}m",
-                            flush=True,
-                        )
+                    failures.append(f"{symbol}: {error}")
+                    print(f"[oi-corpus] FAILED {symbol}: {error}", flush=True)
+                return
+            oi_sha, oi_bytes = write_payload(raw_root, oi_rows)
+            candle_sha, candle_bytes = write_payload(raw_root, candle_rows)
+            record = SymbolRecord(
+                symbol=symbol,
+                oi_sha256=oi_sha,
+                oi_points=len(oi_rows),
+                oi_first_ms=int(oi_rows[0]["timestamp"]) if oi_rows else None,
+                oi_last_ms=int(oi_rows[-1]["timestamp"]) if oi_rows else None,
+                candle_sha256=candle_sha,
+                candle_points=len(candle_rows),
+                candle_first_ms=int(candle_rows[0][0]) if candle_rows else None,
+                candle_last_ms=int(candle_rows[-1][0]) if candle_rows else None,
+                stored_bytes=oi_bytes + candle_bytes,
+                pulled_at_ms=int(time.time() * 1000),
+            )
+            async with lock:
+                append_progress(corpus_dir, record)
+                completed += 1
+                if completed % 10 == 0 or completed == len(todo):
+                    elapsed = time.monotonic() - started
+                    rate = completed / elapsed if elapsed else 0.0
+                    remaining = (len(todo) - completed) / rate if rate else 0.0
+                    print(
+                        f"[oi-corpus] {completed}/{len(todo)} ({symbol} oi={record.oi_points} "
+                        f"k={record.candle_points}) elapsed={elapsed / 60:.1f}m eta={remaining / 60:.1f}m",
+                        flush=True,
+                    )
 
-        await asyncio.gather(*(run(symbol) for symbol in todo))
+        pending = iter(todo)
+
+        async def worker() -> None:
+            for symbol in pending:
+                await run(symbol)
+
+        await asyncio.gather(*(worker() for _ in range(min(concurrency, len(todo)))))
 
     manifest = seal(corpus_dir, now_ms=int(time.time() * 1000))
     coverage = manifest["coverage"]

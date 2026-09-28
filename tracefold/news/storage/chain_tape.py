@@ -207,20 +207,6 @@ class ChainTapeStorage:
         )
         return row["state"], roster, tuple(row["wallets"])
 
-    def chain_tape_roster_version(self, version: int) -> RosterSnapshot | None:
-        rows = self.conn.execute(
-            "SELECT roster_version, taken_at_ms, wallet, handle FROM news_market_wallet_roster "
-            "WHERE roster_version = %s ORDER BY wallet",
-            (int(version),),
-        ).fetchall()
-        if not rows:
-            return None
-        return RosterSnapshot(
-            roster_version=int(version),
-            taken_at_ms=int(rows[0]["taken_at_ms"]),
-            members=tuple(RosterMember(**{name: r[name] for name in RosterMember.__dataclass_fields__}) for r in rows),
-        )
-
     def chain_tape_overlap_fills(
         self, *, chain_id: int, from_block: int, to_block: int, wallets: Sequence[str]
     ) -> list[dict[str, Any]]:

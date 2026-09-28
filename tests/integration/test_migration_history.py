@@ -22,7 +22,7 @@ from tests.postgres_test_utils import connect_postgres_test, prepare_test_migrat
 from tests.postgres_test_utils import postgres_migration_test_dsn as postgres_test_dsn
 from tests.postgres_test_utils import test_postgres_dsn as admin_postgres_test_dsn
 from tests.support.news_legacy import LEGACY_TRIAGE_POLICY_VERSION
-from tests.support.news_legacy_storage import legacy_news
+from tests.support.news_legacy_storage import _persist_triage_verdict, legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.journal import (
     ObservationFactory,
@@ -2969,8 +2969,6 @@ def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_
 
     from contextlib import closing
 
-    from tests.integration import test_news_reader_history as history
-
     config = _config()
     _empty_the_schema()
     command.upgrade(config, "20260922_0386")
@@ -2990,7 +2988,7 @@ def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_
 
         blocked = _seed_admitted_event(conn, "ETH acquisition remains pending approval.", record=666)
         with pytest.raises(psycopg.errors.CheckViolation):
-            history._persist_triage_verdict(repos, event_id=blocked, at_ms=2100, symbol="ETH")
+            _persist_triage_verdict(repos, event_id=blocked, at_ms=2100, symbol="ETH")
         conn.rollback()
 
     command.upgrade(config, "head")
@@ -3001,7 +2999,7 @@ def test_judgment_v3_migration_keeps_the_v2_verdict_it_finds_and_admits_the_new_
         assert conn.execute("SELECT to_jsonb(v) AS row FROM news_verdicts v WHERE stage='triage'").fetchall() == before
         repos = repositories_for_connection(conn)
         new_event = _seed_admitted_event(conn, "SOL acquisition remains pending approval.", record=667)
-        history._persist_triage_verdict(repos, event_id=new_event, at_ms=2200, symbol="SOL")
+        _persist_triage_verdict(repos, event_id=new_event, at_ms=2200, symbol="SOL")
         conn.commit()
         rows = conn.execute(
             "SELECT judgment_contract_version, policy_version, verdict FROM news_verdicts WHERE stage='triage'"
@@ -3328,19 +3326,17 @@ def test_policy_v17_migration_keeps_the_budget_withholds_it_finds_and_admits_v17
 
     from contextlib import closing
 
-    from tests.integration import test_news_reader_history as history
-
     config = _config()
     _empty_the_schema()
     command.upgrade(config, "20260922_0389")
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
         pushed = _seed_admitted_event(conn, "Kraken opens BTC options trading to US customers.", record=69001)
-        history._persist_triage_verdict(
+        _persist_triage_verdict(
             repos, event_id=pushed, at_ms=2000, symbol="BTC", policy_version="news_triage_policy_v16"
         )
         withheld = _seed_admitted_event(conn, "Lido pauses ETH withdrawals after an oracle fault.", record=69002)
-        history._persist_triage_verdict(
+        _persist_triage_verdict(
             repos,
             event_id=withheld,
             at_ms=2100,
@@ -3360,7 +3356,7 @@ def test_policy_v17_migration_keeps_the_budget_withholds_it_finds_and_admits_v17
 
         blocked = _seed_admitted_event(conn, "Solana validators vote to cut the SOL issuance rate.", record=69003)
         with pytest.raises(psycopg.errors.CheckViolation):
-            history._persist_triage_verdict(repos, event_id=blocked, at_ms=2200, symbol="SOL")
+            _persist_triage_verdict(repos, event_id=blocked, at_ms=2200, symbol="SOL")
         conn.rollback()
 
     command.upgrade(config, "head")
@@ -3378,7 +3374,7 @@ def test_policy_v17_migration_keeps_the_budget_withholds_it_finds_and_admits_v17
         assert definition.replace(", 'news_triage_policy_v17'::text", "") == definition_before
         repos = repositories_for_connection(conn)
         current = _seed_admitted_event(conn, "Ripple wins an XRP custody licence in Singapore.", record=69004)
-        history._persist_triage_verdict(repos, event_id=current, at_ms=2300, symbol="XRP")
+        _persist_triage_verdict(repos, event_id=current, at_ms=2300, symbol="XRP")
         conn.commit()
         rows = conn.execute("SELECT policy_version FROM news_verdicts WHERE stage = 'triage'").fetchall()
         assert sorted(str(row["policy_version"]) for row in rows) == [

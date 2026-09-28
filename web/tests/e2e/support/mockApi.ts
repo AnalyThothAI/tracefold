@@ -157,8 +157,8 @@ function newsFeedData(prepended: string[] = [], empty = false) {
   });
   const row = (eventId: string, title: string) => ({
     ...event,
-    // No Chinese headline on the mock rows, so the wire line is the row headline (distinct per row).
-    legacy_verdict: event.legacy_verdict ? { ...event.legacy_verdict, headline_zh: null } : null,
+    // The mock row uses its distinct provider title when no adopted headline is available.
+    update: null,
     event_id: eventId,
     leader_title: title,
   });

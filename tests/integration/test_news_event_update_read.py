@@ -209,7 +209,6 @@ def _feed(news: Any, **over: Any) -> dict[str, Any]:
         "source_authority": None,
         "subject_code": None,
         "admission": None,
-        "final_decision": None,
         "event_kind": None,
         "search": None,
         "limit": 20,
@@ -228,7 +227,7 @@ def test_a_news_agent_event_detail_reads_its_update_processing_and_timeline(conn
     detail = news.event_detail("agent-sent")
 
     assert detail is not None
-    assert detail["legacy_verdict"] is None and detail["verdicts"] == []
+    assert "legacy_verdict" not in detail and "verdicts" not in detail
     update = detail["event_update"]
     assert update["content_revision"] == raised.content_revision
     assert update["previous_content_revision"] == head.content_revision
@@ -271,27 +270,16 @@ def test_a_news_agent_event_detail_reads_its_update_processing_and_timeline(conn
     assert [step["facts"]["change_kinds"] for step in adoptions] == [["new_fact"], ["parameter_change"]]
 
 
-def test_a_legacy_event_detail_keeps_its_verdict_and_has_no_update_path(conn) -> None:
+def test_a_historical_event_reads_source_and_receipts_without_verdict_projection(conn) -> None:
     _seed(conn)
     news = repositories_for_connection(conn).news
-
     detail = news.event_detail("legacy")
-
     assert detail is not None
     assert detail["event_update"] is None and detail["processing"] is None
-    legacy = detail["legacy_verdict"]
-    assert legacy["headline_zh"] == "央行政策转向，风险资产承压"
-    assert legacy["source_authority"] == "reputable_secondary"
-    assert "taxonomy" not in legacy
-    (verdict,) = detail["verdicts"]
-    assert set(verdict["model_editorial"]["taxonomy"]) == {
-        "subject_codes",
-        "event_family",
-        "change_state",
-        "assertion_status",
-    }
-    assert [step["stage"] for step in detail["timeline"]] == ["received", "gate", "triage", "decide"]
-    assert detail["outcome"]["kind"] == "dropped"
+    assert detail["feedback"] == {"feedback_n": 0, "latest": None}
+    assert "legacy_verdict" not in detail and "verdicts" not in detail
+    assert [step["stage"] for step in detail["timeline"]] == ["received", "gate"]
+    assert detail["outcome"]["kind"] == "no_update"
 
 
 def test_a_mixed_feed_page_partitions_into_the_same_tabs_its_rows_report(conn) -> None:
@@ -306,18 +294,17 @@ def test_a_mixed_feed_page_partitions_into_the_same_tabs_its_rows_report(conn) -
         "agent-sent": "delivered",
         "agent-silent": "not_notified",
         "agent-pending": "queued_semantic",
-        "legacy": "dropped",
+        "legacy": "no_update",
     }
     assert rows["agent-sent"]["update"]["headline"] == SENT_HEADLINE
     assert rows["agent-sent"]["update"]["headline_source"] == "sent_card"
     assert rows["agent-sent"]["update"]["claim_n"] == 2
-    assert rows["agent-sent"]["legacy_verdict"] is None
     assert rows["agent-silent"]["update"]["headline"] == seeded["silent"].claims[0].statement
     assert rows["agent-silent"]["update"]["headline_source"] == "claim"
     assert rows["agent-silent"]["outcome"]["reason_zh"] == "仅进入信息流"
-    assert rows["agent-pending"]["update"] is None and rows["agent-pending"]["legacy_verdict"] is None
+    assert rows["agent-pending"]["update"] is None
     assert rows["legacy"]["update"] is None
-    assert rows["legacy"]["legacy_verdict"]["headline_zh"] == "央行政策转向，风险资产承压"
+    assert "legacy_verdict" not in rows["legacy"]
 
     assert page["counts"] == {"total": 4, "pushed": 1, "held": 2, "pending": 1}
     for group in ("pushed", "held", "pending"):
@@ -365,9 +352,8 @@ def test_an_owed_intent_and_a_new_revision_move_the_row_back_to_pending(conn) ->
     rows = {row["event_id"]: row for row in _feed(repos.news)["events"]}
 
     assert rows["agent-silent"]["outcome"]["kind"] == "pending_delivery"
-    # A legacy Event re-opened by new evidence is on the EventUpdate path, and its verdict stays history.
+    # A historical Event re-opened by new evidence enters the current semantic work path.
     assert rows["legacy"]["outcome"]["kind"] == "queued_semantic"
-    assert rows["legacy"]["legacy_verdict"] is not None
     counts = _feed(repos.news)["counts"]
     assert counts == {"total": 4, "pushed": 1, "held": 0, "pending": 3}
 
@@ -383,8 +369,8 @@ def test_topic_and_cited_source_filters_read_the_adopted_head(conn) -> None:
     assert [row["event_id"] for row in topics["events"]] == ["agent-sent", "agent-silent"]
     assert topics["filters"]["subject_code"] == TARIFF_TOPIC
     assert [row["event_id"] for row in issuers["events"]] == ["agent-sent", "agent-silent"]
-    # An Event without a head is filtered by its legacy editorial authority, and only by that.
-    assert [row["event_id"] for row in secondary["events"]] == ["legacy"]
+    # An Event without a current adopted head has no current cited-source authority.
+    assert secondary["events"] == []
     assert issuers["counts"]["total"] == 2
 
 

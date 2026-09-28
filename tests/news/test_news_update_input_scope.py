@@ -289,8 +289,7 @@ def test_related_claims_rank_all_candidates_against_new_material_before_eight_li
 
 
 def test_scope_metadata_cannot_supply_a_fact_citation(monkeypatch) -> None:
-    from tests.news.test_news_event_update_judgments import MemoryCache
-    from tests.news.test_news_event_update_notifications import TaskBackend
+    from tests.support.news_update_semantic import MemoryCache, TaskBackend
     from tracefold.news.updates.judgment import Budget, ContractFault, NewsJudgments
     from tracefold.news.updates.semantics import SemanticAnalyzer
 

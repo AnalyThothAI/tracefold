@@ -127,15 +127,3 @@ class EvidenceStorage:
                 (list(item_ids),),
             ).fetchall()
         ]
-
-    def evidence_member_metadata(self, item_ids: Sequence[str]) -> list[dict[str, Any]]:
-        if not item_ids:
-            return []
-        return [
-            dict(row)
-            for row in self.conn.execute(
-                """SELECT item_id, evidence_text_sha256, provider_params_available_at_ms
-                 FROM news_items WHERE item_id=ANY(%s)""",
-                (list(item_ids),),
-            ).fetchall()
-        ]

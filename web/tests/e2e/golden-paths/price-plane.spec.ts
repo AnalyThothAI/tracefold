@@ -35,7 +35,7 @@ test("keeps the current quote and the post-Event reaction visibly apart on an Ev
    * different time semantics, and a single table would invite reading the first as the market's answer to
    * the second.
    */
-  const quotes = page.locator(".news-detail-hero .news-quote-table");
+  const quotes = page.getByRole("region", { name: "当前行情" }).locator(".news-quote-table");
   await expect(quotes).toBeVisible();
   await expect(quotes).toContainText("现价");
   await expect(quotes).toContainText("24H");

@@ -62,6 +62,7 @@ from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.reader_card import ReaderCard
 from tracefold.news.reader_history import ReaderHistorySnapshot
+from tracefold.news.storage.root import NewsRepository
 from tracefold.news.updates.contracts import EventUpdate
 from tracefold.news.updates.judgment import ProviderUnavailable
 from tracefold.news.updates.notification import FrozenCard, NotificationPlan
@@ -137,12 +138,12 @@ class RecordingNews:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def __getattr__(self, name: str) -> Any:
-        if name.startswith("_"):
-            raise AttributeError(name)
+        if name.startswith("_") or (name not in self.responses and not callable(getattr(NewsRepository, name, None))):
+            raise AttributeError(f"recording_news_unknown_operation:{name}")
 
         def _call(*args: Any, **kwargs: Any) -> Any:
             self.calls.append((name, {**{f"arg{i}": a for i, a in enumerate(args)}, **kwargs}))
-            if name in {"evidence_material", "evidence_member_metadata"} and name not in self.responses:
+            if name == "evidence_material" and name not in self.responses:
                 return []
             if name == "evidence_candidates" and name not in self.responses:
                 return []
@@ -159,14 +160,6 @@ class RecordingNews:
                     "evidence_sha256": str(card.get("evidence_sha256") or "e" * 64),
                     "focus_fact_id": str(card.get("focus_fact_id") or "fact-1"),
                 }
-            if name == "latest_evidence_identity" and name not in self.responses:
-                evidence = self.responses.get("latest_evidence_snapshot")
-                card = self.responses.get("event_card") or {}
-                source = evidence if isinstance(evidence, dict) else card
-                return (
-                    int(source.get("evidence_version") or 1),
-                    str(source.get("evidence_sha256") or "e" * 64),
-                )
             if name == "evidence_snapshot_material" and name not in self.responses:
                 event_id = str(kwargs.get("event_id") or "event")
                 focused_item = kwargs.get("focus_item_id")
@@ -407,6 +400,12 @@ def _message(kind: str, payload: dict[str, Any], *, routing_key: str = "", prior
 
 
 # ---------------------------------------------------------------- Deduper
+def test_recording_news_rejects_unknown_operations() -> None:
+    news = RecordingNews()
+    with pytest.raises(AttributeError, match="recording_news_unknown_operation:unknown_operation"):
+        news.unknown_operation()
+
+
 def _admitted(event_id: str, dedupe_family: str, *, inserted: bool = True) -> Any:
     return SimpleNamespace(
         item_inserted=inserted,

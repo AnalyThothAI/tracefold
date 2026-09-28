@@ -90,7 +90,7 @@ class NewsBrokerStatusData(ExactApiSchema):
 class NewsSourceContractStageCountsData(ExactApiSchema):
     received: int = 0
     parsed: int = 0
-    verdict: int = 0
+    adopted: int = 0
 
 
 class NewsSourceContracts24hData(ExactApiSchema):
@@ -122,16 +122,8 @@ class NewsPipelineStatusData(ExactApiSchema):
     candidates_24h: int = 0
     source_classifier_version: str = ""
     source_contracts_24h: NewsSourceContracts24hData = Field(default_factory=NewsSourceContracts24hData)
-    triage_24h: int = 0
-    # The funnel counts every judgment; model health counts only the model's (#137).
-    model_triage_24h: int = 0
-    triage_degraded_24h: int = 0
-    decided_push_24h: int = 0
-    throttled_24h: int = 0
-    triage_p50_ms: float | None = None
-    triage_p95_ms: float | None = None
-    queue_lag_p95_ms: float | None = None
-    reasked_24h: int = 0
+    decisions_24h: int = 0
+    selected_24h: int = 0
     # The configured News model routes (#706), secret-free. `news_program_identity` is the identity
     # the configured runtime records on every semantic observation.
     extraction_model: str | None = None
@@ -155,16 +147,14 @@ class NewsPipelineStatusData(ExactApiSchema):
     semantic_failed_exhausted: int = 0
     semantic_failed_by_code_24h: dict[str, int] = Field(default_factory=dict)
     suppressed_by_reason: dict[str, int] = Field(default_factory=dict)
-    dropped_by_rule: dict[str, int] = Field(default_factory=dict)
-    throttled_by_key: dict[str, int] = Field(default_factory=dict)
-    pushed_by_rule: dict[str, int] = Field(default_factory=dict)
-    reviewed_should_push_24h: int = 0
+    decision_actions_24h: dict[str, int] = Field(default_factory=dict)
+    reviewed_decision_should_push_24h: int = 0
     reviewed_external_miss_24h: int = 0
     # The daily sampling loop's two readings. Accepted judgments on the `delivered` stratum that say push,
     # over all of them; and the same numerator over the `model_drop` + `throttled` strata. No epoch or
     # release-eligibility filter: these are product metrics, not release evidence.
     keep_ratio_sent_24h: NewsReviewRatio24hData = Field(default_factory=NewsReviewRatio24hData)
-    missed_ratio_dropped_24h: NewsReviewRatio24hData = Field(default_factory=NewsReviewRatio24hData)
+    missed_ratio_held_24h: NewsReviewRatio24hData = Field(default_factory=NewsReviewRatio24hData)
     duplicates_withheld_24h: NewsDuplicatesWithheld24hData = Field(default_factory=NewsDuplicatesWithheld24hData)
     tagged_24h: int = 0
     grounded_24h: int = 0
@@ -174,9 +164,8 @@ class NewsPipelineStatusData(ExactApiSchema):
     # Event-feed funnel: one cohort selected by Event.opened_at_ms, then tested for each durable stage.
     funnel_received_24h: int = 0
     funnel_admitted_24h: int = 0
-    funnel_triaged_24h: int = 0
+    funnel_adopted_24h: int = 0
     funnel_delivered_24h: int = 0
-    triage_degraded_by_code_24h: dict[str, int] = Field(default_factory=dict)
 
 
 class NewsDeliveryStatusData(ExactApiSchema):
@@ -222,17 +211,17 @@ class NewsFunnelData(ExactApiSchema):
     received: int = 0
     admitted: int = 0
     candidates: int = 0
-    triaged: int = 0
+    adopted: int = 0
     tagged: int = 0
     grounded: int = 0
-    decided_push: int = 0
+    selected: int = 0
     delivered: int = 0
     received_1h: int = 0
     delivered_1h: int = 0
 
 
 class NewsReasonCountData(ExactApiSchema):
-    stage: Literal["gate", "drop", "throttle", "push", "degraded", "ungrounded"]
+    stage: Literal["gate", "decision", "ungrounded"]
     key: str
     label_zh: str
     count: int

@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from tests.support.news_legacy import LEGACY_PROGRAM_VERSION, LEGACY_TRIAGE_POLICY_VERSION, legacy_judgment
+from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.models import TriageVerdict
 from tracefold.news.storage.decisions import LEGACY_INTENT_RETIRED, legacy_intent_id
 from tracefold.news.storage.sql_values import _dumps
 
@@ -209,3 +212,72 @@ class LegacyFixtureStorage:
 
 def legacy_news(news: Any) -> LegacyFixtureStorage:
     return LegacyFixtureStorage(news)
+
+
+def _persist_triage_verdict(
+    repos,
+    *,
+    event_id: str,
+    at_ms: int,
+    symbol: str,
+    direction: str = "bearish",
+    headline_zh: str = "阿里巴巴配售新股",
+    policy_version: str = LEGACY_TRIAGE_POLICY_VERSION,
+    final_decision: str = "push",
+    throttled_by: str | None = None,
+) -> None:
+    evidence = repos.news.latest_evidence_snapshot(event_id)
+    assert evidence is not None
+    verdict = TriageVerdict(
+        novelty="new_fact",
+        assets=[{"symbol": symbol, "role": "primary"}],
+        direction=direction,
+        scope="single_name",
+        fact_kind="state_change",
+        evidence_ref="c1",
+        confidence=0.9,
+        headline_zh=headline_zh,
+        why_zh="",
+    )
+    judgment = legacy_judgment(verdict)
+    runtime_manifest_sha = "b" * 64
+    trace = {
+        "judgment_contract_version": judgment.judgment_contract_version,
+        "judgment_origin": "model",
+        "judgment_sha256": judgment.scored_judgment_sha256,
+        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
+        "editorial_sha256": judgment.editorial.editorial_sha256,
+        "runtime_manifest_sha": runtime_manifest_sha,
+        "program_version": LEGACY_PROGRAM_VERSION,
+        "program_sha256": "a" * 64,
+        "evidence_version": int(evidence["evidence_version"]),
+        "evidence_sha256": str(evidence["evidence_sha256"]),
+        "focus_fact_id": str(evidence["focus_fact_id"]),
+        "told": [],
+        "told_count": 0,
+    }
+    assert legacy_news(repos.news).insert_verdict(
+        event_id=event_id,
+        stage="triage",
+        policy_version=policy_version,
+        judgment_contract_version=judgment.judgment_contract_version,
+        judgment_origin="model",
+        rule_baseline_decision="push",
+        final_decision=final_decision,
+        override_rule="fact_kind_state_change",
+        throttled_by=throttled_by,
+        verdict=verdict.model_dump(mode="json"),
+        model_editorial=judgment.editorial.document,
+        judgment_sha256=judgment.scored_judgment_sha256,
+        runtime_manifest_sha=runtime_manifest_sha,
+        model="test",
+        program_version=LEGACY_PROGRAM_VERSION,
+        program_sha256="a" * 64,
+        degraded=False,
+        error_code=None,
+        trace=trace,
+        evidence_version=int(evidence["evidence_version"]),
+        evidence_sha256=str(evidence["evidence_sha256"]),
+        focus_fact_id=str(evidence["focus_fact_id"]),
+        now_ms=at_ms - 1,
+    )

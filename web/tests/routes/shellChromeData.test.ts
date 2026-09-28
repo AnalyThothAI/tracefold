@@ -33,10 +33,10 @@ describe("route-aware shell figures", () => {
     expect(topbarFigures("/news/market", news)).toEqual([]);
   });
 
-  it("uses operational latency on the status surface", () => {
+  it("uses the current semantic backlog on the status surface", () => {
     expect(topbarFigures("/news/status", news)).toEqual([
       { label: "EVENTS 24H", tone: "accent", value: 320 },
-      { label: "QUEUE P95", text: undefined },
+      { label: "SEMANTIC PENDING", value: 0 },
     ]);
   });
 

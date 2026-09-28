@@ -763,21 +763,6 @@ class EventStorage:
                 (symbol.upper().replace("XYZ-", ""), event_id, opened_at_ms),
             )
 
-    def set_storyline_key(self, *, event_id: str, storyline_key: str, now_ms: int) -> None:
-        """Triage refined the storyline (final key from verdict primaries/scope); windows use this key from now on."""
-
-        self.conn.execute(
-            "UPDATE news_events SET storyline_key = %s, updated_at_ms = %s WHERE event_id = %s AND storyline_key <> %s",
-            (storyline_key[:120], int(now_ms), event_id, storyline_key[:120]),
-        )
-
-    def set_context_line(self, *, event_id: str, context_line: str, followup_of: str | None, now_ms: int) -> None:
-        self.conn.execute(
-            "UPDATE news_events SET context_line = %s, followup_of = COALESCE(%s, followup_of), updated_at_ms = %s"
-            " WHERE event_id = %s",
-            (context_line[:400], followup_of, int(now_ms), event_id),
-        )
-
     def _current_event_card(self, event_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(CURRENT_EVENT_CARD_SQL, (event_id,)).fetchone()
         return dict(row) if row else None
@@ -925,18 +910,6 @@ class EventStorage:
             (event_id,),
         ).fetchone()
         return dict(row) if row else None
-
-    def latest_evidence_identity(self, event_id: str) -> tuple[int, str] | None:
-        """The two scalars a locked verdict write must compare; no snapshot JSON is materialized."""
-
-        row = self.conn.execute(
-            "SELECT evidence_version, evidence_sha256 FROM news_event_evidence_snapshots "
-            "WHERE event_id = %s AND provenance = 'observed' "
-            "AND snapshot ->> 'schema_version' = 'news_event_evidence_v3' "
-            "ORDER BY evidence_version DESC LIMIT 1",
-            (event_id,),
-        ).fetchone()
-        return None if row is None else (int(row["evidence_version"]), str(row["evidence_sha256"]))
 
     def event_card(self, event_id: str) -> dict[str, Any] | None:
         """The exact latest immutable evidence card the SemanticJudge may read."""

@@ -7,17 +7,8 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..evidence import execution_evidence_views
-from ..models import ReaderReceipt, market_type_of
-from ..outcome import (
-    decision_zh,
-    direction_zh,
-    event_outcome,
-    fact_kind_zh,
-    novelty_zh,
-    scope_zh,
-)
-from ..row_values import optional_float
+from ..models import ReaderReceipt
+from ..outcome import event_outcome
 from ..search import NewsSearchPlan
 from ..source_contracts import (
     EVENT_KINDS,
@@ -25,7 +16,6 @@ from ..source_contracts import (
     SOURCE_CONTRACT_CLASSIFIER_VERSION,
     EventKind,
 )
-from ..taxonomy import source_authority_zh
 from ..timeline import event_timeline, reader_delivery
 from ..update_view import (
     UPDATE_DECODE_ERROR,
@@ -37,23 +27,22 @@ from ..update_view import (
     sent_headline,
 )
 from . import update_reads
-from .decisions import editorial_read_shape, triage_verdict_read_shape
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_SQL,
+    EVENT_FEEDBACK_SQL,
     EVENT_MEMBERS_SQL,
-    EVENT_VERDICTS_SQL,
     ITEM_RELATED_COUNT_SQL,
     ITEM_RELATED_EVENTS_SQL,
     ITEM_RELATED_KEYS_SQL,
     OUTCOME_GROUP_SQL,
     SOURCE_AUTHORITY_PREDICATE,
     STATUS_DELIVERY_SQL,
+    STATUS_FUNNEL_DECISIONS_SQL,
     STATUS_FUNNEL_REVIEW_RATIOS_SQL,
     STATUS_FUNNEL_REVIEWS_SQL,
     STATUS_FUNNEL_SUPPRESSED_SQL,
     STATUS_FUNNEL_TOTALS_SQL,
-    STATUS_FUNNEL_VERDICTS_SQL,
     STATUS_INGEST_SQL,
     STATUS_LEARNING_RETENTION_SQL,
     STATUS_PIPELINE_SQL,
@@ -73,7 +62,6 @@ class FeedStorage:
         *,
         source_authority: tuple[str, ...] | None,
         subject_code: tuple[str, ...] | None,
-        final_decision: tuple[str, ...] | None,
         event_kind: tuple[EventKind, ...] | None,
         admission: str | None,
         search: NewsSearchPlan | None,
@@ -81,7 +69,6 @@ class FeedStorage:
         cursor: str | None,
         outcome: str | None = None,
         hours: int | None = None,
-        directions: tuple[str, ...] | None = None,
         now_ms: int | None = None,
     ) -> dict[str, Any]:
         cursor_opened, cursor_id = _decode_cursor(cursor)
@@ -98,9 +85,8 @@ class FeedStorage:
             where.append("e.opened_at_ms >= %s")
             params.append(since_ms)
         if source_authority:
-            # #706: the authority of the sources an adopted update cites, else the legacy editorial one.
             where.append(SOURCE_AUTHORITY_PREDICATE)
-            params.extend([list(source_authority), list(source_authority)])
+            params.append(list(source_authority))
         if subject_code:
             where.append(SUBJECT_CODE_PREDICATE)
             params.append(list(subject_code))
@@ -114,21 +100,13 @@ class FeedStorage:
             else:
                 where.append(TEXT_SEARCH_PREDICATE)
                 params.append(search.normalized_query)
-        if final_decision:
-            where.append("t.final_decision = ANY(%s)")
-            params.append(list(final_decision))
-        if directions:
-            where.append("t.direction = ANY(%s)")
-            params.append(list(directions))
         if event_kind and len(event_kind) < len(EVENT_KINDS):
             where.append("e.event_kind = ANY(%s)")
             params.append(list(event_kind))
         # Counting is worth one extra aggregate only on the first page; later pages reuse what it returned.
         # Snapshot the clauses so the outcome group and cursor appended below cannot reach the count query.
         wants_counts = cursor_opened is None
-        counts = (
-            self._feed_counts(where=list(where), params=list(params), now_ms=handoff_now_ms) if wants_counts else None
-        )
+        counts = self._feed_counts(where=list(where), params=list(params)) if wants_counts else None
         if outcome in OUTCOME_GROUP_SQL:
             where.append(OUTCOME_GROUP_SQL[outcome])
         if cursor_opened is not None:
@@ -136,7 +114,7 @@ class FeedStorage:
             params.extend([cursor_opened, cursor_id])
         rows = self.conn.execute(
             feed_page_sql(" AND ".join(where)),
-            (handoff_now_ms, *params, int(limit) + 1),
+            (*params, int(limit) + 1),
         ).fetchall()
         items = [_feed_row(dict(r), now_ms=handoff_now_ms) for r in rows[: int(limit)]]
         next_cursor = None
@@ -150,7 +128,6 @@ class FeedStorage:
             "filters": {
                 "source_authority": _joined_filter(source_authority),
                 "subject_code": _joined_filter(subject_code),
-                "final_decision": _joined_filter(final_decision),
                 "event_kind": _joined_filter(event_kind),
                 "admission": admission,
                 "symbol": search.symbol if search is not None else None,
@@ -158,12 +135,11 @@ class FeedStorage:
                 "limit": int(limit),
                 "outcome": outcome if outcome in OUTCOME_GROUP_SQL else None,
                 "hours": window_hours,
-                "direction": ",".join(directions) if directions else None,
             },
             "search": search.public_metadata() if search is not None else None,
         }
 
-    def _feed_counts(self, *, where: list[str], params: list[Any], now_ms: int) -> dict[str, int]:
+    def _feed_counts(self, *, where: list[str], params: list[Any]) -> dict[str, int]:
         """How the reader's current filter splits across the three outcome groups.
 
         The predicates partition the feed exactly (see OUTCOME_GROUP_SQL) and use the page's
@@ -173,7 +149,7 @@ class FeedStorage:
         """
         row = self.conn.execute(
             feed_counts_sql(" AND ".join(where)),
-            (int(now_ms), *params),
+            tuple(params),
         ).fetchone()
         return {key: int((row or {}).get(key) or 0) for key in ("total", "pushed", "held", "pending")}
 
@@ -231,10 +207,9 @@ class FeedStorage:
             EVENT_MEMBERS_SQL,
             (event_id,),
         ).fetchall()
-        verdicts = self.conn.execute(EVENT_VERDICTS_SQL, (event_id,)).fetchall()
         deliveries = update_reads.event_deliveries(self.conn, event_id)
         queue = update_reads.event_delivery_queue(self.conn, event_id)
-        # #706: the EventUpdate plane. A legacy Event has none of these rows and reads exactly as before.
+        # Durable EventUpdate work and actual reader receipts remain separate facts.
         work = update_reads.semantic_work(self.conn, event_id)
         head = update_reads.event_update_head(self.conn, event_id)
         on_update_path = work is not None or head is not None
@@ -281,8 +256,6 @@ class FeedStorage:
             }
             for r in members
         ]
-        timeline_verdict_rows = [dict(r) | {"model_editorial": editorial_read_shape(r["editorial"])} for r in verdicts]
-        verdict_rows = [_verdict_public(dict(r)) for r in verdicts]
         delivery_rows = [_delivery_public(row) for row in deliveries]
         intents = intent_views(queue, deliveries)
         event_update = None
@@ -317,7 +290,6 @@ class FeedStorage:
         outcome, timeline = event_timeline(
             event=event,
             members=member_rows,
-            verdicts=timeline_verdict_rows,
             deliveries=deliveries,
             delivery_queue=_owed_intent(queue, deliveries),
             semantic=work,
@@ -328,111 +300,28 @@ class FeedStorage:
             observations=observations,
             notification_view=notification_public,
             intents=intents,
-            now_ms=int(time.time() * 1000),
         )
-        latest_triage = next((dict(v) for v in reversed(verdicts) if v["stage"] == "triage"), None)
-        latest_editorial = editorial_read_shape((latest_triage or {}).get("editorial"))
-        evidence_inputs = execution_evidence_views(verdicts)
-        selected_inputs = [entry for entry in evidence_inputs if entry["selected"]]
-        last_cutoff = max((entry["cutoff_at_ms"] for entry in selected_inputs), default=None)
-        late_evidence = []
-        if last_cutoff is not None:
-            late_evidence = [
-                dict(row)
-                for row in self.conn.execute(
-                    """
-                SELECT item_id AS material_id, 'provider_payload'::text AS material_kind,
-                       provider_params_available_at_ms AS available_at_ms
-                  FROM news_items WHERE item_id=%s AND provider_params_available_at_ms > %s
-                ORDER BY available_at_ms DESC LIMIT 8
-                """,
-                    (card["leader_item_id"], last_cutoff),
-                ).fetchall()
-            ]
-
         return {
             "event": event,
             "outcome": outcome.as_dict(),
             "event_update": event_update,
             "processing": processing,
-            # History only: the Triage verdict an Event was judged by before #706. A new Event has none,
-            # and nothing here is merged into `event_update`.
-            "legacy_verdict": _legacy_verdict(
-                final_decision=(latest_triage or {}).get("final_decision"),
-                override_rule=(latest_triage or {}).get("override_rule"),
-                throttled_by=(latest_triage or {}).get("throttled_by"),
-                degraded=(latest_triage or {}).get("degraded"),
-                error_code=(latest_triage or {}).get("error_code"),
-                verdict=(latest_triage or {}).get("verdict") or {},
-                editorial=latest_editorial,
-                full=True,
-            ),
             "timeline": timeline,
             "members": member_rows,
-            "verdicts": verdict_rows,
             "deliveries": delivery_rows,
-            "review": self._review_summary(event_id),
-            "evidence_inputs": evidence_inputs,
-            "late_evidence": late_evidence,
+            "feedback": self._feedback_summary(event_id),
             "evidence_snapshots": snapshots,
             "reader_receipt": ReaderReceipt.from_delivery(
                 _delivery_public(reader_card) if reader_card is not None else None
             ).model_dump(mode="json"),
         }
 
-    def _review_summary(self, event_id: str) -> dict[str, Any]:
-        row = self.conn.execute(
-            """
-            SELECT j.review_id, j.subject_kind, j.event_id, j.external_snapshot_id,
-                   j.should_push, j.first_bad_owner, j.evidence_refs, j.expected_correction,
-                   j.note, j.reviewer, j.created_at_ms, j.rubric_version,
-                   j.reader_contract_version, j.pairwise_case_id, counts.judgment_n
-              FROM (
-                SELECT count(*) AS judgment_n FROM news_review_records_v1
-                 WHERE event_id = %s AND review_kind = 'judgment'
-                   AND subject_kind = 'event'
-              ) counts
-              LEFT JOIN LATERAL (
-                SELECT judgment.review_id, judgment.subject_kind, judgment.event_id,
-                       judgment.external_snapshot_id, judgment.should_push,
-                       judgment.first_bad_owner, judgment.evidence_refs,
-                       judgment.expected_correction, judgment.note, judgment.reviewer,
-                       judgment.created_at_ms, judgment.rubric_version,
-                       judgment.reader_contract_version, judgment.pairwise_case_id
-                  FROM news_review_records_v1 acceptance
-                  JOIN news_review_records_v1 judgment ON judgment.review_id = acceptance.accepts_review_id
-                 WHERE acceptance.review_kind = 'acceptance' AND judgment.event_id = %s
-                   AND judgment.subject_kind = 'event'
-                 ORDER BY acceptance.created_at_ms DESC, acceptance.review_id DESC LIMIT 1
-              ) j ON true
-            """,
-            (event_id, event_id),
-        ).fetchone()
-        if row is None:
-            return {"judgment_n": 0, "accepted": None, "uncertain": False}
-        accepted = None
-        if row.get("review_id"):
-            accepted = {
-                "review_id": row["review_id"],
-                "subject_kind": row["subject_kind"],
-                "event_id": row["event_id"],
-                "external_snapshot_id": row["external_snapshot_id"],
-                "should_push": row["should_push"],
-                "first_bad_owner": row["first_bad_owner"],
-                "evidence_refs": list(row["evidence_refs"] or []),
-                "expected_correction": row["expected_correction"],
-                "note": row["note"],
-                "reviewer": row["reviewer"],
-                "created_at_ms": int(row["created_at_ms"]),
-                "rubric_version": row["rubric_version"],
-                "reader_contract_version": row["reader_contract_version"],
-                "pairwise_case_id": row["pairwise_case_id"],
-            }
-        return {
-            "judgment_n": int(row["judgment_n"] or 0),
-            "accepted": accepted,
-            "uncertain": bool(accepted and accepted["should_push"] == "uncertain"),
-        }
+    def _feedback_summary(self, event_id: str) -> dict[str, Any]:
+        rows = self.conn.execute(
+            EVENT_FEEDBACK_SQL,
+            (event_id,),
+        ).fetchall()
+        return {"feedback_n": len(rows), "latest": dict(rows[0]) if rows else None}
 
     def _source_contracts_24h(self, *, day_ago: int) -> dict[str, dict[str, int]]:
         """One bounded Event cohort, projected into the two editorial source-contract funnels.
@@ -454,7 +343,7 @@ class FeedStorage:
             result[family] = {
                 "received": received,
                 "parsed": received,
-                "verdict": int(row.get("verdict") or 0),
+                "adopted": int(row.get("adopted") or 0),
             }
         return result
 
@@ -573,91 +462,39 @@ class FeedStorage:
         return {str(row["event_id"]): [str(s) for s in (row["symbols"] or [])] for row in rows}
 
     def _funnel_24h(self, *, day_ago: int) -> dict[str, Any]:
-        """Where the last 24 h of Events went, by named reason: Gate admissions, decide() rules, storyline keys."""
-
-        suppressed = self.conn.execute(
-            STATUS_FUNNEL_SUPPRESSED_SQL,
-            (day_ago,),
-        ).fetchall()
-        # One pass over the last 24 h of Triage verdicts; the four named maps are folded from it in Python.
-        verdict_groups = self.conn.execute(
-            STATUS_FUNNEL_VERDICTS_SQL,
-            (day_ago,),
-        ).fetchall()
-        dropped: dict[str, int] = {}
-        throttled: dict[str, int] = {}
-        pushed_by_rule: dict[str, int] = {}
-        degraded_by_code: dict[str, int] = {}
-        # Current duplicate withholds name the exact sent-ledger measurement scope.
-        duplicates: dict[str, int] = {"all": 0}
-        for row in verdict_groups:
-            n = int(row["n"])
-            final = str(row["final_decision"])
-            if final == "drop":
-                dropped[str(row["rule"])] = dropped.get(str(row["rule"]), 0) + n
-            elif final == "throttled":
-                throttled[str(row["key"])] = throttled.get(str(row["key"]), 0) + n
-                if str(row["key"]).endswith(":seen"):
-                    duplicates["all"] += n
-            elif final in {"push", "escalate"}:
-                pushed_by_rule[str(row["rule"])] = pushed_by_rule.get(str(row["rule"]), 0) + n
-            if row["degraded"]:
-                degraded_by_code[str(row["code"])] = degraded_by_code.get(str(row["code"]), 0) + n
-        # Both current Review shapes of "the reader should have got this": an accepted Event judgment and an
-        # accepted ExternalMissSnapshot. The latter is the only observed upper bound on upstream recall.
-        # Release eligibility is a material fact of the review; genesis removed old review contracts.
-        missed = self.conn.execute(
-            STATUS_FUNNEL_REVIEWS_SQL,
-            (day_ago,),
-        ).fetchone()
-        # #675 §4. The daily audit's two product ratios, over accepted judgments rather than cards: how much
-        # of what the reader got a reviewer would keep, and how much of what was withheld they would have
-        # sent. Both carry their numerator and denominator so a two-review day reads as a two-review day.
-        ratios = self.conn.execute(
-            STATUS_FUNNEL_REVIEW_RATIOS_SQL,
-            (day_ago,),
-        ).fetchone()
+        """One Event cohort and current notification decisions with distinct reviewer facts."""
+        suppressed = self.conn.execute(STATUS_FUNNEL_SUPPRESSED_SQL, (day_ago,)).fetchall()
+        decisions = self.conn.execute(STATUS_FUNNEL_DECISIONS_SQL, (day_ago,)).fetchall()
+        reviewed = self.conn.execute(STATUS_FUNNEL_REVIEWS_SQL, (day_ago, day_ago)).fetchone()
+        ratios = self.conn.execute(STATUS_FUNNEL_REVIEW_RATIOS_SQL, (day_ago,)).fetchone()
         sent_n = int(ratios["sent_n"] or 0) if ratios else 0
         sent_push_n = int(ratios["sent_push_n"] or 0) if ratios else 0
-        dropped_n = int(ratios["dropped_n"] or 0) if ratios else 0
-        dropped_push_n = int(ratios["dropped_push_n"] or 0) if ratios else 0
-        # The four Event-feed stages are one cohort, not four independent rolling windows. A verdict created
-        # today for yesterday's Event still belongs in model-health throughput, but it must not make the
-        # feed's 24 h funnel grow after the intake cohort has fallen out of the window. Every predicate below
-        # therefore starts from the same set of Events opened in the window and asks how far each one got.
-        totals = self.conn.execute(
-            STATUS_FUNNEL_TOTALS_SQL,
-            (day_ago,),
-        ).fetchone()
+        held_n = int(ratios["held_n"] or 0) if ratios else 0
+        held_push_n = int(ratios["held_push_n"] or 0) if ratios else 0
+        totals = self.conn.execute(STATUS_FUNNEL_TOTALS_SQL, (day_ago,)).fetchone()
         events = int(totals["events"] or 0) if totals else 0
         admitted = int(totals["admitted"] or 0) if totals else 0
-        triaged = int(totals["triaged"] or 0) if totals else 0
-        delivered = int(totals["delivered"] or 0) if totals else 0
         return {
-            "suppressed_by_reason": {str(r["admission"]): int(r["n"]) for r in suppressed},
-            "dropped_by_rule": dict(sorted(dropped.items(), key=lambda kv: -kv[1])),
-            "throttled_by_key": dict(sorted(throttled.items(), key=lambda kv: -kv[1])[:10]),
-            "pushed_by_rule": dict(sorted(pushed_by_rule.items(), key=lambda kv: -kv[1])),
-            "triage_degraded_by_code_24h": dict(sorted(degraded_by_code.items(), key=lambda kv: -kv[1])),
-            "reviewed_should_push_24h": int(missed["n"] or 0) if missed else 0,
-            "reviewed_external_miss_24h": int(missed["external"] or 0) if missed else 0,
+            "suppressed_by_reason": {str(row["admission"]): int(row["n"]) for row in suppressed},
+            "decision_actions_24h": {str(row["action"]): int(row["n"]) for row in decisions},
+            "reviewed_decision_should_push_24h": int(reviewed["decision"] or 0) if reviewed else 0,
+            "reviewed_external_miss_24h": int(reviewed["external"] or 0) if reviewed else 0,
             "keep_ratio_sent_24h": {
                 "ratio": round(sent_push_n / sent_n, 4) if sent_n else None,
                 "numerator": sent_push_n,
                 "denominator": sent_n,
             },
-            "missed_ratio_dropped_24h": {
-                "ratio": round(dropped_push_n / dropped_n, 4) if dropped_n else None,
-                "numerator": dropped_push_n,
-                "denominator": dropped_n,
+            "missed_ratio_held_24h": {
+                "ratio": round(held_push_n / held_n, 4) if held_n else None,
+                "numerator": held_push_n,
+                "denominator": held_n,
             },
-            "duplicates_withheld_24h": duplicates,
             "candidate_share_24h": round(admitted / events, 4) if events else None,
             "admitted_24h": admitted,
             "funnel_received_24h": events,
             "funnel_admitted_24h": admitted,
-            "funnel_triaged_24h": triaged,
-            "funnel_delivered_24h": delivered,
+            "funnel_adopted_24h": int(totals["adopted"] or 0) if totals else 0,
+            "funnel_delivered_24h": int(totals["delivered"] or 0) if totals else 0,
         }
 
 
@@ -708,102 +545,7 @@ def _event_public(card: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _legacy_verdict(
-    *,
-    final_decision: Any,
-    override_rule: Any = None,
-    throttled_by: Any = None,
-    degraded: Any = False,
-    error_code: Any = None,
-    verdict: Mapping[str, Any] | None = None,
-    editorial: Mapping[str, Any] | None = None,
-    full: bool = False,
-) -> dict[str, Any] | None:
-    """The reader-facing summary of one legacy Triage verdict, shared by the feed row and the Event detail.
-
-    History since #706: `news_verdicts` receives no writes, and an Event judged by the News Agent has no
-    verdict and therefore no summary. Every business word is resolved to Chinese here so no browser owns a
-    vocabulary table; the raw enum ships beside it purely so the UI can pick a visual tone.
-
-    ``full`` is the Event detail. The feed row renders only direction/fact kind over 25 rows, so it takes
-    the slim shape — carrying the detail fields there cost 20.7% of the feed payload for nothing.
-
-    A verdict written under `news_judgment_v2` carries `magnitude` and `audience` and no `fact_kind`;
-    those rows are audit truth and are never rewritten, so `fact_kind` reads as ``None`` for them and
-    the badge is simply absent (#675 §1). The retired taxonomy axes are not summarized: the verdict rows
-    keep their stored values for audit, and nothing projects them into a current reading (#706)."""
-
-    if not final_decision:
-        return None
-    v: Mapping[str, Any] = verdict or {}
-    direction = v.get("direction")
-    fact_kind = v.get("fact_kind")
-    scope = v.get("scope")
-    summary = {
-        "final_decision": final_decision,
-        "override_rule": override_rule,
-        "throttled_by": throttled_by,
-        "degraded": bool(degraded),
-        "error_code": error_code,
-        "direction": direction,
-        "fact_kind": fact_kind,
-        "headline_zh": v.get("headline_zh"),
-        "direction_zh": direction_zh(direction),
-        "fact_kind_zh": fact_kind_zh(fact_kind),
-    }
-    if not full:
-        return summary
-    novelty = v.get("novelty")
-    # The read shape `editorial_read_shape` produces, or nothing at all for a degraded/OI/liquidation
-    # verdict that has no editorial sibling. `source_authority` is a code fact about the evidence.
-    e: Mapping[str, Any] = editorial or {}
-    return summary | {
-        "scope": scope,
-        "novelty": novelty,
-        "evidence_ref": v.get("evidence_ref"),
-        "confidence": optional_float(v.get("confidence")),
-        "source_authority": e.get("source_authority"),
-        "source_authority_zh": source_authority_zh(e.get("source_authority")),
-        "why_zh": v.get("why_zh"),
-        "assets": _triage_assets(v.get("assets")),
-        "scope_zh": scope_zh(scope),
-        "novelty_zh": novelty_zh(novelty),
-        "decision_zh": decision_zh(final_decision),
-    }
-
-
-def _triage_assets(value: Any) -> list[dict[str, str]]:
-    """The stored verdict's assets, typed. A pre-#651 free string or `null` reads as `unknown`."""
-
-    if not isinstance(value, list):
-        return []
-    out: list[dict[str, str]] = []
-    for item in value:
-        if not isinstance(item, Mapping):
-            continue
-        symbol = str(item["symbol"]).strip()
-        if not symbol:
-            continue
-        out.append(
-            {
-                "symbol": symbol,
-                "market_type": market_type_of(item.get("market_type")),
-                "role": str(item["role"]),
-            }
-        )
-    return out
-
-
 def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
-    legacy = _legacy_verdict(
-        final_decision=row.get("final_decision"),
-        override_rule=row.get("override_rule"),
-        throttled_by=row.get("throttled_by"),
-        degraded=row.get("triage_degraded"),
-        error_code=row.get("triage_error_code"),
-        verdict=row.get("triage_verdict") or {},
-        editorial=editorial_read_shape(row.get("model_editorial")),
-    )
     delivery = (
         {
             "state": row["delivery_state"],
@@ -813,20 +555,8 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
         if row.get("delivery_state")
         else None
     )
-    outcome_triage = (
-        {
-            **legacy,
-            "created_at_ms": row.get("verdict_created_at_ms"),
-            "published_at_ms": row.get("verdict_published_at_ms"),
-        }
-        if legacy is not None
-        else None
-    )
     outcome = event_outcome(
         admission=row.get("admission"),
-        opened_at_ms=row.get("opened_at_ms"),
-        published_at_ms=row.get("published_at_ms"),
-        triage=outcome_triage,
         delivery=delivery | {"plan_key": row.get("delivery_plan_key")} if delivery is not None else None,
         delivery_queue={"state": row.get("delivery_queue_state"), "error_code": row.get("delivery_queue_error_code")},
         semantic=(
@@ -850,7 +580,6 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
             if row.get("notification_state")
             else None
         ),
-        now_ms=now_ms,
     )
     sent_update = row.get("sent_update_headline")
     headline = sent_update or row.get("update_claim_headline")
@@ -869,72 +598,8 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
         **_event_public(row),
         "outcome": outcome.as_dict(),
         "update": update,
-        "legacy_verdict": legacy,
         "delivery": delivery,
     }
-
-
-def _verdict_public(row: Mapping[str, Any]) -> dict[str, Any]:
-    trace = row.get("trace")
-    trace = trace if isinstance(trace, dict) else {}
-    editorial = editorial_read_shape(row.get("editorial"))
-    model_editorial = None
-    if editorial is not None:
-        taxonomy = editorial["taxonomy"]
-        model_editorial = {
-            "source_authority": editorial["source_authority"],
-            "source_authority_zh": source_authority_zh(editorial["source_authority"]),
-            "taxonomy": _legacy_taxonomy(taxonomy) if taxonomy is not None else None,
-            "taxonomy_status": editorial["taxonomy_status"],
-            "taxonomy_error_code": editorial["taxonomy_error_code"],
-        }
-    return {
-        "stage": row["stage"],
-        "policy_version": row["policy_version"],
-        "judgment_contract_version": row["judgment_contract_version"],
-        "judgment_origin": row["judgment_origin"],
-        "judgment_sha256": row["scored_judgment_sha256"],
-        "verdict": triage_verdict_read_shape(row.get("verdict")),
-        "model_editorial": model_editorial,
-        "rule_baseline_decision": row["rule_baseline_decision"],
-        "final_decision": row["final_decision"],
-        "override_rule": row.get("override_rule"),
-        "throttled_by": row.get("throttled_by"),
-        "model": row.get("model"),
-        "model_usage_coverage": trace.get("usage_coverage", "unknown"),
-        "model_input_tokens": trace.get("input_tokens") if trace.get("usage_coverage") == "complete" else None,
-        "model_output_tokens": trace.get("output_tokens") if trace.get("usage_coverage") == "complete" else None,
-        "model_provider_cost_microusd": (trace.get("provider_cost_microusd") if "usage_coverage" in trace else None),
-        "program_version": row.get("program_version"),
-        "program_sha256": row.get("program_sha256"),
-        "degraded": bool(row.get("degraded")),
-        "error_code": row.get("error_code"),
-        "evidence_version": row.get("evidence_version"),
-        "evidence_sha256": row.get("evidence_sha256"),
-        "focus_fact_id": row.get("focus_fact_id"),
-        "published_at_ms": row.get("published_at_ms"),
-        "created_at_ms": int(row["created_at_ms"]),
-    }
-
-
-def _legacy_taxonomy(value: Mapping[str, Any]) -> dict[str, Any]:
-    """The four retired taxonomy axes as the legacy verdict stored them, for audit and nothing else.
-
-    No vocabulary is applied: the axes have no current owner or reading since #706, so the stored codes
-    are published as stored, and a missing axis stays missing.
-    """
-
-    codes = value.get("subject_codes")
-    return {
-        "subject_codes": [str(code) for code in codes] if isinstance(codes, list) else [],
-        "event_family": _optional_text(value.get("event_family")),
-        "change_state": _optional_text(value.get("change_state")),
-        "assertion_status": _optional_text(value.get("assertion_status")),
-    }
-
-
-def _optional_text(value: Any) -> str | None:
-    return str(value) if value else None
 
 
 def _delivery_public(row: Mapping[str, Any]) -> dict[str, Any]:

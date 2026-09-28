@@ -6,9 +6,9 @@ from decimal import Decimal
 
 import pytest
 
-from tests.integration.test_trading_analysis_storage import _selection
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
+from tests.support.trading_analysis import _selection
 from tracefold.platform.market_identity import DEFAULT_UNIVERSE
 from tracefold.trading.engine.policy import decision_identity
 from tracefold.trading.execution_contracts import (

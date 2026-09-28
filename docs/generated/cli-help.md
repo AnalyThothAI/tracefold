@@ -195,8 +195,8 @@ positional arguments:
                         Deduper+Gate (no model, no broker)
     wallets             explain the smart-money alert flow: roster,
                         thresholds, collected flow, decisions, send queue
-    why                 print one Event's chain: item, gate, triage, decide,
-                        delivery
+    why                 print one Event's sources, semantic work, adopted
+                        update, notification and delivery
     retry-work          reopen one failed News work version; retain facts and
                         receipts
     reanalyze           inspect or request one exact Event task read under

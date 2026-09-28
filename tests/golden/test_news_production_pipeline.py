@@ -46,8 +46,8 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
     assert data["event"]["published_at_ms"] is not None
     assert data["members"] and data["members"][0]["reporting_origin"] == "binance"
     _assert_one_sent_update(data, title=title)
-    # The legacy verdict path is gone: no verdict, no `first` card.
-    assert data["verdicts"] == [] and data["legacy_verdict"] is None
+    # The current reader does not expose the retired verdict projection.
+    assert "verdicts" not in data and "legacy_verdict" not in data
     readiness = golden_runtime.workers_readiness()
     assert readiness["capabilities"]["news_editorial"] == {"state": "running", "reason": None}
     # Two business queues and the dead-letter queue, all drained: the wake was consumed.

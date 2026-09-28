@@ -26,18 +26,19 @@ from .events import BAND_CANDIDATES_SQL
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_CARD_SQL,
+    EDITORIAL_EVENT_SQL,
+    EVENT_FEEDBACK_SQL,
     EVENT_MEMBERS_SQL,
-    EVENT_VERDICTS_SQL,
     ITEM_RELATED_COUNT_SQL,
     ITEM_RELATED_EVENTS_SQL,
     ITEM_RELATED_KEYS_SQL,
     SOURCE_AUTHORITY_PREDICATE,
     STATUS_DELIVERY_SQL,
+    STATUS_FUNNEL_DECISIONS_SQL,
     STATUS_FUNNEL_REVIEW_RATIOS_SQL,
     STATUS_FUNNEL_REVIEWS_SQL,
     STATUS_FUNNEL_SUPPRESSED_SQL,
     STATUS_FUNNEL_TOTALS_SQL,
-    STATUS_FUNNEL_VERDICTS_SQL,
     STATUS_INGEST_SQL,
     STATUS_LEARNING_RETENTION_SQL,
     STATUS_PIPELINE_SQL,
@@ -94,34 +95,35 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     week_ago = int(now_ms) - 168 * 3600_000
     raw_cutoff = int(now_ms) - 30 * 24 * 3600_000
     judged_cutoff = int(now_ms) - 365 * 24 * 3600_000
-    search_base = "e.ingest_mode IN ('live', 'recovery') AND e.opened_at_ms >= %s"
+    search_base = f"e.ingest_mode IN ('live', 'recovery') AND {EDITORIAL_EVENT_SQL} AND e.opened_at_ms >= %s"
     search_cursor = "(e.opened_at_ms, e.event_id) < (%s, %s)"
     recovery_backlog_sql, recovery_backlog_params = pending_recovery_incidents_statement(limit=RECOVERY_BACKLOG_LIMIT)
     return (
         ReadQuerySpec(
             name="news_feed_events",
-            sql=feed_page_sql("e.ingest_mode IN ('live', 'recovery')"),
-            params=(now_ms, 51),
+            sql=feed_page_sql(f"e.ingest_mode IN ('live', 'recovery') AND {EDITORIAL_EVENT_SQL}"),
+            params=(51,),
             max_read_return_amplification=32.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
-        # #706: the two feed filters that survived the taxonomy cut, over the adopted head's topics and
-        # cited sources and, for an Event without one, the legacy editorial document.
+        # Topic and cited-source authority are facts of the current adopted update.
         ReadQuerySpec(
             name="news_feed_filtered",
             sql=feed_page_sql(
-                f"e.ingest_mode IN ('live', 'recovery') AND {SOURCE_AUTHORITY_PREDICATE} AND {SUBJECT_CODE_PREDICATE}"
+                f"e.ingest_mode IN ('live', 'recovery') AND {EDITORIAL_EVENT_SQL} "
+                f"AND {SOURCE_AUTHORITY_PREDICATE} AND {SUBJECT_CODE_PREDICATE}"
             ),
-            params=(now_ms, ["issuer_first_party"], ["issuer_first_party"], ["medtop:20000379"], 51),
+            params=(["issuer_first_party"], ["medtop:20000379"], 51),
             max_read_return_amplification=32.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="news_feed_filtered_counts",
             sql=feed_counts_sql(
-                f"e.ingest_mode IN ('live', 'recovery') AND {SOURCE_AUTHORITY_PREDICATE} AND {SUBJECT_CODE_PREDICATE}"
+                f"e.ingest_mode IN ('live', 'recovery') AND {EDITORIAL_EVENT_SQL} "
+                f"AND {SOURCE_AUTHORITY_PREDICATE} AND {SUBJECT_CODE_PREDICATE}"
             ),
-            params=(now_ms, ["issuer_first_party"], ["issuer_first_party"], ["medtop:20000379"]),
+            params=(["issuer_first_party"], ["medtop:20000379"]),
             max_read_return_amplification=2.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
@@ -173,42 +175,42 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             # AssetSearch predicate and the production verdict/delivery joins. The builder is shared with
             # FeedStorage so this audit cannot regress to a simplified look-alike query.
             sql=feed_page_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE}"),
-            params=(now_ms, week_ago, ["BTC"], 51),
+            params=(week_ago, ["BTC"], 51),
             max_read_return_amplification=32.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="news_feed_asset_search_counts",
             sql=feed_counts_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE}"),
-            params=(now_ms, week_ago, ["BTC"]),
+            params=(week_ago, ["BTC"]),
             max_read_return_amplification=2.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="news_feed_asset_search_cursor",
             sql=feed_page_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE} AND {search_cursor}"),
-            params=(now_ms, week_ago, ["BTC"], int(now_ms), "\uffff", 51),
+            params=(week_ago, ["BTC"], int(now_ms), "\uffff", 51),
             max_read_return_amplification=32.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="news_feed_text_search",
             sql=feed_page_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE}"),
-            params=(now_ms, week_ago, "bitcoin", 51),
+            params=(week_ago, "bitcoin", 51),
             max_read_return_amplification=32.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="news_feed_text_search_counts",
             sql=feed_counts_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE}"),
-            params=(now_ms, week_ago, "bitcoin"),
+            params=(week_ago, "bitcoin"),
             max_read_return_amplification=2.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="news_feed_text_search_cursor",
             sql=feed_page_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE} AND {search_cursor}"),
-            params=(now_ms, week_ago, "bitcoin", int(now_ms), "\uffff", 51),
+            params=(week_ago, "bitcoin", int(now_ms), "\uffff", 51),
             max_read_return_amplification=32.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
@@ -258,8 +260,8 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
-            name="news_event_verdicts",
-            sql=EVENT_VERDICTS_SQL,
+            name="news_event_feedback",
+            sql=EVENT_FEEDBACK_SQL,
             params=("event",),
             max_read_return_amplification=8.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
@@ -384,8 +386,8 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
-            name="news_status_funnel_verdicts",
-            sql=STATUS_FUNNEL_VERDICTS_SQL,
+            name="news_status_funnel_decisions",
+            sql=STATUS_FUNNEL_DECISIONS_SQL,
             params=(day_ago,),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
@@ -393,7 +395,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_status_funnel_reviews",
             sql=STATUS_FUNNEL_REVIEWS_SQL,
-            params=(day_ago,),
+            params=(day_ago, day_ago),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),

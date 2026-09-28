@@ -12,8 +12,8 @@ import {
   newsOutcomeFixture,
   newsQuoteFixture,
   newsStatusFixture,
+  newsTimelineFixture,
   newsUpdateDetailFixture,
-  newsVerdictFixture,
 } from "@tests/fixtures/newsFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
@@ -126,7 +126,7 @@ describe("NewsPage", () => {
       inRow.getByText("Central banks respond to a new global policy shock"),
     ).toBeInTheDocument();
     expect(inRow.getByText("Reuters World")).toBeInTheDocument();
-    expect(inRow.getByText("利空")).toBeInTheDocument();
+    expect(inRow.queryByText("利空")).not.toBeInTheDocument();
     const kind = row!.querySelector(".news-kind");
     expect(kind).toHaveAttribute("data-kind", "news");
     expect(kind).toHaveTextContent("新闻");
@@ -150,8 +150,8 @@ describe("NewsPage", () => {
     expect(badges[0]).toHaveTextContent("已推送");
     expect(row).not.toHaveAttribute("data-priority");
     expect(badges[0]).toHaveAttribute("data-variant", "text");
-    expect(badges[0]).toHaveAttribute("title", "模型判断值得推送");
-    expect(inRow.getByText("模型判断值得推送")).toBeInTheDocument();
+    expect(badges[0]).not.toHaveAttribute("title");
+    expect(inRow.getByText(/推送于/)).toBeInTheDocument();
     for (const raw of ["escalate_corroborated", "candidate", "asset:BTC", "escalate", "general"]) {
       expect(inRow.queryByText(raw)).not.toBeInTheDocument();
     }
@@ -202,10 +202,7 @@ describe("NewsPage", () => {
                 ],
                 event_id: "evt-oi-btr",
                 grounded_assets: [],
-                legacy_verdict: {
-                  ...newsFeedEventFixture().legacy_verdict!,
-                  headline_zh: "BTR 持仓异动",
-                },
+                update: { ...newsFeedEventFixture().update!, headline: "BTR 持仓异动" },
               }),
             ],
           }),
@@ -253,7 +250,7 @@ describe("NewsPage", () => {
                 delivery: null,
                 outcome: newsOutcomeFixture({
                   group: "held",
-                  kind: "dropped",
+                  kind: "not_notified",
                   reason_zh: "判为噪声",
                   text_zh: "未推送",
                 }),
@@ -357,15 +354,10 @@ describe("NewsPage", () => {
                 event_id: "evt-throttled",
                 outcome: newsOutcomeFixture({
                   group: "held",
-                  kind: "throttled",
+                  kind: "not_notified",
                   reason_zh: "BTC 同一话题 2 小时内已推过同等或更重要的消息",
                   text_zh: "未推送（历史限流）",
                 }),
-                legacy_verdict: {
-                  ...newsFeedEventFixture().legacy_verdict!,
-                  final_decision: "throttled",
-                  throttled_by: "storyline:asset:BTC",
-                },
               }),
               newsFeedEventFixture({
                 delivery: null,
@@ -379,7 +371,7 @@ describe("NewsPage", () => {
                   reason_zh: "断线期间补抄的旧闻，仅用于去重与历史",
                   text_zh: "补抄件，不推送",
                 }),
-                legacy_verdict: null,
+                update: null,
               }),
             ],
           }),
@@ -399,10 +391,10 @@ describe("NewsPage", () => {
       await screen.findByText("BTC 同一话题 2 小时内已推过同等或更重要的消息")
     ).closest("article")!;
     expect(throttled).toHaveAttribute("data-outcome-group", "held");
-    expect(throttled).toHaveAttribute("data-outcome", "throttled");
+    expect(throttled).toHaveAttribute("data-outcome", "not_notified");
     const heldBadge = throttled.querySelector(".news-outcome")!;
     expect(heldBadge).toHaveAttribute("data-variant", "text");
-    expect(heldBadge).toHaveAttribute("data-tone", "caution");
+    expect(heldBadge).toHaveAttribute("data-tone", "neutral");
     expect(heldBadge).toHaveTextContent("未推送（历史限流）");
     expect(within(throttled).queryByText("storyline:asset:BTC")).not.toBeInTheDocument();
     const recovery = screen.getByText("断线期间补抄的旧闻，仅用于去重与历史").closest("article")!;
@@ -421,7 +413,6 @@ describe("NewsPage", () => {
             events: [
               newsFeedEventFixture({
                 event_id: "evt-agent",
-                legacy_verdict: null,
                 outcome: newsOutcomeFixture({
                   group: "held",
                   kind: "not_notified",
@@ -447,7 +438,7 @@ describe("NewsPage", () => {
     const row = (
       await screen.findByRole("heading", { name: "Agency raises the steel import tariff to 50%." })
     ).closest("article")!;
-    expect(row).toHaveAttribute("data-direction", "flat");
+    expect(row).not.toHaveAttribute("data-direction");
     expect(row).toHaveAttribute("data-outcome", "not_notified");
     expect(row.querySelector(".news-direction")).toBeNull();
     expect(within(row).getByText("仅表态或观点 ×2")).toBeInTheDocument();
@@ -473,7 +464,7 @@ describe("NewsPage", () => {
             events: [
               newsFeedEventFixture({
                 leader_title: longTitle,
-                legacy_verdict: { ...newsFeedEventFixture().legacy_verdict!, headline_zh: null },
+                update: { ...newsFeedEventFixture().update!, headline: null },
               }),
             ],
           }),
@@ -488,12 +479,12 @@ describe("NewsPage", () => {
     expect(heading.closest("[data-page-archetype='scan']")).not.toBeNull();
   });
 
-  it("keeps outcome, time, direction, and event kind in URL-owned server state", async () => {
+  it("keeps outcome, time, and event kind in URL-owned server state", async () => {
     const observed: Record<string, string | null> = {};
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
-        for (const name of ["q", "outcome", "hours", "direction", "event_kind"]) {
+        for (const name of ["q", "outcome", "hours", "event_kind"]) {
           observed[name] = params.get(name);
         }
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
@@ -502,13 +493,11 @@ describe("NewsPage", () => {
 
     renderNews(
       <NewsPage token="test-token" view="feed" />,
-      "/news?q=bitcoin&outcome=held&hours=168&direction=bullish,neutral&event_kind=listing",
+      "/news?q=bitcoin&outcome=held&hours=168&event_kind=listing",
     );
 
     await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ });
-    await waitFor(() => expect(observed.direction).toBe("bullish,neutral"));
     expect(observed).toEqual({
-      direction: "bullish,neutral",
       event_kind: "listing",
       hours: "168",
       outcome: "held",
@@ -519,9 +508,7 @@ describe("NewsPage", () => {
       "true",
     );
     expect(screen.getByRole("button", { name: "时间范围，最近 7 天" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "筛选 · 3" }));
-    expect(screen.getByRole("button", { name: "▲ 利多" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "◆ 中性" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "筛选 · 1" }));
     expect(screen.getByRole("button", { name: "上币/下币" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -538,13 +525,10 @@ describe("NewsPage", () => {
       expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument();
     }
 
-    fireEvent.click(screen.getByRole("button", { name: "◆ 中性" }));
-    await waitFor(() => expect(observed.direction).toBe("bullish"));
     fireEvent.click(screen.getByRole("button", { name: "新闻" }));
     await waitFor(() => expect(observed.event_kind).toBe("news,listing"));
     fireEvent.click(screen.getByRole("button", { name: "清除" }));
     await waitFor(() => {
-      expect(observed.direction).toBeNull();
       expect(observed.event_kind).toBeNull();
     });
     expect(screen.getByRole("button", { name: "筛选" })).toBeInTheDocument();
@@ -676,10 +660,7 @@ describe("NewsPage", () => {
               newsFeedEventFixture(),
               newsFeedEventFixture({
                 event_id: "evt-second-page",
-                legacy_verdict: {
-                  ...newsFeedEventFixture().legacy_verdict!,
-                  headline_zh: "Second page Event",
-                },
+                update: { ...newsFeedEventFixture().update!, headline: "Second page Event" },
               }),
             ],
             next_cursor: null,
@@ -707,9 +688,9 @@ describe("NewsPage", () => {
       events: [
         newsFeedEventFixture({
           event_id: "evt-new-at-top",
-          legacy_verdict: {
-            ...newsFeedEventFixture().legacy_verdict!,
-            headline_zh: "New high-signal event at the top",
+          update: {
+            ...newsFeedEventFixture().update!,
+            headline: "New high-signal event at the top",
           },
         }),
         ...newsFeedFixture().events,
@@ -733,9 +714,9 @@ describe("NewsPage", () => {
             events: [
               newsFeedEventFixture({
                 event_id: "evt-loaded-tail",
-                legacy_verdict: {
-                  ...newsFeedEventFixture().legacy_verdict!,
-                  headline_zh: "Loaded non-deferred tail event",
+                update: {
+                  ...newsFeedEventFixture().update!,
+                  headline: "Loaded non-deferred tail event",
                 },
               }),
             ],
@@ -756,10 +737,7 @@ describe("NewsPage", () => {
       events: [
         newsFeedEventFixture({
           event_id: "evt-deferred-at-top",
-          legacy_verdict: {
-            ...newsFeedEventFixture().legacy_verdict!,
-            headline_zh: "Deferred high-signal event",
-          },
+          update: { ...newsFeedEventFixture().update!, headline: "Deferred high-signal event" },
         }),
         ...newsFeedFixture().events,
       ],
@@ -795,7 +773,7 @@ describe("NewsPage", () => {
     expect(within(funnel).getByLabelText("24 小时漏斗").textContent).toBe(
       // Four counts and the share each came from. #87: 符号落表 is measured against the Events that
       // *carried* a tag, never against the tagless macro headlines that never offered a symbol.
-      "RECEIVED320采集ADMITTED180过门禁56%JUDGED175已审稿97%PUSHED41已推送13%",
+      "RECEIVED320采集ADMITTED180过门禁56%ADOPTED175已采用更新97%PUSHED41已推送13%",
     );
   });
 
@@ -877,9 +855,8 @@ describe("NewsPage", () => {
     for (const reason of newsStatusFixture().reasons_24h ?? []) {
       expect(within(reasons).getByText(reason.label_zh)).toBeInTheDocument();
     }
-    expect(within(reasons).getByText("模型判定为噪音")).toBeInTheDocument();
-    expect(within(reasons).getByText("「美伊冲突」话题 4 小时内已推 3 条")).toBeInTheDocument();
-    expect(within(reasons).getByText("律所推广模板，规则直接拦截")).toBeInTheDocument();
+    expect(within(reasons).getByText("保留")).toBeInTheDocument();
+    expect(within(reasons).getByText("律所推广模板")).toBeInTheDocument();
     expect(
       within(reasons).queryByText("storyline:conflict:mideast_2026:cap3"),
     ).not.toBeInTheDocument();
@@ -898,7 +875,7 @@ describe("NewsPage", () => {
     // Raw metrics stay available, but folded away.
     const technical = screen.getByText(/技术指标/).closest("details")!;
     expect(technical).not.toHaveAttribute("open");
-    expect(within(technical).getByText("triage_p95_ms")).toBeInTheDocument();
+    expect(within(technical).getByText("decisions_24h")).toBeInTheDocument();
     expect(within(technical).getByText("学习证据保留")).toBeInTheDocument();
     expect(within(technical).getByText("deleted_last_turn")).toBeInTheDocument();
   });
@@ -917,10 +894,6 @@ describe("NewsPage", () => {
               grounded_assets: [],
             },
             normalization: [],
-            legacy_verdict: {
-              ...detail.legacy_verdict!,
-              assets: [{ role: "primary", symbol: "BTR" }],
-            },
           },
         }),
       ),
@@ -949,8 +922,8 @@ describe("NewsPage", () => {
       "/news/events/evt-global-policy",
     );
 
-    expect(await screen.findByText("ASSET · 1 个标的")).toBeInTheDocument();
-    expect(screen.getByText("BTRUSDT")).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "当前行情" })).toBeInTheDocument();
+    expect(await screen.findByText("BTRUSDT")).toBeInTheDocument();
     expect(screen.getAllByText("0.16059").length).toBeGreaterThan(0);
   });
 
@@ -1011,95 +984,62 @@ describe("NewsPage", () => {
     expect(requests).toEqual(["", "evt-other"]);
   });
 
-  it("renders Event detail as one conclusion, a timeline, members, and folded technical details", async () => {
+  it("renders current Event detail with outcome, timeline, members, and receipts", async () => {
     renderNews(
       <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
       "/news/events/evt-global-policy",
     );
-
     const region = await screen.findByRole("region", { name: "新闻事件详情" });
-    expect(screen.getByRole("link", { name: "返回新闻事件流" })).toHaveAttribute("href", "/news");
-    await screen.findByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" });
-    // The conclusion and its reason are siblings in the hero, not one capsule: the chip is the verdict and
-    // the sentence beside it is the server's reason for it.
-    const heroState = region.querySelector(".news-detail-hero-state")!;
-    expect(heroState.querySelector(".news-outcome")).toHaveTextContent("已推送");
-    expect(heroState.querySelector(".news-kind")).toHaveAttribute("data-kind", "news");
-    expect(heroState.querySelector(".news-kind")).toHaveTextContent("新闻");
-    expect(heroState).toHaveTextContent("模型判断值得推送");
     expect(
-      screen.getByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" }),
+      await screen.findByRole("heading", { level: 1, name: "钢铁进口关税上调至 50%" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("利率指引与市场预期背离，风险资产定价需要重估")).toBeInTheDocument();
-    // #256: the judgments are still served and still shown; the door into the retired ReviewDesk is not.
-    expect(screen.getByRole("heading", { name: "人工复盘" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "在学习复盘中打开" })).toBeNull();
-    const hero = region.querySelector<HTMLElement>(".news-detail-hero")!;
-    expect(
-      within(hero).getByText("Central banks respond to a new global policy shock"),
-    ).toBeInTheDocument();
-
+    expect(region.querySelector(".news-outcome")).toHaveTextContent("已推送");
     const timeline = screen.getByRole("region", { name: "处理时间线" });
-    const steps = within(timeline).getAllByRole("listitem");
-    expect(steps.map((step) => step.getAttribute("data-stage"))).toEqual([
-      "received",
-      "gate",
-      "triage",
-      "decide",
-      "delivery",
-    ]);
-    expect(steps[0]).toHaveTextContent("来源 Reuters World · 归并 4 条同类报道（2 个来源）");
-    expect(steps[3]).toHaveTextContent("推送 · 模型判断值得推送");
-    expect(within(steps[3]).queryByText("escalate_corroborated")).not.toBeInTheDocument();
-    fireEvent.click(within(steps[3]).getByRole("button", { name: /展开字段/ }));
-    expect(within(steps[3]).getByText("override_rule")).toBeInTheDocument();
-    expect(within(steps[3]).getByText("escalate_corroborated")).toBeInTheDocument();
-
-    const members = screen.getByRole("region", { name: "同类报道" });
-    expect(within(members).getAllByRole("listitem")).toHaveLength(2);
     expect(
-      within(members).getByText("Central banks scramble after policy shock"),
-    ).toBeInTheDocument();
-    expect(within(members).queryByText(/0\.71/)).not.toBeInTheDocument();
-
-    expect(screen.queryByRole("region", { name: "运营标注" })).not.toBeInTheDocument();
-
+      within(timeline)
+        .getAllByRole("listitem")
+        .map((step) => step.getAttribute("data-stage")),
+    ).toEqual(["received", "gate", "semantic", "delivery"]);
+    expect(
+      within(screen.getByRole("region", { name: "同类报道" })).getAllByRole("listitem"),
+    ).toHaveLength(2);
+    expect(screen.getByRole("heading", { name: "人工复盘" })).toBeInTheDocument();
     const technical = screen.getByText(/技术详情/).closest("details")!;
-    expect(technical).not.toHaveAttribute("open");
     expect(within(technical).getByText("storyline_key")).toBeInTheDocument();
-    expect(within(technical).getByText("asset:BTC")).toBeInTheDocument();
-    expect(within(technical).getByText("news_triage_policy_v17")).toBeInTheDocument();
-    for (const [earlier, later] of [
-      [hero, timeline],
-      [timeline, members],
-      [members, technical],
-    ] as const) {
-      expect(earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    }
-    // Internal identifiers do not leak into the first screen.
-    expect(within(hero).queryByText(/asset:BTC|evt-global-policy|jaccard/)).toBeNull();
+    expect(within(technical).getByText("message_id", { exact: false })).toBeInTheDocument();
+    expect(within(technical).queryByText("news_triage_policy_v17")).toBeNull();
   });
 
-  it("keeps a legacy verdict in its own 旧版判定 panel without the retired taxonomy facts", async () => {
-    // #706: a legacy Event keeps its Triage verdict, labelled as history. The retired taxonomy axes are not
-    // a current reading: no 事件族/变化状态/断言状态 cell, and the verdict row shows its stored code only.
+  it("shows only source facts when an Event has no current semantic work", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsEventDetailFixture({
+            deliveries: [
+              newsDeliveryFixture({ intent_id: `legacy_intent:${"5".repeat(64)}`, kind: "first" }),
+            ],
+            event_update: null,
+            processing: null,
+            timeline: [
+              ...newsTimelineFixture().slice(0, 2),
+              { ...newsTimelineFixture()[3], facts: { kind: "first", state: "sent" } },
+            ],
+          }),
+        }),
+      ),
+    );
     renderNews(
       <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
       "/news/events/evt-global-policy",
     );
-
-    await screen.findByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" });
-    const legacy = screen.getByRole("region", { name: "旧版判定" });
-    expect(within(legacy).getByText("利率指引与市场预期背离，风险资产定价需要重估")).toBeVisible();
-    expect(within(legacy).getByText("可信二手来源")).toBeInTheDocument();
-    for (const retired of ["事件族", "变化状态", "断言状态"]) {
-      expect(screen.queryByText(retired)).toBeNull();
-    }
-    for (const section of ["新增了什么", "命题", "来源与分歧", "推断与缺口", "处理状态"]) {
-      expect(screen.queryByRole("region", { name: section })).toBeNull();
-    }
-    const technical = screen.getByText(/技术详情/).closest("details")!;
-    expect(within(technical).getByText("macro_policy_data")).toBeInTheDocument();
+    await screen.findByRole("heading", {
+      level: 1,
+      name: "Central banks respond to a new global policy shock",
+    });
+    expect(screen.queryByRole("region", { name: "旧版判定" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "新增了什么" })).toBeNull();
+    expect(screen.getByRole("region", { name: "同类报道" })).toBeInTheDocument();
   });
 
   it("renders a News Agent Event from its EventUpdate: changes, claims, sources, inference and processing", async () => {
@@ -1228,7 +1168,7 @@ describe("NewsPage", () => {
       "/news/events/evt-global-policy",
     );
 
-    await screen.findByRole("heading", { level: 1, name: "央行政策转向，风险资产承压" });
+    await screen.findByRole("heading", { level: 1, name: "钢铁进口关税上调至 50%" });
     expect(screen.getByText("NVDA")).toBeInTheDocument();
     expect(screen.queryByText("GLM")).not.toBeInTheDocument();
     expect(screen.getByText(/已隐藏 1 个同名但非主标的/)).toBeInTheDocument();
@@ -1257,17 +1197,10 @@ describe("NewsPage", () => {
               ...newsEventDetailFixture().timeline!.slice(0, 2),
               {
                 at_ms: NEWS_NOW_MS - 90_000,
-                facts: { degraded: true, error_code: "news_program_output_truncated" },
-                stage: "triage",
-                summary_zh: "模型不可用：模型输出被截断，按规则兜底",
-                title_zh: "审稿",
-              },
-              {
-                at_ms: NEWS_NOW_MS - 90_000,
-                facts: { final_decision: "push", override_rule: "fail_closed_fallback" },
-                stage: "decide",
-                summary_zh: "推送 · 模型不可用，按规则兜底",
-                title_zh: "决策",
+                facts: { error_code: "news_program_output_truncated" },
+                stage: "semantic",
+                summary_zh: "语义处理失败：模型输出被截断",
+                title_zh: "语义处理",
               },
               {
                 at_ms: NEWS_NOW_MS - 10_000,
@@ -1280,17 +1213,6 @@ describe("NewsPage", () => {
                 summary_zh: "未送达：飞书发送失败（FeishuServerError）",
                 title_zh: "推送",
               },
-            ],
-            verdicts: [
-              newsVerdictFixture({
-                degraded: true,
-                error_code: "news_program_output_truncated",
-                final_decision: "push",
-                judgment_origin: "degraded",
-                model: null,
-                model_editorial: null,
-                override_rule: "fail_closed_fallback",
-              }),
             ],
           }),
         }),
@@ -1311,14 +1233,11 @@ describe("NewsPage", () => {
     );
     expect(badge).toHaveAttribute("data-tone", "alert");
     const timeline = screen.getByRole("region", { name: "处理时间线" });
-    expect(
-      within(timeline).getByText("模型不可用：模型输出被截断，按规则兜底"),
-    ).toBeInTheDocument();
+    expect(within(timeline).getByText("语义处理失败：模型输出被截断")).toBeInTheDocument();
     expect(
       within(timeline).getByText("未送达：飞书发送失败（FeishuServerError）"),
     ).toBeInTheDocument();
     const technical = screen.getByText(/技术详情/).closest("details")!;
-    expect(within(technical).getByText("news_program_output_truncated")).toBeInTheDocument();
     expect(
       within(technical).getByText("news_delivery_failed:FeishuServerError"),
     ).toBeInTheDocument();

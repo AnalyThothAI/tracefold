@@ -22,24 +22,8 @@
     border-bottom: 0;
   }
 
-  .news-event-row[data-direction="bullish"] {
-    --rail: var(--dir-bullish);
-  }
-
-  .news-event-row[data-direction="bearish"] {
-    --rail: var(--dir-bearish);
-  }
-
   .news-event-row[data-outcome-group="held"] {
     --rail: var(--border-subtle);
-  }
-
-  .news-event-row[data-outcome-group="held"][data-direction="bullish"] {
-    --rail: var(--dir-bullish-muted);
-  }
-
-  .news-event-row[data-outcome-group="held"][data-direction="bearish"] {
-    --rail: var(--dir-bearish-muted);
   }
 
   .news-event-row:hover {
@@ -121,25 +105,6 @@
 
   .news-event-divider {
     color: var(--border-subtle);
-  }
-
-  .news-event-row .news-direction {
-    padding: 0 5px;
-    border-radius: var(--radius-xs);
-    font-size: var(--font-size-mono-meta);
-    font-weight: 620;
-  }
-
-  .news-event-row .news-direction[data-dir="bullish"] {
-    background: var(--dir-bullish-soft);
-  }
-
-  .news-event-row .news-direction[data-dir="bearish"] {
-    background: var(--dir-bearish-soft);
-  }
-
-  .news-event-row .news-direction[data-dir="flat"] {
-    background: var(--signal-neutral-soft);
   }
 
   .news-event-row .news-outcome {

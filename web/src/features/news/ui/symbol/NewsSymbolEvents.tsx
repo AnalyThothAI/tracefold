@@ -14,7 +14,6 @@ import {
   symbolLaneLabel,
   type NewsSymbolLane,
 } from "../../model/symbolLanes";
-import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 import { NewsReactionValue } from "../chrome/NewsQuoteValue";
@@ -121,7 +120,6 @@ export function NewsSymbolEvents({
 }
 
 function EventRow({ event }: { event: NewsFeedEvent }) {
-  const legacy = event.legacy_verdict;
   const headline = eventHeadline(event);
   return (
     <article className="news-symbol-row">
@@ -135,7 +133,6 @@ function EventRow({ event }: { event: NewsFeedEvent }) {
       <NewsKindBadge kind={event.event_kind} />
       <span className="news-symbol-headline">
         <Link to={newsEventPath(event.event_id)}>{headline}</Link>
-        {legacy ? <NewsDirectionChip verdict={legacy} withStrength={false} /> : null}
       </span>
       <span className="news-symbol-outcome">
         <NewsOutcomeBadge outcome={event.outcome} variant="text" />

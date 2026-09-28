@@ -349,14 +349,6 @@ def _integer(value: Any) -> int | None:
     return None if value is None else int(value)
 
 
-def _lines(value: Any) -> tuple[str, ...]:
-    """A jsonb array of digest sentences as a tuple, and anything else as none of them."""
-
-    if not isinstance(value, (list, tuple)):
-        return ()
-    return tuple(str(line) for line in value if str(line).strip())
-
-
 def group_family(observation: MarketObservation) -> MarketFamily:
     """Which rule branch owns this record, decided by the typed fact it actually has.
 

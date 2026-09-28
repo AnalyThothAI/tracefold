@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .quote_storage import QuoteStorage
-from .review_storage import MarketReviewCohort, ReviewStorage
+from .review_storage import ReviewStorage
 
 
 class PriceRepository(QuoteStorage, ReviewStorage):
@@ -13,4 +13,4 @@ class PriceRepository(QuoteStorage, ReviewStorage):
         self.conn = conn
 
 
-__all__ = ["MarketReviewCohort", "PriceRepository"]
+__all__ = ["PriceRepository"]

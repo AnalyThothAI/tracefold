@@ -152,7 +152,6 @@ TRADING_TABLES = (
     "trading_model_calls",
     "trading_watch_observations",
     "trading_case_evaluations",
-    "trading_root_market_tapes",
     "trading_signal_retirements",
     "trading_entry_validity_checks",
     "trading_trade_signals",
@@ -163,6 +162,10 @@ TRADING_TABLES = (
     "trading_execution_runtime_state",
     "trading_source_amendments",
 )
+
+# Durable rows from migration 0396 are preserved, but no runtime reads or writes this retired tape.
+# It belongs to the physical schema check, not the required online table/read-count registry.
+HISTORICAL_TRADING_TABLES = frozenset({"trading_root_market_tapes"})
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
     {
@@ -205,9 +208,9 @@ class PostgresOperationalAudit:
         }
         actual_trading_tables = self._tables_with_prefix("trading_")
         trading_schema = {
-            "expected_tables": list(TRADING_TABLES),
+            "expected_tables": sorted((*TRADING_TABLES, *HISTORICAL_TRADING_TABLES)),
             "actual_tables": sorted(actual_trading_tables),
-            "exact": actual_trading_tables == set(TRADING_TABLES),
+            "exact": actual_trading_tables == set(TRADING_TABLES) | HISTORICAL_TRADING_TABLES,
         }
         migration_version = self._migration_version()
         migration_ready = migration_version == self.expected_migration_version

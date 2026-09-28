@@ -8,7 +8,8 @@ from typing import Any
 
 import pytest
 
-from tests.integration.test_news_chain_tape import (
+from tests.postgres_test_utils import connect_postgres_test
+from tests.support.wallet_chain import (
     SELL_BLOCK,
     SELL_WALLET,
     _Chain,
@@ -18,7 +19,6 @@ from tests.integration.test_news_chain_tape import (
     _state,
     _synthetic_receipt,
 )
-from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 
 
@@ -110,8 +110,8 @@ def test_plan_is_consistent_inside_the_real_workers_preconfigured_transaction(co
 
 
 def test_missing_sell_never_creates_false_quorum_and_normal_receipts_reach_one_send(conn: Any) -> None:
-    from tests.integration.test_news_chain_tape import FSD, _Log, _Receipt
-    from tests.integration.test_wallet_net_buy import Db, Sender
+    from tests.support.wallet_chain import FSD, _Log, _Receipt
+    from tests.support.wallet_net_buy import Db, Sender
     from tracefold.news.chain_tape.contracts import STABLE_CASH_TOKEN, UNISWAP_V3_SWAP_TOPIC
     from tracefold.news.chain_tape.detect import NetBuyDetector
     from tracefold.news.chain_tape.evm import TRANSFER_TOPIC, address_topic
@@ -195,7 +195,7 @@ def test_actual_rpc_requests_are_bounded_for_full_topic_sets(conn: Any, count: i
 
     import httpx
 
-    from tests.integration.test_news_chain_tape import _Db
+    from tests.support.wallet_chain import _Db
     from tracefold.integrations.robinhood_chain import RobinhoodChainClient
     from tracefold.news.chain_tape.loop import ChainTapeLoop
 
@@ -243,7 +243,7 @@ def test_rpc_retry_after_blocks_requests_until_due_and_then_recovers(conn: Any) 
 
     import httpx
 
-    from tests.integration.test_news_chain_tape import _Db
+    from tests.support.wallet_chain import _Db
     from tracefold.integrations.robinhood_chain import RobinhoodChainClient
     from tracefold.news.chain_tape.loop import ChainTapeLoop
 

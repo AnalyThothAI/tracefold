@@ -2,11 +2,9 @@ export type NewsFeedQueryKeyFilters = {
   admission: string | null;
   sourceAuthorities: readonly string[];
   subjectCodes: readonly string[];
-  finalDecisions: readonly string[];
   eventKinds: readonly string[];
   hours: number | null;
   outcome: string | null;
-  directions: readonly string[];
   q: string;
   symbol: string | null;
 };
@@ -16,13 +14,11 @@ export const newsFeedIdentity = (filters: NewsFeedQueryKeyFilters) =>
     filters.q,
     filters.sourceAuthorities.join(","),
     filters.subjectCodes.join(","),
-    filters.finalDecisions.join(","),
     filters.eventKinds.join(","),
     filters.admission ?? "",
     filters.symbol ?? "",
     filters.outcome ?? "",
     filters.hours == null ? "" : String(filters.hours),
-    filters.directions.join(","),
   ] as const;
 
 export const queryKeys = {

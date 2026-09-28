@@ -16,9 +16,9 @@ from urllib.parse import unquote
 import pytest
 import yaml
 
-from tests.contract.test_cli import write_runtime_config
 from tests.postgres_test_utils import postgres_migration_test_dsn
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
+from tests.support.cli_config import write_runtime_config
 from tracefold.app.http.schemas.trading import TradingExecutionReadinessData
 from tracefold.cli import main
 

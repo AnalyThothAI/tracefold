@@ -23,8 +23,9 @@ from typing import Any
 
 import pytest
 
-from tests.integration.test_news_market_notifications import _oi_item
-from tests.integration.test_wallet_net_buy import (
+from tests.postgres_test_utils import connect_postgres_test
+from tests.support.market_oi import _oi_item
+from tests.support.wallet_net_buy import (
     NOW,
     Db,
     Sender,
@@ -34,13 +35,17 @@ from tests.integration.test_wallet_net_buy import (
     run,
     seed,
 )
-from tests.integration.test_wallet_net_buy import (
-    conn as conn,  # noqa: PLC0414 -- the fixture, re-exported deliberately
-)
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_notifications import DEFER_BACKOFF_MS, MarketNotificationLoop
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture()
+def conn(postgres_clone_dsn: str):
+    connection = connect_postgres_test(read_only=False)
+    yield connection
+    connection.close()
 
 
 def _loop(conn: Any, sender: Sender, *, at_ms: int = NOW, **kwargs: Any) -> MarketNotificationLoop:

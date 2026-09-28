@@ -39,7 +39,7 @@ _NEWS_QUERY_NAMES = (
     "news_event_detail",
     "news_event_asset_projection",
     "news_event_members",
-    "news_event_verdicts",
+    "news_event_feedback",
     # #706: the Event detail's EventUpdate plane and its intent ledger/queue.
     "news_event_deliveries",
     "news_event_delivery_queue",
@@ -58,7 +58,7 @@ _NEWS_QUERY_NAMES = (
     "news_status_source_contracts",
     "news_status_delivery",
     "news_status_funnel_suppressed",
-    "news_status_funnel_verdicts",
+    "news_status_funnel_decisions",
     "news_status_funnel_reviews",
     "news_status_funnel_review_ratios",
     "news_status_funnel_totals",
@@ -93,12 +93,9 @@ _NEWS_QUERY_NAMES = (
     "news_market_news_total",
     "news_reaction_due_scan",
     "news_reaction_attach",
-    "news_review_task_queue",
-    "news_review_task_evidence",
-    "news_review_task_evidence_version",
-    "news_review_active_agent",
-    "news_review_coverage_source",
-    "news_review_market",
+    "news_review_decision_queue",
+    "news_review_decision_coverage",
+    "news_review_decision_evidence",
 )
 
 
@@ -160,7 +157,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     assert catalog.query_routes["/api/news/events/{event_id}"] == (
         "news_event_detail",
         "news_event_members",
-        "news_event_verdicts",
+        "news_event_feedback",
         "news_event_deliveries",
         "news_event_delivery_queue",
         "news_event_semantic_work",
@@ -205,7 +202,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_source_contracts",
         "news_status_delivery",
         "news_status_funnel_suppressed",
-        "news_status_funnel_verdicts",
+        "news_status_funnel_decisions",
         "news_status_funnel_reviews",
         "news_status_funnel_review_ratios",
         "news_status_funnel_totals",
@@ -367,7 +364,8 @@ def test_status_audit_explains_the_statements_the_status_route_executes():
     assert sorted(executed, key=repr) == sorted(audited, key=repr)
     # Not vacuous: the pipeline read really is the whole status statement, not a count of one table.
     pipeline = queries["news_status_pipeline"].sql
-    assert "percentile_cont(0.95)" in pipeline
+    assert "news_notification_decisions" in pipeline
+    assert "percentile_cont(0.95)" in queries["news_status_delivery"].sql
     assert "news_event_evidence_snapshots" in pipeline
     assert queries["news_status_funnel_totals"].sql.count("news_event_evidence_snapshots") == 2
 
@@ -474,7 +472,7 @@ def test_status_audit_reads_its_sql_from_the_production_module_only():
         "STATUS_SOURCE_CONTRACTS_SQL",
         "STATUS_DELIVERY_SQL",
         "STATUS_FUNNEL_SUPPRESSED_SQL",
-        "STATUS_FUNNEL_VERDICTS_SQL",
+        "STATUS_FUNNEL_DECISIONS_SQL",
         "STATUS_FUNNEL_REVIEWS_SQL",
         "STATUS_FUNNEL_REVIEW_RATIOS_SQL",
         "STATUS_FUNNEL_TOTALS_SQL",
@@ -800,7 +798,7 @@ def test_analyzed_query_audit_keeps_the_returned_rows_denominator_for_an_empty_p
     An ungrouped aggregate emits exactly one row, so a result of none did not come from one. Reading zero
     as "at most one row, so it folded" made the filter that discards a whole window to return nothing --
     `news_market_groups` on a group key no observation carries, which is #570 A3's shape, and
-    `news_review_market` through its subquery -- report a bounded read: 25,000 rows discarded beside a
+    a scalar subquery can also hide a large scan: 25,000 rows discarded beside a
     `count(*)` over 500,000 came back as amplification 1.05 with no violation.
     """
 

@@ -34,15 +34,6 @@
     border-left-width: 1px;
   }
 
-  /* The rail is the market call. A neutral verdict leaves it uncoloured rather than picking a side. */
-  .news-detail-hero[data-direction="bullish"] {
-    border-left-color: var(--dir-bullish);
-  }
-
-  .news-detail-hero[data-direction="bearish"] {
-    border-left-color: var(--dir-bearish);
-  }
-
   .news-detail-hero-top {
     display: flex;
     flex-wrap: wrap;

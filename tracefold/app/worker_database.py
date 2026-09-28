@@ -21,6 +21,7 @@ from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
     ResourceCapability,
     await_concurrent_future,
+    drain_futures,
 )
 from tracefold.platform.validation import require_nonnegative_float
 
@@ -354,13 +355,13 @@ class WorkerDatabase:
         self._accepting_control = False
 
     async def drain_business(self, *, timeout_seconds: float) -> bool:
-        return await _drain_db_futures(
+        return await drain_futures(
             self._pending_business,
             timeout_seconds=timeout_seconds,
         )
 
     async def drain_control(self, *, timeout_seconds: float) -> bool:
-        return await _drain_db_futures(
+        return await drain_futures(
             self._pending_control,
             timeout_seconds=timeout_seconds,
         )
@@ -614,18 +615,3 @@ def _release_db_permit_on_completion(
         loop.call_soon_threadsafe(finalize)
 
     underlying.add_done_callback(on_done)
-
-
-async def _drain_db_futures(
-    pending: set[asyncio.Future[Any]],
-    *,
-    timeout_seconds: float,
-) -> bool:
-    active = {future for future in pending if not future.done()}
-    if not active:
-        return True
-    _, unfinished = await asyncio.wait(
-        active,
-        timeout=max(0.0, float(timeout_seconds)),
-    )
-    return not unfinished

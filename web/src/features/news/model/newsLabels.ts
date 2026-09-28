@@ -25,7 +25,6 @@ import { formatNewsLocalTimestamp } from "./newsTime";
  *                 a second, contradictory 利多 / 利空.
  */
 export type Tone = "done" | "info" | "caution" | "alert" | "neutral";
-export type Direction = "bullish" | "bearish" | "flat";
 
 /*
  * Two kinds since #553 PR-1. An Event is editorial; OI frames, liquidations, smart-money prints and
@@ -43,15 +42,8 @@ export function eventKindLabel(kind: NewsEventKind): string {
 const OUTCOME_TONE: Record<NewsOutcomeKind, Tone> = {
   delivered: "done",
   pending_delivery: "info",
-  queued_triage: "info",
-  queued_publish: "info",
-  throttled: "caution",
-  dropped: "neutral",
   held_gate: "neutral",
   held_recovery: "neutral",
-  expired_triage_handoff: "alert",
-  expired_delivery_handoff: "alert",
-  degraded_dropped: "alert",
   delivery_failed: "alert",
   // #706: the EventUpdate path.
   queued_semantic: "info",
@@ -74,35 +66,6 @@ const HEALTH_TONE: Record<NewsHealthLevel, Tone> = {
   bad: "alert",
   off: "neutral",
 };
-
-/**
- * Market direction → its own axis plus a colour-independent arrow. The Chinese word always comes from the
- * server as `direction_zh`; red and green only reinforce it, and the glyph carries the same meaning for a
- * reader who cannot separate the two hues (they sit at nearly equal luminance by necessity — both have to
- * clear 4.5:1 on white). `neutral` and `unclear` resolve to `flat` so the ~42% of neutral verdicts stay quiet
- * and do not drown the ones that moved.
- */
-const DIRECTION: Record<string, Direction> = {
-  bullish: "bullish",
-  bearish: "bearish",
-  neutral: "flat",
-  unclear: "flat",
-};
-
-const DIRECTION_GLYPH: Record<string, string> = {
-  bullish: "\u25b2",
-  bearish: "\u25bc",
-  neutral: "\u2014",
-  unclear: "?",
-};
-
-export function directionTone(direction: string | null | undefined): Direction {
-  return DIRECTION[direction ?? ""] ?? "flat";
-}
-
-export function directionGlyph(direction: string | null | undefined): string {
-  return DIRECTION_GLYPH[direction ?? ""] ?? "\u2014";
-}
 
 const OUTCOME_TAB_LABELS: Record<NewsFeedOutcome, string> = {
   pushed: "已推送",
@@ -160,10 +123,7 @@ export function healthItemEyebrow(key: HealthItemKey): string {
 
 const REASON_STAGE_TITLES: Record<string, string> = {
   gate: "未送审",
-  drop: "模型/规则不推",
-  throttle: "重复拦截",
-  push: "推送依据",
-  degraded: "模型降级",
+  decision: "通知决策",
   ungrounded: "符号未落标的表",
 };
 
@@ -174,10 +134,7 @@ export function reasonStageLabel(stage: string): string {
 /** Why an Event went where it went, in the pipeline's tone vocabulary — never red or green. */
 const REASON_STAGE_TONE: Record<string, Tone> = {
   gate: "neutral",
-  drop: "neutral",
-  throttle: "caution",
-  push: "done",
-  degraded: "alert",
+  decision: "done",
   // A provider tag that names nothing is something to fix, not something that failed: amber, like limiting.
   ungrounded: "caution",
 };
@@ -194,8 +151,6 @@ export function reasonStageTone(stage: string): Tone {
 const TIMELINE_STAGE_TONE: Record<NewsTimelineStep["stage"], Tone> = {
   received: "neutral",
   gate: "neutral",
-  triage: "done",
-  decide: "done",
   evidence: "neutral",
   semantic: "done",
   notify: "done",
@@ -206,22 +161,11 @@ export function timelineStageTone(stage: NewsTimelineStep["stage"]): Tone {
   return TIMELINE_STAGE_TONE[stage] ?? "neutral";
 }
 
-/**
- * One Event's headline, from whichever judgment it has (#706). The server resolves the EventUpdate headline
- * itself -- the card a reader actually received, else the first unretired claim -- and a legacy Event keeps
- * its verdict's card headline. The provider title is the last word, never a guess.
- */
+/** The adopted claim headline, else the original provider title. */
 export function eventHeadline(
-  event: Pick<NewsFeedEvent, "leader_title"> & {
-    update?: { headline?: string | null } | null;
-    legacy_verdict?: { headline_zh?: string | null } | null;
-  },
+  event: Pick<NewsFeedEvent, "leader_title"> & { update?: { headline?: string | null } | null },
 ): string {
-  return (
-    event.update?.headline?.trim() ||
-    event.legacy_verdict?.headline_zh?.trim() ||
-    event.leader_title
-  );
+  return event.update?.headline?.trim() || event.leader_title;
 }
 
 /**

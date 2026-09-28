@@ -1490,37 +1490,3 @@ def test_symbol_in_text_does_not_match_ordinary_english_words() -> None:
         )
         == NO_STORYLINE_KEY
     )
-
-
-def test_the_verifier_reads_the_kind_the_policy_acted_on_not_the_one_the_model_wrote() -> None:
-    """#679 review 5. `non_fact_delivered` is critical, and one legitimate path would have tripped it.
-
-    `confirmed_fact_kind` re-reads a `market_flow_price` report against its own text, and the >= 5%
-    commodity/index exception carries a card the model called a `statement` through as a `new_quantity`.
-    The verdict still stores `statement`, so a verifier comparing the stored kind would raise a critical
-    flag on a card the policy deliberately delivered. `decide()` already records which kind it acted on
-    -- the `fact_kind_*` override rule names it -- so the ledger is read rather than a second copy
-    persisted beside it.
-    """
-
-    from tracefold.news.review.desk import _acted_fact_kind, _verifier_flags
-
-    admitted = {
-        "verdict": {"fact_kind": "statement", "novelty": "new_fact"},
-        "final_decision": "push",
-        "override_rule": "fact_kind_new_quantity",
-    }
-    assert _acted_fact_kind("fact_kind_new_quantity", admitted["verdict"]) == "new_quantity"
-    assert not [flag for flag in _verifier_flags(admitted) if flag["code"] == "non_fact_delivered"]
-
-    # The case the flag exists for is untouched: a `statement` that reached a reader through an
-    # objective guard has no `fact_kind_*` rule, so the stored kind is what the verifier reads.
-    guarded = {**admitted, "override_rule": "listing_deterministic"}
-    assert _acted_fact_kind("listing_deterministic", guarded["verdict"]) == "statement"
-    flags = [flag for flag in _verifier_flags(guarded) if flag["code"] == "non_fact_delivered"]
-    assert [flag["severity"] for flag in flags] == ["info"]
-
-    # And a `promotion` delivered with no guard at all is still the critical finding.
-    unguarded = {**admitted, "override_rule": "", "verdict": {"fact_kind": "promotion"}}
-    flags = [flag for flag in _verifier_flags(unguarded) if flag["code"] == "non_fact_delivered"]
-    assert [flag["severity"] for flag in flags] == ["critical"]
