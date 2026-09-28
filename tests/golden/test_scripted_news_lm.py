@@ -1,19 +1,22 @@
-"""The full-stack provider double consumes the same projected input as production."""
+"""The full-stack provider double consumes the same projected input as production.
+
+Import DSPy-dependent helpers inside tests so broker-lane collection can load FastAPI first.
+"""
 
 from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
 
-from tests.golden._scripted_news_lm import _answer, scripted_generative_lm
-from tests.support.news_update_semantic import material
 from tracefold.news.updates.contracts import ExtractionScope, FrozenInput
-from tracefold.news.updates.dspy_backend import DspyExtractor
 from tracefold.news.updates.identity import canonical_json
 from tracefold.news.updates.projection import extraction_input
 
 
 def test_scripted_provider_cites_only_visible_task_segments() -> None:
+    from tests.golden._scripted_news_lm import _answer
+    from tests.support.news_update_semantic import material
+
     evidence = material("1. Alpha opens a plant.\n2. Beta launches a product.\n3. Gamma closes an office.")
     source = FrozenInput(
         event_id="beta-event",
@@ -44,6 +47,10 @@ def test_scripted_provider_cites_only_visible_task_segments() -> None:
 
 
 def test_scripted_provider_runs_through_the_production_dspy_projection() -> None:
+    from tests.golden._scripted_news_lm import scripted_generative_lm
+    from tests.support.news_update_semantic import material
+    from tracefold.news.updates.dspy_backend import DspyExtractor
+
     evidence = material("Binance will list ACMEUSDT perpetual futures on 2026-09-08")
     source = FrozenInput(event_id="golden-event", revision=1, lineage_id="golden-line", evidence=(evidence,))
 
