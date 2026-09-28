@@ -105,6 +105,19 @@ tracefold news reanalyze --event EVENT_ID --wanted WANTED_REVISION \
 
 命令使用版本与 head 条件更新；状态已前进、lease 有效或范围不再匹配时返回冲突。它保留原 Event、旧 head、已送账本和来源修订，不授权历史重发。选择名单时记录原文、任务范围与原因；不要对所有旧 Event 盲目执行。
 
+### 历史编号事实的 head 归属清理
+
+`tracefold news repair-head-scopes` 只读审计当前编号事实 Event 的已采用 head。输出所有越界 Claim、无法自动判定的数量和整批审计 `digest`。执行前保存并验证当前数据库备份，排空 News 发送进程，再用刚生成的 digest 运行：
+
+```bash
+docker compose exec -T serve tracefold news repair-head-scopes
+docker compose exec -T serve tracefold news repair-head-scopes \
+  --execute --expected-digest AUDIT_DIGEST
+docker compose exec -T serve tracefold news repair-head-scopes
+```
+
+执行命令在同一事务中重审证据并核对所有 head；出现未能判定的引用、状态变化或相关发送仍在进行时整批回滚。成功后越界活跃 Claim 应为 0；核对 `news_head_scope_repairs` 的证明、`news_event_updates` 的新旧链和 `news_trade_events` 的 `source_update`，再恢复 News Workers。已完成的通知工作不重新打开，原本待处理的工作改为读取修复后 head；已送回执作为实际外部结果保留，不将它们改写成未发送。
+
 ### 通知计划失败
 
 ```bash

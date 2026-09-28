@@ -10,6 +10,7 @@ from .event_updates import EventUpdateStorage
 from .events import EventStorage
 from .evidence import EvidenceStorage
 from .feed import FeedStorage
+from .head_scope_repairs import HeadScopeRepairStorage
 from .market import MarketStorage
 from .operations import OperationsStorage
 from .trade_projection import TradeProjectionStorage
@@ -23,6 +24,7 @@ class NewsRepository(
     EvidenceStorage,
     DecisionStorage,
     EventUpdateStorage,
+    HeadScopeRepairStorage,
     MarketStorage,
     ChainTapeStorage,
     WalletEventStorage,

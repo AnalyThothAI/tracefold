@@ -44,6 +44,8 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         news_delivery_columns = columns("news_deliveries")
         semantic_work_columns = columns("news_semantic_work")
         semantic_observation_columns = columns("news_semantic_observations")
+        event_update_columns = columns("news_event_updates")
+        scope_repair_columns = columns("news_head_scope_repairs")
         delivery_queue_columns = columns("news_delivery_queue")
         news_ingest_columns = columns("news_ingest_state")
         news_v3_indexes = {
@@ -117,6 +119,8 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "reanalysis_head_ref",
     } <= semantic_work_columns
     assert {"read_refs", "reanalysis_reason", "reanalysis_head_ref"} <= semantic_observation_columns
+    assert {"observation_result_id", "scope_repair_id"} <= event_update_columns
+    assert {"repair_id", "proof", "claim_refs", "projection_version"} <= scope_repair_columns
     assert {"card_copy_input_digest", "card_copy_document"} <= delivery_queue_columns
     assert news_delivery_columns == {
         "history_context",
@@ -202,7 +206,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in verdict_handoff_index
     assert "stage = 'triage'" in verdict_handoff_index
     assert "final_decision = ANY" in verdict_handoff_index
-    assert version == latest_migration_version() == "20260928_0409"
+    assert version == latest_migration_version() == "20260928_0410"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -227,7 +231,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260928_0409"
+    assert version == latest_migration_version() == "20260928_0410"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:

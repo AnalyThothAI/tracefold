@@ -59,6 +59,7 @@ NEWS_TABLES = {
     "news_semantic_checkpoints",
     "news_semantic_observations",
     "news_event_updates",
+    "news_head_scope_repairs",
     "news_event_update_heads",
     "news_judgment_cache",
     "news_notification_work",

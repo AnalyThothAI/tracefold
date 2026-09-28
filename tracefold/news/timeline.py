@@ -203,7 +203,9 @@ def _update_steps(
                 },
             }
         )
-    adopted_by_result = {str(row["observation_result_id"]): row for row in revisions}
+    adopted_by_result = {
+        str(row["observation_result_id"]): row for row in revisions if row.get("observation_result_id") is not None
+    }
     for observation in observations:
         adoption = adopted_by_result.get(str(observation["result_id"]))
         summary = f"输入第 {int(observation['input_revision'])} 版"
@@ -228,7 +230,7 @@ def _update_steps(
         steps.append(
             {
                 "stage": "semantic",
-                "title_zh": "采用更新",
+                "title_zh": "事实归属清理" if revision.get("scope_repair_id") else "采用更新",
                 "at_ms": int(revision["adopted_at_ms"]),
                 "summary_zh": (described or "无新增变化") + f" · {int(revision.get('claim_n') or 0)} 条命题",
                 "facts": {
@@ -236,6 +238,7 @@ def _update_steps(
                     "previous_content_revision": revision.get("previous_content_revision"),
                     "input_revision": revision.get("input_revision"),
                     "change_kinds": list(kinds) if isinstance(kinds, list) else [],
+                    "scope_repair_id": revision.get("scope_repair_id"),
                 },
             }
         )

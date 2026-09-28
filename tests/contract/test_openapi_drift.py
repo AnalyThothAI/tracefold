@@ -439,6 +439,7 @@ def test_news_event_update_contract_is_exact_and_types_the_core_vocabulary() -> 
         "input_revision",
         "previous_content_revision",
         "adopted_at_ms",
+        "scope_repair_id",
         "headline",
         "headline_source",
         "topics",

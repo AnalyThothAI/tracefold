@@ -60,6 +60,7 @@ ChangeKind = Literal[
     "correction",
     "conflict",
     "evidence_change",
+    "scope_retraction",
     "restatement",
 ]
 
@@ -312,6 +313,10 @@ class Change(Exact):
             raise ValueError("news_change_previous_identity_incomplete")
         if self.kind == "possible_new" and (self.previous_ref is None or self.relation != "unresolved"):
             raise ValueError("news_possible_new_requires_unresolved_prior")
+        if self.kind == "scope_retraction" and (
+            self.current_ref != self.previous_ref or self.previous_content_ref is None or self.relation is not None
+        ):
+            raise ValueError("news_scope_retraction_requires_same_prior_claim")
         return self
 
 

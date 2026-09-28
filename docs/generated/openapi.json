@@ -1402,6 +1402,7 @@
               "correction",
               "conflict",
               "evidence_change",
+              "scope_retraction",
               "restatement"
             ],
             "title": "Kind",
@@ -2797,6 +2798,17 @@
             },
             "title": "Retired Claim Refs",
             "type": "array"
+          },
+          "scope_repair_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Repair Id"
           },
           "sources": {
             "items": {

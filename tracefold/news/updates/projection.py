@@ -14,7 +14,7 @@ from ..events.facts import source_blocks
 from .contracts import Evidence, ExtractionScope, FrozenInput
 from .identity import digest, identity
 
-PROJECTION_VERSION = "news_task_projection_v1"
+PROJECTION_VERSION = "news_task_projection_v2"
 _NUMBERED_RE = re.compile(r"^\s*\d{1,2}[.)、:：]\s*\S")
 _CLOCK_RE = re.compile(r"^\s*\d{1,2}[:：]\d{2}(?!\d)")
 _SPACE_RE = re.compile(r"\s+")
@@ -81,12 +81,14 @@ def reading_view(event_id: str, evidence: Evidence, scopes: tuple[ExtractionScop
             last_end = numbered[-1][3]
             if first_start:
                 ranges.append((0, first_start, "context"))
-            for position, (block_index, _block, start, end) in enumerate(numbered):
+            for position, (block_index, _block, start, _end) in enumerate(numbered):
                 if block_index not in chosen:
                     continue
-                next_start = numbered[position + 1][2] if position + 1 < len(numbered) else end
+                # The final numbered fact owns its following continuation. A
+                # citation may start in the numbered line and finish there.
+                next_start = numbered[position + 1][2] if position + 1 < len(numbered) else len(text)
                 ranges.append((start, next_start, "task"))
-            if last_end < len(text):
+            if last_end < len(text) and numbered[-1][0] not in chosen:
                 ranges.append((last_end, len(text), "context"))
         elif reason is None:
             reason = "numbered_structure_missing_in_source_version"

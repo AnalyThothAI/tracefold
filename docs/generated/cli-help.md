@@ -178,10 +178,10 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,reanalyze,dlq} ...
+                      {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,reanalyze,repair-head-scopes,dlq} ...
 
 positional arguments:
-  {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,reanalyze,dlq}
+  {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,reanalyze,repair-head-scopes,dlq}
     bus-check           declare the News topology and report queue state,
                         effective retry policy, and topology drift
     bus-policy          apply or verify the checked-in RabbitMQ retry/dead-
@@ -201,6 +201,8 @@ positional arguments:
                         receipts
     reanalyze           inspect or request one exact Event task read under
                         wanted/head CAS
+    repair-head-scopes  audit numbered Event heads and retire proven sibling-
+                        fact claims
     dlq                 inspect, replay, or purge the News dead-letter queue
 
 options:
@@ -439,6 +441,20 @@ options:
   --read READ      exact read_ref from the scope list
   --reason REASON  operator reason, required with --execute
   --execute        open the targeted system processing revision
+
+```
+
+## `news repair-head-scopes`
+
+```
+usage: tracefold news repair-head-scopes [-h] [--execute]
+                                         [--expected-digest EXPECTED_DIGEST]
+
+options:
+  -h, --help            show this help message and exit
+  --execute             append audited repairs under exact head CAS
+  --expected-digest EXPECTED_DIGEST
+                        required with --execute; digest from a fresh audit
 
 ```
 
