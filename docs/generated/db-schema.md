@@ -203,8 +203,9 @@
 | `input_revision` | `INTEGER` | False | `None` |
 | `previous_content_revision` | `TEXT` | True | `None` |
 | `adopted_at_ms` | `BIGINT` | False | `None` |
-| `observation_result_id` | `TEXT` | False | `None` |
+| `observation_result_id` | `TEXT` | True | `None` |
 | `document` | `JSONB` | False | `None` |
+| `scope_repair_id` | `TEXT` | True | `None` |
 
 ## `news_events`
 
@@ -279,6 +280,19 @@
 | `snapshot` | `JSONB` | False | `None` |
 | `created_by` | `TEXT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+
+## `news_head_scope_repairs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `repair_id` | `TEXT` | False | `None` |
+| `event_id` | `TEXT` | False | `None` |
+| `previous_content_revision` | `TEXT` | False | `None` |
+| `content_revision` | `TEXT` | False | `None` |
+| `claim_refs` | `ARRAY` | False | `None` |
+| `proof` | `JSONB` | False | `None` |
+| `projection_version` | `TEXT` | False | `None` |
+| `recorded_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_ingest_state`
 

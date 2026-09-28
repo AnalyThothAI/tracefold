@@ -11,7 +11,7 @@ from typing import Any, Final
 # The adopted head with its insert-only document. One row or none: the head is the Event's CAS target.
 EVENT_UPDATE_HEAD_SQL: Final = """
     SELECT h.event_id, h.content_revision, h.input_revision, h.update_ref, h.adopted_at_ms,
-           u.previous_content_revision, u.observation_result_id, u.document
+           u.previous_content_revision, u.observation_result_id, u.scope_repair_id, u.document
       FROM news_event_update_heads h
       JOIN news_event_updates u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
      WHERE h.event_id = %s
@@ -20,7 +20,7 @@ EVENT_UPDATE_HEAD_SQL: Final = """
 # revision and which change kinds each adoption introduced.
 EVENT_UPDATE_REVISIONS_SQL: Final = """
     SELECT u.content_revision, u.input_revision, u.previous_content_revision, u.adopted_at_ms,
-           u.observation_result_id,
+           u.observation_result_id, u.scope_repair_id,
            jsonb_path_query_array(u.document, '$.changes[*].kind') AS change_kinds,
            jsonb_array_length(u.document -> 'claims') AS claim_n
       FROM news_event_updates u

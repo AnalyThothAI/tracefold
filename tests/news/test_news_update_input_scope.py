@@ -174,6 +174,29 @@ def test_fourteen_numbered_event_tasks_keep_the_last_fact_without_a_quota() -> N
     assert source.evidence[0].text == body
 
 
+def test_last_numbered_fact_keeps_its_following_continuation_in_one_citable_span() -> None:
+    body = (
+        "1. Alpha approves a plan.\n2. Beta reports results.\n"
+        "3. If your assets were taken\nIndependent whitehats rescued thousands of NFTs."
+    )
+    unit = extract_fact_units(item_id="digest", raw_text=body, fallback_title="Digest")[-1]
+    data = input_material()
+    data["item_ids"] = ["digest"]
+    data["items"] = [{**data["items"][0], "evidence_text": body}]
+    data["members"] = [{"item_id": "digest", "fact_id": unit.fact_id, "fact_text": unit.text}]
+    data["fact_scopes"] = {unit.fact_id: unit.as_dict()}
+    source = frozen_input("last-event", data)
+    view = reading_views(source)[0]
+    quote = "If your assets were taken\nIndependent whitehats rescued thousands of NFTs."
+    assert view.mode == "scoped"
+    assert any(quote in span.text and span.role == "task" for span in view.spans)
+    assert "Beta reports results" not in str(view.spans)
+    claim = draft(source.evidence[0]).model_copy(
+        update={"citations": (Citation(evidence_ref=source.evidence[0].ref, quote=quote),)}
+    )
+    validate_extraction(source, Extraction(claims=(claim,)))
+
+
 def test_fourteen_tasks_use_bounded_scope_material_and_keep_independent_extract_calls(monkeypatch) -> None:
     body = "\n".join(
         f"{index}. Company reports development number {index} with a distinct condition." for index in range(1, 15)

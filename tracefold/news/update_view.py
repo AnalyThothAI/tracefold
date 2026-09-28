@@ -65,6 +65,7 @@ CHANGE_KIND_ZH: Final[dict[str, str]] = {
     "correction": "更正",
     "conflict": "冲突",
     "evidence_change": "证据变化",
+    "scope_retraction": "事实归属撤回",
     "restatement": "复述",
 }
 CLAIM_RELATION_ZH: Final[dict[str, str]] = {
@@ -345,6 +346,7 @@ def event_update_view(
         "input_revision": update.input_revision,
         "previous_content_revision": update.previous_content_revision,
         "adopted_at_ms": update.adopted_at_ms,
+        "scope_repair_id": head.get("scope_repair_id"),
         "headline": sent_headline or claim_headline,
         "headline_source": "sent_card" if sent_headline else ("claim" if claim_headline else None),
         "topics": [{"code": code, "label_zh": IPTC_SUBJECT_LABELS_ZH.get(code, code)} for code in update.topics],

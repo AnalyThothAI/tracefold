@@ -39,6 +39,8 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
         return _handle_retry_work(args)
     if args.news_command == "reanalyze":
         return _handle_reanalyze(args)
+    if args.news_command == "repair-head-scopes":
+        return _handle_repair_head_scopes(args)
     if args.news_command == "why":
         return _handle_why(args)
     if args.news_command == "wallets":
@@ -103,6 +105,56 @@ def _handle_reanalyze(args: Namespace) -> tuple[int, dict[str, Any]]:
     except (EventUpdateConflict, LookupError, ValueError) as exc:
         return 1, {"ok": False, "error": str(exc)}
     return 0, {"ok": True, "event_id": args.event, "read_ref": args.read, "wanted_revision": revision}
+
+
+def _handle_repair_head_scopes(args: Namespace) -> tuple[int, dict[str, Any]]:
+    from tracefold.app.repository_session import repositories
+    from tracefold.news.bus import now_ms
+    from tracefold.news.storage.head_scope_repairs import audit_scope_rows
+
+    if args.execute and not args.expected_digest:
+        return 2, {"ok": False, "error": "news_scope_repair_expected_digest_required"}
+    settings = load_settings(require_ws_token=False)
+    with repositories(settings) as repos, repos.transaction():
+        report = audit_scope_rows(repos.news.head_scope_material())
+        if args.execute and report["digest"] != args.expected_digest:
+            return 1, {"ok": False, "error": "news_scope_repair_audit_changed", "digest": report["digest"]}
+        if args.execute and report["unresolved_active_claims"]:
+            return 1, {
+                "ok": False,
+                "error": "news_scope_repair_unresolved_claims",
+                "digest": report["digest"],
+                "unresolved_active_claims": report["unresolved_active_claims"],
+            }
+        repaired = []
+        if args.execute:
+            stamp = now_ms()
+            for event in report["events"]:
+                if event["outside"]:
+                    revision = repos.news.adopt_head_scope_repair(
+                        expected_head=event["head_revision"], proof=event, now_ms=stamp
+                    )
+                    repaired.append({"event_id": event["event_id"], "content_revision": revision})
+    return 0, {
+        "ok": True,
+        "digest": report["digest"],
+        "projection_version": report["projection_version"],
+        "heads": report["heads"],
+        "affected_heads": report["affected_heads"],
+        "outside_active_claims": report["outside_active_claims"],
+        "unresolved_active_claims": report["unresolved_active_claims"],
+        "events": [
+            {
+                "event_id": row["event_id"],
+                "head_revision": row["head_revision"],
+                "outside_claim_refs": [item["claim_ref"] for item in row["outside"]],
+                "unresolved": row["unresolved"],
+            }
+            for row in report["events"]
+            if row["outside"] or row["unresolved"]
+        ],
+        "repaired": repaired,
+    }
 
 
 def _handle_why(args: Namespace) -> tuple[int, dict[str, Any]]:

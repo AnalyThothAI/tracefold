@@ -106,6 +106,11 @@ def add_news_commands(
     reanalyze.add_argument("--read", help="exact read_ref from the scope list")
     reanalyze.add_argument("--reason", help="operator reason, required with --execute")
     reanalyze.add_argument("--execute", action="store_true", help="open the targeted system processing revision")
+    repair = news_subcommands.add_parser(
+        "repair-head-scopes", help="audit numbered Event heads and retire proven sibling-fact claims"
+    )
+    repair.add_argument("--execute", action="store_true", help="append audited repairs under exact head CAS")
+    repair.add_argument("--expected-digest", help="required with --execute; digest from a fresh audit")
     news_dlq = news_subcommands.add_parser("dlq", help="inspect, replay, or purge the News dead-letter queue")
     news_dlq.add_argument("dlq_action", choices=("inspect", "replay", "purge"))
     news_dlq.add_argument("--limit", type=_positive_int, default=20, help="messages to inspect/replay")
