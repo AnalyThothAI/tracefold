@@ -25,6 +25,7 @@ from ..reader_history import SIMILAR_TITLE_MAX, TARGETED_HISTORY_WINDOW_MS
 from ..similarity import trigram_similarity
 from ..taxonomy import source_authority
 from ..updates.contracts import (
+    EstablishedRelation,
     EventUpdate,
     Evidence,
     FrozenInput,
@@ -35,6 +36,7 @@ from ..updates.contracts import (
     Source,
 )
 from ..updates.identity import digest, identity
+from ..updates.judgment import error_code
 from ..updates.notification import (
     NEWS_CHANNEL,
     NOTIFICATION_ATTEMPTS_MAX,
@@ -43,7 +45,7 @@ from ..updates.notification import (
     NotificationPlan,
 )
 from ..updates.ports import BeginSendStatus
-from ..updates.projection import extraction_scopes, item_text, reading_view
+from ..updates.projection import extraction_scopes, item_text, reading_view, reading_views
 from .decisions import DecisionStorage
 from .evidence import EvidenceStorage
 from .sql_values import _dumps
@@ -87,6 +89,9 @@ RELATED_PRIOR_CLAIMS_MAX: Final = 8
 READ_TARGETS_MAX: Final = 4
 READ_TARGET_PREFIX: Final = "news_item:"
 _WAKE_STATE_LIMIT: Final = 1_000
+# A wanted revision that can still be claimed: attempts remain and it has not failed. A failed revision keeps
+# its real attempt count; only new evidence, a reanalysis or an explicit retry makes it runnable again.
+_RUNNABLE: Final = f"attempts < {SEMANTIC_ATTEMPTS_MAX} AND last_outcome IS DISTINCT FROM 'failed'"
 SEMANTIC_WAKE_STATE_SQL: Final = f"""
     WITH pending AS MATERIALIZED (
       SELECT attempts, last_outcome, updated_at_ms FROM news_semantic_work
@@ -94,8 +99,8 @@ SEMANTIC_WAKE_STATE_SQL: Final = f"""
        ORDER BY next_attempt_at_ms, event_id
        LIMIT {_WAKE_STATE_LIMIT}
     )
-    SELECT count(*) FILTER (WHERE attempts < {SEMANTIC_ATTEMPTS_MAX}) AS pending,
-           min(updated_at_ms) FILTER (WHERE attempts < {SEMANTIC_ATTEMPTS_MAX}) AS oldest_pending_at_ms,
+    SELECT count(*) FILTER (WHERE {_RUNNABLE}) AS pending,
+           min(updated_at_ms) FILTER (WHERE {_RUNNABLE}) AS oldest_pending_at_ms,
            count(*) FILTER (WHERE last_outcome = 'failed') AS expired
       FROM pending
 """  # noqa: S608 - code-owned integer constants only
@@ -115,14 +120,13 @@ SEMANTIC_STATUS_SQL: Final = f"""
       (SELECT count(*) FROM news_event_updates WHERE adopted_at_ms >= %(since)s) AS semantic_adopted_24h,
       (SELECT count(*) FROM news_semantic_work WHERE last_outcome = 'failed' AND updated_at_ms >= %(since)s)
         AS semantic_failed_24h,
-      (SELECT count(*) FROM outstanding WHERE attempts < {SEMANTIC_ATTEMPTS_MAX}
+      (SELECT count(*) FROM outstanding WHERE {_RUNNABLE}
          AND next_attempt_at_ms <= %(now)s AND (leased_until_ms IS NULL OR leased_until_ms <= %(now)s))
         AS semantic_pending,
-      (SELECT count(*) FROM outstanding WHERE attempts < {SEMANTIC_ATTEMPTS_MAX}
+      (SELECT count(*) FROM outstanding WHERE {_RUNNABLE}
          AND next_attempt_at_ms > %(now)s) AS semantic_deferred,
       (SELECT count(*) FROM outstanding WHERE leased_until_ms > %(now)s) AS semantic_in_progress,
-      (SELECT count(*) FROM outstanding WHERE attempts >= {SEMANTIC_ATTEMPTS_MAX}
-         AND last_outcome = 'failed') AS semantic_failed_exhausted
+      (SELECT count(*) FROM outstanding WHERE last_outcome = 'failed') AS semantic_failed_exhausted
 """  # noqa: S608 - code-owned integer constant only
 SEMANTIC_FAILED_CODES_SQL: Final = """
     SELECT COALESCE(last_error_code, 'unknown') AS code, count(*) AS n
@@ -364,10 +368,14 @@ def _related_prior(
     candidates: list[tuple[tuple[Any, ...], PriorClaim]] = []
     seen = set(own)
     for event_rank, document in enumerate(documents):
-        head = EventUpdate.model_validate(document)
-        retired = set(head.retired_claim_refs) | set(head.superseded_claim_refs)
-        for claim in head.claims:
-            if claim.ref in retired or claim.ref in seen:
+        try:
+            head = EventUpdate.model_validate(document)
+        except ValueError:
+            # Another Event's unreadable head is that Event's fault; it is no comparison candidate here.
+            log.warning("news_related_head_undecodable", extra={"event_id": document.get("event_id")})
+            continue
+        for claim in head.current_claims:
+            if claim.ref in seen:
                 continue
             seen.add(claim.ref)
             score = max(
@@ -433,7 +441,8 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
     all_scopes = () if attached else extraction_scopes(material, complete)
     # A source ref proves only which body was stored, not which task boundary
     # was read.  Construct the current view before comparing completed reads.
-    completed = set((work or {}).get("processed_read_refs") or ())
+    # A read that failed is settled too: it is quarantined until an exact reanalysis names it.
+    completed = set((work or {}).get("processed_read_refs") or ()) | set((work or {}).get("failed_read_refs") or ())
     requested_read = (work or {}).get("reanalysis_read_ref")
     views = tuple(reading_view(event_id, row, all_scopes) for row in complete)
     unique = tuple(
@@ -451,7 +460,7 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
         head = EventUpdate.model_validate(head_document)
         prior = tuple(
             PriorClaim(event_id=head.event_id, content_revision=head.content_revision, claim=claim)
-            for claim in head.claims
+            for claim in head.current_claims
         )
     read_targets: tuple[ReadTarget, ...] = ()
     hints: tuple[IdentityHint, ...] = ()
@@ -480,6 +489,8 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
             material.get("grounded_assets") or (),
             visible_text={view.evidence_ref: " ".join(span.text for span in view.spans) for view in selected_views},
         )
+    facing = set(material.get("reader_facing_claim_refs") or ())
+    prior = tuple(row.model_copy(update={"reader_facing": row.claim.ref in facing}) for row in prior)
     wanted = int(work["wanted_revision"]) if work is not None else max(1, int(material.get("evidence_version") or 1))
     lineage = str(work["lineage_id"]) if work is not None else identity("lineage", event_id, wanted)
     return FrozenInput(
@@ -495,6 +506,9 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
         if head_document is None
         else {row.ref: row for row in EventUpdate.model_validate(head_document).open_questions},
         identity_hints=hints,
+        established_relations=tuple(
+            EstablishedRelation.model_validate(row) for row in material.get("established_relations") or ()
+        ),
         reanalysis_reason=None if work is None else work.get("reanalysis_reason"),
         reanalysis_head_ref=None if work is None else work.get("reanalysis_head_ref"),
     )
@@ -554,36 +568,41 @@ class EventUpdateStorage:
     def claim_semantic_work(
         self, *, event_id: str, lease_token: str, now_ms: int, lease_ms: int
     ) -> SemanticLease | None:
-        """Lease due pending work, spending one attempt of its wanted revision."""
+        """Lease due pending work, spending one attempt of its wanted revision.
+
+        The frozen input is read in the same transaction. When the stored material cannot form one (a missing
+        body, a changed reanalysis scope, an undecodable head or source), only this revision fails, visibly and
+        with its code; the consumer and every other Event keep running.
+        """
 
         row = self.conn.execute(
-            """
+            f"""
             UPDATE news_semantic_work
                SET attempts = attempts + 1, lease_token = %s, leased_until_ms = %s, updated_at_ms = %s
              WHERE event_id = %s
                AND (done_revision IS NULL OR done_revision < wanted_revision)
-               AND attempts < %s
+               AND {_RUNNABLE}
                AND next_attempt_at_ms <= %s
                AND (leased_until_ms IS NULL OR leased_until_ms <= %s)
             RETURNING event_id, wanted_revision, lineage_id, lease_token, attempts
-            """,
-            (
-                lease_token,
-                int(now_ms) + int(lease_ms),
-                int(now_ms),
-                event_id,
-                SEMANTIC_ATTEMPTS_MAX,
-                int(now_ms),
-                int(now_ms),
-            ),
+            """,  # noqa: S608 - code-owned predicate only
+            (lease_token, int(now_ms) + int(lease_ms), int(now_ms), event_id, int(now_ms), int(now_ms)),
         ).fetchone()
         if row is None:
             return None
-        return SemanticLease(
-            source=frozen_input(event_id, self.semantic_input_material(event_id, now_ms=now_ms)),
-            lease_token=str(row["lease_token"]),
-            attempts=int(row["attempts"]),
-        )
+        try:
+            source = frozen_input(event_id, self.semantic_input_material(event_id, now_ms=now_ms))
+        except (LookupError, ValueError) as exc:
+            # EventUpdateConflict and pydantic's ValidationError are ValueErrors.
+            code = error_code(exc, default="news_semantic_input_invalid")
+            log.warning("news semantic input failed event_id=%s code=%s", event_id, code)
+            self.conn.execute(
+                "UPDATE news_semantic_work SET lease_token=NULL, leased_until_ms=NULL, last_outcome='failed',"
+                " last_error_code=%s, updated_at_ms=%s WHERE event_id=%s",
+                (code, int(now_ms), event_id),
+            )
+            return None
+        return SemanticLease(source=source, lease_token=str(row["lease_token"]), attempts=int(row["attempts"]))
 
     def require_semantic_owner(self, lease: SemanticLease, *, now_ms: int) -> Mapping[str, Any]:
         row = self.conn.execute(
@@ -607,27 +626,37 @@ class EventUpdateStorage:
     def _end_semantic_attempt(
         self, lease: SemanticLease, *, reason: str, now_ms: int, failed: bool, retry_after_ms: int = 0
     ) -> bool:
+        """Settle one attempt. A revision that ends failed keeps its real attempt count and quarantines the
+        task reads it was given: later revisions read only newer material, and the failed reads stay listed
+        for an exact reanalysis."""
+
         try:
             row = self.require_semantic_owner(lease, now_ms=now_ms)
         except SemanticLeaseLost:
             return False
+        attempts = int(row["attempts"])
+        failed = failed or attempts >= SEMANTIC_ATTEMPTS_MAX
+        quarantined = [view.read_ref for view in reading_views(lease.source)] if failed else []
         newer = int(row["wanted_revision"]) > lease.wanted_revision
         if newer:
             self.conn.execute(
-                "UPDATE news_semantic_work SET lease_token=NULL, leased_until_ms=NULL WHERE event_id=%s",
-                (lease.event_id,),
+                "UPDATE news_semantic_work SET lease_token=NULL, leased_until_ms=NULL,"
+                " failed_read_refs=ARRAY(SELECT DISTINCT ref FROM unnest(failed_read_refs || %s::text[]) AS ref)"
+                " WHERE event_id=%s",
+                (quarantined, lease.event_id),
             )
         else:
-            attempts = SEMANTIC_ATTEMPTS_MAX if failed else int(row["attempts"])
             self.conn.execute(
-                "UPDATE news_semantic_work SET lease_token=NULL, leased_until_ms=NULL, attempts=%s,"
-                " last_outcome=%s,last_error_code=%s,next_attempt_at_ms=%s,updated_at_ms=%s WHERE event_id=%s",
+                "UPDATE news_semantic_work SET lease_token=NULL, leased_until_ms=NULL, last_outcome=%s,"
+                " last_error_code=%s, next_attempt_at_ms=%s, updated_at_ms=%s,"
+                " failed_read_refs=ARRAY(SELECT DISTINCT ref FROM unnest(failed_read_refs || %s::text[]) AS ref)"
+                " WHERE event_id=%s",
                 (
-                    attempts,
-                    "failed" if attempts >= SEMANTIC_ATTEMPTS_MAX else reason,
+                    "failed" if failed else reason,
                     reason,
                     int(now_ms) + max(retry_after_ms, _retry_delay(SEMANTIC_RETRY_MS, attempts)),
                     int(now_ms),
+                    quarantined,
                     lease.event_id,
                 ),
             )
@@ -646,6 +675,9 @@ class EventUpdateStorage:
                    processed_read_refs = ARRAY(
                        SELECT DISTINCT ref FROM unnest(processed_read_refs || %s::text[]) AS ref
                    ),
+                   failed_read_refs = ARRAY(
+                       SELECT ref FROM unnest(failed_read_refs) AS ref WHERE ref <> ALL(%s::text[])
+                   ),
                    reanalysis_read_ref = CASE WHEN %s THEN NULL ELSE reanalysis_read_ref END,
                    reanalysis_reason = CASE WHEN %s THEN NULL ELSE reanalysis_reason END,
                    reanalysis_head_ref = CASE WHEN %s THEN NULL ELSE reanalysis_head_ref END,
@@ -659,6 +691,7 @@ class EventUpdateStorage:
             """,
             (
                 observed["input_revision"],
+                list(observed["read_refs"]),
                 list(observed["read_refs"]),
                 current,
                 current,
@@ -716,17 +749,17 @@ class EventUpdateStorage:
 
     def pending_semantic_event_ids(self, *, now_ms: int, limit: int) -> list[str]:
         rows = self.conn.execute(
-            """
+            f"""
             SELECT event_id FROM news_semantic_work
              WHERE (done_revision IS NULL OR done_revision < wanted_revision)
-               AND attempts < %s
+               AND {_RUNNABLE}
                AND next_attempt_at_ms <= %s
                AND (leased_until_ms IS NULL OR leased_until_ms <= %s)
                AND (published_at_ms IS NULL OR published_at_ms <= %s)
              ORDER BY next_attempt_at_ms, event_id
              LIMIT %s
-            """,
-            (SEMANTIC_ATTEMPTS_MAX, int(now_ms), int(now_ms), int(now_ms) - SEMANTIC_WAKE_STALE_MS, int(limit)),
+            """,  # noqa: S608 - code-owned predicate only
+            (int(now_ms), int(now_ms), int(now_ms) - SEMANTIC_WAKE_STALE_MS, int(limit)),
         ).fetchall()
         return [str(row["event_id"]) for row in rows]
 
@@ -743,14 +776,17 @@ class EventUpdateStorage:
             raise LookupError("news_reanalysis_event_work_missing")
         if work.get("attached_evidence"):
             raise EventUpdateConflict("news_reanalysis_optional_read_pending")
-        complete_work = {**work, "processed_read_refs": (), "reanalysis_read_ref": None}
+        complete_work = {**work, "processed_read_refs": (), "failed_read_refs": (), "reanalysis_read_ref": None}
         source = frozen_input(event_id, {**material, "work": complete_work})
         completed = set(work.get("processed_read_refs") or ())
+        failed = set(work.get("failed_read_refs") or ())
         head = material.get("head")
         return {
             "event_id": event_id,
             "wanted_revision": int(work["wanted_revision"]),
             "done_revision": work.get("done_revision"),
+            "failed": work.get("last_outcome") == "failed",
+            "last_error_code": work.get("last_error_code"),
             "head_revision": None if head is None else str(head["content_revision"]),
             "scopes": [
                 {
@@ -765,6 +801,7 @@ class EventUpdateStorage:
                     "material_sha": view.material_sha,
                     "visible_chars": sum(len(span.text) for span in view.spans),
                     "completed": view.read_ref in completed,
+                    "failed": view.read_ref in failed,
                 }
                 for view in (reading_view(event_id, item, source.extraction_scopes) for item in source.evidence)
             ],
@@ -780,18 +817,23 @@ class EventUpdateStorage:
         reason: str,
         now_ms: int,
     ) -> int:
-        """Open one system revision for one inspected task view, under version CAS."""
+        """Open one system revision for one inspected task view, under version CAS.
+
+        The inspected revision must be settled: done, or failed. Reanalysing a failed revision reads exactly
+        the named (possibly quarantined) task view again; the rest of the quarantine stays in place.
+        """
 
         if not reason.strip() or not read_ref:
             raise ValueError("news_reanalysis_target_or_reason_missing")
         row = self.conn.execute(
-            "SELECT wanted_revision, done_revision, leased_until_ms FROM news_semantic_work "
+            "SELECT wanted_revision, done_revision, leased_until_ms, last_outcome FROM news_semantic_work "
             "WHERE event_id=%s FOR UPDATE",
             (event_id,),
         ).fetchone()
         if row is None:
             raise LookupError("news_reanalysis_event_work_missing")
-        if int(row["wanted_revision"]) != expected_wanted_revision or row["done_revision"] != expected_wanted_revision:
+        settled = row["done_revision"] == expected_wanted_revision or row["last_outcome"] == "failed"
+        if int(row["wanted_revision"]) != expected_wanted_revision or not settled:
             raise EventUpdateConflict("news_reanalysis_wanted_revision_changed_or_incomplete")
         if row["leased_until_ms"] is not None and int(row["leased_until_ms"]) > now_ms:
             raise EventUpdateConflict("news_reanalysis_lease_active")
@@ -833,7 +875,7 @@ class EventUpdateStorage:
         work = self.conn.execute(
             """
             SELECT wanted_revision, done_revision, lineage_id, attached_evidence, focus_claim_refs,
-                   processed_read_refs,
+                   processed_read_refs, failed_read_refs, last_outcome, last_error_code,
                    reanalysis_read_ref, reanalysis_reason, reanalysis_head_ref
               FROM news_semantic_work WHERE event_id = %s
             """,
@@ -909,10 +951,54 @@ class EventUpdateStorage:
             "items": [dict(row) for row in items],
             "revisions": [dict(row) for row in revisions],
             "head": self.event_update_head_document(event_id),
+            "established_relations": self._established_relations(event_id),
+            "reader_facing_claim_refs": self._reader_facing_claim_refs([event_id, *related_ids]),
             "related_heads": self._related_head_documents(related_ids),
             "read_targets": self._read_target_rows(related_ids, exclude_item_ids=item_ids),
             "grounded_assets": [str(value) for value in card.get("grounded_assets") or ()],
         }
+
+    def _reader_facing_claim_refs(self, event_ids: Sequence[str]) -> list[str]:
+        """Claims of these Events a reader card carried, carries or may still carry.
+
+        Queued, sending or settled cards name their claims; an Event whose notification is still undecided
+        may yet carry any claim of its current head.
+        """
+
+        rows = self.conn.execute(
+            """
+            SELECT DISTINCT ref FROM (
+              SELECT jsonb_array_elements_text(claim_refs) AS ref FROM news_deliveries
+               WHERE event_id = ANY(%s) AND kind = 'update' AND state IN ('sending', 'sent', 'ambiguous')
+              UNION ALL
+              SELECT jsonb_array_elements_text(claim_refs) FROM news_delivery_queue
+               WHERE event_id = ANY(%s) AND kind = 'update' AND state = 'pending' AND claim_refs IS NOT NULL
+              UNION ALL
+              SELECT jsonb_array_elements(u.document -> 'claims') ->> 'ref'
+                FROM news_notification_work w
+                JOIN news_event_update_heads h ON h.event_id = w.event_id
+                JOIN news_event_updates u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
+               WHERE w.event_id = ANY(%s) AND w.channel = %s AND w.state = 'pending'
+            ) facing ORDER BY ref
+            """,
+            (list(event_ids), list(event_ids), list(event_ids), NEWS_CHANNEL),
+        ).fetchall()
+        return [str(row["ref"]) for row in rows]
+
+    def _established_relations(self, event_id: str) -> list[dict[str, str]]:
+        """Corrections and conflicts this Event's adopted revisions already published, by claim pair."""
+
+        rows = self.conn.execute(
+            """
+            SELECT DISTINCT change->>'current_ref' AS current_ref, change->>'previous_ref' AS previous_ref,
+                   change->>'relation' AS relation
+              FROM news_event_updates u CROSS JOIN LATERAL jsonb_array_elements(u.document->'changes') change
+             WHERE u.event_id = %s AND change->>'relation' IN ('corrects', 'conflicts')
+             ORDER BY 1, 2, 3
+            """,
+            (event_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def _related_event_ids(
         self, event_id: str, card: Mapping[str, Any], leader: Mapping[str, Any], *, now_ms: int
@@ -2235,7 +2321,7 @@ class EventUpdateStorage:
                 """
                 UPDATE news_semantic_work
                    SET attempts = 0, last_outcome = NULL, lease_token = NULL, leased_until_ms = NULL,
-                       next_attempt_at_ms = %s, published_at_ms = NULL, updated_at_ms = %s
+                       failed_read_refs = '{}', next_attempt_at_ms = %s, published_at_ms = NULL, updated_at_ms = %s
                  WHERE event_id = %s AND wanted_revision = %s AND last_outcome = 'failed'
                    AND (done_revision IS NULL OR done_revision < wanted_revision)
                    AND (leased_until_ms IS NULL OR leased_until_ms <= %s)
@@ -2313,19 +2399,26 @@ class EventUpdateStorage:
         return None if row is None else int(row["wanted_revision"])
 
     # ------------------------------------------------------------------ judgment cache and retention
-    def judgment_cache_answer(self, cache_key: str) -> dict[str, Any] | None:
-        row = self.conn.execute("SELECT answer FROM news_judgment_cache WHERE cache_key = %s", (cache_key,)).fetchone()
-        return None if row is None else dict(row["answer"])
+    def judgment_cache_answers(self, cache_keys: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """One statement for a whole question set's cached answers."""
 
-    def put_judgment_cache_answer(self, *, cache_key: str, answer_json: str, now_ms: int) -> bool:
+        rows = self.conn.execute(
+            "SELECT cache_key, answer FROM news_judgment_cache WHERE cache_key = ANY(%s)", (list(cache_keys),)
+        ).fetchall()
+        return {str(row["cache_key"]): dict(row["answer"]) for row in rows}
+
+    def put_judgment_cache_answers(self, *, answers: Mapping[str, str], now_ms: int) -> int:
+        """One statement per answered batch; the first stored answer for a key wins."""
+
         cursor = self.conn.execute(
             """
-            INSERT INTO news_judgment_cache (cache_key, answer, created_at_ms) VALUES (%s, %s::jsonb, %s)
+            INSERT INTO news_judgment_cache (cache_key, answer, created_at_ms)
+            SELECT cache_key, answer::jsonb, %s FROM unnest(%s::text[], %s::text[]) AS a(cache_key, answer)
             ON CONFLICT (cache_key) DO NOTHING
             """,
-            (cache_key, answer_json, int(now_ms)),
+            (int(now_ms), list(answers), list(answers.values())),
         )
-        return bool(cursor.rowcount)
+        return int(cursor.rowcount or 0)
 
     def purge_semantic_caches(self, *, now_ms: int, limit: int = PURGE_BATCH_MAX) -> int:
         """Janitor retention: judgment answers and stage checkpoints older than 14 days, bounded."""

@@ -21,7 +21,6 @@ from .notification import CardCopy, FrozenCard, NotificationPlan, ReaderSnapshot
 class SemanticCheckpoint(Exact):
     work_id: str
     extraction: Extraction | None = None
-    understanding: Extraction | None = None
 
 
 class SemanticObservation(Exact):
@@ -123,8 +122,6 @@ class NewsStore(Protocol):
     async def save_extraction(self, work_id: str, extracted: Extraction) -> Extraction:
         """Insert-only work stage; return the first stored winner on a race."""
         ...
-
-    async def save_understanding(self, work_id: str, understood: Extraction) -> Extraction: ...
 
     async def save_observation(self, observation: SemanticObservation) -> SemanticObservation:
         """Insert-only result_id; return the stored winner, including its original

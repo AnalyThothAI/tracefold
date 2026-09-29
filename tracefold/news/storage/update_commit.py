@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Protocol, cast
 
-from ..updates.contracts import EventUpdate
+from ..updates.contracts import NOTIFICATION_CHANGES, EventUpdate
 from ..updates.notification import NEWS_CHANNEL
 from .sql_values import _dumps
 from .trade_projection import TradeProjectionStorage
@@ -55,9 +55,11 @@ def commit_update(
     """Write the source, immutable update, head, public outbox and work in one transaction.
 
     The caller has already taken the Event lock and checked its source under that lock.
-    A pure scope retraction only retargets work still owed -- pending, or failed and waiting for an
-    operator retry -- to the new head; it does not create work, reopen a failed one or replenish the
-    budget of any responsibility.
+    Only an update with a notification change (new content, a real change, a correction or a
+    conflict) opens or resets notification work. Any other update -- a restatement, a new source
+    for an adopted claim, a pure scope retraction -- only retargets work still owed (pending, or
+    failed and waiting for an operator retry) to the new head; it does not create work, reopen a
+    failed one or replenish the budget of any responsibility.
     """
 
     conn = owner.conn
@@ -125,10 +127,7 @@ def commit_update(
             source_recorded_at_ms=int(payload["semantic_completed_at_ms"]),
         ):
             raise ValueError("news_public_update_conflict")
-    pure_retraction = isinstance(source, ScopeProofSource) and all(
-        change.kind == "scope_retraction" for change in update.changes
-    )
-    if pure_retraction:
+    if not any(change.kind in NOTIFICATION_CHANGES for change in update.changes):
         conn.execute(
             """UPDATE news_notification_work
                   SET content_revision=%s,decision_ref=NULL,reader_revision=NULL,

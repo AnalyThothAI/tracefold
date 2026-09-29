@@ -97,10 +97,10 @@ def _program_identity(analyzer: SemanticAnalyzer, card_model_identity: str) -> s
 class _NoCache:
     """The identity-only analyzer asks no question, so it caches none."""
 
-    async def get(self, key: str) -> Any:
-        return None
+    async def get_many(self, keys: tuple[str, ...]) -> dict[str, Any]:
+        return {}
 
-    async def put(self, key: str, answer: Any) -> None:
+    async def put_many(self, answers: Any) -> None:
         return None
 
 

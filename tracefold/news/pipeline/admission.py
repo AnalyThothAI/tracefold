@@ -690,7 +690,9 @@ def _compatible(a: tuple[set[str], set[str]], b: tuple[set[str], set[str]]) -> b
     return not (a[1] and b[1] and not (a[1] & b[1]))
 
 
-def _load_near_candidates(repos: Any, prepared: _PreparedAdmission, *, now_ms: int) -> tuple[dict[str, Any], ...]:
+def _load_near_candidates(
+    repos: Any, prepared: _PreparedAdmission, *, ingest_mode: str, now_ms: int
+) -> tuple[dict[str, Any], ...]:
     """Load bounded candidate rows without holding a write transaction."""
 
     if not prepared.shareable:
@@ -702,6 +704,7 @@ def _load_near_candidates(repos: Any, prepared: _PreparedAdmission, *, now_ms: i
             event_kind=prepared.source_contract.event_kind or "news",
             band_keys=prepared.band_keys,
             now_ms=now_ms,
+            ingest_mode=ingest_mode,
         )
     )
 
@@ -886,6 +889,7 @@ def admit_item(
             event_kind=source_contract.event_kind or "news",
             fingerprint=fingerprint,
             now_ms=now_ms,
+            ingest_mode=ingest_mode,
         )
         if shareable
         else None
@@ -951,7 +955,7 @@ def admit_item(
             if _near_match_prepared
             else _select_near_match(
                 prepared,
-                _load_near_candidates(repos, prepared, now_ms=now_ms),
+                _load_near_candidates(repos, prepared, ingest_mode=ingest_mode, now_ms=now_ms),
             )
         )
         if near_match is not None:
@@ -1061,14 +1065,19 @@ def append_admission_evidence(
 
     Runs inside the caller's single admission transaction, so evidence and the semantic work it asks
     for commit together. Returns the wake route to publish after commit, or None. Recovery ingest and a
-    suppressed Event record evidence without waking semantics; an unchanged snapshot wakes nothing.
+    suppressed Event record evidence without waking semantics; an unchanged snapshot, or one whose change
+    is metadata only (a strategy re-send, a score), wakes nothing.
     A near or exact match is evidence like any other member: it is recalled into the Event and the
     Event is understood again, never settled by the match.
     """
 
     news = repos.news
     appended = news.append_prepared_evidence_snapshot(snapshot)
-    if ingest_mode == "recovery" or snapshot.get("previous_sha256") == snapshot["evidence_sha256"]:
+    if (
+        ingest_mode == "recovery"
+        or snapshot.get("previous_sha256") == snapshot["evidence_sha256"]
+        or not snapshot["semantic_changed"]
+    ):
         return None
     event_id = str(snapshot["event_id"])
     event = news.event_admission(event_id)
@@ -1291,7 +1300,7 @@ class DeduperConsumer:
                 repos: Any,
                 admission: _PreparedAdmission = prepared,
             ) -> tuple[dict[str, Any], ...]:
-                return _load_near_candidates(repos, admission, now_ms=stamp)
+                return _load_near_candidates(repos, admission, ingest_mode=ingest_mode, now_ms=stamp)
 
             candidates = await self.db.read(
                 "news_deduper_candidates",

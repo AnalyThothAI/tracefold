@@ -186,8 +186,7 @@ def headline_claim_statement(update: EventUpdate) -> str | None:
     first listed claim would title a 25% -> 50% update with the 25% statement.
     """
 
-    retired = set(update.retired_claim_refs) | set(update.superseded_claim_refs)
-    live = {claim.ref: claim.statement for claim in update.claims if claim.ref not in retired}
+    live = {claim.ref: claim.statement for claim in update.current_claims}
     if update.previous_content_revision is not None:
         for change in update.changes:
             if change.kind in _HEADLINE_CHANGE_KINDS and change.current_ref in live:

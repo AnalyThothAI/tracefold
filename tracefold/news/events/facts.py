@@ -164,7 +164,9 @@ def extract_fact_units(*, item_id: str, raw_text: str, fallback_title: str) -> t
     context = " ".join(context_blocks)
     return (
         FactUnit(
-            fact_id=_fact_id(item_id=item_id, ordinal=0, text=title, method="whole_item"),
+            # The whole record is one fact whatever its headline says: a revised headline is a later
+            # version of the same fact, never a second one (a second Event, run and trigger).
+            fact_id=_fact_id(item_id=item_id, ordinal=0, text="", method="whole_item"),
             ordinal=0,
             text=title,
             context=context,

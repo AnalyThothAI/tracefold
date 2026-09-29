@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Mapping
 from functools import lru_cache
 from typing import Any, Final
 
 import dspy  # type: ignore[import-untyped]
 from dspy.adapters.types.decision import Choice  # type: ignore[import-untyped]
-from pydantic import Field, ValidationError
+from pydantic import ConfigDict, Field, ValidationError
 from typesafe_sdk import TypeSafeAPIConnectionError, TypeSafeAPIError, TypeSafeAPIResponseValidationError
 
 from .attention import BRIEF, BRIEF_IDENTITY, AttentionAssessment, assessment_input
@@ -22,13 +23,13 @@ from .contracts import (
     Citation,
     Claim,
     ClaimFields,
+    DiscardedClaim,
     Exact,
     Extraction,
     FrozenInput,
     ImplicationDraft,
     OpenQuestion,
     QuestionResolution,
-    RelationDraft,
     Source,
     SupportDraft,
 )
@@ -89,8 +90,9 @@ Scopes are task metadata, not evidence: cite exact spans only from the supplied 
 Prior claims are context, not new raw evidence. When focus_claim_refs is supplied, process only the
 provided changed material affecting that focus; do not regenerate unaffected Event history.
 Always classify content_kind with the supplied definitions; it reads the content, not the reader's interest.
-Fuse mode, phase, content kind, per-claim topics, relations and supports into this extraction using the supplied
-definitions and only supplied prior refs and evidence refs; do not ask whether the reader should be notified.
+Fuse mode, phase, content kind, per-claim topics and supports into this extraction using the supplied
+definitions and only supplied evidence refs; do not ask whether the reader should be notified. Do not
+compare new claims with prior claims: that comparison is a separate question.
 Use only the supplied short reference aliases for evidence, prior claims, gaps and read targets.
 Model slot IDs are temporary. Do not invent stable claim/content/intent IDs. Topics must come from the
 supplied codebook, at most three per claim. Preserve unresolved prior open_questions; omit them from new
@@ -136,18 +138,31 @@ class TransportClaim(Exact):
 
 
 class ExtractionEnvelope(Exact):
-    """Generated transport only. Bad optional hints cannot erase valid core claims."""
+    """Generated transport only. Each claim is parsed on its own: one bad claim, reading or optional hint
+    cannot erase its valid siblings. A section this contract does not ask for (a relation a model still
+    volunteers) is ignored rather than failing the whole answer."""
 
-    claims: tuple[TransportClaim, ...]
-    resolved_questions: tuple[QuestionResolution, ...] = ()
-    relations: tuple[RelationDraft | dict[str, Any], ...] = Field(
-        default=(), description="Optional current-slot/prior-ref relations. Omit uncertain hints."
-    )
+    model_config = ConfigDict(extra="ignore", frozen=True, allow_inf_nan=False)
+
+    claims: tuple[TransportClaim | dict[str, Any], ...]
+    resolved_questions: tuple[QuestionResolution | dict[str, Any], ...] = ()
     supports: tuple[SupportDraft | dict[str, Any], ...] = Field(
         default=(), description="Optional current-slot/evidence-ref relationships. Omit uncertain hints."
     )
     implications: tuple[ImplicationDraft | dict[str, Any], ...] = ()
     open_questions: tuple[OpenQuestion | dict[str, Any], ...] = ()
+
+
+# A generated reading that names no allowed value is dropped from its claim (the claim keeps its statement and
+# citations): an unknown phase, mode or polarity is `unknown`, an unknown content kind is `other`, and a
+# quantity or asset entry that does not parse is left out.
+_READING_DEFAULTS: Final[dict[str, str]] = {
+    "phase": "unknown",
+    "mode": "unknown",
+    "polarity": "unknown",
+    "content_kind": "other",
+}
+_OPTIONAL_ENTRIES: Final = frozenset({"quantities", "assets"})
 
 
 _REF_FIELDS = frozenset(
@@ -203,11 +218,56 @@ def _discarded_hint(hint: str, index: int, exc: ValidationError | ContractFault)
     )
 
 
+def _transport_claims(rows: list[Any]) -> tuple[list[dict[str, Any]], list[DiscardedClaim]]:
+    """Parse every generated claim on its own; an unusable one is discarded by name with its reason."""
+
+    kept: list[dict[str, Any]] = []
+    discarded: list[DiscardedClaim] = []
+    for index, row in enumerate(rows):
+        slot = str(row.get("slot") or f"#{index}") if isinstance(row, dict) else f"#{index}"
+        claim = _transport_claim(row, index)
+        if claim is None:
+            discarded.append(DiscardedClaim(slot=slot, code="news_claim_schema_invalid"))
+        elif claim.slot in {row["slot"] for row in kept}:
+            discarded.append(DiscardedClaim(slot=slot, code="news_duplicate_claim_slot"))
+        else:
+            kept.append(claim.model_dump(mode="json"))
+    for row in discarded:
+        log.warning("news_extraction_claim_discarded", extra={"slot": row.slot, "error_code": row.code})
+    return kept, discarded
+
+
+def _transport_claim(row: Any, index: int) -> TransportClaim | None:
+    try:
+        return TransportClaim.model_validate(row)
+    except ValidationError as exc:
+        if not isinstance(row, dict) or not isinstance(row.get("fields"), dict):
+            return None
+        errors = exc.errors(include_input=False, include_url=False)
+    fields = dict(row["fields"])
+    dropped: dict[str, set[int]] = {}
+    for error in errors:
+        location = error["loc"]
+        name = str(location[1]) if len(location) > 1 and location[0] == "fields" else ""
+        if name in _READING_DEFAULTS:
+            fields[name] = _READING_DEFAULTS[name]
+            dropped.setdefault(name, set())
+        elif name in _OPTIONAL_ENTRIES and len(location) > 2 and isinstance(location[2], int):
+            dropped.setdefault(name, set()).add(location[2])
+        else:
+            return None
+    for name in _OPTIONAL_ENTRIES & dropped.keys():
+        fields[name] = [entry for position, entry in enumerate(fields.get(name) or ()) if position not in dropped[name]]
+    log.warning("news_extraction_reading_discarded", extra={"claim_index": index, "fields": sorted(dropped)})
+    try:
+        return TransportClaim.model_validate({**row, "fields": fields})
+    except ValidationError:
+        return None
+
+
 def _optional_hints(
     rows: list[dict[str, Any]],
-    model: type[RelationDraft] | type[SupportDraft],
     *,
-    field: str,
     slots: set[str],
     supplied: set[str],
 ) -> list[dict[str, Any]]:
@@ -215,8 +275,8 @@ def _optional_hints(
     rejected: set[tuple[str, str]] = set()
     for index, row in enumerate(rows):
         try:
-            hint = model.model_validate(row)
-            ref = str(getattr(hint, field))
+            hint = SupportDraft.model_validate(row)
+            ref = hint.evidence_ref
             if hint.slot not in slots or ref not in supplied:
                 raise ContractFault("news_optional_hint_reference_invalid")
             key = (hint.slot, ref)
@@ -229,7 +289,7 @@ def _optional_hints(
                 raise ContractFault("news_optional_hint_conflicting_answers")
             kept[key] = document
         except (ValidationError, ContractFault) as exc:
-            _discarded_hint(model.__name__, index, exc)
+            _discarded_hint("SupportDraft", index, exc)
     return list(kept.values())
 
 
@@ -357,6 +417,10 @@ def _parse_failure_code(exc: dspy.AdapterParseError, lm: Any, history_before: in
     return "news_generation_output_schema_invalid"
 
 
+def _snake(name: str) -> str:
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", name).lower()
+
+
 def _different_route(current: Any, fallback: Any) -> bool:
     if isinstance(current, str) or isinstance(fallback, str):
         return bool(current != fallback)
@@ -393,7 +457,8 @@ async def _generate(signature: Any, route: Any, **inputs: Any) -> Any:
                 return await dspy.Predict(signature).acall(lm=lm, **inputs)
         except _GENERATION_TRANSIENT as exc:
             if index + 1 == len(lms):
-                raise ProviderUnavailable(f"news_generation_{type(exc).__name__}") from exc
+                # The LM error class survives into the stored error code: `news_generation_lm_timeout_error`.
+                raise ProviderUnavailable(f"news_generation_{_snake(type(exc).__name__)}") from exc
         except dspy.AdapterParseError as exc:
             code = _parse_failure_code(exc, lm, history_before)
             log.warning(
@@ -442,6 +507,7 @@ class DspyExtractor:
         )
         envelope = ExtractionEnvelope.model_validate(result.result)
         data = _references(envelope.model_dump(mode="json"), {alias: ref for ref, alias in aliases.items()})
+        data["claims"], discarded = _transport_claims(data["claims"])
         for index, claim in enumerate(data["claims"]):
             topics = claim["topics"]
             if len(topics) > MAX_TOPICS or any(
@@ -449,21 +515,8 @@ class DspyExtractor:
             ):
                 log.warning("news_optional_topic_discarded", extra={"claim_index": index})
                 claim["topics"] = []
-        slots = {claim.slot for claim in envelope.claims}
-        data["relations"] = _optional_hints(
-            data["relations"],
-            RelationDraft,
-            field="previous_ref",
-            slots=slots,
-            supplied={row.claim.ref for row in source.prior},
-        )
-        data["supports"] = _optional_hints(
-            data["supports"],
-            SupportDraft,
-            field="evidence_ref",
-            slots=slots,
-            supplied={row.ref for row in source.evidence},
-        )
+        slots = {claim["slot"] for claim in data["claims"]}
+        data["supports"] = _optional_hints(data["supports"], slots=slots, supplied={row.ref for row in source.evidence})
         targets = {target.ref for target in source.read_targets}
         for field, model in (("implications", ImplicationDraft), ("open_questions", OpenQuestion)):
             data[field] = _claim_details(data[field], model, slots=slots, targets=targets)
@@ -471,11 +524,15 @@ class DspyExtractor:
         # operation instead of erasing valid claims; supplied questions still require grounded citations.
         resolutions = []
         for index, row in enumerate(data["resolved_questions"]):
-            if row["question_ref"] in source.open_questions:
-                resolutions.append(row)
-            else:
-                _discarded_hint("QuestionResolution", index, ContractFault("news_question_not_supplied"))
+            try:
+                resolution = QuestionResolution.model_validate(row)
+                if resolution.question_ref not in source.open_questions:
+                    raise ContractFault("news_question_not_supplied")
+                resolutions.append(resolution.model_dump(mode="json"))
+            except (ValidationError, ContractFault) as exc:
+                _discarded_hint("QuestionResolution", index, exc)
         data["resolved_questions"] = resolutions
+        data["discarded_claims"] = [row.model_dump(mode="json") for row in discarded]
         return Extraction.model_validate(data)
 
 

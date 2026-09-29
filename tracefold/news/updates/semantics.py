@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from .contracts import (
     Change,
     ChangeKind,
+    Citation,
     Claim,
+    DiscardedClaim,
     DraftClaim,
     EventUpdate,
     Evidence,
@@ -19,6 +23,7 @@ from .contracts import (
     IdentityHint,
     Implication,
     KnowledgeGap,
+    Phase,
     PriorClaim,
     RelationDraft,
     SupportDraft,
@@ -30,6 +35,7 @@ from .contracts import (
 from .identity import canonical_json, digest, identity
 from .judgment import (
     MAX_QUESTIONS_PER_REQUEST,
+    TRIAGE_CANDIDATES_MAX,
     Answer,
     Budget,
     ContractFault,
@@ -39,6 +45,12 @@ from .judgment import (
 )
 from .projection import reading_views
 from .topics import CODEBOOK
+
+log = logging.getLogger("tracefold.news")
+
+# Relation triage is code policy over the model's answer: a native answer's probabilities add every other
+# candidate at or above this floor to its chosen prior.
+TRIAGE_MIN_PROBABILITY: Final = 0.1
 
 
 class ClaimExtractor(Protocol):
@@ -159,15 +171,116 @@ def validate_extraction(source: FrozenInput, extraction: Extraction) -> None:
             raise ContractFault("news_read_target_not_supplied")
 
 
+def locate_quote(quote: str, texts: Sequence[str]) -> str | None:
+    """The exact source text a generated quote names, letting it differ only in letter case and whitespace.
+
+    Returns the span as it appears in the source, never the generated spelling, so a stored quote is always a
+    verbatim substring of its evidence.
+    """
+
+    for text in texts:
+        if quote in text:
+            return quote
+    wanted = "".join(quote.split()).casefold()
+    if not wanted:
+        return None
+    for text in texts:
+        folded: list[str] = []
+        positions: list[int] = []
+        for index, char in enumerate(text):
+            if char.isspace():
+                continue
+            for piece in char.casefold():
+                folded.append(piece)
+                positions.append(index)
+        found = "".join(folded).find(wanted)
+        if found >= 0:
+            return text[positions[found] : positions[found + len(wanted) - 1] + 1]
+    return None
+
+
+def _grounded(
+    citations: Sequence[Citation], evidence: Mapping[str, Evidence], visible: Mapping[str, tuple[str, ...]]
+) -> tuple[tuple[Citation, ...], str | None]:
+    grounded = []
+    for citation in citations:
+        item = evidence.get(citation.evidence_ref)
+        if item is None:
+            return (), "news_citation_not_in_frozen_source"
+        quote = locate_quote(citation.quote, visible[item.ref])
+        if quote is None:
+            outside = locate_quote(citation.quote, (item.text,)) is None
+            return (), "news_citation_not_in_frozen_source" if outside else "news_citation_not_in_visible_source"
+        grounded.append(Citation(evidence_ref=item.ref, quote=quote))
+    return tuple(grounded), None
+
+
+def ground_extraction(source: FrozenInput, extraction: Extraction) -> Extraction:
+    """Keep every claim whose quotes name visible source text, each quote replaced by that exact text.
+
+    A claim with a quote that names no visible text is discarded by slot with its reason, together with the
+    hints that referred to it; its siblings are kept. A question resolution needs the same grounding, and one
+    that has none leaves its question open.
+    """
+
+    evidence = {item.ref: item for item in source.evidence}
+    visible = {view.evidence_ref: tuple(span.text for span in view.spans) for view in reading_views(source)}
+    claims = []
+    discarded = list(extraction.discarded_claims)
+    for claim in extraction.claims:
+        citations, code = _grounded(claim.citations, evidence, visible)
+        if code is None:
+            claims.append(claim.model_copy(update={"citations": citations}))
+        else:
+            discarded.append(DiscardedClaim(slot=claim.slot, code=code))
+            log.warning("news_extraction_claim_discarded", extra={"slot": claim.slot, "error_code": code})
+    resolutions = []
+    for resolution in extraction.resolved_questions:
+        citations, code = _grounded(resolution.citations, evidence, visible)
+        if code is None:
+            resolutions.append(resolution.model_copy(update={"citations": citations}))
+        else:
+            log.warning("news_extraction_hint_discarded", extra={"hint": "QuestionResolution", "error_code": code})
+    kept = {claim.slot for claim in claims}
+    return _replace(
+        extraction,
+        claims=tuple(claims),
+        resolved_questions=tuple(resolutions),
+        relations=tuple(row for row in extraction.relations if row.slot in kept),
+        supports=tuple(row for row in extraction.supports if row.slot in kept),
+        implications=tuple(row for row in extraction.implications if set(row.slots) <= kept),
+        open_questions=tuple(row for row in extraction.open_questions if set(row.slots) <= kept),
+        discarded_claims=tuple(discarded),
+    )
+
+
+def _phase(value: Phase | None) -> Phase | None:
+    # A missing phase and an unestablished one say the same thing: nothing.
+    return None if value == "unknown" else value
+
+
+def _realization_changes(current: DraftClaim, previous: Claim) -> set[ChangeKind]:
+    """What a real-world change altered: a phase both readings establish, or a structured quantity."""
+
+    kinds: set[ChangeKind] = set()
+    before, after = _phase(previous.fields.phase), _phase(current.fields.phase)
+    if before is not None and after is not None and before != after:
+        kinds.add("phase_change")
+    if _quantity_key(current) != _quantity_key(previous):
+        kinds.add("parameter_change")
+    return kinds
+
+
 def _default_change(current: DraftClaim, previous: Claim, relation: str) -> ChangeKind | None:
     if relation == "corrects":
         return "correction"
     if relation == "conflicts":
         return "conflict"
     if relation == "real_world_change":
-        if current.fields.phase != previous.fields.phase:
+        kinds = _realization_changes(current, previous)
+        if "phase_change" in kinds:
             return "phase_change"
-        if _quantity_key(current) != _quantity_key(previous):
+        if "parameter_change" in kinds:
             return "parameter_change"
         return "scope_change"
     if relation == "adds_information":
@@ -180,6 +293,25 @@ def _require_available(answers: tuple[Answer, ...], code: str, *, final_attempt:
 
     if not final_attempt and any(answer.status == "unavailable" for answer in answers):
         raise ProviderUnavailable(code)
+
+
+def _triaged(answer: Answer, candidates: Mapping[str, PriorClaim]) -> tuple[PriorClaim, ...] | None:
+    """The priors one triage answer picks, or None when it settles nothing (every candidate is judged).
+
+    `none` picks no prior. A generated answer names every prior it picks (`p2,p5`). A native answer names
+    one option; every other candidate at or above the probability floor is picked beside it.
+    """
+
+    if answer.status != "available":
+        return None
+    named = [alias for alias in str(answer.value).split(",") if alias != "none"]
+    if any(alias not in candidates for alias in named):
+        # An alias beyond this group's candidates names no prior.
+        return None
+    for alias, probability in sorted((answer.probabilities or {}).items(), key=lambda row: (-row[1], row[0])):
+        if alias in candidates and alias not in named and probability >= TRIAGE_MIN_PROBABILITY:
+            named.append(alias)
+    return tuple(candidates[alias] for alias in named)
 
 
 def _replace(extraction: Extraction, **values: object) -> Extraction:
@@ -205,8 +337,13 @@ class SemanticAnalyzer:
         self.identity = identity("semantic", "event_understanding_v2", extractor.identity, judgments.identity, topics)
 
     async def extract(self, source: FrozenInput, budget: Budget) -> Extraction:
+        """Extract and ground claims one by one. Only material whose every claim was unusable fails."""
+
         async with asyncio.timeout(budget.remaining()):
             result = await self.extractor.extract(source)
+        result = ground_extraction(source, result)
+        if not result.claims and result.discarded_claims:
+            raise ContractFault(result.discarded_claims[0].code)
         validate_extraction(source, result)
         return result
 
@@ -223,11 +360,12 @@ class SemanticAnalyzer:
 
         A relation or source answer the provider could not give is an unresolved comparison only on
         the final attempt of a revision. Earlier attempts raise ProviderUnavailable so the worker
-        retries; successful answers are already cached and are not asked again.
+        retries; successful answers are already cached and are not asked again. Relations are always
+        derived for the priors supplied now, so an understanding made against other priors is re-derived.
         """
 
-        validate_extraction(source, extracted)
-        result = extracted
+        result = _replace(extracted, relations=())
+        validate_extraction(source, result)
         if not rebase_only:
             result = await self._clarify_modes(source, result, budget)
         result = await self._relations(source, result, budget, final_attempt=final_attempt)
@@ -267,43 +405,79 @@ class SemanticAnalyzer:
     async def _relations(
         self, source: FrozenInput, extraction: Extraction, budget: Budget, *, final_attempt: bool
     ) -> Extraction:
-        # Current/prior candidates are already bounded by retrieval. No global
-        # pair search; no title-only key for relation cache reuse.
-        known = {(row.slot, row.previous_ref): row for row in extraction.relations}
-        questions = []
+        """Triage, then judge: one question per new claim picks the prior claims about its proposition.
+
+        Candidates are already bounded by retrieval; no global pair search. A reader-facing prior (carried,
+        or possibly still carried, by a reader card) is always judged: reader novelty reads that relation.
+        Of the other priors, only the pairs the triage picked are judged; a pair it passed over is settled
+        `unrelated`. When those pairs fit in one judgment request there is nothing to save and no triage is
+        asked. A triage without a usable answer settles nothing, so every pair of its candidate group is
+        judged. Every supplied pair ends with a relation.
+        """
+
+        claims = extraction.claims
+        if not claims or not source.prior:
+            return extraction
+        chosen: set[tuple[str, str]] = {
+            (claim.slot, prior.claim.ref) for claim in claims for prior in source.prior if prior.reader_facing
+        }
+        triaged = tuple(prior for prior in source.prior if not prior.reader_facing)
+        if len(claims) * len(triaged) <= self.judgments.batch_size:
+            # A triage question costs a request of its own; it cannot save one when every pair fits in one.
+            chosen.update((claim.slot, prior.claim.ref) for claim in claims for prior in triaged)
+            triaged = ()
+        groups = [
+            {f"p{index}": prior for index, prior in enumerate(triaged[start : start + TRIAGE_CANDIDATES_MAX], 1)}
+            for start in range(0, len(triaged), TRIAGE_CANDIDATES_MAX)
+        ]
+        triage = tuple(
+            Question(item_id=identity("triage", claim.slot), payload_json=canonical_json({"claim": claim}))
+            for claim in claims
+        )
+        for group in groups:
+            context = canonical_json({"prior_claims": {alias: row.claim for alias, row in group.items()}})
+            answers = await self.judgments.judge("relation_triage", triage, budget, context_json=context)
+            for claim, answer in zip(claims, answers, strict=True):
+                picked = _triaged(answer, group)
+                chosen.update((claim.slot, prior.claim.ref) for prior in (group.values() if picked is None else picked))
         pairs: dict[str, tuple[DraftClaim, PriorClaim]] = {}
-        for claim in extraction.claims:
+        questions = []
+        for claim in claims:
             for prior in source.prior:
-                if (claim.slot, prior.claim.ref) in known:
+                if (claim.slot, prior.claim.ref) not in chosen:
                     continue
                 item_id = identity("pair", claim.slot, prior.claim.ref)
                 pairs[item_id] = (claim, prior)
                 payload = {
                     "current": claim,
                     "previous": prior.claim,
-                    "previous_content_revision": prior.content_revision,
                     "known_numeric_modal_mismatch": not equivalent_is_possible(
                         claim, prior.claim, source.identity_hints
                     ),
                 }
                 questions.append(Question(item_id=item_id, payload_json=canonical_json(payload)))
-        if not questions:
-            return extraction
         answers = await self.judgments.judge("relation", tuple(questions), budget)
         _require_available(answers, "news_relation_unavailable", final_attempt=final_attempt)
+        judged: dict[tuple[str, str], str] = {}
         for answer in answers:
             claim, prior = pairs[answer.item_id]
             # An unavailable answer is an unresolved relation, never a manufactured one.
-            value = str(answer.value or "unresolved")
-            known[(claim.slot, prior.claim.ref)] = RelationDraft.model_validate(
-                {
-                    "slot": claim.slot,
-                    "previous_ref": prior.claim.ref,
-                    "relation": value,
-                    "change_kind": _default_change(claim, prior.claim, value),
-                }
-            )
-        return _replace(extraction, relations=tuple(known.values()))
+            judged[(claim.slot, prior.claim.ref)] = str(answer.value or "unresolved")
+        relations = []
+        for claim in claims:
+            for prior in source.prior:
+                value = judged.get((claim.slot, prior.claim.ref), "unrelated")
+                relations.append(
+                    RelationDraft.model_validate(
+                        {
+                            "slot": claim.slot,
+                            "previous_ref": prior.claim.ref,
+                            "relation": value,
+                            "change_kind": _default_change(claim, prior.claim, value),
+                        }
+                    )
+                )
+        return _replace(extraction, relations=tuple(relations))
 
     async def _supports(
         self, source: FrozenInput, extraction: Extraction, budget: Budget, *, final_attempt: bool
@@ -415,15 +589,20 @@ def _occurrence_changes(
     previous: dict[str, PriorClaim],
     source: FrozenInput,
 ) -> list[Change]:
-    """Changes introduced by a new occurrence that is not a restatement."""
+    """Changes introduced by a new occurrence that is not a restatement.
 
-    if not material_relations:
+    A conflict annotates the new claim; it does not stand in for it. A claim that only conflicts with earlier
+    claims is still new content (a catalyst), and its conflicts are published beside it.
+    """
+
+    changes: list[Change] = []
+    if all(relation.relation == "conflicts" for relation in material_relations):
         unsettled = _unsettled_priors(relations, source)
         if not unsettled:
-            return [Change(kind="new_fact", current_ref=ref)]
+            changes.append(Change(kind="new_fact", current_ref=ref))
         # An unresolved comparison cannot manufacture a catalyst. The claim is adopted and can reach a
         # reader, but it is not published as new until a relation is established.
-        return [
+        changes.extend(
             Change(
                 kind="possible_new",
                 current_ref=ref,
@@ -432,18 +611,14 @@ def _occurrence_changes(
                 relation="unresolved",
             )
             for prior_ref in unsettled
-        ]
-    changes: list[Change] = []
+        )
     for relation in material_relations:
         prior = previous[relation.previous_ref]
         kinds: set[ChangeKind] = set()
         if relation.change_kind is not None:
             kinds.add(relation.change_kind)
         if relation.relation == "real_world_change":
-            if draft.fields.phase != prior.claim.fields.phase:
-                kinds.add("phase_change")
-            if _quantity_key(draft) != _quantity_key(prior.claim):
-                kinds.add("parameter_change")
+            kinds |= _realization_changes(draft, prior.claim)
         changes.extend(
             Change(
                 kind=kind,
@@ -455,6 +630,43 @@ def _occurrence_changes(
             for kind in sorted(kinds)
         )
     return changes
+
+
+def _in_order(
+    draft: DraftClaim,
+    relations: list[RelationDraft],
+    same: PriorClaim | None,
+    previous: Mapping[str, PriorClaim],
+    source: FrozenInput,
+    evidence: Mapping[str, Evidence],
+) -> list[RelationDraft]:
+    """Refuse a correction or real-world change of a claim that was available before this one was reported.
+
+    A late-arriving older report cannot retire or supersede a newer claim; the comparison stays unresolved.
+    This claim's time is its earliest cited source (its publication time when the provider gave one), or,
+    when it restates one of this Event's own claims, that claim's first availability.
+    """
+
+    reported = [
+        min(value for value in (item.source.published_at_ms, item.source.first_available_at_ms) if value is not None)
+        for item in (evidence[citation.evidence_ref] for citation in draft.citations)
+    ]
+    if same is not None and same.event_id == source.event_id:
+        reported.append(same.claim.first_available_at_ms)
+    reported_at = min(reported)
+    ordered = []
+    for row in relations:
+        if row.relation not in {"corrects", "real_world_change"} or (
+            previous[row.previous_ref].claim.first_available_at_ms <= reported_at
+        ):
+            ordered.append(row)
+            continue
+        log.info(
+            "news_relation_out_of_order",
+            extra={"event_id": source.event_id, "relation": row.relation, "previous_ref": row.previous_ref},
+        )
+        ordered.append(RelationDraft(slot=row.slot, previous_ref=row.previous_ref, relation="unresolved"))
+    return ordered
 
 
 def assemble_update(
@@ -489,11 +701,17 @@ def assemble_update(
     relations_by_slot: dict[str, list[RelationDraft]] = {}
     for relation in extraction.relations:
         relations_by_slot.setdefault(relation.slot, []).append(relation)
+    established = {(row.current_ref, row.previous_ref, row.relation) for row in source.established_relations}
     for draft in extraction.claims:
         relations = relations_by_slot.get(draft.slot, [])
-        material_relations = tuple(row for row in relations if row.change_kind is not None)
         occurrence_previous = {row.previous_ref for row in relations if row.relation == "real_world_change"}
         same = _equivalent_prior(draft, relations, occurrence_previous, previous, source, evidence)
+        ordered = _in_order(draft, relations, same, previous, source, evidence)
+        if ordered != relations:
+            relations = ordered
+            occurrence_previous = {row.previous_ref for row in relations if row.relation == "real_world_change"}
+            same = _equivalent_prior(draft, relations, occurrence_previous, previous, source, evidence)
+        material_relations = tuple(row for row in relations if row.change_kind is not None)
         material = _claim_material(draft)
         # A genuine new proposition may have incomplete structured fields, and a
         # reversal can return to a previously seen state. Without an equivalent
@@ -542,11 +760,16 @@ def assemble_update(
                 changes.extend(_occurrence_changes(draft, ref, relations, material_relations, previous, source))
         # Relationship deltas do not depend on whether this occurrence already existed.
         # An equivalent Claim can acquire a cross-Event conflict or correction while
-        # retaining its ref and its first available time.
+        # retaining its ref and its first available time -- once: a later revision that
+        # restates it again does not publish the same conflict or correction again.
         for relation in material_relations:
             if relation.relation == "corrects" and relation.previous_ref in claims:
                 retired.add(relation.previous_ref)
-            if ref in head_refs and relation.relation != "real_world_change":
+            if (
+                ref in head_refs
+                and relation.relation != "real_world_change"
+                and (ref, relation.previous_ref, relation.relation) not in established
+            ):
                 prior = previous[relation.previous_ref]
                 changes.append(
                     Change(
@@ -638,6 +861,10 @@ def assemble_update(
             ),
         )
     )
+    if head is None and not claims:
+        # A first read that asserts nothing is not an Event version: there is nothing for a reader to see and
+        # nothing to supersede. The work settles, and a later member can still open the first version.
+        return None
     if head is not None and content_sha == head.content_sha:
         return None
     previous_revision = None if head is None else head.content_revision
@@ -674,11 +901,16 @@ def _link_evidence(
 
     # Quote existence is not semantic support. Unresolved is explicit until
     # the single backend supplied a source relationship.
+    cited = {citation.evidence_ref for citation in draft.citations}
     support = {row.evidence_ref: row.relation for row in extraction.supports if row.slot == draft.slot}
     # Preserve every validated source relationship, including refutations
     # outside the claim's quote list. A citation without a supplied judgment
     # remains unresolved; a source relationship does not invent a new quote.
-    evidence_refs = dict.fromkeys([*(citation.evidence_ref for citation in draft.citations), *support])
+    # Material that does not address the claim is no relationship at all: arriving
+    # beside the claim's sources must not make a new business revision.
+    evidence_refs = dict.fromkeys(
+        [*cited, *(ref for ref, relation in support.items() if ref in cited or relation != "not_addressed")]
+    )
     changes: list[Change] = []
     for evidence_ref in evidence_refs:
         key = (ref, evidence_ref)

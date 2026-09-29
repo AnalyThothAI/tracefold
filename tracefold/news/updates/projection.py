@@ -197,9 +197,9 @@ def reading_views(source: FrozenInput) -> tuple[ReadingView, ...]:
 def extraction_input(source: FrozenInput) -> dict[str, object]:
     """Serialize the only model input shape; never transmit full sibling bodies."""
 
-    document: dict[str, object] = source.model_dump(mode="json")
-    document.pop("reanalysis_reason", None)
-    document.pop("reanalysis_head_ref", None)
+    document = source.extraction_document()
+    for key in ("reanalysis_reason", "reanalysis_head_ref", "established_relations"):
+        document.pop(key, None)
     document["evidence"] = [
         view.as_dict(item) for item, view in zip(source.evidence, reading_views(source), strict=True)
     ]

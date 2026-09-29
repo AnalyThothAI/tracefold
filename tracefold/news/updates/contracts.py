@@ -64,6 +64,13 @@ ChangeKind = Literal[
     "restatement",
 ]
 
+# The changes that give a reader something new to consider. Only an adoption carrying one of them opens (or
+# reopens) a notification obligation; a restatement, a new source for an adopted claim or an empty revision
+# moves still-unfinished work to the new head without creating any.
+NOTIFICATION_CHANGES: frozenset[ChangeKind] = frozenset(
+    {"new_fact", "possible_new", "parameter_change", "phase_change", "scope_change", "correction", "conflict"}
+)
+
 _RELATION_CHANGE_KINDS: dict[str, frozenset[ChangeKind | None]] = {
     "equivalent": frozenset({None}),
     "unrelated": frozenset({None}),
@@ -224,6 +231,10 @@ class PriorClaim(Exact):
     event_id: str
     content_revision: str
     claim: Claim
+    # A reader card carried, carries or may still carry this claim: it was queued, sent or is being sent, or
+    # its Event's notification is undecided. Reader novelty reads its relation to a new claim, so that
+    # comparison is always asked rather than left to relation triage. Not extraction input.
+    reader_facing: bool = False
 
 
 class RelationDraft(Exact):
@@ -270,14 +281,23 @@ class QuestionResolution(Exact):
     citations: tuple[Citation, ...] = Field(min_length=1)
 
 
+class DiscardedClaim(Exact):
+    """One generated claim that could not be kept, and the code of why. Its siblings are still adopted."""
+
+    slot: str
+    code: str = Field(min_length=1)
+
+
 class Extraction(Exact):
-    # No maximum claim count: the backend batches; it never drops the tail.
+    # No maximum claim count and no silent tail drop: a claim that cannot be kept is named in
+    # `discarded_claims` with its reason, and the others are adopted.
     claims: tuple[DraftClaim, ...]
     resolved_questions: tuple[QuestionResolution, ...] = ()
     relations: tuple[RelationDraft, ...] = ()
     supports: tuple[SupportDraft, ...] = ()
     implications: tuple[ImplicationDraft, ...] = ()
     open_questions: tuple[OpenQuestion, ...] = ()
+    discarded_claims: tuple[DiscardedClaim, ...] = ()
 
     @model_validator(mode="after")
     def unique_slots(self) -> Extraction:
@@ -424,6 +444,14 @@ class EventUpdate(Exact):
     def ref(self) -> str:
         return identity("update", self.event_id, self.content_revision)
 
+    @property
+    def current_claims(self) -> tuple[Claim, ...]:
+        """The claims this Event still asserts: neither corrected away (retired) nor replaced by a real change
+        (superseded). The one derivation every semantic comparison and headline reads."""
+
+        inactive = set(self.retired_claim_refs) | set(self.superseded_claim_refs)
+        return tuple(claim for claim in self.claims if claim.ref not in inactive)
+
     def content_material(self) -> dict[str, object]:
         return content_material(
             self.event_id,
@@ -477,6 +505,14 @@ class ExtractionScope(Exact):
     method: str
 
 
+class EstablishedRelation(Exact):
+    """A cross-claim correction or conflict an earlier revision of this Event already adopted."""
+
+    current_ref: str
+    previous_ref: str
+    relation: Literal["corrects", "conflicts"]
+
+
 class FrozenInput(Exact):
     schema_version: Literal["news_event_input_v1"] = "news_event_input_v1"
     event_id: str
@@ -487,18 +523,33 @@ class FrozenInput(Exact):
     # no-op observation and settles that revision without calling the extractor.
     evidence: tuple[Evidence, ...]
     extraction_scopes: tuple[ExtractionScope, ...] = ()
+    # This Event's current claims, then related Events' current claims recalled for comparison.
     prior: tuple[PriorClaim, ...] = ()
     read_targets: tuple[ReadTarget, ...] = ()
     focus_claim_refs: tuple[str, ...] = ()
     open_questions: dict[str, KnowledgeGap] = Field(default_factory=dict)
     identity_hints: tuple[IdentityHint, ...] = ()
+    established_relations: tuple[EstablishedRelation, ...] = ()
     reanalysis_reason: str | None = None
     reanalysis_head_ref: str | None = None
 
     @property
+    def own_prior(self) -> tuple[PriorClaim, ...]:
+        return tuple(row for row in self.prior if row.event_id == self.event_id)
+
+    def extraction_document(self) -> dict[str, object]:
+        """What extraction reads. Related Events' claims are comparison candidates, not extraction context."""
+
+        document: dict[str, object] = self.model_dump(mode="json")
+        document["prior"] = [row.model_dump(mode="json", exclude={"reader_facing"}) for row in self.own_prior]
+        return document
+
+    @property
     def input_sha(self) -> str:
-        # Prior claims, questions and read targets affect extraction just as the new body does.
-        return digest(self.model_dump(mode="json"))
+        # This Event's claims, questions and read targets affect extraction just as the new body does. A
+        # related Event adopting again does not, so a retry reuses its stored extraction and only the
+        # comparisons are asked again (their answers are cached by content).
+        return digest(self.extraction_document())
 
     @model_validator(mode="after")
     def unique_input_refs(self) -> FrozenInput:

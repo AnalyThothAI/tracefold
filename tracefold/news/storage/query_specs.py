@@ -326,7 +326,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_band_lookup",
             sql=BAND_CANDIDATES_SQL,
-            params=([0, 1], ["a", "b"], "general", now_ms, "news"),
+            params=([0, 1], ["a", "b"], "general", now_ms, "news", ["candidate", "listing_deterministic"]),
             max_read_return_amplification=20.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),

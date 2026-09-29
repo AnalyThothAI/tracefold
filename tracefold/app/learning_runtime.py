@@ -23,6 +23,9 @@ from tracefold.platform.config.models import NewsModelAvailability, news_model_a
 
 # Code-owned generation ceilings per role. A native Jev route has none: it is not a chat model.
 EXTRACTION_MAX_TOKENS: Final = 4_000
+# The declared fallback answers an extraction the primary could not finish; a larger ceiling is what makes
+# its answer to a truncated one more than a second vote on the same request.
+EXTRACTION_FALLBACK_MAX_TOKENS: Final = 8_000
 JUDGMENT_MAX_TOKENS: Final = 2_000
 CARD_MAX_TOKENS: Final = 1_200
 # One provider call; the stage deadline bounds the route, fallback included.
@@ -75,10 +78,11 @@ class NewsModelRoute:
     primary: ConfiguredLMEndpoint
     fallback: ConfiguredLMEndpoint | None
     max_tokens: int
+    fallback_max_tokens: int | None = None
 
     @property
     def identity(self) -> str:
-        """Secret-free: provider, model, endpoint and request semantics of both endpoints, and the ceiling."""
+        """Secret-free: provider, model, endpoint and request semantics of both endpoints, and the ceilings."""
 
         return canonical_sha(
             {
@@ -87,15 +91,16 @@ class NewsModelRoute:
                 "primary": _endpoint_model_sha256(self.primary),
                 "fallback": None if self.fallback is None else _endpoint_model_sha256(self.fallback),
                 "max_tokens": self.max_tokens,
+                **({} if self.fallback_max_tokens is None else {"fallback_max_tokens": self.fallback_max_tokens}),
             }
         )
 
     def lms(self) -> tuple[GenerativeLM, ...]:
-        endpoints = (self.primary,) if self.fallback is None else (self.primary, self.fallback)
-        return tuple(
-            generative_lm(endpoint, max_tokens=self.max_tokens, timeout=GENERATION_TIMEOUT_SECONDS)
-            for endpoint in endpoints
-        )
+        primary = generative_lm(self.primary, max_tokens=self.max_tokens, timeout=GENERATION_TIMEOUT_SECONDS)
+        if self.fallback is None:
+            return (primary,)
+        ceiling = self.fallback_max_tokens or self.max_tokens
+        return (primary, generative_lm(self.fallback, max_tokens=ceiling, timeout=GENERATION_TIMEOUT_SECONDS))
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,7 +185,13 @@ def compose_news_models(settings: Any) -> NewsRuntimeModels | None:
         else None
     )
     return NewsRuntimeModels(
-        extraction=NewsModelRoute("extraction", extraction_primary, extraction_fallback, EXTRACTION_MAX_TOKENS),
+        extraction=NewsModelRoute(
+            "extraction",
+            extraction_primary,
+            extraction_fallback,
+            EXTRACTION_MAX_TOKENS,
+            fallback_max_tokens=EXTRACTION_FALLBACK_MAX_TOKENS,
+        ),
         judgment=NewsModelRoute("judgment", extraction_primary, extraction_fallback, JUDGMENT_MAX_TOKENS),
         card=NewsModelRoute("card", card_primary, card_fallback, CARD_MAX_TOKENS),
         news_judgment=news_judgment,
@@ -264,6 +275,7 @@ def _canonical_endpoint_sha256(value: str) -> str:
 
 __all__ = [
     "CARD_MAX_TOKENS",
+    "EXTRACTION_FALLBACK_MAX_TOKENS",
     "EXTRACTION_MAX_TOKENS",
     "JUDGMENT_MAX_TOKENS",
     "GenerativeLM",
