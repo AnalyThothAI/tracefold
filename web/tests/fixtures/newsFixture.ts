@@ -447,7 +447,8 @@ export function newsProcessingFixture(overrides: Partial<NewsProcessing> = {}): 
             novelty_zh: "进展",
             reader_backend: "native",
             reason: "reader_key",
-            reason_zh: "新增信息重要，标为重点（增量重要性 3.10；推送 ≥ 2.5，重点 ≥ 2.8）；补充此前已推送的一条",
+            reason_zh:
+              "新增信息重要，标为重点（增量重要性 3.10；推送 ≥ 2.5，重点 ≥ 2.8）；补充此前已推送的一条",
             render: "increment",
             statement: "Agency raises the steel import tariff to 50%.",
           },

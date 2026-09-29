@@ -11,6 +11,7 @@ cut belongs to the backend whose answers it was measured on.
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -119,10 +120,13 @@ class ReaderCuts:
 
 
 # The 2026-09-28 replay with links and production recall: native jev-1.13 gives about 116 messages (37 key)
-# a day; the generative qwen3.8-27b route scores the top higher, so its cuts match that volume.
+# a day; the generative qwen3.8-27b route scores the top higher, so its cuts match that volume. The anchor
+# cut favours a missed anchor (full rendering, as before) over a wrong one (an increment of another message):
+# at 0.2 both backends anchor >= 97 % of fully said claims with no false anchor, but only about half of the
+# claims that add detail to a reported core fact (`scripts/eval_news_reader.py`).
 READER_CUTS: Final[dict[ReaderBackend, ReaderCuts]] = {
-    "native": ReaderCuts(push=2.5, key=2.8, anchor_none_below=0.4),
-    "generated": ReaderCuts(push=2.6, key=3.1, anchor_none_below=0.6),
+    "native": ReaderCuts(push=2.5, key=2.8, anchor_none_below=0.2),
+    "generated": ReaderCuts(push=2.6, key=3.1, anchor_none_below=0.2),
 }
 
 
@@ -463,25 +467,39 @@ def cache_key(judge: ReaderJudge, reader: ReaderInput) -> str:
     return identity("news_reader_judgment", judge.identity, READER_JUDGMENT_SCHEMA, reader.digest)
 
 
-async def cached_judgment(
-    judge: ReaderJudge, cache: JudgmentCache, reader: ReaderInput, budget: Budget
-) -> ReaderJudgment:
-    """Reuse an available answer for exactly this input; otherwise ask, and keep only an available answer.
+async def cached_judgments(
+    judge: ReaderJudge, cache: JudgmentCache, readers: Mapping[str, ReaderInput], budget: Budget
+) -> dict[str, ReaderJudgment]:
+    """Reuse available answers for exactly these inputs, ask the rest concurrently, keep only available ones.
 
     The key is the judge and the frozen input, so a sibling claim's change or a lost CAS asks nothing again.
-    An unavailable answer is never stored: the next turn asks again.
+    One cache read for the set and one write for the new answers; an unavailable answer is never stored, so
+    the next turn asks again.
     """
 
-    key = cache_key(judge, reader)
-    stored = await cache.get(key)
-    if stored is not None and stored.status == "available" and isinstance(stored.value, str):
-        reused = ReaderJudgment.model_validate_json(stored.value)
-        if reused.status == "available" and reused.matches(reader):
-            return reused
-    judgment = await judge.judge(reader, budget)
-    if judgment.status == "available":
-        await cache.put(key, Answer(item_id=key, value=judgment.model_dump_json(), backend=str(judgment.identity)))
-    return judgment
+    if not readers:
+        return {}
+    keys = {name: cache_key(judge, reader) for name, reader in readers.items()}
+    stored = await cache.get_many(tuple(dict.fromkeys(keys.values())))
+    judgments: dict[str, ReaderJudgment] = {}
+    for name, reader in readers.items():
+        answer = stored.get(keys[name])
+        if answer is not None and answer.status == "available" and isinstance(answer.value, str):
+            reused = ReaderJudgment.model_validate_json(answer.value)
+            if reused.status == "available" and reused.matches(reader):
+                judgments[name] = reused
+    missing = [name for name in readers if name not in judgments]
+    asked = await asyncio.gather(*(judge.judge(readers[name], budget) for name in missing))
+    fresh: dict[str, Answer] = {}
+    for name, judgment in zip(missing, asked, strict=True):
+        judgments[name] = judgment
+        if judgment.status == "available":
+            fresh[keys[name]] = Answer(
+                item_id=keys[name], value=judgment.model_dump_json(), backend=str(judgment.identity)
+            )
+    if fresh:
+        await cache.put_many(fresh)
+    return judgments
 
 
 __all__ = [
@@ -509,7 +527,7 @@ __all__ = [
     "Render",
     "anchor_options",
     "cache_key",
-    "cached_judgment",
+    "cached_judgments",
     "current_links",
     "message_id",
     "novelty_outcome",

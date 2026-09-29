@@ -11,7 +11,6 @@ for a bounded time.
 
 from __future__ import annotations
 
-import asyncio
 import re
 import time
 from collections.abc import Mapping, Sequence
@@ -34,7 +33,7 @@ from .reader_judgments import (
     ReaderJudgment,
     ReaderNovelty,
     Render,
-    cached_judgment,
+    cached_judgments,
     novelty_outcome,
     reader_decision,
     reader_novelty,
@@ -457,11 +456,8 @@ class NotificationPlanner:
             claim.ref: ReaderInput.of(claim, update, [row.body for row in messages[claim.ref]]) for claim in pending
         }
         started = time.monotonic()
-        answers = await asyncio.gather(
-            *(cached_judgment(self.judge, self.cache, inputs[claim.ref], budget) for claim in pending)
-        )
+        judgments = await cached_judgments(self.judge, self.cache, inputs, budget)
         judgment_ms = max(0, int((time.monotonic() - started) * 1000))
-        judgments = {claim.ref: answer for claim, answer in zip(pending, answers, strict=True)}
         linked = {row.intent_id: row for row in (*reader.linked, *reader.receipts)}
         rows = []
         for claim in update.claims:

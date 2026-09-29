@@ -36,7 +36,7 @@ from tracefold.news.updates.dspy_backend import (
     GeneratedJudgments,
 )
 from tracefold.news.updates.judgment import Budget, ContractFault, NewsJudgments, Question
-from tracefold.news.updates.notification import ReaderRepairContext
+from tracefold.news.updates.notification import NotificationPlanner, ReaderRepairContext, ReaderSnapshot
 from tracefold.news.updates.semantics import SemanticAnalyzer, assemble_update
 
 STAMP = 1_790_405_000_000

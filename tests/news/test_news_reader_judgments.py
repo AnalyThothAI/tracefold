@@ -46,7 +46,7 @@ from tracefold.news.updates.reader_judgments import (
     ReaderJudgment,
     ReaderNovelty,
     cache_key,
-    cached_judgment,
+    cached_judgments,
     current_links,
     reader_decision,
     reader_novelty,
@@ -320,15 +320,15 @@ def test_when_neither_backend_answers_the_judgment_is_unavailable_and_never_stor
         judge = _judge(connection, generated)
         cache = MemoryCache()
         try:
-            first = await cached_judgment(judge, cache, _reader(), Budget.start(5))
-            second = await cached_judgment(judge, cache, _reader(), Budget.start(5))
+            first = (await cached_judgments(judge, cache, {"c": _reader()}, Budget.start(5)))["c"]
+            second = (await cached_judgments(judge, cache, {"c": _reader()}, Budget.start(5)))["c"]
         finally:
             await connection.aclose()
         return first, second, cache
 
     first, second, cache = asyncio.run(run())
     assert first.status == second.status == "unavailable"
-    assert first.error_code == "news_generation_LMServerError"
+    assert first.error_code == "news_generation_lm_server_error"
     assert first.importance is None and first.anchor is None
     assert cache.values == {}
 
@@ -368,15 +368,17 @@ class _CountingJudge:
 def test_an_available_answer_is_reused_for_exactly_the_same_input() -> None:
     async def run() -> tuple[_CountingJudge, MemoryCache, ReaderJudgment]:
         judge, cache = _CountingJudge(), MemoryCache()
-        first = await cached_judgment(judge, cache, _reader(), Budget.start(5))
-        again = await cached_judgment(judge, cache, _reader(), Budget.start(5))
+        first = (await cached_judgments(judge, cache, {"c": _reader()}, Budget.start(5)))["c"]
+        again = (await cached_judgments(judge, cache, {"c": _reader()}, Budget.start(5)))["c"]
         assert again == first
         other = _update("NVIDIA ANNOUNCES $160 BILLION BUYBACK")
-        await cached_judgment(judge, cache, ReaderInput.of(other.claims[0], other, SENT), Budget.start(5))
+        both = {"c": _reader(), "d": ReaderInput.of(other.claims[0], other, SENT)}
+        assert (await cached_judgments(judge, cache, both, Budget.start(5)))["c"] == first
         return judge, cache, first
 
     judge, cache, first = asyncio.run(run())
-    assert judge.calls == 2
+    # One read per set and one write per set of new answers; the sibling asked alone.
+    assert judge.calls == 2 and len(cache.reads) == 3 and len(cache.writes) == 2
     stored = cache.values[cache_key(judge, _reader())]
     assert stored.status == "available" and ReaderJudgment.model_validate_json(str(stored.value)) == first
 
@@ -392,8 +394,10 @@ def test_evidence_shapes_and_judgment_status_are_exact() -> None:
         ReaderJudgment(status="unavailable", error_code="x", backend="native")
     with pytest.raises(ValidationError, match="news_reader_available_judgment_incomplete"):
         ReaderJudgment(status="available", backend="native", identity="n")
-    anchor = AnchorEvidence(probabilities={"m1": 0.1, "m2": 0.55, "none": 0.35}, confidence=0.5)
+    anchor = AnchorEvidence(probabilities={"m1": 0.1, "m2": 0.75, "none": 0.15}, confidence=0.5)
     assert anchor.anchor(READER_CUTS["native"]) == 1
+    unsure = AnchorEvidence(probabilities={"m1": 0.1, "m2": 0.55, "none": 0.35}, confidence=0.5)
+    assert unsure.anchor(READER_CUTS["native"]) is None
     for cuts in READER_CUTS.values():
         assert 0 < cuts.push < cuts.key < len(IMPORTANCE_LEVELS) - 1 and 0 < cuts.anchor_none_below < 1
 
