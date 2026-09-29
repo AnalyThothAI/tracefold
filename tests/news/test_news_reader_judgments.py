@@ -540,7 +540,15 @@ P010 = (
 
 
 @pytest.mark.parametrize("case", [P005, P010], ids=["P005-anchored", "P010-linked"])
-@pytest.mark.parametrize(("importance", "outcome"), [(2.5, "feed"), (2.59, "feed"), (2.79, "feed"), (2.8, "key")])
+@pytest.mark.parametrize(
+    ("importance", "outcome"),
+    [
+        (READER_CUTS["native"].push, "feed"),
+        (2.59, "feed"),
+        (READER_CUTS["native"].key - 0.01, "feed"),
+        (READER_CUTS["native"].key, "key"),
+    ],
+)
 def test_a_known_core_fact_is_pushed_only_at_the_key_cut(
     case: tuple[Any, ...], importance: float, outcome: str
 ) -> None:

@@ -14,9 +14,10 @@ The script scores the answers recorded in the fixtures for one backend through t
 and cuts. The inputs are an archived baseline: the current judge reads `news_reader_input_v2` over
 claim-scoped recall (#750), so they are never sent to a model. No sender, broker or database is constructed.
 
-Reports: incremental importance AUC; a decision table (claims/day estimated with the stratum weights,
-precision of keep+borderline, keep recall, pushes by novelty); anchor recall and false-anchor rate against the
-core-fact and the fully-said labels; pushes per replayed cluster.
+Reports: incremental importance AUC; a decision table over push cuts at the backend's key cut and over key cuts
+at its push cut (claims and key claims per day estimated with the stratum weights, precision of
+keep+borderline, keep recall, pushes by novelty); anchor recall and false-anchor rate against the core-fact and
+the fully-said labels; pushes per replayed cluster.
 """
 
 from __future__ import annotations
@@ -54,7 +55,8 @@ CLUSTERS = (
     FIXTURES / "reader_spacex_starship_2026-09-28.jsonl",
 )
 VERDICTS = ("keep", "borderline", "demote")
-CUT_TABLE = (2.0, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9)
+CUT_TABLE = (1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8)
+KEY_TABLE = (2.5, 2.6, 2.7, 2.8, 2.9, 2.95, 2.98, 3.0, 3.05, 3.1, 3.2)
 NONE_THRESHOLDS = (0.1, 0.2, 0.3, 0.4, 0.6, 0.8)
 PUSHED = ("correction", "key", "push")
 
@@ -159,34 +161,45 @@ def importance_report(rows: Sequence[Mapping[str, Any]], answers: Mapping[str, R
     }
 
 
-def decision_table(
-    rows: Sequence[Mapping[str, Any]], answers: Mapping[str, ReaderJudgment], *, cuts: Iterable[float] = CUT_TABLE
-) -> list[dict[str, Any]]:
-    """Weighted by each row's stratum weight, so a stratified sample estimates one day's population."""
+def decision_row(
+    rows: Sequence[Mapping[str, Any]], answers: Mapping[str, ReaderJudgment], *, push: float, key: float
+) -> dict[str, Any]:
+    """One (push, key) pair, weighted by each row's stratum weight, so a stratified sample estimates one day."""
 
     labelled = [row for row in rows if row["case_id"] in answers and row.get("label")]
     keep_weight = sum(row["weight"] for row in labelled if row["label"]["verdict"] == "keep")
-    table = []
-    for cut in cuts:
-        outcomes = {}
-        for row in labelled:
-            own = answers[row["case_id"]].cuts
-            recut = ReaderCuts(push=cut, key=max(cut, own.key), anchor_none_below=own.anchor_none_below)
-            outcomes[row["case_id"]] = decision(row, answers[row["case_id"]], recut).outcome
-        pushed = [row for row in labelled if outcomes[row["case_id"]] in PUSHED]
-        weight = sum(row["weight"] for row in pushed)
-        kept = sum(row["weight"] for row in pushed if row["label"]["verdict"] == "keep")
-        border = sum(row["weight"] for row in pushed if row["label"]["verdict"] == "borderline")
-        table.append(
-            {
-                "cut": cut,
-                "claims_per_day": round(weight),
-                "precision_keep_borderline": round((kept + border) / weight, 3) if weight else None,
-                "keep_recall": round(kept / keep_weight, 3) if keep_weight else None,
-                "pushed_by_novelty": dict(Counter(row["reader_novelty"].novelty for row in pushed)),
-            }
-        )
-    return table
+    outcomes = {}
+    for row in labelled:
+        own = answers[row["case_id"]].cuts
+        recut = ReaderCuts(push=push, key=max(push, key), anchor_none_below=own.anchor_none_below)
+        outcomes[row["case_id"]] = decision(row, answers[row["case_id"]], recut).outcome
+    pushed = [row for row in labelled if outcomes[row["case_id"]] in PUSHED]
+    weight = sum(row["weight"] for row in pushed)
+    kept = sum(row["weight"] for row in pushed if row["label"]["verdict"] == "keep")
+    border = sum(row["weight"] for row in pushed if row["label"]["verdict"] == "borderline")
+    return {
+        "claims_per_day": round(weight),
+        "key_per_day": round(sum(row["weight"] for row in pushed if outcomes[row["case_id"]] == "key")),
+        "precision_keep_borderline": round((kept + border) / weight, 3) if weight else None,
+        "keep_recall": round(kept / keep_weight, 3) if keep_weight else None,
+        "pushed_by_novelty": dict(Counter(row["reader_novelty"].novelty for row in pushed)),
+    }
+
+
+def decision_table(
+    rows: Sequence[Mapping[str, Any]],
+    answers: Mapping[str, ReaderJudgment],
+    cuts: ReaderCuts,
+    *,
+    push_cuts: Iterable[float] = CUT_TABLE,
+    key_cuts: Iterable[float] = KEY_TABLE,
+) -> dict[str, list[dict[str, Any]]]:
+    """Push cuts at the backend's key cut, and key cuts at its push cut."""
+
+    return {
+        "push": [{"cut": cut, **decision_row(rows, answers, push=cut, key=cuts.key)} for cut in push_cuts],
+        "key": [{"cut": cut, **decision_row(rows, answers, push=cuts.push, key=cut)} for cut in key_cuts],
+    }
 
 
 def anchor_truth(row: Mapping[str, Any]) -> str | None:
@@ -275,7 +288,7 @@ def evaluate(
             "coverage": sum(row["case_id"] in answers for row in coverage),
         },
         "importance": importance_report(replay, answers),
-        "decision_table": decision_table(replay, answers),
+        "decision_table": decision_table(replay, answers, cuts),
         "anchor": {"core_fact": anchor_report(anchors, answers), "fully_said": anchor_report(coverage, answers)},
         "clusters": [cluster_report(rows, answers) for rows in clusters],
     }
