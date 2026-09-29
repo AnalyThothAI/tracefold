@@ -170,13 +170,14 @@ docker compose exec -T workers tracefold news wallets --hours 24 --queue-limit 1
 ```bash
 docker compose exec -T analysis tracefold trading cases --limit 20
 docker compose exec -T analysis tracefold trading signals --limit 20
-docker compose exec -T analysis tracefold trading gate --limit 20
 docker compose exec -T analysis tracefold trading observations --limit 20
 docker compose exec -T analysis tracefold trading commands --limit 20
 make runtime-status
 ```
 
 `trading diagnose` 提供有界只读执行诊断；检查实际配置和探针地址，不把 host loopback 自动当作另一个容器。
+
+`trading gate` 读取的 `trading_candidate_gate_decisions` 已不再由当前代码写入，不能说明当前准入；准入与排除看 Case 的 `target_selection` / `policy_reason`，链路排查顺序见 [Trading 排障](modules/trading.md#section-排障与验证)。
 
 ### 显式本地操作意图
 

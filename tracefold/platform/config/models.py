@@ -587,9 +587,10 @@ class TradingExecutionRiskSettings(BaseModel):
     any of these numbers takes effect at the next Runtime restart and needs nothing else. None of
     them is a secret and `tracefold config` prints all of them.
 
-    The stop distance stays a Runtime number: the Strategy places the stop, and neither the Case
-    nor the Signal ever carries it. Equity, the risk fraction, leverage and venue filters bound
-    entry size without separate dollar, position-count or daily-loss gates.
+    A Signal entry carries its own stop distance in `TradeSignalV3.exit_plan`; `stop_distance_bps`
+    here sizes and protects only manual entries and seeds the route catalogue. Equity, the risk
+    fraction, leverage and venue filters bound entry size without separate dollar, position-count or
+    daily-loss gates.
     """
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
@@ -630,7 +631,7 @@ class TradingExecutionRiskSettings(BaseModel):
 
 
 class TradingExitPolicySettings(BaseModel):
-    """Execution defaults shared by every Binance connection."""
+    """Take-profit and holding defaults for manual entries; a Signal carries its own exit plan."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
     policy_id: Literal["oi_fixed_v1"] = "oi_fixed_v1"

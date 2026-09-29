@@ -11,9 +11,11 @@ Everything this module decides is level-triggered from the Cache and idempotent:
 * entry: a Signal or manual Command passes the gates in order, waits within its TTL for a quote and a
   narrow enough spread, and becomes one committed plan and one market order with a deterministic
   client order id -- never a second one;
-* protection: a position whose entry order is terminal gets one reduce-only `STOP_MARKET` and one
-  reduce-only `TAKE_PROFIT_MARKET`, both triggered on the mark price, placed once from the average
-  fill price; a missing one is placed again, a present one is never compared, resized or replaced;
+* protection: an open position (a partial entry included) gets one reduce-only `STOP_MARKET` and one
+  reduce-only `MARKET_IF_TOUCHED` (Binance `TAKE_PROFIT_MARKET`), both triggered on the mark price
+  at the plan's distance from the average fill price and sized to the position; when the position's
+  quantity or average price changes, a matching replacement is submitted and the old leg is canceled
+  only after the replacement is accepted;
 * exits: past its maximum holding time a position is closed with a reduce-only market order; when a
   position is closed by one of this Runtime's own closing legs (stop, take-profit, time exit, operator
   flatten), every order left on its instrument is canceled and its plan ends with that leg's reason;

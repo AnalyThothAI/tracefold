@@ -235,7 +235,7 @@ make runtime-logs
 
 `runtime-build` 生成 `tracefold-runtime:<sha>` 镜像。`make runtime-up RUNTIME_IMAGE=<已有镜像>` 不构建、不迁移、不重建 PostgreSQL；先检查启用状态和 image / database head，再操作执行容器。`runtime-restart` 使用实际容器的不可变 image ID，不跟随可变 tag；关闭预算仍为 Compose 中的 90 秒。真正的 `runtime-up`、`runtime-restart`、`runtime-down` 是独立、显式的执行生命周期操作；是否有交易权限取决于实际配置、作用域和账户状态，不取决于是否完成了本安装指南。
 
-没有内置 Paper 模拟器；`trading.execution.binance.environment` 指定原生适配器目标，`LIVE` / `DEMO` / `TESTNET` 也必须配合相应凭据。不要假设未设置环境就一定是测试连接。
+没有内置 Paper 模拟器；`trading.execution.binance.environment` 指定原生适配器目标，`LIVE` / `DEMO` / `TESTNET` 也必须配合相应凭据。不要假设未设置环境就一定是测试连接。当前该值同时决定 Analysis 读取的永续行情环境：设为 `DEMO` 时研究行情（spot 除外）来自 DEMO 撮合数据，见 [Trading 行情来源](modules/trading.md#section-行情来源与数据环境)。
 
 <a id="section-本地开发"></a>
 ## 08 · 本地开发
