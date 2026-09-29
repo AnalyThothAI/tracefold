@@ -20,7 +20,7 @@ from tracefold.news.updates.contracts import (
     SupportDraft,
 )
 from tracefold.news.updates.public import public_updates
-from tracefold.news.updates.semantics import assemble_update, equivalent_is_possible
+from tracefold.news.updates.semantics import assemble_update, proven_mismatches
 
 
 def next_revision(
@@ -75,16 +75,16 @@ def test_expected_and_actual_with_identical_number_are_not_equivalent() -> None:
     previous = head.claims[0].model_copy(
         update={"fields": head.claims[0].fields.model_copy(update={"mode": "forecast"})}
     )
-    assert not equivalent_is_possible(current, previous)
+    assert proven_mismatches(current, previous) == ("mode",)
 
 
-def test_known_different_country_cannot_be_equivalent() -> None:
+def test_known_different_subject_identity_cannot_be_equivalent() -> None:
     source, extraction, head = update_one()
     quote = extraction.claims[0].citations[0].quote
-    prior_hint = IdentityHint(key="country", value="BR", evidence_ref=source.evidence[0].ref, surface=quote)
+    prior_hint = IdentityHint(key="subject_id", value="BR", evidence_ref=source.evidence[0].ref, surface=quote)
     prior = head.claims[0].model_copy(update={"known_identity": (prior_hint,)})
-    hints = (IdentityHint(key="country", value="TR", evidence_ref=source.evidence[0].ref, surface=quote),)
-    assert not equivalent_is_possible(extraction.claims[0], prior, hints)
+    hints = (IdentityHint(key="subject_id", value="TR", evidence_ref=source.evidence[0].ref, surface=quote),)
+    assert proven_mismatches(extraction.claims[0], prior, hints) == ("subject_id",)
 
 
 def correction_update() -> tuple[EventUpdate, EventUpdate]:

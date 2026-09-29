@@ -37,7 +37,14 @@ class NewsDatabasePort(Protocol):
     class's exact shape. `tracefold.app` implements this; `tracefold.news` never names the implementation.
     """
 
-    async def read[T](self, name: str, fn: Callable[[NewsRepositories], T], *, timeout_seconds: float = 3.0) -> T: ...
+    async def read[T](
+        self,
+        name: str,
+        fn: Callable[[NewsRepositories], T],
+        *,
+        timeout_seconds: float = 3.0,
+        repeatable_read: bool = False,
+    ) -> T: ...
 
     async def tx[T](self, name: str, fn: Callable[[NewsRepositories], T], *, timeout_seconds: float = 3.0) -> T: ...
 

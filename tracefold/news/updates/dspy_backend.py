@@ -466,6 +466,15 @@ async def _generate(signature: Any, route: Any, **inputs: Any) -> Any:
             if index + 1 < len(lms) and _different_route(lm, lms[index + 1]):
                 continue
             raise ContractFault(code) from exc
+        except ValueError as exc:
+            # DSPy's decision-state decoder raises ValueError (outside AdapterParseError)
+            # when a generated Score distribution is malformed. Treat that provider output
+            # like another schema failure; other ValueErrors remain programming errors.
+            if not str(exc).startswith("Invalid Score distribution for "):
+                raise
+            if index + 1 < len(lms) and _different_route(lm, lms[index + 1]):
+                continue
+            raise ContractFault("news_generation_output_schema_invalid") from exc
     raise ProviderUnavailable("news_generation_route_exhausted")
 
 
@@ -692,7 +701,7 @@ def reader_signature(messages: int) -> Any:
     fields: dict[str, Any] = {
         "claim": (
             dict[str, Any],
-            dspy.InputField(desc="One adopted news claim: its structured fields, topics, change and cited sources."),
+            dspy.InputField(desc="One adopted news claim: its structured fields, topics and cited sources."),
         )
     }
     if messages:

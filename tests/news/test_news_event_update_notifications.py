@@ -229,7 +229,8 @@ def test_an_increment_is_scored_on_what_it_adds_with_the_linked_message_first() 
     ref = update.claims[0].ref
     earlier = sent("英伟达宣布1500亿美元回购", "r-old")
     snapshot = reader(
-        receipts=(sent("无关消息", "r-other"),),
+        receipts=(earlier, sent("无关消息", "r-other")),
+        receipt_intents_by_claim={ref: ("r-old",)},
         links=(link(ref, "old", "adds_information"),),
         link_receipts=(delivered("r-old", "old"),),
         linked=(earlier,),
@@ -238,11 +239,11 @@ def test_an_increment_is_scored_on_what_it_adds_with_the_linked_message_first() 
     judge = FixedReader(cuts.key, anchor="m1")
     plan = run_plan(update, snapshot, judge=judge)
     assert only_reason(plan) == "reader_key"
-    assert judge.asked[0].messages == ("英伟达宣布1500亿美元回购", "无关消息")
+    assert judge.asked[0].messages == ("英伟达宣布1500亿美元回购",)
     record = plan.claim_decisions[0].reader
     assert record is not None and record.novelty == "increment" and record.render == "increment"
-    assert record.message_intents == ("r-old", "r-other")
-    assert [row.intent_id for row in plan.compared_receipts] == ["r-old", "r-other"]
+    assert record.message_intents == ("r-old",)
+    assert [row.intent_id for row in plan.compared_receipts] == ["r-old"]
     material = card_copy_material(
         update.claims, {item.ref: item.source for item in update.evidence}, {ref: record.earlier}
     )

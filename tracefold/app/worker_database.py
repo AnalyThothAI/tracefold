@@ -394,6 +394,8 @@ class WorkerDatabase:
         name: str,
         statement_timeout_seconds: float | None = None,
         transaction_timeout_seconds: float | None = None,
+        *,
+        repeatable_read: bool = False,
     ) -> Iterator[RepositorySession]:
         telemetry = self.telemetry
         started = time.perf_counter()
@@ -402,6 +404,8 @@ class WorkerDatabase:
         transaction_started = time.perf_counter()
         try:
             with conn.transaction():
+                if repeatable_read:
+                    conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 _set_worker_operation_config(
                     conn,
                     statement_timeout_seconds=statement_timeout_seconds,

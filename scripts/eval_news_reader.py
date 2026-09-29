@@ -1,8 +1,8 @@
-"""Offline replay of the News reader decision (#742) over frozen inputs and independent labels.
+"""Offline replay of the News reader decision (#742) over archived inputs and independent labels.
 
 Every fixture row is one claim at its decision stamp: the persisted semantic links and receipts it could
 reach (from which `reader_novelty` is recomputed), the receipts behind its messages, and the frozen
-`ReaderInput` production asks and caches:
+`news_reader_input_v1` input production asked on 2026-09-28:
   reader_replay          labelled claims (keep / borderline / demote) with stratum weights
   anchor_labeled         unlinked claims with 16 recalled messages and a blind "already reported the core fact"
                          label (stratified on the native anchor answer; the weights restore the day)
@@ -10,9 +10,9 @@ reach (from which `reader_novelty` is recomputed), the receipts behind its messa
   reader_nvidia_buyback  every decision of the seven Nvidia buyback Events (<= 2 pushes expected)
   reader_spacex_starship every decision of the Starship first orbital flight Events
 
-Recorded mode (default) scores the answers stored in the fixtures for one backend. `--live` asks the
-configured reader judge the same inputs: System One when `llm.news_reader_judgment` is configured, else
-the generative News route. No sender, broker or database is constructed.
+The script scores the answers recorded in the fixtures for one backend through the current `reader_decision`
+and cuts. The inputs are an archived baseline: the current judge reads `news_reader_input_v2` over
+claim-scoped recall (#750), so they are never sent to a model. No sender, broker or database is constructed.
 
 Reports: incremental importance AUC; a decision table (claims/day estimated with the stratum weights,
 precision of keep+borderline, keep recall, pushes by novelty); anchor recall and false-anchor rate against the
@@ -22,13 +22,11 @@ core-fact and the fully-said labels; pushes per replayed cluster.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import gzip
 import json
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from time import perf_counter
 from typing import Any
 
 from tracefold.news.updates.reader_judgments import (
@@ -40,8 +38,6 @@ from tracefold.news.updates.reader_judgments import (
     ReaderBackend,
     ReaderCuts,
     ReaderDecision,
-    ReaderInput,
-    ReaderJudge,
     ReaderJudgment,
     ReaderNovelty,
     message_id,
@@ -69,9 +65,10 @@ def load(path: Path) -> list[dict[str, Any]]:
     if not rows:
         raise ValueError("news_reader_eval_cases_required")
     for row in rows:
-        # Refuse a fixture the current projection and novelty rules would not reproduce.
-        row["reader"] = ReaderInput.model_validate(row["reader_input"])
-        if len(row["message_intents"]) != len(row["reader"].messages):
+        # This is an archived v1 baseline, never a current model input.
+        if row["reader_input"]["schema_version"] != "news_reader_input_v1":
+            raise ValueError("news_reader_eval_baseline_version_unexpected")
+        if len(row["message_intents"]) != len(row["reader_input"]["messages"]):
             raise ValueError("news_reader_eval_message_intents_mismatch")
         novelty = reader_novelty(
             row["claim_ref"],
@@ -100,7 +97,9 @@ def recorded(rows: Iterable[Mapping[str, Any]], backend: ReaderBackend) -> dict[
             importance=ImportanceEvidence.model_validate(answer["importance"]),
             anchor=None if anchor is None else AnchorEvidence.model_validate(anchor),
         )
-        if not judgment.matches(row["reader"]):
+        if (anchor is None) != (len(row["message_intents"]) == 0) or (
+            anchor is not None and len(anchor["probabilities"]) - 1 != len(row["message_intents"])
+        ):
             raise ValueError("news_reader_eval_answer_shape_mismatch")
         answers[row["case_id"]] = judgment
     return answers
@@ -125,31 +124,6 @@ def answer_record(judgment: ReaderJudgment) -> dict[str, Any]:
             "confidence": round(judgment.anchor.confidence, 4),
         }
     return record
-
-
-async def ask(judge: ReaderJudge, rows: Sequence[Mapping[str, Any]], *, seconds: float = 60.0) -> dict[str, Any]:
-    from tracefold.news.updates.judgment import Budget
-
-    answers: dict[str, ReaderJudgment] = {}
-    failures: Counter[str] = Counter()
-    latencies = []
-    for row in rows:
-        started = perf_counter()
-        judgment = await judge.judge(row["reader"], Budget.start(seconds))
-        latencies.append(round((perf_counter() - started) * 1000))
-        if judgment.status == "available":
-            answers[row["case_id"]] = judgment
-        else:
-            failures[str(judgment.error_code)] += 1
-    latencies.sort()
-    return {
-        "answers": answers,
-        "failures": dict(failures),
-        "latency_ms": {
-            "p50": latencies[len(latencies) // 2] if latencies else None,
-            "p90": latencies[int(len(latencies) * 0.9)] if latencies else None,
-        },
-    }
 
 
 def auc(positive: Sequence[float], negative: Sequence[float]) -> float | None:
@@ -311,41 +285,15 @@ def load_all() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[st
     return load(READER_REPLAY), load(ANCHOR_LABELED), load(COVERAGE_LABELED), [load(path) for path in CLUSTERS]
 
 
-async def _live(rows: list[dict[str, Any]]) -> tuple[ReaderBackend, dict[str, Any]]:
-    from tracefold.app.learning_runtime import compose_news_models, news_reader_judgment_endpoint
-    from tracefold.app.news_updates import compose_reader_judge
-    from tracefold.platform.config.loader import load_settings
-
-    settings = load_settings(require_ws_token=False)
-    models = compose_news_models(settings)
-    if models is None:
-        raise ValueError("news_reader_eval_models_not_configured")
-    judge, connection = compose_reader_judge(
-        generated_lm_factory=models.judgment.lms,
-        generated_model_identity=models.judgment.identity,
-        reader_judgment=news_reader_judgment_endpoint(settings),
-    )
-    try:
-        return ("native" if connection is not None else "generated"), await ask(judge, rows)
-    finally:
-        if connection is not None:
-            await connection.aclose()
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--backend", choices=("native", "generated"), default="native")
-    parser.add_argument("--live", action="store_true", help="ask the configured reader judge (network, cost)")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     replay, anchors, coverage, clusters = load_all()
     everything = [*replay, *anchors, *coverage, *(row for rows in clusters for row in rows)]
-    if args.live:
-        backend, run = asyncio.run(_live(everything))
-        report = evaluate(replay, anchors, coverage, clusters, run["answers"], backend)
-        report["failures"], report["latency_ms"] = run["failures"], run["latency_ms"]
-    else:
-        report = evaluate(replay, anchors, coverage, clusters, recorded(everything, args.backend), args.backend)
+    report = evaluate(replay, anchors, coverage, clusters, recorded(everything, args.backend), args.backend)
+    report["contract"] = "archived_news_reader_input_v1_baseline"
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")

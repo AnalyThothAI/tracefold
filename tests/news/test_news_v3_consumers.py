@@ -61,7 +61,6 @@ from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.reader_card import ReaderCard
-from tracefold.news.reader_history import ReaderHistorySnapshot
 from tracefold.news.storage.root import NewsRepository
 from tracefold.news.updates.contracts import EventUpdate
 from tracefold.news.updates.notification import FrozenCard, NotificationPlan
@@ -146,8 +145,6 @@ class RecordingNews:
                 return []
             if name == "evidence_candidates" and name not in self.responses:
                 return []
-            if name == "reader_history" and name not in self.responses:
-                return ReaderHistorySnapshot()  # nothing pushed yet
             if name == "latest_evidence_snapshot" and name not in self.responses:
                 card = self.responses.get("event_card") or {}
                 return {

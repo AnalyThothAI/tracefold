@@ -99,7 +99,7 @@ def test_reader_input_is_the_claim_its_sources_and_the_recalled_bodies_and_nothi
     reader = ReaderInput.of(update.claims[0], update, SENT)
 
     assert reader.claim.topics == (TOPIC_NAME,)
-    assert reader.change == "new_fact"
+    assert reader.schema_version == "news_reader_input_v2"
     assert [(s.publisher, s.origin, s.attribution, s.authority) for s in reader.sources] == [
         ("news-opennews", "opennews", "Reuters", "reputable_secondary")
     ]
@@ -113,7 +113,7 @@ def test_reader_input_is_the_claim_its_sources_and_the_recalled_bodies_and_nothi
     assert inputs["messages"] == [{"id": "m1", "body": SENT[0]}, {"id": "m2", "body": SENT[1]}]
     claim = inputs["claim"]
     assert claim["statement"] == "Nvidia announced a $150 billion share buyback."
-    assert claim["topics"] == [TOPIC_NAME] and claim["change"] == "new_fact"
+    assert claim["topics"] == [TOPIC_NAME] and "change" not in claim
     # Empty values are not model input; a claim-level "unknown" reading is.
     assert "conditions" not in claim and "quantities" not in claim and claim["polarity"] == "unknown"
     assert claim["sources"] == [
@@ -331,6 +331,17 @@ def test_when_neither_backend_answers_the_judgment_is_unavailable_and_never_stor
     assert first.error_code == "news_generation_lm_server_error"
     assert first.importance is None and first.anchor is None
     assert cache.values == {}
+
+
+def test_generated_score_decoder_value_error_is_an_unavailable_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    class MalformedScore:
+        async def acall(self, **kwargs: Any) -> Any:
+            raise ValueError("Invalid Score distribution for 'importance'.")
+
+    monkeypatch.setattr(dspy, "Predict", lambda signature: MalformedScore())
+    judgment = asyncio.run(_judge(None, ScriptedLM([])).judge(_reader(), Budget.start(5)))
+    assert judgment.status == "unavailable"
+    assert judgment.error_code == "news_generation_output_schema_invalid"
 
 
 def test_a_native_authentication_fault_is_never_hidden_by_the_fallback() -> None:
