@@ -112,9 +112,10 @@ llm:
     model:
   news_reader_judgment:
     # Optional System One route for News notification decisions only (#742), all three or none.
-    # The key is a secret file (relative to this directory), never an inline value. Unset: the
-    # generative News route answers the reader questions with its own cuts. Never inferred from
-    # news_judgment or trading_semantics.
+    # The key is the secret file news_reader_judgment_api_key in this directory (created empty by
+    # init and mounted into Workers), never an inline value: set api_key_file to that name. Unset,
+    # or an empty key file: the generative News route answers the reader questions with its own
+    # cuts. Never inferred from news_judgment or trading_semantics.
     api_key_file:
     base_url:
     model:

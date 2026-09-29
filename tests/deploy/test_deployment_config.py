@@ -41,7 +41,13 @@ def test_init_preserves_config_passwords_and_private_permissions(
     home = tmp_path / "operator"
     monkeypatch.setenv("TRACEFOLD_HOME", str(home))
     assert handle_init(Namespace(force=False))[0] == 0
-    names = ("config.yaml", "postgres_password", "postgres_database_password", "telegram_bot_token")
+    names = (
+        "config.yaml",
+        "postgres_password",
+        "postgres_database_password",
+        "telegram_bot_token",
+        "news_reader_judgment_api_key",
+    )
     before = {name: (home / name).read_bytes() for name in names}
     (home / "config.yaml").chmod(0o644)
     assert handle_init(Namespace(force=False))[0] == 0

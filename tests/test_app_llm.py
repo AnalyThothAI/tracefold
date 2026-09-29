@@ -421,12 +421,19 @@ def test_the_reader_judgment_route_reads_its_key_file_and_nothing_else(tmp_path:
     assert learning_runtime.news_reader_judgment_endpoint(unset) is None
 
     settings = _news_settings(
-        news_reader_judgment={"api_key_file": "reader_key", "base_url": "https://api.typesafe.ai", "model": "jev-1.13"}
+        news_reader_judgment={
+            "api_key_file": "news_reader_judgment_api_key",
+            "base_url": "https://api.typesafe.ai",
+            "model": "jev-1.13",
+        }
     )
     settings.set_config_dir(tmp_path)
     with pytest.raises(SecretFileError, match="missing"):
         learning_runtime.news_reader_judgment_endpoint(settings)
-    key = tmp_path / "reader_key"
+    # `tracefold init` leaves the file empty: an unset key, answered by the generative route (as Telegram).
+    key = tmp_path / "news_reader_judgment_api_key"
+    key.touch(mode=0o600)
+    assert learning_runtime.news_reader_judgment_endpoint(settings) is None
     key.write_text("reader-secret\n")
     key.chmod(0o600)
     endpoint = learning_runtime.news_reader_judgment_endpoint(settings)

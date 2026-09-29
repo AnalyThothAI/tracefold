@@ -146,7 +146,7 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 
 `news replay` 在本地重放 provider hits 的准入 / Gate，不调用模型或 broker；它也不代表完整 EventUpdate→通知→交易回放。实际参数和默认值见[生成 CLI 帮助](generated/cli-help.md)，不要把命令名称扩展为未实现能力。
 
-未知配置 key 按 Settings 拒绝。`llm.news_reader_judgment` 是通知决策层独用的 System One 路由，密钥只能以 `api_key_file` 引用配置目录下的私有文件，`config` 与 `/api/news/status` 只报告是否配置、模型和作答后端。密钥放在配置允许的位置 / 文件，不能通过 `llm.request.extra_body` 注入 transport-owned 字段或秘密。业务配置只有 `TRACEFOLD_HOME/config.yaml`，默认 `~/.tracefold/config.yaml`；Compose 可读取 `.env` 持久化项目、路径和端口，但 Settings 不把它作为业务字段回退。
+未知配置 key 按 Settings 拒绝。`llm.news_reader_judgment` 是通知决策层独用的 System One 路由，密钥只能以 `api_key_file` 引用配置目录下的私有文件（固定为初始化创建、只挂载给 Workers 的 `news_reader_judgment_api_key`；空文件等于未配置），`config` 与 `/api/news/status` 只报告是否配置、模型和作答后端。密钥放在配置允许的位置 / 文件，不能通过 `llm.request.extra_body` 注入 transport-owned 字段或秘密。业务配置只有 `TRACEFOLD_HOME/config.yaml`，默认 `~/.tracefold/config.yaml`；Compose 可读取 `.env` 持久化项目、路径和端口，但 Settings 不把它作为业务字段回退。
 
 <a id="section-时间缺失与版本规则"></a>
 ## 07 · 时间、缺失与版本规则

@@ -621,6 +621,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         assert directory.stat().st_mode & 0o777 == 0o700
     for name in (
         "telegram_bot_token",
+        "news_reader_judgment_api_key",
         "binance_usdm_api_key",
         "binance_usdm_api_secret",
         "postgres_password",
@@ -630,6 +631,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         assert path.is_file()
         assert path.stat().st_mode & 0o777 == 0o600
     assert (app_home / "telegram_bot_token").read_bytes() == b""
+    assert (app_home / "news_reader_judgment_api_key").read_bytes() == b""
     assert all((app_home / name).read_bytes() == b"" for name in ("binance_usdm_api_key", "binance_usdm_api_secret"))
 
 
@@ -643,6 +645,7 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
     tracked_names = (
         "config.yaml",
         "telegram_bot_token",
+        "news_reader_judgment_api_key",
         "binance_usdm_api_key",
         "binance_usdm_api_secret",
         "postgres_password",

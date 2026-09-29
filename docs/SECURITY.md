@@ -28,6 +28,7 @@ Tracefold 的边界围绕实际数据与副作用：**公开工作台只读，�
 | 应用数据库密码 | 按 Compose 对实际应用角色挂载 |
 | 新闻 / 模型 / 推送配置 | 对应能力的配置与适配器；对外诊断脱敏 |
 | Telegram token 文件 | 通知角色需要，不构成交易控制身份 |
+| 通知决策模型 key 文件 `news_reader_judgment_api_key` | 仅 Workers 只读挂载（通知决策层是唯一使用者）；Serve 不挂载 |
 | Binance 执行 key / secret | 仅 Nautilus Runtime 挂载；不能为研究或页面查询扩大暴露 |
 | 备份和冻结研究文件 | 可能包含业务数据，按其实际敏感性保存，不默认为公开附件 |
 
