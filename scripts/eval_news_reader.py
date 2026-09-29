@@ -4,7 +4,9 @@ Every fixture row is one claim at its decision stamp: the persisted semantic lin
 reach (from which `reader_novelty` is recomputed), the receipts behind its messages, and the frozen
 `ReaderInput` production asks and caches:
   reader_replay          labelled claims (keep / borderline / demote) with stratum weights
-  coverage_labeled       claims with 16 recalled messages and an independent "already fully said" label
+  anchor_labeled         unlinked claims with 16 recalled messages and a blind "already reported the core fact"
+                         label (stratified on the native anchor answer; the weights restore the day)
+  coverage_labeled       claims with 16 recalled messages and a blind "already fully said" label
   reader_nvidia_buyback  every decision of the seven Nvidia buyback Events (<= 2 pushes expected)
   reader_spacex_starship every decision of the Starship first orbital flight Events
 
@@ -13,8 +15,8 @@ configured reader judge the same inputs: System One when `llm.news_reader_judgme
 the generative News route. No sender, broker or database is constructed.
 
 Reports: incremental importance AUC; a decision table (claims/day estimated with the stratum weights,
-precision of keep+borderline, keep recall, pushes by novelty); anchor recall and false-anchor rate; pushes
-per replayed cluster.
+precision of keep+borderline, keep recall, pushes by novelty); anchor recall and false-anchor rate against the
+core-fact and the fully-said labels; pushes per replayed cluster.
 """
 
 from __future__ import annotations
@@ -49,6 +51,7 @@ from tracefold.news.updates.reader_judgments import (
 
 FIXTURES = Path(__file__).resolve().parents[1] / "tests/fixtures/news"
 READER_REPLAY = FIXTURES / "reader_replay_2026-09-28.jsonl.gz"
+ANCHOR_LABELED = FIXTURES / "anchor_labeled_2026-09-28.jsonl.gz"
 COVERAGE_LABELED = FIXTURES / "coverage_labeled_2026-09-28.jsonl.gz"
 CLUSTERS = (
     FIXTURES / "reader_nvidia_buyback_2026-09-28.jsonl",
@@ -56,7 +59,7 @@ CLUSTERS = (
 )
 VERDICTS = ("keep", "borderline", "demote")
 CUT_TABLE = (2.0, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9)
-NONE_THRESHOLDS = (0.3, 0.4, 0.5, 0.6, 0.7)
+NONE_THRESHOLDS = (0.1, 0.2, 0.3, 0.4, 0.6, 0.8)
 PUSHED = ("correction", "key", "push")
 
 
@@ -212,40 +215,59 @@ def decision_table(
     return table
 
 
+def anchor_truth(row: Mapping[str, Any]) -> str | None:
+    """The labelled anchor (`mK` or `none`), or None when the label cannot score the anchor.
+
+    A core-fact label scores every row. A fully-said label implies an anchor where it names a message and no
+    anchor only where no message even partly covered the claim; partly covered claims are not scored.
+    """
+
+    label = row["label"]
+    if "anchor" in label:
+        return str(label["anchor"])
+    if label["covered_by"] != "none":
+        return str(label["covered_by"])
+    return None if label["partial"] else "none"
+
+
 def anchor_report(
     rows: Sequence[Mapping[str, Any]],
     answers: Mapping[str, ReaderJudgment],
     *,
     thresholds: Iterable[float] = NONE_THRESHOLDS,
 ) -> list[dict[str, Any]]:
-    """Against "already fully said" labels: a fully covered claim has an anchor (recall), and a claim no message
-    even partly covered has none (false anchors). Partly covered claims are not scored."""
+    """Anchor recall over labelled anchors and false anchors over labelled none, weighted by stratum weight."""
 
-    judged = [row for row in rows if row["case_id"] in answers and answers[row["case_id"]].anchor is not None]
+    judged = [
+        row
+        for row in rows
+        if row["case_id"] in answers and answers[row["case_id"]].anchor is not None and anchor_truth(row) is not None
+    ]
     report = []
     for threshold in thresholds:
         counts: Counter[str] = Counter()
+        weights: Counter[str] = Counter()
         for row in judged:
             anchor = answers[row["case_id"]].anchor
             index = anchor.anchor(ReaderCuts(push=0, key=0, anchor_none_below=threshold))  # type: ignore[union-attr]
-            truth = row["label"]["covered_by"]
+            truth, weight = anchor_truth(row), row.get("weight", 1.0)
             if truth != "none":
-                counts["covered"] += 1
+                counts["anchors"] += 1
                 counts["anchored"] += index is not None
                 counts["same_message"] += index is not None and message_id(index) == truth
-            elif not row["label"]["partial"]:
-                counts["unrelated"] += 1
+                weights["anchors"] += weight
+                weights["anchored"] += weight * (index is not None)
+            else:
+                counts["none"] += 1
                 counts["false_anchor"] += index is not None
+                weights["none"] += weight
+                weights["false_anchor"] += weight * (index is not None)
         report.append(
             {
                 "none_below": threshold,
-                "anchor_recall": round(counts["anchored"] / counts["covered"], 3) if counts["covered"] else None,
-                "false_anchor_rate": round(counts["false_anchor"] / counts["unrelated"], 3)
-                if counts["unrelated"]
-                else None,
-                "same_message": counts["same_message"],
-                "covered": counts["covered"],
-                "unrelated": counts["unrelated"],
+                "anchor_recall": round(weights["anchored"] / weights["anchors"], 3) if weights["anchors"] else None,
+                "false_anchor_rate": round(weights["false_anchor"] / weights["none"], 3) if weights["none"] else None,
+                **counts,
             }
         )
     return report
@@ -263,6 +285,7 @@ def cluster_report(rows: Sequence[Mapping[str, Any]], answers: Mapping[str, Read
 
 def evaluate(
     replay: Sequence[Mapping[str, Any]],
+    anchors: Sequence[Mapping[str, Any]],
     coverage: Sequence[Mapping[str, Any]],
     clusters: Sequence[Sequence[Mapping[str, Any]]],
     answers: Mapping[str, ReaderJudgment],
@@ -274,17 +297,18 @@ def evaluate(
         "cuts": {"push": cuts.push, "key": cuts.key, "anchor_none_below": cuts.anchor_none_below},
         "answered": {
             "reader_replay": sum(row["case_id"] in answers for row in replay),
+            "anchor": sum(row["case_id"] in answers for row in anchors),
             "coverage": sum(row["case_id"] in answers for row in coverage),
         },
         "importance": importance_report(replay, answers),
         "decision_table": decision_table(replay, answers),
-        "anchor": anchor_report(coverage, answers),
+        "anchor": {"core_fact": anchor_report(anchors, answers), "fully_said": anchor_report(coverage, answers)},
         "clusters": [cluster_report(rows, answers) for rows in clusters],
     }
 
 
-def load_all() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[list[dict[str, Any]]]]:
-    return load(READER_REPLAY), load(COVERAGE_LABELED), [load(path) for path in CLUSTERS]
+def load_all() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[list[dict[str, Any]]]]:
+    return load(READER_REPLAY), load(ANCHOR_LABELED), load(COVERAGE_LABELED), [load(path) for path in CLUSTERS]
 
 
 async def _live(rows: list[dict[str, Any]]) -> tuple[ReaderBackend, dict[str, Any]]:
@@ -314,14 +338,14 @@ def main() -> None:
     parser.add_argument("--live", action="store_true", help="ask the configured reader judge (network, cost)")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    replay, coverage, clusters = load_all()
-    everything = [*replay, *coverage, *(row for rows in clusters for row in rows)]
+    replay, anchors, coverage, clusters = load_all()
+    everything = [*replay, *anchors, *coverage, *(row for rows in clusters for row in rows)]
     if args.live:
         backend, run = asyncio.run(_live(everything))
-        report = evaluate(replay, coverage, clusters, run["answers"], backend)
+        report = evaluate(replay, anchors, coverage, clusters, run["answers"], backend)
         report["failures"], report["latency_ms"] = run["failures"], run["latency_ms"]
     else:
-        report = evaluate(replay, coverage, clusters, recorded(everything, args.backend), args.backend)
+        report = evaluate(replay, anchors, coverage, clusters, recorded(everything, args.backend), args.backend)
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")
