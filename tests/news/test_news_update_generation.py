@@ -227,6 +227,12 @@ def test_an_increment_or_correction_card_is_written_against_the_earlier_message(
     sent = json.loads(calls[0]["selected_claims_json"])
     assert sent[0]["earlier"] == {"render": "increment", "delivered_text": "机构宣布加征关税"}
     assert "补充：" in CARD_INSTRUCTION and "更正：" in CARD_INSTRUCTION
+    # #742 PR-4: P005 copied P004's wrong term (支农再贷款 for PSL) when told to name the earlier fact. The
+    # earlier text is only what not to repeat; every name, term and number comes from the claim.
+    instruction = " ".join(CARD_INSTRUCTION.split())
+    assert "naming the earlier fact" not in instruction
+    assert "only shows what not to repeat" in instruction
+    assert "take every name, term and number from the claim itself" in instruction
 
 
 def test_bug_c_frozen_claim_gives_composer_the_exact_drone_and_capture_fact(monkeypatch: pytest.MonkeyPatch) -> None:
