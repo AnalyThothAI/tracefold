@@ -6,7 +6,7 @@ intent's Chinese card only then, rechecks it before the send and hands it to thi
 channel side -- the preflight, the paced provider call, the provider's own receipt, and the Telegram
 enrichment edit that fills quotes and tradability into the message already sent. A card failure costs
 that intent's card attempt and nothing else; an outcome the provider did not report is held ambiguous
-and never sent again.
+and never sent again. One Event's failure is that Event's: it never cancels another Event's send.
 
 Settled EventUpdate receipts keep their edit reconciliation by intent id.
 """
@@ -20,6 +20,8 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Final, Protocol, runtime_checkable
+
+from tracefold.platform.resource import ResourceAdmissionTimeout
 
 from ..bus import DeferError, TransientError, now_ms
 from ..delivery import (
@@ -64,7 +66,7 @@ from ..tradability import (
 )
 from ..updates.contracts import EventUpdate
 from ..updates.judgment import ContractFault, ProviderUnavailable
-from ..updates.notification import FrozenCard, NotificationPlan
+from ..updates.notification import NEWS_CHANNEL, FrozenCard, NotificationPlan
 from ..updates.ports import SendOutcome
 from ..updates.service import Notifications, NotificationTurn
 from .runtime import NewsDatabasePort, _sleep_or_stop
@@ -74,22 +76,24 @@ _DELIVERY_PRICE_SOURCE_TIMEOUT_SECONDS = 2.0
 _DELIVERY_CANDLE_GAP_MS = 90_000
 _ONE_HOUR_MS = 3_600_000
 _DELIVERY_EDIT_TIMEOUT_SECONDS = 8.0
-_DELIVERY_EDIT_RECONCILE_SECONDS = 30.0
+# How often sends and edits whose owner is gone are held ambiguous while the loop runs, not only at start.
+_DELIVERY_RECONCILE_SECONDS = 30.0
 _DELIVERY_STARTUP_RECONCILE_RETRY_SECONDS = 0.25
 _DELIVERY_PREPARE_TIMEOUT_SECONDS = 8.0
+# How long a stopping turn waits for a send already in flight to reach its settlement: the provider
+# call's own bound plus the settlement's retries. A send is never cancelled to make a stop faster.
+_FINALIZER_DRAIN_SECONDS = 20.0
 
-# The one logical reader channel News notifies (#706). The configured provider is how it is reached.
-NEWS_CHANNEL: Final = "news"
 # How many pending notification markers one turn takes before the loop goes back to the top. A burst
 # drains in one turn instead of one per poll; an empty turn ends immediately.
 _NOTIFICATIONS_PER_TURN = 20
 # Idle poll. The semantic worker commits notification work in the adoption transaction; one second is
 # the whole latency polling costs against a semantic stage that spends seconds in the model.
 _DELIVERY_POLL_SECONDS = 1.0
-# What one notification turn may fail with after the core has already recorded it -- a deferred plan
-# or a spent card attempt -- and the loop survives. Anything else is unclassified and faults
-# `news_delivery`, with the attempt recorded first.
-_RECORDED_TURN_FAILURES: Final = (TimeoutError, ProviderUnavailable, ContractFault, ValueError, IntentLeaseLost)
+# What a send may raise after the core has already settled it -- ambiguous, because the sender could not
+# account for its own call -- and the loop survives. Anything else from a send is unclassified and faults
+# `news_delivery`: a receipt this process could not record is not something to carry on past.
+_SETTLED_SEND_FAILURES: Final = (TimeoutError, ProviderUnavailable, ContractFault, ValueError, IntentLeaseLost)
 
 logger = logging.getLogger(__name__)
 
@@ -430,14 +434,14 @@ class DelivererLoop:
         self._tradability_verifier = tradability_verifier
         self._prepared_send: tuple[str, ReaderCard, Mapping[str, Any], ReaderDeliveryPresentation] | None = None
         self._edit_tasks: set[asyncio.Task[None]] = set()
+        # Sends a stopped turn handed off unfinished, and the intents of every send this process owns.
+        self._finalizers: set[asyncio.Task[NotificationTurn]] = set()
+        self._sending_intents: set[str] = set()
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
             try:
-                await self.db.tx(
-                    "news_delivery_reconcile",
-                    lambda repos: repos.news.terminalize_interrupted_deliveries(now_ms=now_ms()),
-                )
+                await self._reconcile_orphan_sends()
             except (TransientError, DeferError):
                 await _sleep_or_stop(stop_event, _DELIVERY_STARTUP_RECONCILE_RETRY_SECONDS)
                 continue
@@ -467,8 +471,8 @@ class DelivererLoop:
             name="news-delivery-claim",
         )
         reconcile_task = asyncio.create_task(
-            self._edit_reconcile_loop(stop_event=stop_event),
-            name="news-delivery-edit-reconcile",
+            self._reconcile_loop(stop_event=stop_event),
+            name="news-delivery-reconcile",
         )
         tasks = {claim_task, reconcile_task}
         try:
@@ -481,14 +485,25 @@ class DelivererLoop:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _edit_reconcile_loop(self, *, stop_event: asyncio.Event) -> None:
+    async def _reconcile_loop(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop_event.wait(), timeout=_DELIVERY_EDIT_RECONCILE_SECONDS)
+                await asyncio.wait_for(stop_event.wait(), timeout=_DELIVERY_RECONCILE_SECONDS)
             if stop_event.is_set():
                 return
             with contextlib.suppress(TransientError, DeferError):
+                await self._reconcile_orphan_sends()
+            with contextlib.suppress(TransientError, DeferError):
                 await self._reconcile_stale_delivery_edits()
+
+    async def _reconcile_orphan_sends(self) -> None:
+        """Hold ambiguous a `sending` row whose owner is gone -- never one this process is still settling."""
+
+        owned = tuple(sorted(self._sending_intents))
+        await self.db.tx(
+            "news_delivery_reconcile",
+            lambda repos: repos.news.terminalize_interrupted_deliveries(now_ms=now_ms(), exclude_intent_ids=owned),
+        )
 
     async def _reconcile_stale_delivery_edits(self) -> None:
         await self.db.tx(
@@ -506,14 +521,21 @@ class DelivererLoop:
 
         while not stop_event.is_set():
             try:
-                worked = await self.advance()
+                worked = await self.advance(stop_event=stop_event)
             except (TransientError, DeferError):
                 worked = 0
             if not worked:
                 await _sleep_or_stop(stop_event, _DELIVERY_POLL_SECONDS)
 
-    async def advance(self) -> int:
-        """Continuously fill a bounded prepare/ready/finalize window from durable due work."""
+    async def advance(self, *, stop_event: asyncio.Event | None = None) -> int:
+        """Continuously fill a bounded prepare/ready window from durable due work, one send at a time.
+
+        A prepare task is one Event's turn and fails alone: whatever it raises is logged against that
+        Event, whose marker stays due, and never reaches the send in flight or the other turns. The send
+        is its own owner until its settlement. When `stop_event` is set no new turn starts, the turns
+        still preparing are cancelled (which releases what they reserved), the send in flight is given
+        a bounded wait to settle rather than being cancelled, and ready turns are released.
+        """
 
         notifications = self.notifications
         if notifications is None or self.sender is None:
@@ -524,9 +546,13 @@ class DelivererLoop:
         seen: set[str] = set()
         worked = 0
 
+        def stopping() -> bool:
+            return stop_event is not None and stop_event.is_set()
+
         async def fill() -> None:
-            capacity = self.notification_prepare_limit - len(preparing) - len(ready) - int(finalizer is not None)
-            if capacity <= 0 or len(seen) >= _NOTIFICATIONS_PER_TURN:
+            # The send slot is the process's own and serial; it does not take a preparation place.
+            capacity = self.notification_prepare_limit - len(preparing) - len(ready)
+            if capacity <= 0 or len(seen) >= _NOTIFICATIONS_PER_TURN or stopping():
                 return
             try:
                 due = await notifications.store.pending_notification_events(
@@ -549,7 +575,7 @@ class DelivererLoop:
 
         try:
             await fill()
-            while preparing or ready or finalizer is not None:
+            while (preparing or ready or finalizer is not None) and not stopping():
                 if finalizer is None and ready:
                     prepared, ready_at = ready.pop(0)
                     logger.info(
@@ -557,10 +583,7 @@ class DelivererLoop:
                         prepared.update.event_id if prepared.update else "unknown",
                         int((time.monotonic() - ready_at) * 1000),
                     )
-                    finalizer = asyncio.create_task(
-                        notifications.finalize(prepared, self),
-                        name=f"news-notification-finalize:{prepared.update.event_id if prepared.update else 'unknown'}",
-                    )
+                    finalizer = self._start_finalizer(notifications, prepared)
                 await fill()
                 active: set[asyncio.Task[NotificationTurn]] = set(preparing)
                 if finalizer is not None:
@@ -573,23 +596,15 @@ class DelivererLoop:
                 for task in finished:
                     if task is finalizer:
                         finalizer = None
-                        try:
-                            turn = task.result()
-                        except _RECORDED_TURN_FAILURES as exc:
-                            logger.warning("news notification finalizer failed error=%s", _error_code(exc))
-                            worked += 1
-                            continue
-                        if turn.status == "sent":
-                            self._enrich_sent(turn)
-                        if turn.status != "no_work":
-                            worked += 1
+                        worked += self._finalized(task)
                         continue
                     event_id, started_at = preparing.pop(task)
                     try:
                         prepared = task.result()
-                    except _RECORDED_TURN_FAILURES as exc:
+                    except Exception as exc:
+                        # Unrecorded: a database that could not answer, or a bug. The marker stays due,
+                        # and nothing else in this turn -- above all the send in flight -- is touched.
                         logger.warning("news notification turn failed event_id=%s error=%s", event_id, _error_code(exc))
-                        worked += 1
                         continue
                     logger.info(
                         "news notification prepared event_id=%s status=%s elapsed_ms=%s",
@@ -597,6 +612,13 @@ class DelivererLoop:
                         prepared.status,
                         int((time.monotonic() - started_at) * 1000),
                     )
+                    if prepared.status in {"plan_failed", "card_failed"}:
+                        logger.warning(
+                            "news notification turn failed event_id=%s status=%s error=%s",
+                            event_id,
+                            prepared.status,
+                            prepared.error_code,
+                        )
                     if prepared.status == "ready":
                         ready.append((prepared, time.monotonic()))
                     elif prepared.status != "no_work":
@@ -608,10 +630,43 @@ class DelivererLoop:
             if preparing:
                 await asyncio.gather(*preparing, return_exceptions=True)
             if finalizer is not None:
-                finalizer.cancel()
-                await asyncio.gather(finalizer, return_exceptions=True)
+                if not finalizer.done():
+                    await asyncio.wait({finalizer}, timeout=_FINALIZER_DRAIN_SECONDS)
+                if finalizer.done():
+                    with contextlib.suppress(Exception):
+                        self._finalized(finalizer)
+                else:
+                    # Still in the provider or its settlement: it keeps running as its own owner.
+                    self._finalizers.add(finalizer)
+                    finalizer.add_done_callback(self._finalizers.discard)
             for prepared, _ready_at in ready:
                 await notifications.release_ready(prepared)
+
+    def _start_finalizer(
+        self, notifications: Notifications, prepared: NotificationTurn
+    ) -> asyncio.Task[NotificationTurn]:
+        intent_id = prepared.lease.intent_id if prepared.lease is not None else None
+        task = asyncio.create_task(
+            notifications.finalize(prepared, self),
+            name=f"news-notification-finalize:{prepared.update.event_id if prepared.update else 'unknown'}",
+        )
+        if intent_id is not None:
+            # The reconciliation never holds a send ambiguous while this process still owns it.
+            self._sending_intents.add(intent_id)
+            task.add_done_callback(lambda _task: self._sending_intents.discard(intent_id))
+        return task
+
+    def _finalized(self, task: asyncio.Task[NotificationTurn]) -> int:
+        """Account for one finished send; an unsettled failure is raised to fault the capability."""
+
+        try:
+            turn = task.result()
+        except _SETTLED_SEND_FAILURES as exc:
+            logger.warning("news notification finalizer failed error=%s", _error_code(exc))
+            return 1
+        if turn.status == "sent":
+            self._enrich_sent(turn)
+        return 0 if turn.status == "no_work" else 1
 
     # ------------------------------------------------------------------ the `Sender` port
     @contextlib.asynccontextmanager
@@ -623,7 +678,12 @@ class DelivererLoop:
                 self._prepared_send = None
 
     async def preflight(self, card: FrozenCard, *, plan: NotificationPlan, update: EventUpdate) -> SendOutcome | None:
-        """Prepare target and render wire body before the durable sending transition."""
+        """Prepare target and render wire body before the durable sending transition.
+
+        The target check only reads, so whatever it fails with -- a refusal, a timeout, a 5xx, a closed
+        or saturated local capability -- proves the card was not sent, and waiting may cure it: it is a
+        retryable not-sent, and the intent's own attempt bound is what stops a target that stays broken.
+        """
         sender = self.sender
         sha = card.payload_sha256
         if sender is None:
@@ -637,7 +697,7 @@ class DelivererLoop:
                 state="not_sent",
                 payload_sha256=sha,
                 error_code=_error_code(exc),
-                retryable=classify_delivery_failure(exc) == DELIVERY_FAILURE_RETRIABLE,
+                retryable=True,
                 retry_after_ms=retry_after_ms(exc) or None,
             )
         editable = isinstance(sender, EditableNewsPushSender)
@@ -679,6 +739,9 @@ class DelivererLoop:
                 prepare=False,
             )
         except Exception as exc:
+            if isinstance(exc, ResourceAdmissionTimeout):
+                # The call was never submitted: nothing left this process, and the capability may free up.
+                return SendOutcome(state="not_sent", payload_sha256=sha, error_code=_error_code(exc), retryable=True)
             failure = classify_delivery_failure(exc)
             if failure == DELIVERY_FAILURE_UNKNOWN:
                 return SendOutcome(state="ambiguous", payload_sha256=sha, error_code=_error_code(exc))
@@ -1219,7 +1282,7 @@ class DelivererLoop:
         return index, candles
 
     async def drain(self) -> None:
-        tasks = tuple(self._edit_tasks)
+        tasks = (*self._finalizers, *self._edit_tasks)
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 

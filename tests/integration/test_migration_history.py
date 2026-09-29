@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+import time
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -51,7 +52,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260928_0412"
+HEAD = "20260929_0413"
 PRE_CUT = "20260928_0410"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
@@ -259,6 +260,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260928_0412",
         "20260928_0411",
         PRE_CUT,
         "20260928_0409",
@@ -384,6 +386,64 @@ def test_task_read_cut_preserves_history_without_promoting_source_only_completio
             ).fetchone()
             is None
         )
+    finally:
+        conn.close()
+
+
+def test_notification_terminal_cut_fails_overdue_exhausted_work_and_drops_the_plan_column() -> None:
+    """#742 0413: work the old code exhausted and never picked up again becomes visible `failed` work."""
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260928_0412")
+    conn = connect_postgres_test(read_only=False)
+    now_ms = int(time.time() * 1000)
+    try:
+        with conn.transaction():
+            for index, (attempts, due_ms) in enumerate(((3, 100), (3, now_ms + 600_000), (1, 100))):
+                event_id = f"ev-work-{index}"
+                conn.execute(
+                    "INSERT INTO news_items (item_id,source_id,source_item_key,title,raw_first_line,description,"
+                    "canonical_url,reporting_origin,published_at_ms,observed_at_ms,provider_metadata,provenance,"
+                    "first_ingest_mode,trace_id,created_at_ms,updated_at_ms,source_artifact_id,evidence_text,"
+                    "evidence_text_sha256) VALUES (%s,'opennews',%s,'t','t','','https://x.test','R',100,100,"
+                    "'{}'::jsonb,'[]'::jsonb,'live','trace',100,100,%s,'t',repeat('b',64))",
+                    (f"it-{event_id}", f"it-{event_id}", f"it-{event_id}"),
+                )
+                conn.execute(
+                    "INSERT INTO news_events (event_id,leader_item_id,dedupe_family,comparison_fingerprint,"
+                    "comparison_title,leader_title,opened_at_ms,last_member_at_ms,expires_at_ms,admission,"
+                    "ingest_mode,trace_id,created_at_ms,updated_at_ms,focus_fact_id,focus_fact_text,"
+                    "focus_fact_context,focus_fact_method,focus_span_start,focus_span_end,event_kind) "
+                    "VALUES (%s,%s,'general','fp','t','t',100,100,200,'candidate','live','trace',100,100,"
+                    "'fact','t','','whole_item',0,1,'news')",
+                    (event_id, f"it-{event_id}"),
+                )
+                conn.execute(
+                    "INSERT INTO news_notification_work "
+                    "(event_id,channel,content_revision,state,attempts,next_attempt_at_ms,updated_at_ms) "
+                    "VALUES (%s,'news',repeat('a',64),'pending',%s,%s,100)",
+                    (event_id, attempts, due_ms),
+                )
+        command.upgrade(config, HEAD)
+        rows = conn.execute(
+            "SELECT event_id,state,attempts,last_error_code FROM news_notification_work ORDER BY event_id"
+        ).fetchall()
+        assert [(row["state"], row["last_error_code"]) for row in rows] == [
+            ("failed", "news_notification_exhausted_legacy"),
+            # Exhausted but not yet due: the new code plans it once more; its next failure fails it.
+            ("pending", None),
+            ("pending", None),
+        ]
+        assert (
+            conn.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_name='news_notification_work' "
+                "AND column_name='plan'"
+            ).fetchone()
+            is None
+        )
+        with pytest.raises(psycopg.errors.CheckViolation), conn.transaction():
+            conn.execute("UPDATE news_notification_work SET state='failed', last_error_code=NULL")
     finally:
         conn.close()
 
@@ -570,9 +630,13 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="news_notification_settlement_forward_only_restore_verified_backup"):
+    with pytest.raises(RuntimeError, match="news_notification_work_terminal_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
+    command.stamp(config, "20260928_0412")
+    with pytest.raises(RuntimeError, match="news_notification_settlement_forward_only_restore_verified_backup"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260928_0412"
     command.stamp(config, "20260927_0405")
     with pytest.raises(RuntimeError, match="news_revision_ownership_forward_only"):
         command.downgrade(config, "base")

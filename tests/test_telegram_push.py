@@ -1223,8 +1223,36 @@ def test_a_response_larger_than_the_bound_is_refused_while_it_streams(
         sender.prepare()
 
     assert failure.value.code == "news_delivery_telegram_preflight_transport_failed"
-    # The request was written and Telegram answered; only how much it answered was refused.
-    assert failure.value.commit_phase == COMMIT_PHASE_UNKNOWN
+    # The request was written and Telegram answered; only how much it answered was refused. It was a read,
+    # so whatever happened, nothing was posted (#742 N9).
+    assert failure.value.commit_phase == COMMIT_PHASE_NOT_SENT
+
+
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        (httpx.ReadTimeout("timed out"), "news_delivery_telegram_preflight_transport_failed"),
+        (None, "news_delivery_telegram_preflight_http_failed"),
+    ],
+)
+def test_a_preflight_read_that_timed_out_or_hit_a_5xx_proved_nothing_was_posted(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception | None, code: str
+) -> None:
+    """#742 N9: the same timeout or 5xx that leaves a send unknown leaves a read-only target check unsent,
+    and one that passes. Reporting it unknown and unretryable dropped the notification for good."""
+
+    inner = _inner_transport(monkeypatch)
+    if failure is not None:
+        inner.failure = failure
+    else:
+        monkeypatch.setattr(inner, "handle_request", lambda _request: httpx.Response(502, content=iter([b"bad"])))
+    sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID)
+
+    with pytest.raises(TelegramDeliveryError) as raised:
+        sender.prepare()
+
+    assert raised.value.code == code
+    assert (raised.value.commit_phase, raised.value.retryable) == (COMMIT_PHASE_NOT_SENT, True)
 
 
 def test_a_flood_limit_carries_the_wait_telegram_stated(monkeypatch: pytest.MonkeyPatch) -> None:

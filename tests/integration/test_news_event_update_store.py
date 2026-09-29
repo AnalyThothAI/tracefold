@@ -97,12 +97,12 @@ def test_agent_turn_adopts_once_with_public_row_and_pending_notification() -> No
         ("catalyst", EVENT, head.content_revision)
     ]
     assert rows[0]["payload"]["schema_version"] == "news_public_update_v1"
-    notification = sql("SELECT channel, state, content_revision, plan FROM news_notification_work")[0]
+    notification = sql("SELECT channel, state, content_revision, decision_ref FROM news_notification_work")[0]
     assert notification == {
         "channel": "news",
         "state": "pending",
         "content_revision": head.content_revision,
-        "plan": None,
+        "decision_ref": None,
     }
 
     # A replay of the same work reuses its checkpoints and adopts nothing new.
@@ -460,7 +460,7 @@ def test_a_notification_turn_sends_once_and_keeps_the_exact_receipt() -> None:
     assert FrozenCard.model_validate(ledger["card"]) == card and ledger["card"]["headline_zh"] == card.headline_zh
     assert ledger["history_context"]["headline_zh"] == card.headline_zh
     assert sql("SELECT count(*) AS n FROM news_delivery_queue")[0]["n"] == 0
-    work = sql("""SELECT w.state,COALESCE(d.plan,w.plan) AS plan FROM news_notification_work w
+    work = sql("""SELECT w.state,d.plan AS plan FROM news_notification_work w
                       LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref""")[0]
     assert work["state"] == "done"
     assert [row["reason"] for row in work["plan"]["claim_decisions"]] == ["editor_notify"]
@@ -552,24 +552,39 @@ def test_the_janitor_holds_an_unsettled_update_send_ambiguous_and_releases_its_r
     assert sql("SELECT count(*) AS n FROM news_delivery_queue")[0]["n"] == 0
 
 
-def test_a_reader_ledger_change_is_a_version_race_that_leaves_work_pending() -> None:
+@pytest.mark.parametrize("related", [False, True])
+def test_only_a_related_receipt_settled_after_the_snapshot_races_the_plan(related: bool) -> None:
+    """#742 W5: the reader revision is this Event's related receipts, recomputed inside the CAS. A card
+    sent elsewhere about something else is not a race; one whose text is close to this Event's claims is."""
+
     pg, _db, clock = store()
     head = adopted_head(pg, clock)
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
-    seed_event("ev-other", fingerprint="fp-other")
+    seed_event("ev-other", fingerprint="fp-other", title="Chile pit halted", text="Miner halts copper pit.")
+    title = "Agency orders steel tariff" if related else "Chile pit halted"
     conn = connect_postgres_test(read_only=False)
     try:
         with conn.transaction():
-            seed_delivery(conn, event_id="ev-other", at_ms=clock.now_ms - 5_000, history_context={})
+            seed_delivery(
+                conn,
+                event_id="ev-other",
+                at_ms=clock.now_ms - 5_000,
+                history_context={"comparison_title": title},
+                card={"header": {"title": {"content": "智利铜矿停产"}}},
+            )
     finally:
         conn.close()
-    assert asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision))).status == "reader_changed"
-    assert sql("SELECT state, plan FROM news_notification_work WHERE event_id = %s", (EVENT,))[0] == {
-        "state": "pending",
-        "plan": None,
-    }
+    committed = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision)))
+    if not related:
+        assert committed.status == "committed" and committed.lease is not None
+        return
+    assert committed.status == "reader_changed"
+    work = sql("SELECT state, decision_ref FROM news_notification_work WHERE event_id = %s", (EVENT,))[0]
+    assert work == {"state": "pending", "decision_ref": None}
     assert sql("SELECT count(*) AS n FROM news_delivery_queue")[0]["n"] == 0
+    # The losing plan's decision is kept, so the next turn reuses its judgment rather than asking again.
+    assert sql("SELECT count(*) AS n FROM news_notification_decisions WHERE event_id = %s", (EVENT,))[0]["n"] == 1
 
 
 def test_deferred_claims_keep_notification_pending_beside_the_reserved_intent() -> None:
@@ -594,7 +609,7 @@ def test_deferred_claims_keep_notification_pending_beside_the_reserved_intent() 
     lease = asyncio.run(pg.atomic_record_plan(plan)).lease
     assert lease is not None and lease.card is None
     work = sql(
-        "SELECT w.state,w.attempts,COALESCE(d.plan,w.plan) AS plan FROM news_notification_work w "
+        "SELECT w.state,w.attempts,d.plan AS plan FROM news_notification_work w "
         "LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref"
     )[0]
     assert work["state"] == "pending" and work["attempts"] == 0
@@ -697,7 +712,11 @@ def test_final_settlement_retry_matches_exact_lease_and_outcome(state: str) -> N
         asyncio.run(pg.settle_send(lease, card, changed_outcome, settled_at_ms=clock.now_ms))
 
 
-def test_an_ambiguous_send_is_held_and_blocks_its_claims() -> None:
+def test_an_ambiguous_send_is_possibly_sent_never_resent_and_never_holds_the_work() -> None:
+    """#742 N5 (review D7). Before, an ambiguous claim deferred every later plan and spent its attempts
+    until the work was exhausted. It may already be on the reader's screen: it is not sent again, and
+    nothing waits for an outcome that will never come."""
+
     pg, _db, clock = store()
     head = adopted_head(pg, clock)
     with pytest.raises(RuntimeError, match="provider connection dropped"):
@@ -705,20 +724,21 @@ def test_an_ambiguous_send_is_held_and_blocks_its_claims() -> None:
     ledger = sql("SELECT state, error_code, claim_refs FROM news_deliveries")[0]
     assert ledger == {"state": "ambiguous", "error_code": "RuntimeError", "claim_refs": [head.claims[0].ref]}
     assert sql("SELECT count(*) AS n FROM news_delivery_queue")[0]["n"] == 0
+    assert sql("SELECT state FROM news_notification_work")[0]["state"] == "done"
 
     sql("UPDATE news_notification_work SET state = 'pending'")
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
-    assert snapshot is not None and snapshot.reader.blocked_claim_refs == (head.claims[0].ref,)
-    assert snapshot.reader.receipts == ()
+    assert snapshot is not None and snapshot.reader.ambiguous_claim_refs == (head.claims[0].ref,)
+    assert snapshot.reader.blocked_claim_refs == () and snapshot.reader.receipts == ()
     sender = Sender("sent")
-    assert asyncio.run(notifications(pg, clock, sender).process(EVENT, "news")) == "unresolved"
+    assert asyncio.run(notifications(pg, clock, sender).process(EVENT, "news")) == "no_notification"
     assert sender.cards == []
     work = sql(
-        "SELECT w.state,w.attempts,COALESCE(d.plan,w.plan) AS plan FROM news_notification_work w "
+        "SELECT w.state,w.attempts,d.plan AS plan FROM news_notification_work w "
         "LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref"
     )[0]
-    assert work["state"] == "pending" and work["attempts"] == 1
-    assert work["plan"]["claim_decisions"][0]["reason"] == "send_outcome_unresolved"
+    assert (work["state"], work["attempts"]) == ("done", 0)
+    assert work["plan"]["claim_decisions"][0]["reason"] == "send_outcome_ambiguous"
     assert sql("SELECT state FROM news_deliveries")[0]["state"] == "ambiguous"
 
 
@@ -790,7 +810,7 @@ def test_snapshot_reads_current_sent_ledger() -> None:
     ]
 
 
-def test_card_failure_releases_the_lease_and_the_third_is_dead() -> None:
+def test_card_failure_releases_the_lease_and_the_third_fails_the_work() -> None:
     pg, _db, clock = store()
     head = adopted_head(pg, clock)
     for attempt in range(1, 4):
@@ -798,13 +818,17 @@ def test_card_failure_releases_the_lease_and_the_third_is_dead() -> None:
         assert snapshot is not None
         lease = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision))).lease
         assert lease is not None
-        asyncio.run(pg.record_card_failure(lease, error_code="TimeoutError"))
+        asyncio.run(pg.record_unsent_failure(lease, error_code="TimeoutError", retryable=True))
         queued = sql("SELECT state, attempts, lease_token FROM news_delivery_queue")[0]
         assert queued["attempts"] == attempt and queued["lease_token"] is None
         clock.now_ms += 15 * 60_000
     assert queued["state"] == "dead"
-    snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
-    assert snapshot is None  # done: the dead identity is not reopened by the marker
+    # The unsent intent ended, and the work says why, instead of closing as if it had been delivered.
+    assert sql("SELECT state, last_error_code FROM news_notification_work")[0] == {
+        "state": "failed",
+        "last_error_code": "TimeoutError",
+    }
+    assert asyncio.run(pg.notification_snapshot(EVENT, "news")) is None
 
 
 def test_judgment_cache_keeps_the_first_answer_and_retention_purges_old_rows() -> None:
@@ -834,7 +858,7 @@ def test_a_no_notification_plan_is_final_for_the_head_and_retires_an_unsent_rese
     assert snapshot is not None
     lease = asyncio.run(pg.atomic_record_plan(notify_plan(head, snapshot.reader.revision))).lease
     assert lease is not None
-    asyncio.run(pg.record_card_failure(lease, error_code="TimeoutError"))
+    asyncio.run(pg.record_unsent_failure(lease, error_code="TimeoutError", retryable=True))
     clock.now_ms += 5 * 60_000
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
@@ -854,7 +878,7 @@ def test_a_no_notification_plan_is_final_for_the_head_and_retires_an_unsent_rese
     assert asyncio.run(pg.atomic_record_plan(silent)).status == "committed"
     assert sql("SELECT count(*) AS n FROM news_delivery_queue")[0]["n"] == 0
     work = sql(
-        "SELECT w.state,w.reader_revision,COALESCE(d.plan,w.plan) AS plan FROM news_notification_work w "
+        "SELECT w.state,w.reader_revision,d.plan AS plan FROM news_notification_work w "
         "LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref"
     )[0]
     assert work["state"] == "done" and work["reader_revision"] == snapshot.reader.revision
@@ -1010,8 +1034,11 @@ def test_old_notification_failure_cannot_change_new_head_work(phase: str) -> Non
             assert before["content_revision"] == new.content_revision
         finally:
             release.set()
-        with pytest.raises(RuntimeError, match=f"old {phase} failed"):
-            await task
+        turn = await task
+        assert (turn.status, turn.error_code) == (
+            "plan_failed" if phase == "planner" else "card_failed",
+            f"news_{'notification_plan' if phase == 'planner' else 'card'}:RuntimeError",
+        )
         assert sql("SELECT * FROM news_notification_work")[0] == before
         if phase == "card":
             intent = sql("SELECT content_revision, error_code, attempts, state FROM news_delivery_queue")[0]
@@ -1031,20 +1058,31 @@ def test_repeated_planner_failure_settlement_for_one_snapshot_spends_one_attempt
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None and snapshot.work_updated_at_ms is not None
     for _ in range(2):
-        asyncio.run(pg.defer_notification(EVENT, "news", head.content_revision, snapshot.work_updated_at_ms))
-    assert sql("SELECT attempts FROM news_notification_work")[0]["attempts"] == 1
+        asyncio.run(
+            pg.defer_notification(
+                EVENT, "news", head.content_revision, snapshot.work_updated_at_ms, error_code="news_editor_down"
+            )
+        )
+    assert sql("SELECT attempts, last_error_code FROM news_notification_work")[0] == {
+        "attempts": 1,
+        "last_error_code": "news_editor_down",
+    }
 
 
-def test_same_version_planner_failure_keeps_existing_bounded_backoff() -> None:
+def test_the_third_planner_failure_fails_the_work_and_only_an_exact_retry_reopens_it() -> None:
+    """#742 N5: exhausted work is `failed` with its error code, not pending forever with none."""
+
     pg, db, clock = store()
     head = adopted_head(pg, clock)
-    for expected in range(1, 4):
-        asyncio.run(pg.defer_notification(EVENT, "news", head.content_revision))
-        row = sql("SELECT attempts, next_attempt_at_ms FROM news_notification_work")[0]
-        assert row["attempts"] == expected and row["next_attempt_at_ms"] > clock()
-    before = sql("SELECT * FROM news_notification_work")[0]
-    asyncio.run(pg.defer_notification(EVENT, "news", head.content_revision))
-    assert sql("SELECT * FROM news_notification_work")[0] == before
+    for expected in range(1, 3):
+        asyncio.run(pg.defer_notification(EVENT, "news", head.content_revision, error_code=f"plan_error_{expected}"))
+        row = sql("SELECT state, attempts, next_attempt_at_ms FROM news_notification_work")[0]
+        assert (row["state"], row["attempts"]) == ("pending", expected) and row["next_attempt_at_ms"] > clock()
+    asyncio.run(pg.defer_notification(EVENT, "news", head.content_revision, error_code="plan_error_3"))
+    failed = sql("SELECT * FROM news_notification_work")[0]
+    assert (failed["state"], failed["attempts"], failed["last_error_code"]) == ("failed", 3, "plan_error_3")
+    asyncio.run(pg.defer_notification(EVENT, "news", head.content_revision, error_code="plan_error_4"))
+    assert sql("SELECT * FROM news_notification_work")[0] == failed
     assert asyncio.run(pg.pending_notification_events("news", 10)) == ()
     # Explicit recovery affects this planning version only.
     assert not asyncio.run(
@@ -1063,7 +1101,59 @@ def test_same_version_planner_failure_keeps_existing_bounded_backoff() -> None:
             ),
         )
     )
+    assert sql("SELECT state, attempts FROM news_notification_work")[0] == {"state": "pending", "attempts": 0}
     assert asyncio.run(pg.pending_notification_events("news", 10)) == (EVENT,)
+
+
+def test_waiting_on_a_send_in_flight_spends_no_attempt_and_records_no_new_decision() -> None:
+    """#742 N2/N5 (review D6). A claim held by this Event's own `sending` row waits: no attempt is spent,
+    and a turn that decides exactly what the last one decided is the same decision row, not a new one."""
+
+    pg, _db, clock = store()
+    head = adopted_head(pg, clock)
+    prepared = asyncio.run(notifications(pg, clock, Sender()).service.prepare(EVENT, "news"))
+    assert prepared.status == "ready" and prepared.lease is not None and prepared.card is not None
+    assert asyncio.run(pg.atomic_begin_send(prepared.lease, prepared.card)) == "begun"
+    sql("UPDATE news_notification_work SET state='pending', next_attempt_at_ms=%s", (clock(),))
+    for _ in range(3):
+        assert asyncio.run(notifications(pg, clock, Sender()).process(EVENT, "news")) == "unresolved"
+        clock.now_ms += 30_000
+    work = sql("SELECT state, attempts, next_attempt_at_ms FROM news_notification_work")[0]
+    assert (work["state"], work["attempts"]) == ("pending", 0) and work["next_attempt_at_ms"] > clock() - 30_000
+    unresolved = sql("SELECT count(*) AS n FROM news_notification_decisions WHERE plan->>'action'='unresolved'")
+    assert unresolved[0]["n"] == 1
+    assert head.claims[0].ref in {
+        row["claim_ref"]
+        for row in sql(
+            "SELECT jsonb_array_elements(plan->'claim_decisions')->>'claim_ref' AS claim_ref"
+            " FROM news_notification_decisions WHERE plan->>'action'='unresolved'"
+        )
+    }
+
+
+def test_an_orphaned_sending_row_is_held_ambiguous_and_its_plan_completes() -> None:
+    """#742 N8: a `sending` row whose owner is gone is reconciled -- never one this process still owns --
+    and the work it held is completed rather than left waiting until the claim goes stale."""
+
+    pg, db, clock = store()
+    adopted_head(pg, clock)
+    prepared = asyncio.run(notifications(pg, clock, Sender()).service.prepare(EVENT, "news"))
+    assert prepared.lease is not None and prepared.card is not None
+    assert asyncio.run(pg.atomic_begin_send(prepared.lease, prepared.card)) == "begun"
+    intent = prepared.lease.intent_id
+
+    def reconcile(r: Any, *, now_ms: int, owned: tuple[str, ...] = ()) -> int:
+        return r.news.terminalize_interrupted_deliveries(now_ms=now_ms, exclude_intent_ids=owned)
+
+    assert asyncio.run(db.tx("reconcile", lambda r: reconcile(r, now_ms=clock() + 30_000))) == 0
+    owned_late = clock() + 120_000
+    assert asyncio.run(db.tx("reconcile", lambda r: reconcile(r, now_ms=owned_late, owned=(intent,)))) == 0
+    assert asyncio.run(db.tx("reconcile", lambda r: reconcile(r, now_ms=owned_late))) == 1
+    assert sql("SELECT state, error_code FROM news_deliveries") == [
+        {"state": "ambiguous", "error_code": "ambiguous_after_crash"}
+    ]
+    assert sql("SELECT count(*) AS n FROM news_delivery_queue")[0]["n"] == 0
+    assert sql("SELECT state FROM news_notification_work")[0]["state"] == "done"
 
 
 def test_final_semantic_crash_is_settled_only_after_lease_expiry_and_retries_exact_version() -> None:
@@ -1111,7 +1201,7 @@ def test_final_semantic_crash_is_settled_only_after_lease_expiry_and_retries_exa
     assert asyncio.run(pg.head(EVENT)) == head
 
 
-def test_card_recovery_reuses_unsent_intent_and_never_reopens_sent_or_ambiguous() -> None:
+def test_notification_retry_revives_the_failed_unsent_intent_and_never_reopens_a_ledger() -> None:
     pg, db, clock = store()
     head = adopted_head(pg, clock)
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
@@ -1119,22 +1209,32 @@ def test_card_recovery_reuses_unsent_intent_and_never_reopens_sent_or_ambiguous(
     plan = notify_plan(head, snapshot.reader.revision)
     lease = asyncio.run(pg.atomic_record_plan(plan)).lease
     assert lease is not None
-    sql("UPDATE news_delivery_queue SET attempts=3")
-    asyncio.run(pg.record_card_failure(lease, error_code="bad_copy"))
+    sql("UPDATE news_delivery_queue SET attempts=2")
+    asyncio.run(pg.record_unsent_failure(lease, error_code="bad_copy", retryable=True))
     assert sql("SELECT state FROM news_delivery_queue")[0]["state"] == "dead"
+    assert sql("SELECT state, last_error_code FROM news_notification_work")[0] == {
+        "state": "failed",
+        "last_error_code": "bad_copy",
+    }
     facts, outbox = sql("SELECT document FROM news_event_updates"), trade_rows()
 
     def retry(r):
         return r.news.retry_failed_work(
-            event_id=EVENT, kind="card", revision=head.content_revision, intent_id=lease.intent_id, now_ms=clock()
+            event_id=EVENT, kind="notification", revision=head.content_revision, now_ms=clock()
         )
 
     assert asyncio.run(db.tx("retry", retry))
-    assert sql("SELECT intent_id,attempts FROM news_delivery_queue") == [{"intent_id": lease.intent_id, "attempts": 0}]
+    assert sql("SELECT intent_id,attempts,state FROM news_delivery_queue") == [
+        {"intent_id": lease.intent_id, "attempts": 0, "state": "pending"}
+    ]
     assert not asyncio.run(db.tx("retry", retry))
     sender = Sender("sent")
     assert asyncio.run(notifications(pg, clock, sender).process(EVENT, "news")) == "sent"
     assert sender.cards[0].intent_id == lease.intent_id
+    assert sql("SELECT state, last_error_code FROM news_notification_work")[0] == {
+        "state": "done",
+        "last_error_code": None,
+    }
     sent = sql("SELECT * FROM news_deliveries")
     assert not asyncio.run(db.tx("retry", retry))
     assert sql("SELECT * FROM news_deliveries") == sent
@@ -1142,7 +1242,7 @@ def test_card_recovery_reuses_unsent_intent_and_never_reopens_sent_or_ambiguous(
 
 
 @pytest.mark.parametrize("state", ["sending", "ambiguous", "terminal"])
-def test_card_recovery_refuses_any_existing_send_ledger(state: str) -> None:
+def test_notification_retry_never_reopens_an_intent_with_a_send_ledger(state: str) -> None:
     pg, db, clock = store()
     head = adopted_head(pg, clock)
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
@@ -1156,16 +1256,18 @@ def test_card_recovery_refuses_any_existing_send_ledger(state: str) -> None:
     assert asyncio.run(pg.atomic_begin_send(lease, card)) == "begun"
     sql("UPDATE news_deliveries SET state=%s", (state,))
     sql("UPDATE news_delivery_queue SET state='dead', attempts=3, lease_token=NULL, settled_at_ms=%s", (clock(),))
+    sql("UPDATE news_notification_work SET state='failed', last_error_code='operator_test'")
     before = sql("SELECT * FROM news_deliveries")
-    assert not asyncio.run(
+    assert asyncio.run(
         db.tx(
             "retry",
             lambda r: r.news.retry_failed_work(
-                event_id=EVENT, kind="card", revision=head.content_revision, intent_id=lease.intent_id, now_ms=clock()
+                event_id=EVENT, kind="notification", revision=head.content_revision, now_ms=clock()
             ),
         )
     )
     assert sql("SELECT * FROM news_deliveries") == before
+    assert sql("SELECT state FROM news_delivery_queue")[0]["state"] == "dead"
 
 
 def test_targeted_reanalysis_reuses_work_and_preserves_adopted_head() -> None:

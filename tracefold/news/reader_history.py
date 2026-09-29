@@ -76,7 +76,6 @@ class ReaderHistorySnapshot:
     recent_seen_rows: tuple[ReaderHistoryRow, ...] = ()
     targeted_told_rows: tuple[ReaderHistoryRow, ...] = ()
     similar_told_rows: tuple[ReaderHistoryRow, ...] = ()
-    ledger_revision: tuple[int, int, str] = (0, 0, "")
 
     @property
     def told_source_rows(self) -> tuple[ReaderHistoryRow, ...]:
@@ -145,16 +144,10 @@ def assemble_reader_history(
     selected_similar = tuple(
         replace(item[3], scope="targeted", reason="title_similarity") for item in scored[:SIMILAR_TITLE_MAX]
     )
-    revision_rows = (*selected_recent, *selected_targeted, *selected_similar)
     return ReaderHistorySnapshot(
         recent_seen_rows=selected_recent,
         targeted_told_rows=selected_targeted,
         similar_told_rows=selected_similar,
-        ledger_revision=(
-            len({row.event_id for row in revision_rows}),
-            max((row.at_ms for row in revision_rows), default=0),
-            max((row.event_id for row in revision_rows), default=""),
-        ),
     )
 
 

@@ -16,9 +16,10 @@ from ..bus import DeferError, TransientError
 from ..source_contracts import classify_source_contracts
 from ..updates.contracts import EventUpdate, Evidence, Extraction, FrozenInput, PublicUpdate, ReadTarget
 from ..updates.judgment import Answer
-from ..updates.notification import CardCopy, FrozenCard, NotificationPlan, ReaderSnapshot
+from ..updates.notification import NEWS_CHANNEL, CardCopy, FrozenCard, NotificationPlan, ReaderSnapshot
 from ..updates.ports import (
     BeginSendStatus,
+    DeliveryTimings,
     IntentLease,
     NotificationSnapshot,
     PlanCommit,
@@ -29,8 +30,6 @@ from ..updates.ports import (
 from ..updates.service import clock_ms
 from .event_updates import (
     INTENT_LEASE_MS,
-    NEWS_CHANNEL,
-    PUBLIC_TRADE_KINDS,
     EventUpdateConflict,
     SemanticLease,
     frozen_input,
@@ -39,6 +38,7 @@ from .event_updates import (
     select_receipts,
 )
 from .sql_values import _dumps
+from .update_commit import PUBLIC_TRADE_KINDS
 
 if TYPE_CHECKING:
     from ..pipeline.runtime import NewsDatabasePort
@@ -234,11 +234,17 @@ class PgNewsStore:
                 invalidated=material["invalidated"],
             ),
             blocked_claim_refs=tuple(material["blocked"]),
+            ambiguous_claim_refs=tuple(material["ambiguous"]),
             invalidated_claim_refs=tuple(material["invalidated"]),
             watch_symbols=self.watch_symbols,
             protected_listing_claim_refs=listing_refs,
         )
-        return NotificationSnapshot(update=update, reader=reader, work_updated_at_ms=material["work_updated_at_ms"])
+        return NotificationSnapshot(
+            update=update,
+            reader=reader,
+            work_updated_at_ms=material["work_updated_at_ms"],
+            work_due_at_ms=material["work_due_at_ms"],
+        )
 
     async def lookup_notification_decision(
         self, event_id: str, channel: str, input_digest: str
@@ -325,8 +331,11 @@ class PgNewsStore:
             ),
         )
 
-    async def atomic_begin_send(self, lease: IntentLease, card: FrozenCard) -> BeginSendStatus:
+    async def atomic_begin_send(
+        self, lease: IntentLease, card: FrozenCard, *, timings: DeliveryTimings | None = None
+    ) -> BeginSendStatus:
         now_ms = self.clock()
+        timings_json = None if timings is None else timings.model_dump_json()
         return await self.db.tx(
             "news_update_begin_send",
             lambda repos: repos.news.begin_intent_send(
@@ -336,6 +345,7 @@ class PgNewsStore:
                 card=card,
                 watch_symbols=self.watch_symbols,
                 now_ms=now_ms,
+                timings_json=timings_json,
             ),
         )
 
@@ -368,14 +378,26 @@ class PgNewsStore:
             raise RuntimeError("news_send_settlement_conflict")
         return str(result)
 
-    async def record_card_failure(self, lease: IntentLease, *, error_code: str) -> None:
+    async def record_unsent_failure(
+        self,
+        lease: IntentLease,
+        *,
+        error_code: str,
+        retryable: bool,
+        retry_after_ms: int | None = None,
+    ) -> None:
         now_ms = self.clock()
         for attempt in range(3):
             try:
                 await self.db.tx(
-                    "news_update_card_failure",
-                    lambda repos: repos.news.record_intent_card_failure(
-                        intent_id=lease.intent_id, lease_token=lease.lease_token, error_code=error_code, now_ms=now_ms
+                    "news_update_unsent_failure",
+                    lambda repos: repos.news.record_unsent_intent_failure(
+                        intent_id=lease.intent_id,
+                        lease_token=lease.lease_token,
+                        error_code=error_code,
+                        retryable=retryable,
+                        retry_after_ms=retry_after_ms,
+                        now_ms=now_ms,
                     ),
                 )
                 return
@@ -388,8 +410,10 @@ class PgNewsStore:
         self,
         event_id: str,
         channel: str,
-        expected_content_revision: str,
+        expected_content_revision: str | None,
         expected_work_updated_at_ms: int | None = None,
+        *,
+        error_code: str,
     ) -> None:
         now_ms = self.clock()
         for attempt in range(3):
@@ -401,6 +425,7 @@ class PgNewsStore:
                         channel=channel,
                         expected_content_revision=expected_content_revision,
                         expected_work_updated_at_ms=expected_work_updated_at_ms,
+                        error_code=error_code,
                         now_ms=now_ms,
                     ),
                 )
@@ -409,6 +434,18 @@ class PgNewsStore:
                 if attempt == 2:
                     raise
                 await asyncio.sleep(0.25 * (attempt + 1))
+
+    async def postpone_notification(self, event_id: str, channel: str, expected_content_revision: str | None) -> None:
+        now_ms = self.clock()
+        await self.db.tx(
+            "news_update_postpone_notification",
+            lambda repos: repos.news.postpone_notification_work(
+                event_id=event_id,
+                channel=channel,
+                expected_content_revision=expected_content_revision,
+                now_ms=now_ms,
+            ),
+        )
 
     # ------------------------------------------------------------------ optional read
     async def reserve_extra_read(self, lineage_id: str, target_ref: str) -> bool:

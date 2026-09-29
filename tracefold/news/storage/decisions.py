@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import replace
 from typing import Any, cast
 
 # S608 exemptions below interpolate only closed, module-owned history predicates; all values stay bound.
@@ -104,44 +103,13 @@ MARKET_NEWS_TOTAL_SQL = f"""{_EQUIVALENT_SYMBOLS_CTE}
 class DecisionStorage:
     conn: Any
 
-    def reader_history_revision(self, *, now_ms: int) -> tuple[int, int, str]:
-        """Return a primitive CAS token for the delivered-card ledger.
-
-        Open above `now_ms` on purpose, unlike the snapshot bands below. This answers "has the ledger
-        changed since I read it", and the change it exists to catch is precisely a card that settled
-        *after* the stamp the snapshot was taken at: the planner refreshes the ledger outside any transaction
-        and re-reads this token inside `lock_storyline`, both at the same stamp, so an upper bound at that
-        stamp would hide the racing delivery from both reads and buy the lost CAS nothing.
-        """
-
-        row = self.conn.execute(
-            """
-            SELECT count(*) AS row_count,
-                   COALESCE(max(settled_at_ms), 0) AS newest_at_ms,
-                   COALESCE(max(event_id), '') AS greatest_event_id
-              FROM news_deliveries
-             WHERE kind = 'update' AND state = 'sent'
-               AND delete_state IS DISTINCT FROM 'deleted'
-               AND settled_at_ms >= %s
-            """,
-            (int(now_ms) - TARGETED_HISTORY_WINDOW_MS,),
-        ).fetchone()
-        if row is None:  # pragma: no cover - aggregate queries always return one row
-            return (0, 0, "")
-        return (int(row["row_count"]), int(row["newest_at_ms"]), str(row["greatest_event_id"]))
-
     def reader_history(self, *, event_id: str, now_ms: int, include_targeted: bool = True) -> ReaderHistorySnapshot:
         """Reader receipt truth split into the 4 h policy ledger and the bounded semantic candidate bands.
 
         Every band is closed at both ends against ``now_ms`` (#651 §12): a snapshot read at a stamp contains
         only cards the reader had at that stamp, even when a delivery settled after it.
-
-        ``reader_history_revision`` above stays open, and the asymmetry is the point: a snapshot may only
-        contain cards the reader had at this stamp, while the CAS token beside it has to notice the card
-        that arrives after it.
         """
 
-        revision = self.reader_history_revision(now_ms=now_ms)
         recent = self.conn.execute(
             _READER_HISTORY_PROJECTION
             + """
@@ -152,7 +120,7 @@ class DecisionStorage:
             (event_id, int(now_ms) - RECENT_HISTORY_WINDOW_MS, int(now_ms), RECENT_HISTORY_MAX),
         ).fetchall()
         if not include_targeted:
-            return replace(assemble_reader_history(recent_rows=recent, now_ms=now_ms), ledger_revision=revision)
+            return assemble_reader_history(recent_rows=recent, now_ms=now_ms)
         current = self.conn.execute(
             "SELECT comparison_title FROM news_events WHERE event_id = %s", (event_id,)
         ).fetchone()
@@ -269,16 +237,13 @@ class DecisionStorage:
             if comparison_title
             else []
         )
-        return replace(
-            assemble_reader_history(
-                recent_rows=recent,
-                exact_rows=exact,
-                asset_rows=asset,
-                similar_rows=similar,
-                comparison_title=comparison_title,
-                now_ms=now_ms,
-            ),
-            ledger_revision=revision,
+        return assemble_reader_history(
+            recent_rows=recent,
+            exact_rows=exact,
+            asset_rows=asset,
+            similar_rows=similar,
+            comparison_title=comparison_title,
+            now_ms=now_ms,
         )
 
     def pushed_news_for_symbol(self, symbol: str, *, now_ms: int) -> dict[str, Any]:
@@ -665,28 +630,6 @@ class DecisionStorage:
             ),
         )
         return bool(cursor.rowcount)
-
-    def terminalize_interrupted_deliveries(self, *, now_ms: int) -> int:
-        """An unsettled send is ambiguous; remove its queue reservation without resending."""
-
-        row = self.conn.execute(
-            """
-            WITH settled AS (
-              UPDATE news_deliveries
-                 SET state = 'ambiguous',
-                     error_code = 'ambiguous_after_crash', settled_at_ms = %s
-               WHERE state = 'sending' AND attempted_at_ms < %s
-              RETURNING intent_id
-            ), released AS (
-              DELETE FROM news_delivery_queue q USING settled s
-               WHERE q.intent_id = s.intent_id
-              RETURNING q.intent_id
-            )
-            SELECT (SELECT count(*) FROM settled) AS settled, (SELECT count(*) FROM released) AS released
-            """,
-            (int(now_ms), int(now_ms) - 60_000),
-        ).fetchone()
-        return int(row["settled"] or 0)
 
     def terminalize_interrupted_delivery_edits(self, *, now_ms: int) -> int:
         cursor = self.conn.execute(

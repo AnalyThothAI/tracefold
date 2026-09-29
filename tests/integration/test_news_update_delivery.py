@@ -205,8 +205,8 @@ def _queue() -> list[dict[str, Any]]:
 
 
 def _work() -> dict[str, Any]:
-    return sql("""SELECT w.state,w.attempts,w.next_attempt_at_ms,w.content_revision,
-                         COALESCE(d.plan,w.plan) AS plan
+    return sql("""SELECT w.state,w.attempts,w.next_attempt_at_ms,w.content_revision,w.last_error_code,
+                         d.plan AS plan
                     FROM news_notification_work w
                     LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref""")[0]
 
@@ -261,8 +261,10 @@ def test_a_no_notification_plan_composes_no_card_and_sends_nothing() -> None:
     assert [row["reason"] for row in work["plan"]["claim_decisions"]] == ["editor_feed_only"]
 
 
-def test_a_failed_plan_spends_one_bounded_attempt_and_touches_nothing_else() -> None:
-    """A programming error remains visible while the durable marker backs off."""
+def test_a_failed_plan_spends_one_bounded_attempt_and_the_third_fails_the_work_visibly() -> None:
+    """#742 N5: a programming error is recorded against its work, never raised out of the loop. The third
+    failure ends the work `failed` with its error code instead of leaving it pending and never picked up;
+    an explicit retry of that exact revision reopens it."""
 
     clock = Clock()
 
@@ -280,18 +282,32 @@ def test_a_failed_plan_spends_one_bounded_attempt_and_touches_nothing_else() -> 
 
     rig = Rig(provider, clock=clock, assessor=BrokenEditor())
 
-    for attempt in range(1, 4):
-        with pytest.raises(RuntimeError, match="editor_bug"):
-            rig.advance()
+    for attempt in range(1, 3):
+        assert rig.advance() == 1
         work = _work()
         assert (work["state"], work["attempts"], work["plan"]) == ("pending", attempt, None)
+        assert work["last_error_code"] == "editor_bug"
         assert work["next_attempt_at_ms"] > clock.now_ms
         clock.now_ms = work["next_attempt_at_ms"]
+    assert rig.advance() == 1
+    work = _work()
+    assert (work["state"], work["attempts"], work["last_error_code"]) == ("failed", 3, "editor_bug")
 
-    # Bounded: after the last attempt the marker stays visible and is no longer due.
+    # Terminal: it is no longer due, and nothing else moved.
     assert asyncio.run(rig.store.pending_notification_events("news", 10)) == ()
     assert rig.composer.calls == 0 and provider.sent == [] and _queue() == [] and _ledger() == []
     assert asyncio.run(rig.store.head(EVENT)) == head
+
+    retried = asyncio.run(
+        rig.db.tx(
+            "retry",
+            lambda r: r.news.retry_failed_work(
+                event_id=EVENT, kind="notification", revision=head.content_revision, now_ms=clock.now_ms
+            ),
+        )
+    )
+    assert retried and _work()["state"] == "pending" and _work()["attempts"] == 0
+    assert asyncio.run(rig.store.pending_notification_events("news", 10)) == (EVENT,)
 
 
 class FlakyComposer(Composer):
@@ -487,8 +503,10 @@ def test_a_send_whose_outcome_is_unknown_is_held_ambiguous_and_never_resent() ->
     assert ambiguous_claim not in sent[0]["claim_refs"]
     held = next(row for row in _ledger() if row["state"] == "ambiguous")
     assert held["body"] == ledger["body"] and held["payload_sha256"] == ledger["payload_sha256"]
+    # Possibly already read, so never sent again -- and not holding the new claim back either (#742 N5).
     decisions = {row["claim_ref"]: row["reason"] for row in _work()["plan"]["claim_decisions"]}
-    assert decisions[ambiguous_claim] == "send_outcome_unresolved"
+    assert decisions[ambiguous_claim] == "send_outcome_ambiguous"
+    assert _work()["state"] == "done"
 
 
 def test_a_crash_after_the_send_leaves_the_sending_payload_untouched_and_it_is_never_resent() -> None:
@@ -552,85 +570,133 @@ def test_two_deliverers_on_one_event_send_one_card() -> None:
     assert [row["state"] for row in _ledger()] == ["sent"]
 
 
-@pytest.mark.parametrize("fail_settlement", [False, True])
-def test_second_event_waits_until_first_provider_receipt_is_durable(fail_settlement: bool) -> None:
+def _unrelated_copper(source: FrozenInput) -> Extraction:
+    """A claim sharing no word, subject or claim ref with the steel tariff: not a receipt it was told."""
+
+    base = _claim(source.evidence[0], "a")
+    fields = base.fields.model_copy(update={"subject": "Miner", "action": "halts pit", "object": "Chile"})
+    return Extraction(claims=(base.model_copy(update={"fields": fields}),))
+
+
+class _GatedSettlement(FaultDb):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls = 0
+
+    async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
+        if name == "news_update_settle_send":
+            self.calls += 1
+            if self.calls == 1:
+                self.entered.set()
+                await self.release.wait()
+        return await super().tx(name, fn, timeout_seconds=timeout_seconds)
+
+
+class _DistinctComposer(Composer):
+    """Copy per story; the copper card is composed first, so it is the one in the provider."""
+
+    async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
+        self.calls += 1
+        copper = any("copper" in claim.statement.lower() for claim in claims)
+        if not copper:
+            await asyncio.sleep(0.3)
+        return CardCopy(
+            headline_zh="智利铜矿停产" if copper else "机构对钢铁进口加征关税",
+            lines=tuple(
+                CardLine(claim_ref=claim.ref, text_zh="矿企暂停智利铜矿" if copper else "机构宣布加征百分之二十五关税")
+                for claim in claims
+            ),
+        )
+
+
+@pytest.mark.parametrize("related", [False, True])
+def test_only_a_related_receipt_settled_meanwhile_invalidates_a_ready_card(related: bool) -> None:
+    """#742 W5. One card is ready while another Event's is in the provider. The reader revision is the
+    waiting Event's own related receipts, not the whole channel: an unrelated receipt leaves its plan valid
+    and it is sent in the same turn, while a related one makes it stale, and its re-plan compares that
+    receipt (here: is covered by it). Before, any send anywhere invalidated every ready card."""
+
     clock = Clock()
     _adopt(clock)
-    seed_event(
-        "event-second",
-        text="Agency confirms a copper mine closure next month.",
-        title="Agency confirms copper mine closure",
-        fingerprint="fp-second",
-    )
+    if related:
+        seed_event(
+            "event-second",
+            text="Agency confirms a copper mine closure next month.",
+            title="Agency confirms copper mine closure",
+            fingerprint="fp-second",
+        )
+        analyzer = None
+    else:
+        seed_event(
+            "event-second", text="Miner halts copper pit in Chile.", title="Chile pit halted", fingerprint="fp-2"
+        )
+        analyzer = StubAnalyzer(_unrelated_copper)
     pg = PgNewsStore(ThreadedDb(), clock=clock)
-    assert asyncio.run(run_agent(agent(pg, clock), "event-second")) == "adopted"
-
-    class GatedSettlement(FaultDb):
-        def __init__(self) -> None:
-            super().__init__()
-            self.entered = asyncio.Event()
-            self.release = asyncio.Event()
-            self.calls = 0
-
-        async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
-            if name == "news_update_settle_send":
-                self.calls += 1
-                if self.calls == 1:
-                    self.entered.set()
-                    await self.release.wait()
-            return await super().tx(name, fn, timeout_seconds=timeout_seconds)
-
-    class DistinctComposer(Composer):
-        async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
-            self.calls += 1
-            copper = any("copper" in claim.statement for claim in claims)
-            return CardCopy(
-                headline_zh="机构确认铜矿关闭" if copper else "机构对钢铁进口加征关税",
-                lines=tuple(
-                    CardLine(
-                        claim_ref=claim.ref,
-                        text_zh="机构确认铜矿下月关闭" if copper else "机构宣布加征百分之二十五关税",
-                    )
-                    for claim in claims
-                ),
-            )
+    assert asyncio.run(run_agent(agent(pg, clock, analyzer), "event-second")) == "adopted"
 
     provider = Provider()
-    db = GatedSettlement()
-    if fail_settlement:
-        db.fail_operations.add("news_update_settle_send")
-    rig = Rig(provider, clock=clock, db=db, composer=DistinctComposer())
+    db = _GatedSettlement()
+    rig = Rig(provider, clock=clock, db=db, composer=_DistinctComposer())
 
     async def run() -> None:
         task = asyncio.create_task(rig.loop.advance())
         await asyncio.wait_for(db.entered.wait(), 5)
         assert len(provider.sent) == 1
         assert [row["state"] for row in _ledger()] == ["sending"]
+        clock.now_ms += 1_000
         db.release.set()
-        if fail_settlement:
-            with pytest.raises(RuntimeError, match="news_send_settlement_unavailable"):
-                await task
-            return
         assert await task == 2
-        # B's prepared reader snapshot is stale once A settles; a fresh turn replans it.
-        assert len(provider.sent) == 1
-        assert await rig.loop.advance() == 1
         await rig.loop.drain()
 
     asyncio.run(run())
-    if fail_settlement:
-        assert len(provider.sent) == 1
-        assert [row["state"] for row in _ledger()] == ["sending"]
+
+    def works() -> dict[str, dict[str, Any]]:
+        return {
+            row["event_id"]: row
+            for row in sql(
+                "SELECT w.event_id,w.state,d.plan FROM news_notification_work w "
+                "LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref"
+            )
+        }
+
+    # The copper card is composed first, so it is in the provider while the tariff card waits ready.
+    if not related:
+        assert len(provider.sent) == 2
+        assert [row["state"] for row in _ledger()] == ["sent", "sent"]
+        assert {row["state"] for row in works().values()} == {"done"}
         return
-    assert len(provider.sent) == 2, (
-        sql("SELECT event_id,state FROM news_deliveries ORDER BY event_id"),
-        sql(
-            "SELECT w.event_id,w.state,d.plan->>'action' AS action,d.plan->>'reason' AS reason "
-            "FROM news_notification_work w LEFT JOIN news_notification_decisions d "
-            "ON d.decision_ref=w.decision_ref ORDER BY w.event_id"
-        ),
-    )
-    assert [row["state"] for row in _ledger()] == ["sent", "sent"]
+    # The related receipt made the tariff's ready card stale: nothing of it was sent, and it is planned again.
+    assert len(provider.sent) == 1 and works()[EVENT]["state"] == "pending"
+    clock.now_ms += 1_000
+    assert rig.advance() == 1
+    tariff = works()[EVENT]
+    assert tariff["state"] == "done" and len(provider.sent) == 1
+    assert [row["reason"] for row in tariff["plan"]["claim_decisions"]] == ["covered_by_sent_receipt"]
+    assert {row["intent_id"] for row in tariff["plan"]["compared_receipts"]} == {
+        row["intent_id"] for row in _ledger() if row["event_id"] == "event-second"
+    }
+
+
+def test_a_settlement_that_cannot_be_recorded_leaves_sending_and_faults_the_capability() -> None:
+    clock = Clock()
+    _adopt(clock)
+    provider = Provider()
+    db = _GatedSettlement()
+    db.fail_operations.add("news_update_settle_send")
+    rig = Rig(provider, clock=clock, db=db)
+
+    async def run() -> None:
+        task = asyncio.create_task(rig.loop.advance())
+        await asyncio.wait_for(db.entered.wait(), 5)
+        db.release.set()
+        with pytest.raises(RuntimeError, match="news_send_settlement_unavailable"):
+            await task
+
+    asyncio.run(run())
+    assert len(provider.sent) == 1
+    assert [row["state"] for row in _ledger()] == ["sending"]
 
 
 def test_the_telegram_edit_enriches_the_intents_receipt_and_keeps_the_frozen_card() -> None:
@@ -649,3 +715,42 @@ def test_the_telegram_edit_enriches_the_intents_receipt_and_keeps_the_frozen_car
     # The edit is fenced by the intent and its receipt; the frozen card, body and digest do not move.
     assert ledger["receipt"]["payload_sha256"] == ledger["payload_sha256"]
     assert FrozenCard.model_validate(ledger["card"]).body == ledger["body"]
+
+
+def test_the_stage_breakdown_from_adoption_to_the_provider_is_read_back_with_sql() -> None:
+    """#742 W8: every stage of §1.3 comes out of the recorded decision and the delivery row alone."""
+
+    clock = Clock()
+    _adopt(clock)
+    rig = Rig(Provider(), clock=clock)
+
+    assert rig.advance() == 1
+
+    (row,) = sql(
+        """
+        SELECT u.adopted_at_ms,
+               (d.plan #>> '{timings,due_at_ms}')::bigint AS due_at_ms,
+               (d.plan #>> '{timings,started_at_ms}')::bigint AS started_at_ms,
+               (d.plan #>> '{timings,snapshot_ms}')::bigint AS snapshot_ms,
+               (d.plan #>> '{timings,coverage_ms}')::bigint AS coverage_ms,
+               (d.plan #>> '{timings,assessment_ms}')::bigint AS assessment_ms,
+               (d.plan #>> '{timings,planned_at_ms}')::bigint AS planned_at_ms,
+               d.created_at_ms AS decided_at_ms,
+               jsonb_array_length(d.plan -> 'compared_receipts') AS compared,
+               (x.history_context #>> '{timings,card_started_at_ms}')::bigint AS card_started_at_ms,
+               (x.history_context #>> '{timings,card_finished_at_ms}')::bigint AS card_finished_at_ms,
+               (x.history_context #>> '{timings,ready_at_ms}')::bigint AS ready_at_ms,
+               (x.history_context #>> '{timings,send_slot_wait_ms}')::bigint AS send_slot_wait_ms,
+               x.attempted_at_ms, x.settled_at_ms
+          FROM news_deliveries x
+          JOIN news_notification_decisions d ON d.decision_ref = x.decision_ref
+          JOIN news_event_updates u ON u.event_id = x.event_id AND u.content_revision = x.content_revision
+        """
+    )
+    assert all(value is not None for value in row.values()), row
+    # adoption -> due -> taken -> planned -> decided -> card -> ready -> slot -> begun -> settled
+    assert row["adopted_at_ms"] <= row["due_at_ms"] <= row["started_at_ms"] <= row["planned_at_ms"]
+    assert row["planned_at_ms"] <= row["decided_at_ms"] <= row["card_started_at_ms"] <= row["card_finished_at_ms"]
+    assert row["card_finished_at_ms"] <= row["ready_at_ms"] <= row["attempted_at_ms"] <= row["settled_at_ms"]
+    assert min(row["snapshot_ms"], row["coverage_ms"], row["assessment_ms"], row["send_slot_wait_ms"]) >= 0
+    assert row["compared"] == 0

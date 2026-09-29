@@ -35,7 +35,13 @@ from ..updates.contracts import (
     Source,
 )
 from ..updates.identity import digest, identity
-from ..updates.notification import NOTIFICATION_ATTEMPTS_MAX, DeliveredText, FrozenCard, NotificationPlan
+from ..updates.notification import (
+    NEWS_CHANNEL,
+    NOTIFICATION_ATTEMPTS_MAX,
+    DeliveredText,
+    FrozenCard,
+    NotificationPlan,
+)
 from ..updates.ports import BeginSendStatus
 from ..updates.projection import extraction_scopes, item_text, reading_view
 from .decisions import DecisionStorage
@@ -45,13 +51,19 @@ from .update_commit import SemanticSource, commit_update, lock_event
 
 log = logging.getLogger("tracefold.news")
 
-NEWS_CHANNEL: Final = "news"
 SEMANTIC_ATTEMPTS_MAX: Final = 3
 # Delay before the next attempt after the Nth failed one (1-based), per wanted revision.
 SEMANTIC_RETRY_MS: Final = (15_000, 60_000, 300_000)
 # A pending revision whose broker wake is older than this is woken again by the repair turn.
 SEMANTIC_WAKE_STALE_MS: Final = 15_000
-NOTIFICATION_RETRY_MS: Final = (30_000, 120_000, 600_000)
+# Backoff after the first and second failed plan of one work; the third failure fails it.
+NOTIFICATION_RETRY_MS: Final = (30_000, 120_000)
+# How often work waiting on a send of its own Event still in flight looks again. Waiting spends no attempt.
+NOTIFICATION_WAIT_MS: Final = 30_000
+# A `sending` row older than this has no live owner: the provider call (8 s) and its bounded settlement
+# (three short retries) are both long over, so the reconciliation may hold it ambiguous.
+SENDING_ORPHAN_MS: Final = 60_000
+ORPHAN_SEND_BATCH_MAX: Final = 50
 # The queue's own CHECK bounds an intent at three attempts.
 INTENT_ATTEMPTS_MAX: Final = 3
 INTENT_RETRY_MS: Final = (30_000, 120_000, 600_000)
@@ -61,10 +73,12 @@ INTENT_LEASE_MS: Final = 120_000
 RECEIPT_RECALL_MAX: Final = 16
 JUDGMENT_CACHE_RETENTION_MS: Final = 14 * 24 * 3_600_000
 PURGE_BATCH_MAX: Final = 1_000
-READER_REVISION_PREFIX: Final = "reader_v1"
+READER_REVISION_PREFIX: Final = "reader_v2"
 EXTRA_READ_OUTCOMES: Final = frozenset({"attached", "no_material", "unavailable_or_budget_exhausted"})
-# The public kind of a PublicUpdate in the News outbox. A catalyst delta keeps the existing kind.
-PUBLIC_TRADE_KINDS: Final[dict[str, str]] = {"catalyst_delta": "catalyst", "source_update": "source_update"}
+_RECEIPT_COLUMNS: Final = (
+    "d.intent_id, d.event_id, d.kind, d.body, d.payload_sha256, d.settled_at_ms, "
+    "d.receipt, d.card, d.history_context, d.claim_refs"
+)
 # Related Events whose adopted claims are compared with this Event's claims. Every current/prior pair
 # is a relation question, so the recall is bounded by claims, not only by Events.
 RELATED_PRIOR_EVENTS_MAX: Final = 8
@@ -137,31 +151,34 @@ def _retry_delay(delays: Sequence[int], attempts: int) -> int:
 
 
 def reader_revision(
-    stamp_ms: int,
-    ledger: Sequence[object],
+    receipts: Iterable[Mapping[str, Any]],
+    *,
     blocked_claim_refs: Iterable[str],
+    ambiguous_claim_refs: Iterable[str],
     watch_symbols: Iterable[str],
-    invalidated_claim_refs: Iterable[str] = (),
+    invalidated_claim_refs: Iterable[str],
 ) -> str:
-    """One reader version: the sent-ledger token read at `stamp_ms`, blocked claims and watchlist.
+    """One Event's reader version: its related receipts, its unsettled claims and the watchlist.
 
-    The stamp is carried in the revision so the CAS re-reads the ledger at the same stamp: the token's
-    window is open above it, so a receipt settled after the snapshot is exactly what changes it.
+    It is the same digest whenever nothing a plan of this Event depends on has changed, so a plan
+    decided twice from the same reader is the same decision, and a send anywhere else is not a race.
     """
 
-    material = [list(ledger), sorted(set(blocked_claim_refs)), sorted(set(watch_symbols))]
-    invalidated = sorted(set(invalidated_claim_refs))
-    if invalidated:
-        material.append(invalidated)
-    return f"{READER_REVISION_PREFIX}:{int(stamp_ms)}:{digest(material)}"
+    material = {
+        "receipts": sorted({(str(row["intent_id"]), "sent") for row in receipts}),
+        "blocked": sorted(set(blocked_claim_refs)),
+        "ambiguous": sorted(set(ambiguous_claim_refs)),
+        "invalidated": sorted(set(invalidated_claim_refs)),
+        "watch": sorted(set(watch_symbols)),
+    }
+    return f"{READER_REVISION_PREFIX}:{digest(material)}"
 
 
-def reader_revision_stamp(revision: str) -> int:
-    prefix, _, rest = str(revision).partition(":")
-    stamp, _, value = rest.partition(":")
-    if prefix != READER_REVISION_PREFIX or not stamp.isdigit() or len(value) != 64:
-        raise ValueError("news_reader_revision_invalid")
-    return int(stamp)
+def linked_refs(update: EventUpdate, invalidated: Iterable[str] = ()) -> set[str]:
+    """The active claims of an update and their antecedents: what a linked receipt carried."""
+
+    inactive = set(update.retired_claim_refs) | set(update.superseded_claim_refs) | set(invalidated)
+    return {ref for claim in update.claims if claim.ref not in inactive for ref in (claim.ref, *claim.antecedent_refs)}
 
 
 def delivered_text(row: Mapping[str, Any]) -> DeliveredText | None:
@@ -217,8 +234,7 @@ def select_receipts(
     Explicit claim/antecedent references rank first, then content relevance and recency. Neither same
     Event nor asset-band membership is a coverage verdict. Only the planner reads the sent body for that.
     """
-    inactive = set(update.retired_claim_refs) | set(update.superseded_claim_refs) | set(invalidated)
-    refs = {ref for claim in update.claims if claim.ref not in inactive for ref in (claim.ref, *claim.antecedent_refs)}
+    refs = linked_refs(update, invalidated)
     ranked = []
     seen: set[str] = set()
     for row in rows:
@@ -1159,29 +1175,149 @@ class EventUpdateStorage:
         ).fetchall()
         return sorted(str(row["ref"]) for row in rows)
 
-    def _blocked_claim_refs(self, event_id: str) -> list[str]:
+    def _unsettled_claim_refs(self, event_id: str) -> tuple[list[str], list[str]]:
+        """This Event's claims in sends still in flight, and in sends whose outcome is ambiguous."""
+
         rows = self.conn.execute(
             """
-            SELECT claim_refs FROM news_deliveries
+            SELECT state, claim_refs FROM news_deliveries
              WHERE event_id = %s AND kind = 'update' AND state IN ('sending', 'ambiguous')
             """,
             (event_id,),
         ).fetchall()
-        return sorted({str(ref) for row in rows for ref in row["claim_refs"] or ()})
-
-    def _reader_revision(self, *, event_id: str, stamp_ms: int, watch_symbols: Iterable[str]) -> str:
-        ledger = cast(DecisionStorage, self).reader_history_revision(now_ms=stamp_ms)
-        return reader_revision(
-            stamp_ms, ledger, self._blocked_claim_refs(event_id), watch_symbols, self.invalidated_claim_refs(event_id)
+        return (
+            sorted({str(ref) for row in rows if row["state"] == "sending" for ref in row["claim_refs"] or ()}),
+            sorted({str(ref) for row in rows if row["state"] == "ambiguous" for ref in row["claim_refs"] or ()}),
         )
+
+    def _receipt_rows(self, event_ids: Sequence[str], *, until_ms: int | None) -> list[dict[str, Any]]:
+        if not event_ids:
+            return []
+        return [
+            dict(row)
+            for row in self.conn.execute(
+                f"""
+                SELECT {_RECEIPT_COLUMNS} FROM news_deliveries d
+                 WHERE d.event_id = ANY(%s) AND d.kind = 'update' AND d.state = 'sent'
+                   AND d.delete_state IS DISTINCT FROM 'deleted'
+                   AND (%s::bigint IS NULL OR d.settled_at_ms < %s)
+                 ORDER BY d.settled_at_ms DESC, d.intent_id
+                """,  # noqa: S608 - a module-owned column list
+                (list(event_ids), until_ms, until_ms),
+            ).fetchall()
+        ]
+
+    def _similar_receipt_rows(
+        self, queries: Sequence[str], *, now_ms: int, until_ms: int | None
+    ) -> list[dict[str, Any]]:
+        """Receipts of any Event whose delivered text or titles are closest to this update's claims."""
+
+        if not queries:
+            return []
+        return [
+            dict(row)
+            for row in self.conn.execute(
+                f"""
+                SELECT {_RECEIPT_COLUMNS}
+                  FROM news_deliveries d
+                  CROSS JOIN LATERAL (
+                    SELECT max(GREATEST(
+                        similarity(COALESCE(d.history_context ->> 'comparison_title', ''), q),
+                        similarity(COALESCE(d.history_context ->> 'headline_zh', ''), q),
+                        similarity(COALESCE(d.body, d.history_context ->> 'why_zh', ''), q)
+                    )) AS score FROM unnest(%s::text[]) AS q
+                  ) relevance
+                 WHERE d.kind = 'update' AND d.state = 'sent'
+                   AND d.delete_state IS DISTINCT FROM 'deleted'
+                   AND d.settled_at_ms >= %s AND (%s::bigint IS NULL OR d.settled_at_ms < %s)
+                   AND relevance.score > 0
+                 ORDER BY relevance.score DESC, d.settled_at_ms DESC, d.intent_id
+                 LIMIT %s
+                """,  # noqa: S608 - a module-owned column list
+                (list(queries), int(now_ms) - TARGETED_HISTORY_WINDOW_MS, until_ms, until_ms, SIMILAR_TITLE_MAX),
+            ).fetchall()
+        ]
+
+    def _linked_receipt_rows(self, refs: Sequence[str], *, now_ms: int, until_ms: int | None) -> list[dict[str, Any]]:
+        """Receipts of any Event that carried one of these claims or their antecedents."""
+
+        if not refs:
+            return []
+        return [
+            dict(row)
+            for row in self.conn.execute(
+                f"""
+                SELECT {_RECEIPT_COLUMNS} FROM news_deliveries d
+                 WHERE d.kind = 'update' AND d.state = 'sent'
+                   AND d.delete_state IS DISTINCT FROM 'deleted'
+                   AND d.settled_at_ms >= %s AND (%s::bigint IS NULL OR d.settled_at_ms < %s)
+                   AND d.claim_refs ?| %s::text[]
+                """,  # noqa: S608 - a module-owned column list
+                (int(now_ms) - TARGETED_HISTORY_WINDOW_MS, until_ms, until_ms, list(refs)),
+            ).fetchall()
+        ]
+
+    def _reader_state(
+        self,
+        *,
+        event_id: str,
+        head: EventUpdate,
+        now_ms: int,
+        watch_symbols: Iterable[str],
+        until_ms: int | None,
+    ) -> dict[str, Any]:
+        """What this Event's reader revision is made of, read the same way by the snapshot and both CASes.
+
+        The related receipts are the ones a reader of this Event can be said to have been told: its own,
+        any linked to its claims, and the closest by text. A receipt that only happens to be recent is a
+        candidate the planner may still compare, but it is not what makes a plan stale, so an unrelated
+        send elsewhere never invalidates this one. The snapshot reads up to its own stamp; a CAS reads
+        whatever has settled, so a related receipt that arrived after the snapshot is exactly what it sees.
+        """
+
+        sending, ambiguous = self._unsettled_claim_refs(event_id)
+        invalidated = self.invalidated_claim_refs(event_id)
+        event = self.conn.execute(
+            "SELECT comparison_title, event_kind FROM news_events WHERE event_id = %s", (event_id,)
+        ).fetchone()
+        queries = receipt_queries(head, str(event["comparison_title"] or "") if event else "", invalidated)
+        own = self._receipt_rows([event_id], until_ms=until_ms)
+        similar = self._similar_receipt_rows(queries, now_ms=now_ms, until_ms=until_ms)
+        linked = self._linked_receipt_rows(sorted(linked_refs(head, invalidated)), now_ms=now_ms, until_ms=until_ms)
+        return {
+            "event": None if event is None else dict(event),
+            "queries": queries,
+            "sending": sending,
+            "ambiguous": ambiguous,
+            "invalidated": invalidated,
+            "own": own,
+            "similar": similar,
+            "revision": reader_revision(
+                (*own, *similar, *linked),
+                blocked_claim_refs=sending,
+                ambiguous_claim_refs=ambiguous,
+                watch_symbols=watch_symbols,
+                invalidated_claim_refs=invalidated,
+            ),
+        }
+
+    def _current_reader_revision(self, event_id: str, *, now_ms: int, watch_symbols: Iterable[str]) -> str | None:
+        document = self.event_update_head_document(event_id)
+        if document is None:
+            return None
+        head = EventUpdate.model_validate(document)
+        state = self._reader_state(
+            event_id=event_id, head=head, now_ms=now_ms, watch_symbols=watch_symbols, until_ms=None
+        )
+        return str(state["revision"])
 
     def notification_snapshot_material(
         self, *, event_id: str, channel: str, now_ms: int, watch_symbols: Iterable[str]
     ) -> dict[str, Any] | None:
-        """The pending head and the actual-reader receipts recalled by the reader-history bands."""
+        """The pending head, the receipts the planner may compare, and the related-receipt reader revision."""
 
         work = self.conn.execute(
-            "SELECT content_revision, state, updated_at_ms FROM news_notification_work "
+            "SELECT content_revision, state, next_attempt_at_ms, updated_at_ms FROM news_notification_work "
             "WHERE event_id = %s AND channel = %s",
             (event_id, channel),
         ).fetchone()
@@ -1190,14 +1326,20 @@ class EventUpdateStorage:
         head = self.event_update_head_document(event_id)
         if head is None or head.get("content_revision") != work["content_revision"]:
             return None
-        blocked = self._blocked_claim_refs(event_id)
-        invalidated = self.invalidated_claim_refs(event_id)
-        ledger = cast(DecisionStorage, self).reader_history_revision(now_ms=now_ms)
+        reader = self._reader_state(
+            event_id=event_id,
+            head=EventUpdate.model_validate(head),
+            now_ms=now_ms,
+            watch_symbols=watch_symbols,
+            until_ms=now_ms,
+        )
+        # The history bands use the leader. Recall content from later members directly at receipt
+        # granularity too; rank all bands again outside this read before the final model budget.
         history = cast(DecisionStorage, self).reader_history(event_id=event_id, now_ms=now_ms)
-        band = [row.event_id for row in history.told_source_rows]
-        event = self.conn.execute(
-            "SELECT comparison_title, event_kind FROM news_events WHERE event_id = %s", (event_id,)
-        ).fetchone()
+        band = self._receipt_rows(
+            [row.event_id for row in history.told_source_rows if row.event_id != event_id], until_ms=now_ms
+        )
+        event = reader["event"]
         listing_members = (
             self.conn.execute(
                 """SELECT m.item_id,m.fact_text,i.provider_metadata
@@ -1208,60 +1350,51 @@ class EventUpdateStorage:
             if event is not None and event["event_kind"] == "listing"
             else []
         )
-        queries = receipt_queries(
-            EventUpdate.model_validate(head),
-            str(event["comparison_title"] or "") if event else "",
-            invalidated,
-        )
-        rows = self.conn.execute(
-            """
-            SELECT intent_id, event_id, kind, body, payload_sha256, settled_at_ms,
-                   receipt, card, history_context, claim_refs
-              FROM news_deliveries
-             WHERE event_id = ANY(%s) AND kind = 'update' AND state = 'sent'
-               AND delete_state IS DISTINCT FROM 'deleted'
-               AND settled_at_ms < %s
-             ORDER BY settled_at_ms DESC, intent_id
-            """,
-            ([event_id, *band], int(now_ms)),
-        ).fetchall()
-        # The bands use the leader. Recall content from later members directly at receipt
-        # granularity too; rank all bands again outside this read before the final model budget.
-        relevant = (
-            self.conn.execute(
-                """
-            SELECT d.intent_id, d.event_id, d.kind, d.body, d.payload_sha256, d.settled_at_ms,
-                   d.receipt, d.card, d.history_context, d.claim_refs
-              FROM news_deliveries d
-              CROSS JOIN LATERAL (
-                SELECT max(GREATEST(
-                    similarity(COALESCE(d.history_context ->> 'comparison_title', ''), q),
-                    similarity(COALESCE(d.history_context ->> 'headline_zh', ''), q),
-                    similarity(COALESCE(d.body, d.history_context ->> 'why_zh', ''), q)
-                )) AS score FROM unnest(%s::text[]) AS q
-              ) relevance
-             WHERE d.kind = 'update' AND d.state = 'sent'
-               AND d.delete_state IS DISTINCT FROM 'deleted'
-               AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
-               AND relevance.score > 0
-             ORDER BY relevance.score DESC, d.settled_at_ms DESC, d.intent_id
-             LIMIT %s
-            """,
-                (list(queries), int(now_ms) - TARGETED_HISTORY_WINDOW_MS, int(now_ms), SIMILAR_TITLE_MAX),
-            ).fetchall()
-            if queries
-            else []
-        )
         return {
             "work_updated_at_ms": int(work["updated_at_ms"]),
+            "work_due_at_ms": int(work["next_attempt_at_ms"]),
             "head": head,
-            "blocked": blocked,
-            "invalidated": invalidated,
-            "revision": reader_revision(now_ms, ledger, blocked, watch_symbols, invalidated),
-            "receipt_queries": queries,
-            "receipt_rows": [dict(row) for row in (*rows, *relevant)],
+            "blocked": reader["sending"],
+            "ambiguous": reader["ambiguous"],
+            "invalidated": reader["invalidated"],
+            "revision": reader["revision"],
+            "receipt_queries": reader["queries"],
+            "receipt_rows": [*reader["own"], *band, *reader["similar"]],
             "listing_members": [dict(row) for row in listing_members],
         }
+
+    def _record_decision(
+        self, event_id: str, plan: NotificationPlan, plan_json: str, *, now_ms: int
+    ) -> NotificationPlan:
+        """Insert-only decision; an identical plan is the same row, and the stored one wins."""
+
+        self.conn.execute(
+            """
+            INSERT INTO news_notification_decisions
+              (decision_ref,event_id,update_ref,channel,input_digest,input_snapshot,plan,origin,created_at_ms)
+            VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,'editorial_v1',%s)
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                plan.record_ref,
+                event_id,
+                plan.update_ref,
+                plan.channel,
+                plan.assessment_input_digest,
+                _dumps(plan.assessment_input or {}),
+                plan_json,
+                int(now_ms),
+            ),
+        )
+        stored = self.conn.execute(
+            "SELECT decision_ref,plan FROM news_notification_decisions WHERE decision_ref = %s",
+            (plan.record_ref,),
+        ).fetchone()
+        if stored is None:
+            raise EventUpdateConflict("news_notification_decision_missing")
+        return NotificationPlan.model_validate(stored["plan"]).model_copy(
+            update={"reader_revision": plan.reader_revision, "decision_ref": str(stored["decision_ref"])}
+        )
 
     def record_notification_plan(
         self,
@@ -1273,7 +1406,7 @@ class EventUpdateStorage:
         now_ms: int,
         lease_ms: int = INTENT_LEASE_MS,
     ) -> dict[str, Any]:
-        """CAS head/reader, record or reuse an immutable decision, then reserve its stable intent."""
+        """Record or reuse an immutable decision, CAS head/reader, then reserve its stable intent."""
 
         head = self.conn.execute(
             "SELECT event_id, content_revision FROM news_event_update_heads WHERE update_ref = %s",
@@ -1300,11 +1433,10 @@ class EventUpdateStorage:
             return {"status": "head_changed"}
         if work["state"] != "pending":
             return {"status": "already_settled"}
-        stamp = reader_revision_stamp(plan.reader_revision)
-        if (
-            self._reader_revision(event_id=event_id, stamp_ms=stamp, watch_symbols=watch_symbols)
-            != plan.reader_revision
-        ):
+        # The judgment is kept before the reader is checked: a plan that loses the race to a related receipt
+        # is asked again with its assessment reused rather than asked from scratch (#742 N10).
+        plan = self._record_decision(event_id, plan, plan_json, now_ms=now_ms)
+        if self._current_reader_revision(event_id, now_ms=now_ms, watch_symbols=watch_symbols) != plan.reader_revision:
             return {"status": "reader_changed"}
         intent_id = plan.intent_id if plan.action == "notify" else None
         others = self.conn.execute(
@@ -1318,7 +1450,14 @@ class EventUpdateStorage:
             """,
             (event_id, intent_id),
         ).fetchall()
-        if any(row["lease_token"] is not None and int(row["next_attempt_at_ms"]) > int(now_ms) for row in others):
+        leased = [
+            int(row["next_attempt_at_ms"])
+            for row in others
+            if row["lease_token"] is not None and int(row["next_attempt_at_ms"]) > int(now_ms)
+        ]
+        if leased:
+            # Another intent of this Event is still owned. Wait for it rather than poll it: its end wakes this.
+            self._postpone_work(event_id, next_at_ms=min(leased))
             return {"status": "overlap"}
         if others:
             # Superseded unsent reservations of this Event: retire them, never a frozen send.
@@ -1326,34 +1465,6 @@ class EventUpdateStorage:
                 "DELETE FROM news_delivery_queue WHERE intent_id = ANY(%s)",
                 ([str(row["intent_id"]) for row in others],),
             )
-        self.conn.execute(
-            """
-            INSERT INTO news_notification_decisions
-              (decision_ref,event_id,update_ref,channel,input_digest,input_snapshot,plan,origin,created_at_ms)
-            VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,'editorial_v1',%s)
-            ON CONFLICT DO NOTHING
-            """,
-            (
-                plan.record_ref,
-                event_id,
-                plan.update_ref,
-                plan.channel,
-                plan.assessment_input_digest,
-                _dumps(plan.assessment_input or {}),
-                plan_json,
-                int(now_ms),
-            ),
-        )
-        stored = self.conn.execute(
-            "SELECT decision_ref,plan FROM news_notification_decisions WHERE decision_ref = %s",
-            (plan.record_ref,),
-        ).fetchone()
-        if stored is None:
-            raise EventUpdateConflict("news_notification_decision_missing")
-        plan = NotificationPlan.model_validate(stored["plan"]).model_copy(
-            update={"reader_revision": plan.reader_revision, "decision_ref": str(stored["decision_ref"])}
-        )
-        plan_json = plan.model_dump_json()
 
         def recorded(intent: str | None = None, card: Any = None) -> dict[str, Any]:
             return {
@@ -1365,19 +1476,19 @@ class EventUpdateStorage:
 
         attempts = int(work["attempts"])
         if plan.action == "no_notification":
-            self._settle_work(event_id, plan, plan_json, state="done", attempts=0, next_at_ms=now_ms, now_ms=now_ms)
+            self._settle_work(event_id, plan, state="done", attempts=0, next_at_ms=now_ms, now_ms=now_ms)
             return recorded()
         if plan.action == "unresolved":
-            self._retry_work(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
+            self._wait_work(event_id, plan, attempts=attempts, now_ms=now_ms)
             return recorded()
         intent_id = plan.intent_id
         ledger = self.conn.execute("SELECT state FROM news_deliveries WHERE intent_id = %s", (intent_id,)).fetchone()
         if ledger is not None:
-            if ledger["state"] in ("sent", "terminal"):
-                # This exact selection already reached its final outcome: the plan is recorded, not resent.
-                self._complete_plan(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
+            if ledger["state"] == "sending":
+                self._wait_work(event_id, plan, attempts=attempts, now_ms=now_ms)
             else:
-                self._wait_work(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
+                # This exact selection already reached its final outcome: the plan is recorded, not resent.
+                self._complete_plan(event_id, plan, attempts=attempts, now_ms=now_ms)
             return {"status": "already_settled"}
         selected = list(plan.selected_claim_refs)
         reserved = self.conn.execute(
@@ -1407,111 +1518,116 @@ class EventUpdateStorage:
         if reserved is None:
             existing = self.conn.execute(
                 """
-                SELECT state, attempts, lease_token, next_attempt_at_ms, frozen_card, decision_ref
+                SELECT state, lease_token, next_attempt_at_ms, frozen_card, error_code
                   FROM news_delivery_queue WHERE intent_id = %s FOR UPDATE
                 """,
                 (intent_id,),
             ).fetchone()
             if existing["state"] == "dead":
-                self._complete_plan(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
+                # This selection already failed as an unsent intent; only an explicit retry revives it.
+                self._settle_work(
+                    event_id,
+                    plan,
+                    state="failed",
+                    attempts=attempts,
+                    next_at_ms=now_ms,
+                    now_ms=now_ms,
+                    error_code=str(existing["error_code"] or "news_delivery_intent_dead"),
+                )
                 return {"status": "already_settled"}
             if existing["lease_token"] is not None and int(existing["next_attempt_at_ms"]) > int(now_ms):
                 return {"status": "overlap"}
-            if int(existing["attempts"]) >= INTENT_ATTEMPTS_MAX:
-                self.conn.execute(
-                    """
-                    UPDATE news_delivery_queue
-                       SET state = 'dead', lease_token = NULL, settled_at_ms = %s, updated_at_ms = %s,
-                           error_code = COALESCE(error_code, 'news_delivery_attempts_exhausted')
-                     WHERE intent_id = %s
-                    """,
-                    (int(now_ms), int(now_ms), intent_id),
-                )
-                self._complete_plan(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
-                return {"status": "already_settled"}
+            # A re-lease sends under the decision just recorded, not the one that first reserved the intent.
             self.conn.execute(
                 """
                 UPDATE news_delivery_queue
-                   SET lease_token = %s, next_attempt_at_ms = %s,
-                       last_attempt_at_ms = %s, updated_at_ms = %s
+                   SET lease_token = %s, next_attempt_at_ms = %s, last_attempt_at_ms = %s, updated_at_ms = %s,
+                       decision_ref = %s, plan_key = %s
                  WHERE intent_id = %s
                 """,
-                (lease_token, int(now_ms) + int(lease_ms), int(now_ms), int(now_ms), intent_id),
+                (
+                    lease_token,
+                    int(now_ms) + int(lease_ms),
+                    int(now_ms),
+                    int(now_ms),
+                    plan.record_ref,
+                    plan.key,
+                    intent_id,
+                ),
             )
             frozen_card = existing["frozen_card"]
-            if existing["decision_ref"] is not None and existing["decision_ref"] != plan.record_ref:
-                original = self.conn.execute(
-                    "SELECT plan FROM news_notification_decisions WHERE decision_ref = %s",
-                    (existing["decision_ref"],),
-                ).fetchone()
-                if original is None:
-                    raise EventUpdateConflict("news_intent_decision_missing")
-                plan = NotificationPlan.model_validate(original["plan"]).model_copy(
-                    update={"reader_revision": plan.reader_revision, "decision_ref": str(existing["decision_ref"])}
-                )
-                plan_json = plan.model_dump_json()
         # The marker stays pending while the reserved intent is in flight. If this turn dies before
-        # the send is settled, the repair turn re-plans after the lease and reclaims the same identity.
-        retry_ms = NOTIFICATION_RETRY_MS[0] if plan.deferred_claim_refs else 0
+        # the send is settled, the marker comes due after the lease and reclaims the same identity.
         self._settle_work(
-            event_id,
-            plan,
-            plan_json,
-            state="pending",
-            attempts=attempts,
-            next_at_ms=int(now_ms) + max(int(lease_ms), retry_ms),
-            now_ms=now_ms,
+            event_id, plan, state="pending", attempts=attempts, next_at_ms=int(now_ms) + int(lease_ms), now_ms=now_ms
         )
         return recorded(intent_id, frozen_card)
 
-    def _complete_plan(
-        self, event_id: str, plan: NotificationPlan, plan_json: str, *, attempts: int, now_ms: int
-    ) -> None:
-        # Deferred claims keep the marker pending for a later turn; otherwise this head is planned.
+    def _complete_plan(self, event_id: str, plan: NotificationPlan, *, attempts: int, now_ms: int) -> None:
+        # Deferred claims keep the marker waiting for a later turn; otherwise this head is planned.
         if plan.deferred_claim_refs:
-            self._wait_work(event_id, plan, plan_json, attempts=attempts, now_ms=now_ms)
+            self._wait_work(event_id, plan, attempts=attempts, now_ms=now_ms)
         else:
-            self._settle_work(event_id, plan, plan_json, state="done", attempts=0, next_at_ms=now_ms, now_ms=now_ms)
+            self._settle_work(event_id, plan, state="done", attempts=0, next_at_ms=now_ms, now_ms=now_ms)
 
-    def _complete_intent(self, event_id: str, content_revision: str, *, now_ms: int) -> None:
-        """An intent reached its final outcome: its plan is complete unless the head moved on."""
+    def _intent_ended(
+        self,
+        event_id: str,
+        content_revision: str,
+        decision_ref: str | None,
+        *,
+        now_ms: int,
+        error_code: str | None = None,
+    ) -> None:
+        """An intent reached its end: it completes -- or, with an error code, fails -- the plan it was sent for.
+
+        Only the work's current decision is completed by its own intent. Any other intent ending wakes the
+        Event's pending work instead, which may be a newer head waiting for exactly this send to finish.
+        """
 
         work = self.conn.execute(
             """
-            SELECT w.attempts, d.plan, w.decision_ref, w.content_revision, w.state
+            SELECT w.attempts, w.state, w.content_revision, w.decision_ref, d.plan
               FROM news_notification_work w
               LEFT JOIN news_notification_decisions d ON d.decision_ref = w.decision_ref
              WHERE w.event_id = %s AND w.channel = %s FOR UPDATE OF w
             """,
             (event_id, NEWS_CHANNEL),
         ).fetchone()
-        if work is None or work["plan"] is None or work["content_revision"] != content_revision:
+        if work is None or work["state"] != "pending":
+            return
+        if work["content_revision"] != content_revision or work["plan"] is None or work["decision_ref"] != decision_ref:
+            self._wake_work(event_id, now_ms=now_ms)
             return
         plan = NotificationPlan.model_validate(work["plan"]).model_copy(
             update={"decision_ref": str(work["decision_ref"])}
         )
-        self._complete_plan(event_id, plan, _dumps(work["plan"]), attempts=int(work["attempts"]), now_ms=now_ms)
+        if error_code is None:
+            self._complete_plan(event_id, plan, attempts=int(work["attempts"]), now_ms=now_ms)
+        else:
+            self._settle_work(
+                event_id,
+                plan,
+                state="failed",
+                attempts=int(work["attempts"]),
+                next_at_ms=now_ms,
+                now_ms=now_ms,
+                error_code=error_code,
+            )
 
-    def _retry_work(self, event_id: str, plan: NotificationPlan, plan_json: str, *, attempts: int, now_ms: int) -> None:
-        spent = min(attempts + 1, NOTIFICATION_ATTEMPTS_MAX)
+    def _wait_work(self, event_id: str, plan: NotificationPlan, *, attempts: int, now_ms: int) -> None:
+        """Only a send of this Event still in flight is waited on. Waiting spends no attempt.
+
+        It is bounded by that send: its settlement wakes this work, and a send whose owner is gone is
+        held ambiguous by the reconciliation within `SENDING_ORPHAN_MS`, after which nothing waits on it.
+        """
+
         self._settle_work(
             event_id,
             plan,
-            plan_json,
-            state="pending",
-            attempts=spent,
-            next_at_ms=int(now_ms) + _retry_delay(NOTIFICATION_RETRY_MS, spent),
-            now_ms=now_ms,
-        )
-
-    def _wait_work(self, event_id: str, plan: NotificationPlan, plan_json: str, *, attempts: int, now_ms: int) -> None:
-        self._settle_work(
-            event_id,
-            plan,
-            plan_json,
             state="pending",
             attempts=attempts,
-            next_at_ms=int(now_ms) + NOTIFICATION_RETRY_MS[0],
+            next_at_ms=int(now_ms) + NOTIFICATION_WAIT_MS,
             now_ms=now_ms,
         )
 
@@ -1519,17 +1635,18 @@ class EventUpdateStorage:
         self,
         event_id: str,
         plan: NotificationPlan,
-        plan_json: str,
         *,
         state: str,
         attempts: int,
         next_at_ms: int,
         now_ms: int,
+        error_code: str | None = None,
     ) -> None:
         self.conn.execute(
             """
             UPDATE news_notification_work
-               SET state = %s, plan = NULL, decision_ref = %s, reader_revision = %s, attempts = %s,
+               SET state = %s, decision_ref = %s, reader_revision = %s, attempts = %s,
+                   last_error_code = CASE WHEN %s = 'done' THEN NULL ELSE COALESCE(%s, last_error_code) END,
                    next_attempt_at_ms = %s, updated_at_ms = %s
              WHERE event_id = %s AND channel = %s
             """,
@@ -1538,6 +1655,8 @@ class EventUpdateStorage:
                 plan.record_ref,
                 plan.reader_revision,
                 attempts,
+                state,
+                error_code,
                 int(next_at_ms),
                 int(now_ms),
                 event_id,
@@ -1545,16 +1664,38 @@ class EventUpdateStorage:
             ),
         )
 
+    def _postpone_work(self, event_id: str, *, next_at_ms: int) -> None:
+        """Move the Event's pending work to `next_at_ms` without touching its plan, attempts or CAS stamp."""
+
+        self.conn.execute(
+            "UPDATE news_notification_work SET next_attempt_at_ms = %s "
+            "WHERE event_id = %s AND channel = %s AND state = 'pending'",
+            (int(next_at_ms), event_id, NEWS_CHANNEL),
+        )
+
+    def _wake_work(self, event_id: str, *, now_ms: int) -> None:
+        """Make the Event's pending work due now, if it was waiting; nothing else about it changes."""
+
+        self.conn.execute(
+            "UPDATE news_notification_work SET next_attempt_at_ms = %s "
+            "WHERE event_id = %s AND channel = %s AND state = 'pending' AND next_attempt_at_ms > %s",
+            (int(now_ms), event_id, NEWS_CHANNEL, int(now_ms)),
+        )
+
     def _pend_notification(
         self, event_id: str, *, expected_content_revision: str, next_at_ms: int, now_ms: int
     ) -> None:
-        self.conn.execute(
+        """An intent of this revision is owed again at `next_at_ms`; a newer head's work is woken now."""
+
+        updated = self.conn.execute(
             """
             UPDATE news_notification_work SET state = 'pending', next_attempt_at_ms = %s, updated_at_ms = %s
-             WHERE event_id = %s AND channel = %s AND content_revision = %s
+             WHERE event_id = %s AND channel = %s AND content_revision = %s AND state <> 'failed'
             """,
             (int(next_at_ms), int(now_ms), event_id, NEWS_CHANNEL, expected_content_revision),
         )
+        if not updated.rowcount:
+            self._wake_work(event_id, now_ms=now_ms)
 
     # ------------------------------------------------------------------ intent card, send and settlement
     def lookup_card_copy(self, *, input_digest: str) -> dict[str, Any] | None:
@@ -1624,12 +1765,13 @@ class EventUpdateStorage:
         card: FrozenCard,
         watch_symbols: Iterable[str],
         now_ms: int,
+        timings_json: str | None = None,
     ) -> BeginSendStatus:
         """Recheck head, reader revision, lease and in-flight overlap, then freeze `sending`.
 
-        A changed head, reader or overlapping send releases the unsent reservation (its frozen card is
-        kept for the same identity) and leaves notification pending. An existing ledger row is never
-        touched.
+        A changed head, related reader or overlapping send releases the unsent reservation (its frozen card
+        is kept for the same identity) and leaves notification pending. An existing ledger row is never
+        touched. The send's timings are kept beside its reader-history context.
         """
 
         identity_row = self.conn.execute(
@@ -1659,11 +1801,10 @@ class EventUpdateStorage:
         head = self.conn.execute(
             "SELECT update_ref FROM news_event_update_heads WHERE event_id = %s", (event_id,)
         ).fetchone()
-        stamp = reader_revision_stamp(plan.reader_revision)
         head_changed = head is None or head["update_ref"] != plan.update_ref
         reader_changed = (
             not head_changed
-            and self._reader_revision(event_id=event_id, stamp_ms=stamp, watch_symbols=watch_symbols)
+            and self._current_reader_revision(event_id, now_ms=now_ms, watch_symbols=watch_symbols)
             != plan.reader_revision
         )
         overlap = self.conn.execute(
@@ -1712,12 +1853,12 @@ class EventUpdateStorage:
                      'event_id', e.event_id,
                      'intent_id', %(intent)s::text,
                      'headline_zh', %(headline)s::text,
-                     'why_zh', '',
                      'comparison_title', e.comparison_title,
                      'comparison_fingerprint', e.comparison_fingerprint,
                      'dedupe_family', e.dedupe_family,
                      'storyline_key', e.storyline_key,
-                     'canonical_assets', canonical.symbols),
+                     'canonical_assets', canonical.symbols,
+                     'timings', %(timings)s::jsonb),
                    %(copy_digest)s, %(copy_document)s::jsonb
               FROM news_events e CROSS JOIN canonical
              WHERE e.event_id = %(event)s
@@ -1737,6 +1878,7 @@ class EventUpdateStorage:
                 "key": bool(queued["plan_key"]),
                 "decision": queued["decision_ref"],
                 "headline": card.headline_zh,
+                "timings": timings_json,
                 "copy_digest": queued["card_copy_input_digest"],
                 "copy_document": _dumps(queued["card_copy_document"]),
             },
@@ -1761,9 +1903,10 @@ class EventUpdateStorage:
 
         Only a `sending` row with this exact payload is settled. Sent keeps the body, digest, provider
         message id and the provider's own receipt (what an in-place edit is later fenced by); a provider
-        that answers with no message id is recorded with none. Ambiguous is held for reconciliation; a
-        retryable not-sent releases the identity for the same payload under the queue's attempt bound
-        and the provider's own `Retry-After`, otherwise it is terminal.
+        that answers with no message id is recorded with none. Ambiguous is held, and its claims count as
+        possibly sent. A retryable not-sent never reached a reader, so its `sending` row is removed and the
+        identity is released for the same payload under the queue's attempt bound and the provider's own
+        `Retry-After`; the last one ends the unsent intent and fails the work. A refused one is terminal.
         """
 
         identity_row = self.conn.execute(
@@ -1794,7 +1937,7 @@ class EventUpdateStorage:
         }
         ledger = self.conn.execute(
             """
-            SELECT event_id, state, payload_sha256, content_revision, error_code, settlement FROM news_deliveries
+            SELECT event_id, state, payload_sha256, content_revision, decision_ref, settlement FROM news_deliveries
              WHERE intent_id = %s FOR UPDATE
             """,
             (intent_id,),
@@ -1810,6 +1953,7 @@ class EventUpdateStorage:
             return "already_settled" if ledger["settlement"] == expected else "conflict"
         event_id = str(ledger["event_id"])
         content_revision = str(ledger["content_revision"])
+        decision_ref = ledger["decision_ref"]
         queued = self.conn.execute(
             "SELECT attempts, lease_token, last_settlement FROM news_delivery_queue WHERE intent_id = %s FOR UPDATE",
             (intent_id,),
@@ -1828,7 +1972,7 @@ class EventUpdateStorage:
                 (_dumps(receipt), _dumps(expected), now_ms, intent_id),
             )
             self.conn.execute("DELETE FROM news_delivery_queue WHERE intent_id = %s", (intent_id,))
-            self._complete_intent(event_id, content_revision, now_ms=now_ms)
+            self._intent_ended(event_id, content_revision, decision_ref, now_ms=now_ms)
             return "sent"
         if state == "ambiguous":
             self.conn.execute(
@@ -1840,30 +1984,18 @@ class EventUpdateStorage:
                 (error_code or "send_outcome_ambiguous", _dumps(expected), now_ms, intent_id),
             )
             self.conn.execute("DELETE FROM news_delivery_queue WHERE intent_id = %s", (intent_id,))
-            self._complete_intent(event_id, content_revision, now_ms=now_ms)
+            self._intent_ended(event_id, content_revision, decision_ref, now_ms=now_ms)
             return "ambiguous"
-        owned = queued is not None and queued["lease_token"] == lease_token
-        if retryable and owned and int(queued["attempts"]) + 1 < INTENT_ATTEMPTS_MAX:
-            failures = int(queued["attempts"]) + 1
-            next_at_ms = now_ms + max(_retry_delay(INTENT_RETRY_MS, failures), int(retry_after_ms or 0))
+        code = error_code or "send_not_sent"
+        if retryable:
             self.conn.execute("DELETE FROM news_deliveries WHERE intent_id = %s AND state = 'sending'", (intent_id,))
-            self.conn.execute(
-                """
-                UPDATE news_delivery_queue
-                   SET attempts = attempts + 1, lease_token = NULL, error_code = %s,
-                       next_attempt_at_ms = %s, updated_at_ms = %s, last_settlement=%s::jsonb
-                 WHERE intent_id = %s
-                """,
-                (
-                    error_code or "send_not_sent",
-                    next_at_ms,
-                    now_ms,
-                    _dumps(expected),
-                    intent_id,
-                ),
-            )
-            self._pend_notification(
-                event_id, expected_content_revision=content_revision, next_at_ms=next_at_ms, now_ms=now_ms
+            self._fail_unsent_intent(
+                intent_id,
+                error_code=code,
+                retryable=True,
+                retry_after_ms=retry_after_ms,
+                now_ms=now_ms,
+                settlement=expected,
             )
             return "not_sent"
         self.conn.execute(
@@ -1872,7 +2004,7 @@ class EventUpdateStorage:
                    settlement = %s::jsonb, settled_at_ms = %s
              WHERE intent_id = %s
             """,
-            (error_code or "send_not_sent", _dumps(expected), now_ms, intent_id),
+            (code, _dumps(expected), now_ms, intent_id),
         )
         self.conn.execute(
             """
@@ -1882,41 +2014,51 @@ class EventUpdateStorage:
                    last_settlement = %s::jsonb
              WHERE intent_id = %s
             """,
-            (INTENT_ATTEMPTS_MAX, error_code or "send_not_sent", now_ms, now_ms, _dumps(expected), intent_id),
+            (INTENT_ATTEMPTS_MAX, code, now_ms, now_ms, _dumps(expected), intent_id),
         )
-        self._complete_intent(event_id, content_revision, now_ms=now_ms)
+        self._intent_ended(event_id, content_revision, decision_ref, now_ms=now_ms)
         return "terminal"
 
-    def record_intent_card_failure(self, *, intent_id: str, lease_token: str, error_code: str, now_ms: int) -> bool:
-        identity_row = self.conn.execute(
-            "SELECT event_id FROM news_delivery_queue WHERE intent_id=%s AND kind='update'", (intent_id,)
-        ).fetchone()
-        if identity_row is None:
-            return False
-        lock_event(self.conn, str(identity_row["event_id"]))
+    def _fail_unsent_intent(
+        self,
+        intent_id: str,
+        *,
+        error_code: str,
+        retryable: bool,
+        retry_after_ms: int | None,
+        now_ms: int,
+        lease_token: str | None = None,
+        settlement: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """One failure of an owned intent that never reached a reader: back off, or end it and fail the work."""
+
         row = self.conn.execute(
             """
             UPDATE news_delivery_queue
-               SET attempts = LEAST(attempts + 1, 3), lease_token = NULL, error_code = %s,
-                   state = CASE WHEN attempts + 1 >= %s THEN 'dead' ELSE 'pending' END,
-                   settled_at_ms = CASE WHEN attempts + 1 >= %s THEN %s::bigint END,
-                   next_attempt_at_ms = %s::bigint + (%s::bigint[])[GREATEST(1, LEAST(attempts + 1, %s))],
-                   updated_at_ms = %s
-             WHERE intent_id = %s AND kind = 'update' AND state = 'pending' AND lease_token = %s
-            RETURNING event_id, state, next_attempt_at_ms, content_revision
+               SET attempts = CASE WHEN %(retryable)s THEN LEAST(attempts + 1, %(max)s) ELSE %(max)s END,
+                   state = CASE WHEN %(retryable)s AND attempts + 1 < %(max)s THEN 'pending' ELSE 'dead' END,
+                   settled_at_ms = CASE WHEN %(retryable)s AND attempts + 1 < %(max)s
+                                        THEN NULL ELSE %(now)s::bigint END,
+                   next_attempt_at_ms = %(now)s::bigint + GREATEST(
+                     (%(delays)s::bigint[])[GREATEST(1, LEAST(attempts + 1, %(delay_n)s))], %(retry_after)s::bigint),
+                   lease_token = NULL, error_code = %(code)s, updated_at_ms = %(now)s,
+                   last_settlement = COALESCE(%(settlement)s::jsonb, last_settlement)
+             WHERE intent_id = %(intent)s AND kind = 'update' AND state = 'pending'
+               AND (%(lease)s::text IS NULL OR lease_token = %(lease)s)
+            RETURNING event_id, state, next_attempt_at_ms, content_revision, decision_ref
             """,
-            (
-                error_code,
-                INTENT_ATTEMPTS_MAX,
-                INTENT_ATTEMPTS_MAX,
-                int(now_ms),
-                int(now_ms),
-                list(INTENT_RETRY_MS),
-                len(INTENT_RETRY_MS),
-                int(now_ms),
-                intent_id,
-                lease_token,
-            ),
+            {
+                "retryable": bool(retryable),
+                "max": INTENT_ATTEMPTS_MAX,
+                "now": int(now_ms),
+                "delays": list(INTENT_RETRY_MS),
+                "delay_n": len(INTENT_RETRY_MS),
+                "retry_after": int(retry_after_ms or 0),
+                "code": error_code,
+                "settlement": None if settlement is None else _dumps(settlement),
+                "intent": intent_id,
+                "lease": lease_token,
+            },
         ).fetchone()
         if row is None:
             return False
@@ -1928,41 +2070,137 @@ class EventUpdateStorage:
                 now_ms=now_ms,
             )
         else:
-            self._complete_intent(str(row["event_id"]), str(row["content_revision"]), now_ms=now_ms)
+            self._intent_ended(
+                str(row["event_id"]),
+                str(row["content_revision"]),
+                row["decision_ref"],
+                now_ms=now_ms,
+                error_code=error_code,
+            )
         return True
+
+    def record_unsent_intent_failure(
+        self,
+        *,
+        intent_id: str,
+        lease_token: str,
+        error_code: str,
+        retryable: bool,
+        retry_after_ms: int | None,
+        now_ms: int,
+    ) -> bool:
+        """A card failure or a proven unsent preflight: fenced by the lease, never through a `sending` row."""
+
+        identity_row = self.conn.execute(
+            "SELECT event_id FROM news_delivery_queue WHERE intent_id=%s AND kind='update'", (intent_id,)
+        ).fetchone()
+        if identity_row is None:
+            return False
+        lock_event(self.conn, str(identity_row["event_id"]))
+        return self._fail_unsent_intent(
+            intent_id,
+            error_code=error_code,
+            retryable=retryable,
+            retry_after_ms=retry_after_ms,
+            now_ms=now_ms,
+            lease_token=lease_token,
+        )
+
+    def terminalize_interrupted_deliveries(
+        self, *, now_ms: int, exclude_intent_ids: Sequence[str] = (), limit: int = ORPHAN_SEND_BATCH_MAX
+    ) -> int:
+        """Hold ambiguous every `sending` row whose owner is gone, and complete the plan it was sent for.
+
+        An owner outlives neither its provider call nor its bounded settlement, so a row older than
+        `SENDING_ORPHAN_MS` has none -- except the sends this process says it still holds. Run at start and
+        periodically, so an orphan never outlives a restart or keeps its claims waiting.
+        """
+
+        rows = self.conn.execute(
+            """
+            SELECT intent_id, event_id FROM news_deliveries
+             WHERE kind = 'update' AND state = 'sending' AND attempted_at_ms < %s
+               AND NOT (intent_id = ANY(%s::text[]))
+             ORDER BY event_id, intent_id
+             LIMIT %s
+            """,
+            (int(now_ms) - SENDING_ORPHAN_MS, list(exclude_intent_ids), int(limit)),
+        ).fetchall()
+        settled = 0
+        for candidate in rows:
+            lock_event(self.conn, str(candidate["event_id"]))
+            row = self.conn.execute(
+                """
+                UPDATE news_deliveries SET state = 'ambiguous', error_code = 'ambiguous_after_crash', settled_at_ms = %s
+                 WHERE intent_id = %s AND state = 'sending'
+                RETURNING event_id, content_revision, decision_ref
+                """,
+                (int(now_ms), candidate["intent_id"]),
+            ).fetchone()
+            if row is None:
+                continue
+            self.conn.execute("DELETE FROM news_delivery_queue WHERE intent_id = %s", (candidate["intent_id"],))
+            self._intent_ended(str(row["event_id"]), str(row["content_revision"]), row["decision_ref"], now_ms=now_ms)
+            settled += 1
+        return settled
 
     def defer_notification_work(
         self,
         *,
         event_id: str,
         channel: str,
-        expected_content_revision: str,
+        expected_content_revision: str | None,
         expected_work_updated_at_ms: int | None = None,
+        error_code: str,
         now_ms: int,
     ) -> bool:
-        """Spend only the failed snapshot's budget. A superseded turn is a successful no-op."""
+        """Spend one attempt of the failed snapshot's work; the last one fails it. A superseded turn is a no-op."""
 
         lock_event(self.conn, event_id)
         cursor = self.conn.execute(
             """
             UPDATE news_notification_work
-               SET attempts = attempts + 1,
-                   next_attempt_at_ms = %s::bigint + (%s::bigint[])[attempts + 1],
-                   updated_at_ms = GREATEST(%s, updated_at_ms + 1)
-             WHERE event_id = %s AND channel = %s AND content_revision = %s
-               AND state = 'pending' AND attempts < %s
-               AND (%s::bigint IS NULL OR updated_at_ms = %s)
+               SET attempts = LEAST(attempts + 1, %(max)s),
+                   state = CASE WHEN attempts + 1 >= %(max)s THEN 'failed' ELSE 'pending' END,
+                   last_error_code = %(code)s,
+                   next_attempt_at_ms = CASE WHEN attempts + 1 >= %(max)s THEN next_attempt_at_ms
+                     ELSE %(now)s::bigint + (%(delays)s::bigint[])[attempts + 1] END,
+                   updated_at_ms = GREATEST(%(now)s, updated_at_ms + 1)
+             WHERE event_id = %(event)s AND channel = %(channel)s AND state = 'pending'
+               AND (%(revision)s::text IS NULL OR content_revision = %(revision)s)
+               AND (%(updated)s::bigint IS NULL OR updated_at_ms = %(updated)s)
+            """,
+            {
+                "max": NOTIFICATION_ATTEMPTS_MAX,
+                "code": error_code,
+                "now": int(now_ms),
+                "delays": list(NOTIFICATION_RETRY_MS),
+                "event": event_id,
+                "channel": channel,
+                "revision": expected_content_revision,
+                "updated": expected_work_updated_at_ms,
+            },
+        )
+        return bool(cursor.rowcount)
+
+    def postpone_notification_work(
+        self, *, event_id: str, channel: str, expected_content_revision: str | None, now_ms: int
+    ) -> bool:
+        """Put pending work off by one wait without spending an attempt or moving its CAS stamp."""
+
+        lock_event(self.conn, event_id)
+        cursor = self.conn.execute(
+            """
+            UPDATE news_notification_work SET next_attempt_at_ms = GREATEST(next_attempt_at_ms, %s)
+             WHERE event_id = %s AND channel = %s AND state = 'pending'
+               AND (%s::text IS NULL OR content_revision = %s)
             """,
             (
-                int(now_ms),
-                list(NOTIFICATION_RETRY_MS),
-                int(now_ms),
+                int(now_ms) + NOTIFICATION_WAIT_MS,
                 event_id,
                 channel,
                 expected_content_revision,
-                NOTIFICATION_ATTEMPTS_MAX,
-                expected_work_updated_at_ms,
-                expected_work_updated_at_ms,
+                expected_content_revision,
             ),
         )
         return bool(cursor.rowcount)
@@ -1971,37 +2209,23 @@ class EventUpdateStorage:
         rows = self.conn.execute(
             """
             SELECT event_id FROM news_notification_work
-             WHERE channel = %s AND state = 'pending' AND attempts < %s AND next_attempt_at_ms <= %s
+             WHERE channel = %s AND state = 'pending' AND next_attempt_at_ms <= %s
              ORDER BY next_attempt_at_ms, event_id
              LIMIT %s
             """,
-            (channel, NOTIFICATION_ATTEMPTS_MAX, int(now_ms), int(limit)),
+            (channel, int(now_ms), int(limit)),
         ).fetchall()
         return [str(row["event_id"]) for row in rows]
 
-    def notification_work(self, event_id: str, channel: str = NEWS_CHANNEL) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """SELECT w.*,d.plan AS effective_plan FROM news_notification_work w
-                 LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref
-                WHERE w.event_id=%s AND w.channel=%s""",
-            (event_id, channel),
-        ).fetchone()
-        if row is None:
-            return None
-        result = dict(row)
-        result["plan"] = result.pop("effective_plan") or result["plan"]
-        return result
-
-    def retry_failed_work(
-        self, *, event_id: str, kind: str, revision: str, now_ms: int, intent_id: str | None = None
-    ) -> bool:
+    def retry_failed_work(self, *, event_id: str, kind: str, revision: str, now_ms: int) -> bool:
         """Explicit operator recovery of one failed version, retaining facts, checkpoints and receipts.
 
-        Card recovery is limited to an unsent failed intent on the current version. A ledger row
-        (including a terminal or ambiguous send) is never erased or reopened by this operation.
+        Notification recovery reopens failed work of that exact content revision and revives its unsent
+        intents that failed. A ledger row (including a terminal or ambiguous send) is never erased or
+        reopened by this operation.
         """
 
-        if kind not in {"semantic", "notification", "card"} or (kind == "card") != bool(intent_id):
+        if kind not in {"semantic", "notification"}:
             raise ValueError("news_retry_work_target_invalid")
         if kind == "semantic":
             wanted = int(revision)
@@ -2019,40 +2243,27 @@ class EventUpdateStorage:
                 (int(now_ms), int(now_ms), event_id, wanted, int(now_ms)),
             )
             return bool(cursor.rowcount)
-        if kind == "notification":
-            cursor = self.conn.execute(
-                """
-                UPDATE news_notification_work SET attempts = 0, next_attempt_at_ms = %s, updated_at_ms = %s
-                 WHERE event_id = %s AND channel = %s AND content_revision = %s
-                   AND state = 'pending' AND attempts >= %s
-                """,
-                (int(now_ms), int(now_ms), event_id, NEWS_CHANNEL, revision, NOTIFICATION_ATTEMPTS_MAX),
-            )
-            return bool(cursor.rowcount)
-        work = self.conn.execute(
-            """
-            SELECT content_revision FROM news_notification_work
-             WHERE event_id = %s AND channel = %s AND content_revision = %s FOR UPDATE
-            """,
-            (event_id, NEWS_CHANNEL, revision),
-        ).fetchone()
-        if work is None:
-            return False
+        lock_event(self.conn, event_id)
         cursor = self.conn.execute(
+            """
+            UPDATE news_notification_work
+               SET state = 'pending', attempts = 0, next_attempt_at_ms = %s, updated_at_ms = %s
+             WHERE event_id = %s AND channel = %s AND content_revision = %s AND state = 'failed'
+            """,
+            (int(now_ms), int(now_ms), event_id, NEWS_CHANNEL, revision),
+        )
+        if not cursor.rowcount:
+            return False
+        self.conn.execute(
             """
             UPDATE news_delivery_queue q
                SET state = 'pending', attempts = 0, lease_token = NULL, last_attempt_at_ms = NULL,
                    settled_at_ms = NULL, next_attempt_at_ms = %s, updated_at_ms = %s
-             WHERE q.event_id = %s AND q.intent_id = %s AND q.content_revision = %s
-               AND q.kind = 'update' AND q.state = 'dead'
-               AND (q.lease_token IS NULL OR q.next_attempt_at_ms <= %s)
+             WHERE q.event_id = %s AND q.content_revision = %s AND q.kind = 'update' AND q.state = 'dead'
                AND NOT EXISTS (SELECT 1 FROM news_deliveries d WHERE d.intent_id = q.intent_id)
             """,
-            (int(now_ms), int(now_ms), event_id, intent_id, revision, int(now_ms)),
+            (int(now_ms), int(now_ms), event_id, revision),
         )
-        if not cursor.rowcount:
-            return False
-        self._pend_notification(event_id, expected_content_revision=revision, next_at_ms=now_ms, now_ms=now_ms)
         return True
 
     # ------------------------------------------------------------------ optional read budget
@@ -2144,7 +2355,6 @@ class EventUpdateStorage:
 
 __all__ = [
     "INTENT_LEASE_MS",
-    "NEWS_CHANNEL",
     "EventUpdateConflict",
     "EventUpdateStorage",
     "IntentLeaseLost",
@@ -2155,7 +2365,6 @@ __all__ = [
     "read_target_item_id",
     "read_target_ref",
     "reader_revision",
-    "reader_revision_stamp",
     "revision_evidence",
     "select_receipts",
 ]
