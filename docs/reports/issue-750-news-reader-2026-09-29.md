@@ -27,7 +27,7 @@ generated 新输入 120/120 成功，分两批调用并合并答案，批次 P50
 
 ### 固定事件序列
 
-[Nvidia / SpaceX 序列](../../tests/fixtures/news/issue_750_clusters.jsonl.gz)冻结了 9 条回购命题与 17 条 Starship 命题，25 条使用新 reader 输入重新提问，1 条 `retired` 由原确定性规则处理，未跳过。native 的推送数为 Nvidia **2/9**（1500 亿美元额度、FY2028 执行期）与 SpaceX **0/17**；generated 为 Nvidia **4/9**、SpaceX **0/17**，两次评测均 25/25 回答、无失败。generated 的四条 Nvidia 包含首条额度公告，以及“史上最大”、盘前涨幅和“正在回购 1500 亿美元”的后续表述；后三条有重复核心事实或常规市场反应的明显风险，未达到本 Issue 对重复推送的质量验收。逐条结果见 [native](../../tests/fixtures/news/issue_750_clusters_native_eval.json)与 [generated](../../tests/fixtures/news/issue_750_clusters_generated_eval.json)。另一次更强提示词的隔离试验把 Nvidia 降到 2 条，却使 SpaceX 产生 4 条推送且重复“首次入轨”；因此未采纳该改动，也未对验证集调切点。
+[Nvidia / SpaceX 序列](../../tests/fixtures/news/issue_750_clusters.jsonl.gz)冻结了 9 条回购命题与 17 条 Starship 命题，25 条使用新 reader 输入重新提问，1 条 `retired` 由原确定性规则处理，未跳过。native 的推送数为 Nvidia **2/9**（1500 亿美元额度、FY2028 执行期）与 SpaceX **0/17**；generated 为 Nvidia **4/9**、SpaceX **0/17**，两次评测均 25/25 回答、无失败。generated 的四条 Nvidia 包含首条额度公告，以及“史上最大”、盘前涨幅和“正在回购 1500 亿美元”的后续表述；后三条有重复核心事实或常规市场反应的明显风险，未达到本 Issue 对重复推送的质量验收。这三条的 `messages` 已包含此前“增加 1500 亿美元授权”的真实已送正文，所以此处是判断风险，不是召回漏掉该前情。逐条结果见 [native](../../tests/fixtures/news/issue_750_clusters_native_eval.json)与 [generated](../../tests/fixtures/news/issue_750_clusters_generated_eval.json)。另一次更强提示词的隔离试验把 Nvidia 降到 2 条，却使 SpaceX 产生 4 条推送且重复“首次入轨”；因此未采纳该改动，也未对验证集调切点。
 
 此序列固定的是旧策略产生的已送回执。反事实新推送会改变之后的历史，不能把此结果称为完整线上逐日重放。关键重复样本需由独立标注与发布前人工复核确认；在此之前 #750 的质量关闭条件仍未满足。
 
