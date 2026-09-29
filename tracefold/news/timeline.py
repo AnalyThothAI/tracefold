@@ -22,8 +22,11 @@ from .outcome import (
 from .update_view import CHANGE_KIND_ZH, INTENT_STATE_ZH, semantic_state
 
 
-def reader_delivery(deliveries: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
-    """The Event's representative reader card: its latest sent one, else its latest attempt.
+def reader_delivery(
+    deliveries: Sequence[Mapping[str, Any]], current_revision: str | None = None
+) -> Mapping[str, Any] | None:
+    """The Event's representative reader card: the current revision's latest attempt, else its latest sent
+    one, else its latest attempt. An earlier revision's receipt never hides the current one's outcome.
 
     The same order `storage.feed_sql` picks the feed row's `d` by, so the feed row and the detail agree.
     Market follow-up notifications use a separate ledger.
@@ -35,6 +38,7 @@ def reader_delivery(deliveries: Sequence[Mapping[str, Any]]) -> Mapping[str, Any
     return max(
         readers,
         key=lambda pair: (
+            current_revision is not None and pair[1].get("content_revision") == current_revision,
             pair[1].get("state") == "sent",
             int(pair[1].get("created_at_ms") or 0),
             str(pair[1].get("intent_id") or ""),
@@ -64,7 +68,7 @@ def event_timeline(
     Each intent carries its own receipt step.
     """
 
-    delivery = reader_delivery(deliveries)
+    delivery = reader_delivery(deliveries, (notification or {}).get("content_revision"))
     outcome = event_outcome(
         admission=event.get("admission"),
         delivery=delivery,

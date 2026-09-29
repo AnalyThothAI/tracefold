@@ -1762,19 +1762,101 @@
             "title": "Decision Zh",
             "type": "string"
           },
+          "earlier_intent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Earlier Intent Id"
+          },
+          "importance": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importance"
+          },
+          "importance_probabilities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importance Probabilities"
+          },
+          "novelty": {
+            "anyOf": [
+              {
+                "enum": [
+                  "known",
+                  "increment",
+                  "development",
+                  "in_flight",
+                  "unlinked"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Novelty"
+          },
+          "novelty_zh": {
+            "default": "",
+            "title": "Novelty Zh",
+            "type": "string"
+          },
+          "reader_backend": {
+            "anyOf": [
+              {
+                "enum": [
+                  "native",
+                  "generated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reader Backend"
+          },
           "reason": {
             "enum": [
+              "retired",
+              "send_outcome_unresolved",
+              "send_outcome_ambiguous",
+              "stale_source",
+              "known_to_reader",
+              "linked_send_in_flight",
+              "correction_of_sent",
+              "protected_listing",
+              "large_daily_move",
+              "reader_key",
+              "reader_push",
+              "reader_feed",
+              "reader_unavailable",
+              "reader_unassessed",
               "editor_notify",
               "editor_key",
               "editor_feed_only",
               "attention_unavailable_default_notify",
-              "protected_listing",
-              "large_daily_move",
-              "retired",
-              "stale_source",
-              "covered_by_sent_receipt",
-              "send_outcome_ambiguous",
-              "send_outcome_unresolved"
+              "covered_by_sent_receipt"
             ],
             "title": "Reason",
             "type": "string"
@@ -1783,6 +1865,22 @@
             "default": "",
             "title": "Reason Zh",
             "type": "string"
+          },
+          "render": {
+            "anyOf": [
+              {
+                "enum": [
+                  "full",
+                  "increment",
+                  "correction"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Render"
           },
           "statement": {
             "anyOf": [
@@ -4893,27 +4991,6 @@
             "title": "Action Zh",
             "type": "string"
           },
-          "assessment_error_code": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Assessment Error Code"
-          },
-          "assessment_status": {
-            "default": "skipped",
-            "enum": [
-              "available",
-              "unavailable",
-              "skipped"
-            ],
-            "title": "Assessment Status",
-            "type": "string"
-          },
           "claim_decisions": {
             "items": {
               "$ref": "#/components/schemas/NewsClaimDecisionData"
@@ -4937,6 +5014,25 @@
             "title": "Key",
             "type": "boolean"
           },
+          "origin": {
+            "enum": [
+              "reader_v2",
+              "editorial_v1"
+            ],
+            "title": "Origin",
+            "type": "string"
+          },
+          "reader_identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reader Identity"
+          },
           "reader_revision": {
             "title": "Reader Revision",
             "type": "string"
@@ -4944,8 +5040,9 @@
           "reason": {
             "enum": [
               "uncovered_claims",
-              "send_outcome_unresolved",
-              "no_uncovered_actionable_claims"
+              "awaiting",
+              "no_uncovered_actionable_claims",
+              "send_outcome_unresolved"
             ],
             "title": "Reason",
             "type": "string"
@@ -4961,6 +5058,7 @@
           }
         },
         "required": [
+          "origin",
           "action",
           "reason",
           "update_ref",
@@ -5309,6 +5407,32 @@
               }
             ],
             "title": "News Program Identity"
+          },
+          "reader_judgment_backend": {
+            "anyOf": [
+              {
+                "enum": [
+                  "native",
+                  "generated"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reader Judgment Backend"
+          },
+          "reader_judgment_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reader Judgment Model"
           },
           "reviewed_decision_should_push_24h": {
             "default": 0,

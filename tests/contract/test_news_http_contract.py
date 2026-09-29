@@ -859,7 +859,8 @@ def test_event_detail_serves_the_event_update_and_its_processing(client) -> None
     processing = data["processing"]
     assert processing["semantic"]["state"] == "done"
     decisions = processing["notification"]["plan"]["claim_decisions"]
-    assert {row["reason_zh"] for row in decisions} == {"编辑判断为重点"}
+    assert {row["reason_zh"] for row in decisions} == {"新增信息重要，标为重点"}
+    assert processing["notification"]["plan"]["origin"] == "reader_v2"
     assert processing["notification"]["plan"]["key"] is True
     assert processing["intents"][0]["state"] == "sent" and processing["intents"][0]["body"] == body
 

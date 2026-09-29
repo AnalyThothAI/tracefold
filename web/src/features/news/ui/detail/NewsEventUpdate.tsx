@@ -404,6 +404,11 @@ export function NewsProcessingState({ processing }: { processing: NewsProcessing
                       {row.decision_zh || row.decision}
                     </span>
                     <span>{row.reason_zh || row.reason}</span>
+                    {row.novelty_zh ? (
+                      <span className="news-update-badge" data-kind={row.novelty ?? undefined}>
+                        {row.novelty_zh}
+                      </span>
+                    ) : null}
                     <small>{row.statement ?? row.claim_ref}</small>
                   </li>
                 ))}

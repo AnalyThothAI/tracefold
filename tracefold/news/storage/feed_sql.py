@@ -110,7 +110,7 @@ EVENT_FEEDBACK_SQL: Final = """
     SELECT f.review_id,f.decision_ref,f.claim_ref,f.reviewer,f.should_push,f.note,f.created_at_ms
     FROM news_notification_feedback f
     JOIN news_notification_decisions d ON d.decision_ref=f.decision_ref
-   WHERE d.event_id=%s AND d.origin='editorial_v1'
+   WHERE d.event_id=%s AND d.origin IN ('editorial_v1','reader_v2')
    ORDER BY f.created_at_ms DESC,f.review_id DESC"""
 STATUS_INGEST_SQL: Final = """
     SELECT connected, last_frame_at_ms, last_publish_at_ms, last_error_code, broker_snapshot
@@ -158,7 +158,7 @@ STATUS_PIPELINE_SQL: Final = """
       SELECT count(*) AS decisions_24h,
              count(*) FILTER (WHERE plan->>'action'='notify') AS selected_24h
         FROM news_notification_decisions
-       WHERE origin='editorial_v1' AND created_at_ms >= %s
+       WHERE origin IN ('editorial_v1','reader_v2') AND created_at_ms >= %s
     )
     SELECT event_counts.*,decision_counts.* FROM event_counts CROSS JOIN decision_counts
 """
@@ -215,7 +215,7 @@ STATUS_DELIVERY_SQL: Final = f"""
 STATUS_FUNNEL_DECISIONS_SQL: Final = """
     SELECT plan->>'action' AS action,count(*) AS n
       FROM news_notification_decisions
-     WHERE origin='editorial_v1' AND created_at_ms >= %s
+     WHERE origin IN ('editorial_v1','reader_v2') AND created_at_ms >= %s
      GROUP BY 1
 """
 
@@ -234,7 +234,7 @@ STATUS_FUNNEL_REVIEW_RATIOS_SQL: Final = """
       FROM news_notification_feedback f
       JOIN news_notification_decisions d ON d.decision_ref=f.decision_ref
       LEFT JOIN news_deliveries delivery ON delivery.decision_ref=d.decision_ref
-     WHERE f.created_at_ms >= %s AND d.origin='editorial_v1'
+     WHERE f.created_at_ms >= %s AND d.origin IN ('editorial_v1','reader_v2')
 """
 
 _JUDGED_SQL: Final = "EXISTS (SELECT 1 FROM news_event_update_heads head WHERE head.event_id=current_event.event_id)"
@@ -268,15 +268,20 @@ STATUS_FUNNEL_TOTALS_SQL: Final = f"""
 
 # The joins the page and the count query share, after the Event, its leader Item and its current Evidence:
 # the EventUpdate plane and the reader deliveries. Every
-# EventUpdate join is on a primary key. `d` is the Event's representative ledger row -- its latest sent
-# card, else its latest attempt -- over the `(event_id, kind)` index; `q` is its latest intent still owed
-# with no ledger row, from one pass over the in-flight queue.
-_READER_DELIVERY_ORDER_SQL: Final = "(dl.state = 'sent') DESC, dl.created_at_ms DESC, dl.intent_id DESC"
+# EventUpdate join is on a primary key. `d` is the Event's representative ledger row -- the current
+# revision's latest attempt, else its latest sent card, else its latest attempt -- over the
+# `(event_id, kind)` index, so an earlier revision's receipt never hides what happened to the current one
+# (#742 R1); `q` is its latest intent still owed with no ledger row, from one pass over the in-flight queue.
+_READER_DELIVERY_ORDER_SQL: Final = (
+    "(dl.content_revision = current_head.content_revision) DESC, (dl.state = 'sent') DESC,"
+    " dl.created_at_ms DESC, dl.intent_id DESC"
+)
 _FEED_PAGE_DELIVERY_SQL: Final = f"""
           LEFT JOIN LATERAL (
             SELECT dl.kind, dl.state, dl.settled_at_ms, dl.error_code, dl.card, dl.plan_key,
                    dl.content_revision, dl.payload_sha256
               FROM news_deliveries dl
+              LEFT JOIN news_event_update_heads current_head ON current_head.event_id = dl.event_id
              WHERE dl.event_id = e.event_id AND dl.kind IN {READER_DELIVERY_KINDS_SQL}
              ORDER BY {_READER_DELIVERY_ORDER_SQL}
              LIMIT 1
@@ -288,6 +293,7 @@ _FEED_COUNTS_DELIVERY_SQL: Final = f"""
           LEFT JOIN (
             SELECT DISTINCT ON (dl.event_id) dl.event_id, dl.state
               FROM news_deliveries dl
+              LEFT JOIN news_event_update_heads current_head ON current_head.event_id = dl.event_id
              WHERE dl.kind IN {READER_DELIVERY_KINDS_SQL}
              ORDER BY dl.event_id, {_READER_DELIVERY_ORDER_SQL}
           ) d ON d.event_id = e.event_id
@@ -351,10 +357,12 @@ def feed_page_sql(where_sql: str) -> str:
                      AND changed.change ->> 'kind' IN ('new_fact', 'parameter_change', 'phase_change', 'scope_change',
                                                       'correction', 'conflict', 'possible_new')
                      AND NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+                     AND NOT (COALESCE(u.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
                    ORDER BY changed.position LIMIT 1),
                  (SELECT claim ->> 'statement'
                     FROM jsonb_array_elements(u.document -> 'claims') WITH ORDINALITY AS listed(claim, position)
                    WHERE NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+                     AND NOT (COALESCE(u.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
                    ORDER BY position LIMIT 1)
                ) AS update_claim_headline,
                nw.state AS notification_state, nw.attempts AS notification_attempts,

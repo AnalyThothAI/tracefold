@@ -1047,7 +1047,7 @@ describe("NewsPage", () => {
 
     // The headline a reader actually received, not a verdict's and not the wire title.
     await screen.findByRole("heading", { level: 1, name: "钢铁进口关税上调至 50%" });
-    expect(screen.getByText(/通知：通知 · 有命题未被已送达内容覆盖/)).toBeVisible();
+    expect(screen.getByText(/通知：通知 · 有命题值得通知/)).toBeVisible();
     expect(screen.queryByRole("region", { name: "旧版判定" })).toBeNull();
     expect(screen.queryByRole("region", { name: "本次判断的证据" })).toBeNull();
     expect(screen.getByText("关税")).toBeInTheDocument();
@@ -1084,8 +1084,9 @@ describe("NewsPage", () => {
     const processing = screen.getByRole("region", { name: "处理状态" });
     expect(within(processing).getByText("语义处理：已完成")).toBeVisible();
     fireEvent.click(within(processing).getByText("查看逐条决定和处理详情"));
-    expect(within(processing).getByText("通知 · 有命题未被已送达内容覆盖")).toBeInTheDocument();
-    expect(within(processing).getByText("已送达内容已覆盖")).toBeInTheDocument();
+    expect(within(processing).getByText("通知 · 有命题值得通知")).toBeInTheDocument();
+    expect(within(processing).getByText("读者已收到同一事实")).toBeInTheDocument();
+    expect(within(processing).getByText("进展")).toBeInTheDocument();
     expect(within(processing).getByText("【重点】钢铁进口关税上调至 50%")).toBeInTheDocument();
   });
 
