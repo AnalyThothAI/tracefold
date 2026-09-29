@@ -171,6 +171,7 @@ docker compose exec -T workers tracefold news wallets --hours 24 --queue-limit 1
 
 ```bash
 docker compose exec -T analysis tracefold trading cases --limit 20
+docker compose exec -T analysis tracefold trading scoreboard --since 2026-09-01 --until 2026-09-08
 docker compose exec -T analysis tracefold trading signals --limit 20
 docker compose exec -T analysis tracefold trading fills --limit 20
 docker compose exec -T analysis tracefold trading commands --limit 20
@@ -190,9 +191,9 @@ docker compose exec -T executor tracefold trading issue '/pause maintenance' \
 
 重试必须保留相同 request ID 和时间。`/pause` 不平仓；`/flatten account` 先暂停入场，再撤普通单、平仓、撤 Algo 单，并以签名场所读回验证。命令受理不等于场所动作完成。
 
-### #746 执行侧硬切
+### #746 Trading 硬切
 
-先停旧执行进程，确认 DEMO 仓位、普通单和 Algo 单均为零，再备份所有 `trading_*` 表及归档目录。迁移 `20260929_0417` 删除旧执行表、建立 Signal v4 与订单/成交账本；不可降级，也不回填旧 DEMO 数据。迁移和新镜像须在同一维护窗口完成。不要把本地 Plan 的 terminal 当作场所平仓回执。保留签名账户检查与备份，直至 DEMO 生命周期回执通过。
+先停旧执行进程，确认 DEMO 仓位、普通单和 Algo 单均为零，再备份所有 `trading_*` 表及归档目录。迁移 `20260929_0417` 删除旧执行表、建立 Signal v4 与订单/成交账本；`20260929_0418` 删除旧 Analysis Case、Gate、WATCH、逐调用账本并建立冻结预测、六策略和纸面双腿账本。两者不可降级，也不回填旧 DEMO 数据。0418 要求 Signal 表为空；恢复只能使用已验证备份。迁移和新镜像须在同一维护窗口完成。不要把本地 Plan 的 terminal 当作场所平仓回执。保留签名账户检查与备份，直至 DEMO 生命周期回执通过。
 
 <a id="deployment"></a>
 <a id="section-部署与-executor"></a>

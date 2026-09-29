@@ -1,4 +1,4 @@
-"""Read projection for the separate Analysis process and its configured Agent."""
+"""Read projection for the separate Analysis process and its pinned forecast program."""
 
 from __future__ import annotations
 
@@ -20,12 +20,16 @@ def analysis_status_projection(
         and runtime is not None
         and now_ms - int(runtime["heartbeat_at_ms"]) <= _HEARTBEAT_STALE_MS
     ):
-        state = "running" if runtime["model_configured"] else "model_unconfigured"
+        state = (
+            "faulted" if runtime["fault_code"] else "running" if runtime["model_configured"] else "model_unconfigured"
+        )
     return {
         "last_case_at_ms": last_case_at_ms,
         "state": state,
         "active_policy": (runtime["active_policy"] if runtime is not None else settings.trading.analysis.active_policy),
         "model_name": None if runtime is None else runtime["model_name"],
+        "program_sha": None if runtime is None else runtime["program_sha"],
+        "fault_code": None if runtime is None else runtime["fault_code"],
         "publish_signals": (
             bool(runtime["publish_signals"]) if runtime is not None else settings.trading.analysis.publish_signals
         ),

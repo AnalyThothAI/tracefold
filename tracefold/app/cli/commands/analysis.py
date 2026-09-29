@@ -4,15 +4,28 @@ from __future__ import annotations
 
 import asyncio
 import signal
+from pathlib import Path
 
+import dspy  # type: ignore[import-untyped]
+
+from tracefold.app.learning_runtime import generative_lm
 from tracefold.app.llm import configured_lm_endpoint, llm_is_configured
-from tracefold.app.system_one import SystemOneConnection
 from tracefold.app.trading_analysis import AnalysisRunner
-from tracefold.app.trading_analyst import TradeAnalyst
+from tracefold.app.trading_assessor import TradingAssessor, load_program
 from tracefold.integrations.marketdata.binance import BinanceMarketData
 from tracefold.platform.config.loader import load_settings
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import setup_logging
+
+
+def _load_configured_program(path_value: str, program_sha: str) -> dspy.Predict:
+    configured_path = Path(path_value).expanduser()
+    path = (
+        configured_path
+        if configured_path.is_absolute()
+        else (Path(__file__).resolve().parents[3] / "trading" / "programs" / configured_path)
+    )
+    return load_program(path, program_sha)
 
 
 async def _run(settings: Settings) -> None:
@@ -23,52 +36,51 @@ async def _run(settings: Settings) -> None:
     if not settings.trading.enabled:
         await stop.wait()
         return
-    model = settings.trading.analysis.model_name or settings.llm.news_triage_model
-    analyst = None
-    if model and llm_is_configured(settings):
-        endpoint = configured_lm_endpoint(settings, model_name=model)
-        analyst = TradeAnalyst(
-            endpoint,
-            timeout_seconds=settings.trading.analysis.model_timeout_seconds,
-            max_input_bytes=settings.trading.analysis.max_model_input_bytes,
-            max_output_tokens=settings.trading.analysis.max_model_output_tokens,
-            max_concurrent_calls=settings.trading.analysis.max_model_concurrent_calls,
-            cost_budget_microusd=settings.trading.analysis.model_cost_budget_microusd,
-            input_price_ceiling_usd_per_million=(settings.trading.analysis.model_input_price_ceiling_usd_per_million),
-            output_price_ceiling_usd_per_million=(settings.trading.analysis.model_output_price_ceiling_usd_per_million),
-        )
+    analysis = settings.trading.analysis
+    assessor = None
+    fault_code = None
+    program_sha = "0" * 64
+    if analysis.program is None:
+        fault_code = "program_unconfigured"
+    else:
+        program_sha = analysis.program.sha256
+        try:
+            program = _load_configured_program(analysis.program.path, program_sha)
+        except (OSError, ValueError):
+            fault_code = "program_invalid"
+        else:
+            if not analysis.model_name or not llm_is_configured(settings):
+                fault_code = "model_unconfigured"
+            else:
+                endpoint = configured_lm_endpoint(settings, model_name=analysis.model_name)
+                lm = generative_lm(
+                    endpoint,
+                    max_tokens=analysis.max_model_output_tokens,
+                    timeout=analysis.model_timeout_seconds,
+                )
+                assessor = TradingAssessor(
+                    program=program,
+                    lm=lm,
+                    timeout_s=analysis.model_timeout_seconds,
+                    concurrent=analysis.max_model_concurrent_calls,
+                )
     market = BinanceMarketData(
         max_connections=settings.trading.analysis.market_max_connections,
         max_cached_rows=settings.trading.analysis.market_max_cached_rows,
         weight_soft_limit_1m=settings.trading.analysis.market_weight_soft_limit_1m,
     )
-    semantic_route = settings.llm.trading_semantics
-    semantics = None
-    if semantic_route.configured:
-        if semantic_route.base_url is None or semantic_route.api_key is None or semantic_route.model is None:
-            raise ValueError("trading_semantic_route_incomplete")
-        semantics = SystemOneConnection(
-            base_url=semantic_route.base_url,
-            api_key=semantic_route.api_key,
-            model=semantic_route.model,
-            timeout_seconds=settings.trading.analysis.model_timeout_seconds,
-        )
     try:
         runner = AnalysisRunner(
             settings=settings,
             market_data=market,
-            analyst=analyst,
-            files_root=settings.app_home / "archive" / "trading-analysis",
-            max_active_cases=settings.trading.analysis.max_active_cases,
-            semantics=semantics,
+            assessor=assessor,
+            program_sha=program_sha,
+            raw_root=settings.app_home / "archive" / "trading-cases",
+            fault_code=fault_code,
         )
         await runner.run(stop)
     finally:
         await market.aclose()
-        if analyst is not None:
-            await analyst.aclose()
-        if semantics is not None:
-            await semantics.aclose()
 
 
 def handle_analysis(_args: object) -> int:

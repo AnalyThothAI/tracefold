@@ -170,18 +170,12 @@ def test_query_audit_analyzes_all_route_query_families_on_empty_schema(
     assert payload["analyze"] is True
     assert all(item["metrics"]["plan_json_valid"] for item in payload["queries"])
     assert all(item["violations"] == [] for item in payload["queries"])
-    # #510 PR-5a: a console route that plans a filtered statement too has it EXPLAINed here rather
-    # than only its unfiltered first page. #537 PR-5 deleted the three GET routes whose filtered
-    # plans the other names covered, and #589 PR-2 the two admission-ledger routes; every read a CLI
-    # command still executes has no route and is still EXPLAINed here.
     assert {
-        "trading_console_cases_filtered",
-        "trading_console_commands_filtered",
+        "trading_analysis_cases",
+        "trading_scoreboard_cases",
         "trading_signal_ledger",
         "trading_fill_ledger",
         "trading_status_latest_case",
-        "trading_gate_decisions_since",
-        "trading_gate_decision_for_source_key",
     } <= {item["name"] for item in payload["queries"]}
 
 

@@ -4,7 +4,7 @@ One seam resolves operator settings into three generative DSPy routes -- extract
 judgments and cards -- plus the optional News Jev endpoint, with secret-free identities for each.
 Extraction and the generative judgments share the `news_triage_model` endpoint and its fallback;
 cards use `news_reader_card` (or the extraction endpoint) and its fallback. No taxonomy slot, no
-progression slot, and never Trading's `trading_semantics` route.
+progression slot.
 """
 
 from __future__ import annotations
@@ -54,15 +54,17 @@ class GenerativeLM(dspy.LM):
         return self._structured_output == "json_schema"
 
 
-def generative_lm(endpoint: ConfiguredLMEndpoint, *, max_tokens: int, timeout: float) -> GenerativeLM:
-    """One configured generative endpoint with its existing request settings; no retries, no cache."""
+def generative_lm(
+    endpoint: ConfiguredLMEndpoint, *, max_tokens: int, timeout: float, cache: bool = False
+) -> GenerativeLM:
+    """One configured generative endpoint; offline replay may enable DSPy cache."""
 
     request: dict[str, Any] = {
         "api_key": endpoint.api_key,
         "api_base": endpoint.api_base,
         "timeout": float(timeout),
         "max_tokens": int(max_tokens),
-        "cache": False,
+        "cache": cache,
         "num_retries": 0,
         "engine": "litellm",
         **dict(endpoint.model_kwargs),

@@ -52,7 +52,7 @@
 | 新闻为什么不推送？ | [逐命题通知](modules/news.md#notification) · [精确版本恢复](OPERATIONS.md#news-retry) |
 | 一条消息为什么有多个 Event？ | [输入范围与身份](modules/news.md#input) |
 | 模型究竟调用几次？ | [NewsAgent 与预算](modules/news.md#agent) |
-| 有 TRADE 决策为什么没有成交？ | [研究状态](modules/trading.md#state) · [执行与对账](modules/execution.md) |
+| 有策略方向为什么没有成交？ | [预测与发布](modules/trading.md) · [执行与对账](modules/execution.md) |
 | 账户状态未知与未认领敞口怎么读？ | [账户操作边界](OPERATIONS.md#trading-operations) |
 | 文档图如何修改并验证？ | [写作与图表规范](DEVELOPMENT.md#documentation-design) · [渲染检查](TESTING.md#diagrams) |
 

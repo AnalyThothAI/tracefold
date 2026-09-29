@@ -15,11 +15,7 @@ def add_trading_commands(
     diagnose.add_argument("--status-url", help="optional serve /api/trading/status URL")
 
     cases = commands.add_parser("cases", help="list Trading cases newest first")
-    cases.add_argument(
-        "--state",
-        choices=("PENDING", "RUNNING", "NO_TRADE", "SIGNAL_EMITTED", "BLOCKED"),
-        default=None,
-    )
+    cases.add_argument("--state", choices=("pending", "running", "complete", "failed"), default=None)
     cases.add_argument("--limit", type=_positive_int, default=20)
 
     signals = commands.add_parser("signals", help="list TradeSignalV4 rows")
@@ -28,19 +24,15 @@ def add_trading_commands(
     fills = commands.add_parser("fills", help="list signed DEMO venue fills")
     fills.add_argument("--limit", type=_positive_int, default=20)
 
-    gate = commands.add_parser("gate", help="read the candidate admission ledger")
-    gate.add_argument(
-        "--source-key",
-        default=None,
-        help="one admission answer by source key, for example 'oi:<event_id>:oi_signal_v1'",
-    )
-    gate.add_argument(
-        "--since-ms",
-        type=_positive_int,
-        default=None,
-        help="Unix millisecond lower bound on the source frame's own observation clock; default 24 h",
-    )
-    gate.add_argument("--limit", type=_positive_int, default=20)
+    scoreboard = commands.add_parser("scoreboard", help="compare all Trading policies on LIVE paper legs")
+    scoreboard.add_argument("--since", required=True, help="UTC date or ISO timestamp")
+    scoreboard.add_argument("--until", required=True, help="exclusive UTC date or ISO timestamp")
+    scoreboard.add_argument("--program", help="optional 64-character program sha")
+
+    replay = commands.add_parser("replay", help="assess frozen CaseViews with a candidate DSPy program")
+    replay.add_argument("--program", required=True, help="candidate DSPy JSON file")
+    replay.add_argument("--since", required=True, help="UTC date or ISO timestamp")
+    replay.add_argument("--until", required=True, help="exclusive UTC date or ISO timestamp")
 
     operator_intents = commands.add_parser("commands", help="list authenticated OperatorIntentV1 rows")
     operator_intents.add_argument(

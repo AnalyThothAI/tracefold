@@ -8,7 +8,6 @@ from tracefold.trading.engine.features import (
     PROFILE_VERSION,
     closed_bar_window,
     extract_features,
-    freeze_features,
     price_plan_window,
 )
 from tracefold.trading.engine.marketdata import MarketDataResult
@@ -99,18 +98,6 @@ def test_partial_early_gap_preserves_only_complete_tail_windows() -> None:
     assert features["perp_return_15m_bps"] is not None
     assert features["perp_return_60m_bps"] is not None
     assert features["perp_return_240m_bps"] is None
-    frozen = freeze_features(
-        snapshot_ref="a" * 64,
-        knowledge_cutoff_ms=21_000_000,
-        data_environment="live",
-        source_first_visible_at_ms=1,
-        source_fact={"kind": "oi", "source_recorded_at_ms": 1},
-        results=results,
-        features=features,
-    )
-    values = {value.feature_id: value for value in frozen.values}
-    assert values["perp_return_15m_bps"].status == "ok"
-    assert values["perp_return_240m_bps"].status == "missing"
 
 
 def test_window_rejects_missing_tail_wrong_grid_future_and_identity() -> None:

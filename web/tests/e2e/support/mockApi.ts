@@ -20,6 +20,7 @@ import {
   tradingCasesForCaseId,
   tradingExecutionFixture,
   tradingExecutionsFixture,
+  tradingScoreboardFixture,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 
@@ -111,13 +112,18 @@ export async function installMockApi(
       );
     }
     /*
-     * #604 T3: without `case_id` this answers the three 24 h count distributions and an empty `cases[]`;
-     * with one it answers that exact Case or none. The mock narrows on the parameter because the drawer's
-     * read is a real request, and a mock that ignored it would let a browser-side `find` pass a baseline.
+     * The drawer reads an exact Case, while an OI research link filters by the public observation id.
      */
     if (path === "/api/trading/cases") {
-      return fulfill(route, tradingCasesForCaseId(url.searchParams.get("case_id")));
+      return fulfill(
+        route,
+        tradingCasesForCaseId(
+          url.searchParams.get("case_id"),
+          url.searchParams.get("source_item_id"),
+        ),
+      );
     }
+    if (path === "/api/trading/scoreboard") return fulfill(route, tradingScoreboardFixture());
     if (path === "/api/trading/executions") {
       return fulfill(route, options.tradingExecutions ?? tradingExecutionsFixture());
     }

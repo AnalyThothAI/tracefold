@@ -1061,10 +1061,10 @@ def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pyte
     }
 
 
-def test_status_names_the_configured_routes_and_never_the_trading_jev(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_names_the_configured_news_judgment_route(monkeypatch: pytest.MonkeyPatch) -> None:
     jev = {"api_key": "jev-key", "base_url": "https://openrouter.ai/api", "model": "jev-1.13"}
     for llm, backend, judgment_model in (
-        ({"trading_semantics": jev}, "generated", "shared-model"),
+        ({}, "generated", "shared-model"),
         ({"news_judgment": jev}, "native", "jev-1.13"),
     ):
         settings = Settings.model_validate(

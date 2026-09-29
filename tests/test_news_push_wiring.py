@@ -437,17 +437,14 @@ def test_configured_models_compose_the_semantic_worker_as_a_confined_editorial_t
     token_file.write_text(BOT_TOKEN, encoding="utf-8")
     token_file.chmod(0o600)
     capabilities = CapabilityStates()
-    settings = _with_models(
-        tmp_path,
-        trading_semantics={"api_key": "trading-key", "base_url": "https://openrouter.ai/api", "model": "jev-1.13"},
-    )
+    settings = _with_models(tmp_path)
 
     wiring = asyncio.run(_wire_news_pipeline_with_stub_bus(settings=settings, capabilities=capabilities))
 
     assert wiring.news_updates is not None
     assert wiring.pipeline.semantic.agent is wiring.news_updates.agent
     assert wiring.pipeline.semantic.program_identity == wiring.news_updates.program_identity
-    # Trading's System One route never enables News Jev.
+    # News Jev remains opt-in.
     assert wiring.news_updates.judgment_connection is None
     assert capabilities.payload()[NEWS_EDITORIAL] == {"state": "running", "reason": None}
     assert wiring.runtime_manifest_sha == news_wiring.configured_runtime_manifest_sha(settings)

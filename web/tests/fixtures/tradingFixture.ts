@@ -5,10 +5,10 @@ import type {
   TradingExecutionRow,
   TradingExecutions,
   TradingStatus,
+  TradingScoreboard,
 } from "@features/trading/api/tradingQueries";
 
 export const TRADING_NOW_MS = Date.parse("2026-08-25T12:00:00Z");
-export const ALPHA_POLICY_ID = "source_native_oi_smart_money_long_v5";
 
 /**
  * The desk's fixtures, in the shapes the real endpoints return.
@@ -22,7 +22,7 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
     decision: {
       last_case_at_ms: TRADING_NOW_MS - 1_000,
       state: "disabled",
-      active_policy: "trade_assessment_v1",
+      active_policy: "forecast",
       model_name: null,
       publish_signals: false,
       config_digest: null,
@@ -117,93 +117,104 @@ export function tradingSignedAccountFixture(
   };
 }
 
+export const CASE_ID = "a".repeat(64);
+
 export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): TradingCase {
   return {
-    base_symbol: "HYPE",
-    case_id: "case-hype",
+    case_id: CASE_ID,
+    trigger_kind: "oi",
+    asset_id: "crypto:HYPE",
+    native_symbol: "HYPEUSDT",
     created_at_ms: TRADING_NOW_MS - 500_000,
     decided_at_ms: TRADING_NOW_MS - 499_000,
-    event_id: "evt-oi-hype",
-    manifest_version: "trading_manifest_v10",
-    mark_price: "0.0950",
-    market_key: "crypto:perp:HYPE:USDT",
-    observed_at_ms: TRADING_NOW_MS - 501_000,
-    policy_checks: [
+    state: "complete",
+    failure_code: null,
+    geometry_version: "leg_geometry_v1",
+    view_sha256: "b".repeat(64),
+    raw_snapshot_ref: "c".repeat(64),
+    assessments: [],
+    policy_actions: [],
+    paper_legs: [],
+    ...overrides,
+  };
+}
+
+export function tradingCasesFixture(overrides: Partial<TradingCases> = {}): TradingCases {
+  return { cases: [tradingCaseFixture()], total: 1, complete: true, ...overrides };
+}
+
+export function tradingCasesForCaseId(
+  caseId: string | null,
+  sourceItemId: string | null = null,
+): TradingCases {
+  if (sourceItemId && sourceItemId !== "mkt-oi-wif-3")
+    return tradingCasesFixture({ cases: [], total: 0 });
+  if (!caseId) return tradingCasesFixture();
+  return tradingCasesFixture({
+    cases: caseId === CASE_ID ? [tradingCaseFixture()] : [],
+    total: caseId === CASE_ID ? 1 : 0,
+  });
+}
+
+export function tradingScoreboardFixture(
+  overrides: Partial<TradingScoreboard> = {},
+): TradingScoreboard {
+  return {
+    window: { since_ms: TRADING_NOW_MS - 7 * 86_400_000, until_ms: TRADING_NOW_MS },
+    funnel: {
+      triggers: 12,
+      selected: 10,
+      assessed: 8,
+      published: 1,
+      execution_accepted: 1,
+      filled: 1,
+    },
+    programs: [
       {
-        check: "whale_oi_ratio_bps",
-        measured: "5424",
-        operator: ">",
-        passed: false,
-        threshold: "8000",
+        program_sha: "d".repeat(64),
+        route: "qwen",
+        assessments: 8,
+        failures: { timeout: 2 },
+        policies: [
+          "forecast",
+          "always_long",
+          "always_short",
+          "abstain",
+          "momentum15m",
+          "fade15m",
+        ].map((policy_id) => ({
+          policy_id,
+          policy_version: "policy_v1",
+          cases: 10,
+          actions: policy_id === "abstain" ? 0 : 6,
+          scored: policy_id === "abstain" ? 0 : 6,
+          coverage: policy_id === "abstain" ? "0" : "0.6",
+          average_r: null,
+          win_rate: null,
+          ci_low: null,
+          ci_high: null,
+          status: "insufficient_data" as const,
+        })),
+        forecast: {
+          legs: 12,
+          multiclass_brier: null,
+          log_loss: null,
+          brier_skill_score: null,
+          reliability: [],
+          status: "insufficient_data",
+        },
+        execution_deviation: { scored: 1, average_r_delta: null, status: "insufficient_data" },
       },
     ],
-    policy_config_digest: "e".repeat(64),
-    policy_id: ALPHA_POLICY_ID,
-    policy_reason: "smart_money_ratio_below_or_equal_floor",
-    pre_move_bps: 187,
-    review_mode: "none",
-    state: "NO_TRADE",
     ...overrides,
   };
 }
 
-/**
- * The counts read: three durable 24 h distributions and no Cases (#604 T3).
- *
- * `cases` is empty without `case_id` by contract — the response stopped publishing the 100-row list the
- * desk downloaded every 15 s to render at most one of. `admission_counts_24h` is the funnel's top: how
- * many frames admission looked at at all, and what it did with the ones it refused.
- */
-export function tradingCasesFixture(overrides: Partial<TradingCases> = {}): TradingCases {
-  return {
-    admission_counts_24h: [
-      { status: "CASE_CREATED", reason: null, count: 7 },
-      { status: "REJECTED", reason: "oi_value_below_floor", count: 4 },
-      { status: "EXPIRED", reason: "trigger_stale", count: 1 },
-    ],
-    cases: [],
-    total: 0,
-    next_cursor: null,
-    window_from_ms: TRADING_NOW_MS - 86400000,
-    window_to_ms: TRADING_NOW_MS,
-    complete: true,
-    decision_counts_24h: [
-      { action: "TRADE", publish_status: "published", count: 1 },
-      { action: "TRADE", publish_status: "unpublished", count: 2 },
-      { action: "WATCH", publish_status: "not_applicable", count: 1 },
-      { action: "NO_TRADE", publish_status: "not_applicable", count: 3 },
-    ],
-    state_counts_24h: { BLOCKED: 1, NO_TRADE: 5, SIGNAL_EMITTED: 1 },
-    window_hours: 24,
-    ...overrides,
-  };
-}
-
-/** The known Cases this fixture set can answer `?case_id=` with; anything else is an empty `cases[]`. */
-const KNOWN_CASE_IDS = new Set(["case-hype", "case-btc", "case-nvda", "case-sol"]);
-
-/** `?case_id=` is an exact primary key: the one Case, or none, and an unknown id is not an error. */
-export function tradingCasesForCaseId(caseId: string | null): TradingCases {
-  const batch = tradingCasesFixture();
-  if (!caseId) return batch;
-  return {
-    ...batch,
-    cases: KNOWN_CASE_IDS.has(caseId) ? [tradingCaseFixture({ case_id: caseId })] : [],
-  };
-}
-
-/**
- * One entry that ran to the end: entered, protected, and flattened out with a realized number on it.
- *
- * The shape is `console_executions_statement`'s own — a `closed` plan carries the quantity its entry
- * filled, the average exit price, the net realized PnL and the commissions folded from its fill journal
- * (#680), and the `exit_reason` its plan closed with. `source` says which entry identity `entry_id` is.
- */
 export function tradingExecutionRowFixture(
   overrides: Partial<TradingExecutionRow> = {},
 ): TradingExecutionRow {
   return {
-    case_id: "case-btc",
+    case_id: CASE_ID,
     direction: "long",
     disposition_reason: "accepted",
     entry_id: "1".repeat(64),

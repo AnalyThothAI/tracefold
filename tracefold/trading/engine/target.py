@@ -48,16 +48,14 @@ def select_target(
     selected = (
         assets
         if kind == "oi"
-        else tuple(
-            asset for asset in assets if asset.role == "primary" and asset.market_type in ("crypto", "commodity")
-        )
+        else tuple(asset for asset in assets if asset.role == "primary" and asset.market_type == "crypto")
     )
     if not selected:
         return TargetSelection("no_eligible_primary", None, None, (), registry.snapshot_ref)
     resolved = [
         registry.resolve(
             asset.symbol,
-            "commodity" if asset.market_type == "commodity" else "crypto",
+            "crypto",
         )
         for asset in selected
     ]

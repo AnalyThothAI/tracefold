@@ -187,7 +187,7 @@ Trading 读取自己的有界市场证据并选择当前计划菜单。旧 OI �
 | 有卡没有 Case | outbox、relay 接收 / 排除结果、经济身份映射 |
 | 有 Case 没 Signal | 决策、发布设置、截止时间和来源修订，而非 OI 通知倍数 |
 
-验证入口：[市场路径边界](../../tests/architecture/test_news_market_path_boundaries.py)、[通知集成](../../tests/integration/test_news_market_notifications.py)、[市场读模型](../../tests/integration/test_news_market_read_model.py)、[Analysis runner](../../tests/integration/test_trading_analysis_runner.py)。历史研究见 [notebooks](../../notebooks/README.md)，不是当前在线收益承诺。
+验证入口：[市场路径边界](../../tests/architecture/test_news_market_path_boundaries.py)、[通知集成](../../tests/integration/test_news_market_notifications.py)、[市场读模型](../../tests/integration/test_news_market_read_model.py)、[Analysis 闭环](../../tests/integration/test_trading_analysis_closure.py)。历史研究见 [notebooks](../../notebooks/README.md)，不是当前在线收益承诺。
 
 <a id="section-源码责任地图"></a>
 ## 07 · 源码责任地图

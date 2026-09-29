@@ -1,0 +1,26 @@
+{
+  "traces": [],
+  "train": [],
+  "demos": [],
+  "signature": {
+    "instructions": "Estimate TP, SL, and timeout chances for both frozen paper legs; never choose an action.",
+    "fields": [
+      {
+        "prefix": "Case View Json:",
+        "description": "Frozen LIVE facts e1...eN, leg geometry, and PIT base rates"
+      },
+      {
+        "prefix": "Assessment:",
+        "description": "Drivers with evidence aliases and three outcomes per side"
+      }
+    ]
+  },
+  "lm": null,
+  "metadata": {
+    "dependency_versions": {
+      "python": "3.13",
+      "dspy": "3.4.0",
+      "cloudpickle": "3.1"
+    }
+  }
+}

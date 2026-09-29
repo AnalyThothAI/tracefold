@@ -204,23 +204,15 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_funnel_review_ratios",
         "news_status_funnel_totals",
     )
-    # #604 T3: `/api/trading/cases` plans a primary-key Case read and three grouped 24 h counts. The
-    # windowed page and its filtered twin are still audited -- `tracefold trading cases [--state]`
-    # executes them -- but they are no longer statements this route runs, and certifying them under it
-    # would certify a plan it never executes.
     assert catalog.query_routes["/api/trading/cases"] == (
-        "trading_console_cases_by_id",
-        "trading_case_decision_by_id",
-        "trading_case_outcomes_by_id",
-        "trading_console_cases",
-        "trading_console_cases_filtered",
-        "trading_case_list_latest",
-        "trading_console_scope_cases",
-        "trading_console_scope_totals",
-        "trading_case_counts",
-        "trading_case_decision_counts",
-        "trading_gate_counts",
+        "trading_analysis_cases",
+        "trading_analysis_cases_for_source",
+        "trading_analysis_case_by_id",
+        "trading_assessments_by_case",
+        "trading_actions_by_case",
+        "trading_paper_by_case",
     )
+    assert len(catalog.query_routes["/api/trading/scoreboard"]) == 7
     # The desk reads plans, refusals, orders and fills from the native ledger.
     assert catalog.query_routes["/api/trading/executions"] == (
         "trading_execution_plans",
@@ -233,21 +225,15 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     assert "/api/trading/execution/observations" not in catalog.query_routes
     # #624: the retired Command path is neither a write nor a read.
     assert "/api/trading/execution/commands" not in catalog.query_routes
-    # #589 PR-2. The admission ledger's two routes are gone and `tracefold trading gate` is what runs
-    # their statements now. A statement stops being audited when nothing executes it, not when a route
-    # is deleted, so both stay here beside the other two CLI-only ledger reads -- and the grouped
-    # 24 h distribution, which had no caller left at all, does not.
     assert not any(route.startswith("/api/trading/gate") for route in catalog.query_routes)
     query_names = {query.name for query in catalog.queries}
     assert {
-        "trading_console_cases",
-        "trading_console_cases_filtered",
+        "trading_analysis_cases",
+        "trading_scoreboard_cases",
         "trading_signal_ledger",
         "trading_fill_ledger",
-        "trading_gate_decisions_since",
-        "trading_gate_decision_for_source_key",
     } <= query_names
-    assert "trading_gate_decision_counts" not in query_names
+    assert not any(name.startswith("trading_gate") for name in query_names)
     assert not any(
         route.startswith(("/api/news/stories", "/api/news/brief", "/api/news/sources"))
         for route in catalog.query_routes
@@ -274,24 +260,20 @@ def test_default_news_query_specs_cover_every_news_route_query():
     assert set(_NEWS_QUERY_NAMES) <= names
 
 
-def test_trading_console_audit_explains_the_statements_the_routes_execute():
-    """#510 PR-5a: the audited console SQL is the repository's own, byte for byte.
+def test_trading_analysis_audit_explains_the_statements_the_routes_execute():
+    """Analysis and scoreboard register their own production SQL, including bound parameters."""
 
-    The audit used to register a second copy of each console statement, without the optional
-    predicates the route adds. Editing one and not the other left the plan audit passing on SQL nobody
-    runs. Driving `TradingRepository` against a recording connection is what makes that unrepeatable.
-    """
-
-    now_ms = 123_456
+    now_ms = 100_000_000
     since_ms = now_ms - 24 * 3_600_000
     since_ns = since_ms * 1_000_000
     queries = {query.name: query for query in query_audit_catalog(now_ms=now_ms).queries}
     conn = RecordingStatementConn()
     repository = TradingRepository(conn)
 
-    repository.console_case(case_id="0" * 32)
-    repository.console_cases(since_ms=since_ms, states=(), limit=101)
-    repository.console_cases(since_ms=since_ms, states=("SIGNAL_EMITTED", "NO_TRADE"), limit=101)
+    repository.analysis_cases(since_ms=since_ms, state=None, limit=25)
+    repository.analysis_cases(since_ms=since_ms, state=None, limit=25, source_item_id="source-item")
+    repository.analysis_case("0" * 64)
+    repository.scoreboard(since_ms=since_ms, until_ms=now_ms)
     repository.console_executions(since_ns=since_ns, limit=101)
     day_start_ns = (now_ms - now_ms % 86_400_000) * 1_000_000
     repository.console_realized_totals(
@@ -300,7 +282,6 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
         day_end_ns=day_start_ns + 86_400_000 * 1_000_000,
     )
     repository.console_operator_intents(since_ns=since_ns, action=None, limit=101)
-    repository.console_operator_intents(since_ns=since_ns, action="flatten", limit=101)
     repository.signal_ledger(since_ns=since_ns, limit=101)
     repository.fill_ledger(since_ns=since_ns, limit=101)
 
@@ -308,36 +289,27 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
     audited = [
         (queries[name].sql, queries[name].params)
         for name in (
-            "trading_console_cases_by_id",
-            "trading_console_cases",
-            "trading_console_cases_filtered",
+            "trading_analysis_cases",
+            "trading_analysis_cases_for_source",
+            "trading_analysis_case_by_id",
+            "trading_scoreboard_cases",
+            "trading_scoreboard_triggers",
             "trading_execution_plans",
             "trading_execution_refusals",
             "trading_execution_orders",
             "trading_execution_fills",
             "trading_realized_totals",
             "trading_console_commands",
-            "trading_console_commands_filtered",
             "trading_signal_ledger",
             "trading_fill_ledger",
         )
     ]
     assert [sql for sql, _ in executed] == [sql for sql, _ in audited]
-    assert [params for _, params in executed[:5] + executed[7:]] == [params for _, params in audited[:5] + audited[7:]]
-    assert executed[5][1] == ([],) and executed[6][1] == ([],)
-    # The filtered half really is a different statement, or registering it twice proves nothing.
-    assert audited[1][0] != audited[2][0]
-    assert "state = ANY(%(states)s)" in audited[2][0]
-    # #604 T3: the identity read is a primary-key predicate and carries no window at all, and the
-    # totals read folds each plan's fills through the two partial correlation indexes (#680).
-    assert "case_id = %(case_id)s" in audited[0][0] and "created_at_ms >=" not in audited[0][0]
-    assert "FROM trading_plans p" in audited[3][0]
-    assert "FROM trading_dispositions d" in audited[4][0]
-    assert "FROM trading_fill_attributions" in audited[6][0]
-    assert "JOIN trading_fills" in audited[6][0]
-    # #537 PR-5: no keyset predicate anywhere. `/api/trading/cases` published a `next_cursor` no
-    # reader ever sent back, and the three routes whose cursors were followed are gone.
-    assert all("before_ms" not in sql and "before_ns" not in sql for sql, _ in audited)
+    assert [params for _, params in executed[:7] + executed[9:]] == [params for _, params in audited[:7] + audited[9:]]
+    assert executed[7][1] == ([],) and executed[8][1] == ([],)
+    assert "WHERE case_id=%s" in audited[2][0]
+    assert "FROM trading_plans p" in audited[5][0]
+    assert "FROM trading_dispositions d" in audited[6][0]
 
 
 def test_status_audit_explains_the_statements_the_status_route_executes():
@@ -1015,6 +987,8 @@ class RecordingStatementConn:
         return []
 
     def fetchone(self):
+        if "FROM trading_triggers" in self.statements[-1][0]:
+            return {"n": 0}
         if "AS closed_today" in self.statements[-1][0]:
             return {
                 name: 0

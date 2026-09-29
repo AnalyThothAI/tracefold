@@ -56,20 +56,21 @@ config:
 ---
 flowchart TB
     accTitle: 部署拓扑
-    accDescr: 四种进程角色分别运行。Serve 只读 PostgreSQL；Workers 使用 RabbitMQ 与 News 记录；Analysis 管理 Trading 研究；独立 Nautilus 连接账户。
+    accDescr: 四种进程角色分别运行。Serve 只读 PostgreSQL；Workers 使用 RabbitMQ 与 News 记录；Analysis 冻结 LIVE 预测与纸面结果；Executor 以 DEMO 账户对账。
     Browser["浏览器<br/>只读工作台"] -->|HTTP| Serve
     Sources["新闻源 · 名单 · 链上 RPC"] --> Workers
-    subgraph APP["应用镜像 · 三种独立进程角色"]
+    subgraph APP["应用镜像 · 四种独立进程角色"]
         Serve["Serve<br/>API 与静态资源"]
-        Analysis["Analysis<br/>研究与 WATCH"]
+        Analysis["Analysis<br/>预测与纸面标签"]
+        Runtime["Executor<br/>DEMO 对账"]
         Workers["Workers<br/>News 与市场观察"]
     end
     Serve -->|只读查询| DB[("PostgreSQL<br/>事实、工作与回执")]
     Analysis <-->|Trading 研究记录| DB
     Workers <-->|News 记录| DB
     Workers <-->|原始记录 / 唤醒| MQ[("RabbitMQ")]
-    DB <-->|Signal / 执行记录| Runtime["Nautilus<br/>独立镜像与生命周期"]
-    Runtime <-->|账户操作 / 原生证据| Venue["配置指定的 Binance 连接"]
+    DB <-->|Signal / 执行记录| Runtime
+    Runtime <-->|账户操作 / 原生证据| Venue["Binance USD-M DEMO"]
 
     classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
     classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
@@ -89,7 +90,7 @@ class Runtime execution;
 | --- | --- | --- | --- |
 | Serve | [serve_runtime.py](../tracefold/app/serve_runtime.py)、[HTTP routes](../tracefold/app/http/routes/) | 读取持久化投影、提供 React 静态文件 | 模型重跑、公开写接口、下单 |
 | Workers | [entrypoint.py](../tracefold/app/workers/entrypoint.py)、[task_contract.py](../tracefold/app/workers/task_contract.py) | 消息接收、准入、语义、通知、行情复盘、钱包与维护 | Trading Analysis 生命周期、账户执行 |
-| Analysis | [trading_analysis.py](../tracefold/app/trading_analysis.py)、[trading_analyst.py](../tracefold/app/trading_analyst.py) | 来源转交、标的选择、Case、受限研究、WATCH 与研究结果 | 发送新闻卡片、向交易所写订单 |
+| Analysis | [trading_analysis.py](../tracefold/app/trading_analysis.py)、[trading_assessor.py](../tracefold/app/trading_assessor.py) | 来源转交、LIVE CaseView、冻结预测、六策略、两腿纸面结果 | 发送新闻卡片、向交易所写订单 |
 | Executor | [app/executor.py](../tracefold/app/executor.py)、[REST 适配](../tracefold/integrations/trading/binance.py) | Signal / 操作意图消费、订单、保护、原生成交与对账 | 新闻理解、重新决定 ReaderCard 内容 |
 
 [compose.yaml](../compose.yaml)定义镜像、依赖、挂载与探针；[Makefile](../Makefile)提供薄命令入口，[scripts/deploy.py](../scripts/deploy.py)统一持锁、启动、迁移等待、镜像和就绪验收。[make/checks.mk](../make/checks.mk)只拥有开发验证，不进入服务启动链路。`rabbitmq-policy`、`migrate` 是一次性准备作业，不是额外业务服务。`make up` 等迁移成功后启动应用角色，executor 随应用镜像部署，启用交易时持有 DEMO 账户执行权限。
@@ -101,10 +102,10 @@ class Runtime execution;
 | Serve | 持久化读模型和本地静态 / 冻结材料 | 无 |
 | Workers | 新闻源、名单、链上 RPC、新闻模型、公共行情与通知提供商 | 无 |
 | Analysis | 研究模型、受限公共市场证据 | 无 |
-| Nautilus | 配置指定连接的账户、订单和原生历史 | 由实际配置、作用域和执行检查控制 |
+| Executor | Binance USD-M DEMO 账户、订单和原生成交 | 仅 DEMO，独立于 Analysis 模型 |
 
 > [!NOTE]
-> `make up` 管理应用角色；是否启用其中的模型或研究能力由配置决定。独立 Runtime 的启动与账户权限不由应用首页或 News 模型决定。
+> `make up` 管理应用角色；是否启用其中的模型或研究能力由配置决定。Executor 随应用镜像管理；账户权限由执行配置、账户状态和场所证据决定。
 
 <a id="2-package-ownership-and-source-navigation"></a>
 <a id="packages"></a>
@@ -161,8 +162,8 @@ class Trading research;
 | [news/market_review](../tracefold/news/market_review/) | 标的目录、当前报价、固定期限 Event Reaction | [行情复盘](modules/market-review.md) |
 | [news/chain_tape](../tracefold/news/chain_tape/) | 名单、回执完整前缀、成交解释、净买入与价格采样 | [钱包](modules/wallets.md) |
 | [news/review](../tracefold/news/review/)、[learning](../tracefold/news/learning/) | ReviewDesk、保留的卡片评审与校准 | [复核](modules/review.md) |
-| [trading/engine](../tracefold/trading/engine/) | 类型化目标、证据、特征、有限计划和纯决策编译 | [交易研究](modules/trading.md) |
-| [trading/storage](../tracefold/trading/storage/) | Trigger、Case、修订、研究和执行记录 | [交易状态](modules/trading.md#state) |
+| [trading/engine](../tracefold/trading/engine/) | 类型化目标、LIVE 特征、双腿几何、预测策略与记分纯函数 | [交易研究](modules/trading.md) |
+| [trading/storage](../tracefold/trading/storage/) | Trigger、Case、修订、研究和执行记录 | [交易状态](modules/trading.md) |
 | [app/news_updates.py](../tracefold/app/news_updates.py)、[trading_analysis.py](../tracefold/app/trading_analysis.py) | News 公开更新映射、接收确认及研究调度 | [跨域交接](#handoff) |
 | [integrations/trading](../tracefold/integrations/trading/) | DEMO 账户签名 REST 执行适配 | [执行](modules/execution.md) |
 | [platform](../tracefold/platform/)、[app](../tracefold/app/)、[integrations](../tracefold/integrations/) | 配置、资源、数据库、进程装配与外部 I/O | [平台](modules/platform.md) |
@@ -294,9 +295,9 @@ class Case,Amendment,Decision research;
 | 语义处理 | 冻结输入、owner token、lease、版本级尝试预算、检查点复用 |
 | EventUpdate 采用 | 比较当前 head 并条件更新；同事务生成公开 outbox 与通知工作 |
 | 通知发送 | 先记录意图和精确正文；等待共用发送时隙、完成目标预检，再以短事务重检并记录 sending；事务外发送并在释放时隙前结算实际结果；不盲重试未知结果 |
-| Trading 研究完成 | 校验 Case 所有权、来源有效性与作用域，原子保存决策及可发布 Signal |
+| Trading 研究完成 | 校验 Case 所有权，保存冻结预测和六策略；发布前核实来源与 DEMO 执行器 |
 | 钱包采集 | 完整交易事实与连续进度一起提交，不能跳过未完成回执 |
-| 交易所写操作 | 命令与计划只是意图；通过交易所回执、Cache 和对账确定真实结果 |
+| 交易所写操作 | 命令与计划只是意图；通过交易所 REST 回执和对账确定真实结果 |
 
 数据库事务由调用方拥有，仓储不隐藏提交。模型、网络、文件 I/O 在事务外完成；昂贵的序列化、验证和哈希也不占着数据库连接执行。RabbitMQ ack 与 PostgreSQL commit 是两个边界，不能写成“一个跨系统原子事务”。
 

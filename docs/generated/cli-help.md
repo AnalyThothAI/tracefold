@@ -465,16 +465,17 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,diagnose,cases,signals,fills,gate,commands,issue} ...
+                         {status,diagnose,cases,signals,fills,scoreboard,replay,commands,issue} ...
 
 positional arguments:
-  {status,diagnose,cases,signals,fills,gate,commands,issue}
+  {status,diagnose,cases,signals,fills,scoreboard,replay,commands,issue}
     status              show Alpha producer and execution readiness
     diagnose            sample bounded read-only execution evidence
     cases               list Trading cases newest first
     signals             list TradeSignalV4 rows
     fills               list signed DEMO venue fills
-    gate                read the candidate admission ledger
+    scoreboard          compare all Trading policies on LIVE paper legs
+    replay              assess frozen CaseViews with a candidate DSPy program
     commands            list authenticated OperatorIntentV1 rows
     issue               durably record one local OS-authenticated operator
                         intent
@@ -510,12 +511,12 @@ options:
 
 ```
 usage: tracefold trading cases [-h]
-                               [--state {PENDING,RUNNING,NO_TRADE,SIGNAL_EMITTED,BLOCKED}]
+                               [--state {pending,running,complete,failed}]
                                [--limit LIMIT]
 
 options:
   -h, --help            show this help message and exit
-  --state {PENDING,RUNNING,NO_TRADE,SIGNAL_EMITTED,BLOCKED}
+  --state {pending,running,complete,failed}
   --limit LIMIT
 
 ```
@@ -542,20 +543,31 @@ options:
 
 ```
 
-## `trading gate`
+## `trading scoreboard`
 
 ```
-usage: tracefold trading gate [-h] [--source-key SOURCE_KEY]
-                              [--since-ms SINCE_MS] [--limit LIMIT]
+usage: tracefold trading scoreboard [-h] --since SINCE --until UNTIL
+                                    [--program PROGRAM]
 
 options:
-  -h, --help            show this help message and exit
-  --source-key SOURCE_KEY
-                        one admission answer by source key, for example
-                        'oi:<event_id>:oi_signal_v1'
-  --since-ms SINCE_MS   Unix millisecond lower bound on the source frame's own
-                        observation clock; default 24 h
-  --limit LIMIT
+  -h, --help         show this help message and exit
+  --since SINCE      UTC date or ISO timestamp
+  --until UNTIL      exclusive UTC date or ISO timestamp
+  --program PROGRAM  optional 64-character program sha
+
+```
+
+## `trading replay`
+
+```
+usage: tracefold trading replay [-h] --program PROGRAM --since SINCE
+                                --until UNTIL
+
+options:
+  -h, --help         show this help message and exit
+  --program PROGRAM  candidate DSPy JSON file
+  --since SINCE      UTC date or ISO timestamp
+  --until UNTIL      exclusive UTC date or ISO timestamp
 
 ```
 

@@ -14,6 +14,7 @@ import {
 import {
   tradingCasesForCaseId,
   tradingExecutionsFixture,
+  tradingScoreboardFixture,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 
@@ -87,10 +88,11 @@ export function mockAppRoutes(apiMock: ApiMock) {
     // #537 PR-5: only `/trading` reads this now. The shell polled it on every News route for a
     // sidebar badge and two chrome figures until the badge and the figures were deleted.
     if (path === "/api/trading/status") return ok(tradingStatusFixture());
-    // #604 T3: `case_id` is an exact primary key and the only way to get a Case out of this route.
+    // An exact Case read and an OI source observation filter share the Cases route.
     if (path.startsWith("/api/trading/cases")) {
-      return ok(tradingCasesForCaseId(param("case_id")));
+      return ok(tradingCasesForCaseId(param("case_id"), param("source_item_id")));
     }
+    if (path === "/api/trading/scoreboard") return ok(tradingScoreboardFixture());
     if (path === "/api/trading/executions") return ok(tradingExecutionsFixture());
     if (path.startsWith("/api/news/symbols/"))
       return ok(

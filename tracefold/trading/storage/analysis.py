@@ -1,187 +1,152 @@
-"""Durable intake, fenced work and frozen decisions for the Analysis process."""
+"""Transactional Trading Analysis ledger for frozen LIVE Cases and paired paper legs."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import uuid
-from decimal import Decimal, InvalidOperation
-from typing import Any, cast
+from dataclasses import asdict
+from decimal import Decimal
+from typing import Any
 
-from tracefold.trading.engine.plans import directed_cross
-from tracefold.trading.engine.policy import decision_identity
+from tracefold.trading.engine.forecast import Forecast, PolicyDecision
+from tracefold.trading.engine.paper import PaperLeg
 from tracefold.trading.engine.target import TargetSelection
-from tracefold.trading.executor.core import SignalV4
-from tracefold.trading.storage.executor import ExecutorStorage
+
+ANALYSIS_RUNTIME_SQL = (
+    "SELECT runtime_id,heartbeat_at_ms,active_policy,program_sha,model_name,model_configured,"
+    "publish_signals,config_digest,fault_code FROM trading_analysis_runtime WHERE runtime_id=%s"
+)
+ANALYSIS_CASES_SQL = (
+    "SELECT c.case_id,c.trigger_kind,c.asset_id,c.native_symbol,c.created_at_ms,c.state,"
+    "c.failure_code,c.decided_at_ms,c.geometry_version,c.view_sha256,c.raw_snapshot_ref "
+    "FROM trading_cases c WHERE c.created_at_ms>=%s AND (%s::text IS NULL OR c.state=%s) "
+    "ORDER BY c.created_at_ms DESC,c.case_id DESC LIMIT %s"
+)
+ANALYSIS_CASES_FOR_SOURCE_SQL = (
+    "SELECT c.case_id,c.trigger_kind,c.asset_id,c.native_symbol,c.created_at_ms,c.state,"
+    "c.failure_code,c.decided_at_ms,c.geometry_version,c.view_sha256,c.raw_snapshot_ref "
+    "FROM trading_cases c JOIN trading_triggers t USING(trigger_id) "
+    "WHERE t.kind='oi' AND t.payload->>'evidence_ref'=%s "
+    "AND (%s::text IS NULL OR c.state=%s) "
+    "ORDER BY c.created_at_ms DESC,c.case_id DESC LIMIT %s"
+)
+ANALYSIS_CASE_SQL = (
+    "SELECT case_id,trigger_id,trigger_kind,asset_id,native_symbol,mapping_digest,created_at_ms,"
+    "root_expires_at_ms,state,claim_token,lease_until_ms,claim_attempt,view,view_sha256,raw_snapshot_ref,"
+    "geometry_version,stop_bps,tp_bps,half_spread_bps,reference_price,decided_at_ms,failure_code,"
+    "updated_at_ms FROM trading_cases WHERE case_id=%s"
+)
+ASSESSMENTS_BY_CASE_SQL = (
+    "SELECT case_id,program_sha,route,status,forecast,drivers,notes,input_tokens,output_tokens,"
+    "started_at_ms,ended_at_ms FROM trading_assessments WHERE case_id=%s ORDER BY program_sha"
+)
+ACTIONS_BY_CASE_SQL = (
+    "SELECT case_id,program_sha,policy_id,policy_version,calibrator_version,action,reason,expected_r,"
+    "publish_status,signal_id,decided_at_ms FROM trading_policy_actions WHERE case_id=%s "
+    "ORDER BY program_sha,policy_id"
+)
+PAPER_BY_CASE_SQL = (
+    "SELECT case_id,side,geometry_version,status,outcome,reason,anchor_at_ms,exit_at_ms,anchor_price,"
+    "exit_price,gross_bps,cost_bps,net_r,labeled_at_ms FROM trading_paper_legs WHERE case_id=%s ORDER BY side"
+)
+
+
+def _json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _sha(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str).encode()
-    ).hexdigest()
-
-
-_OUTCOME_HORIZONS = (900, 3_600, 14_400, 86_400)
-_OUTCOME_VERSION = "price_path_v2"
-TRADING_TRIGGER_BY_ID_SQL = (
-    "SELECT trigger_id,kind,source_fact_key,source_revision,payload_sha256,payload,"
-    "asset_id,target_selection,first_visible_at_ms,source_observed_at_ms,"
-    "root_expires_at_ms,created_at_ms "
-    "FROM trading_triggers WHERE trigger_id=%s"
-)
-TRADING_ANALYSIS_RUNTIME_SQL = (
-    "SELECT heartbeat_at_ms,active_policy,model_name,model_configured,"
-    "publish_signals,config_digest FROM trading_analysis_runtime WHERE runtime_id=%s"
-)
-
-
-# The claims a catalyst trigger's research cites; its payload is News' public update.
-_ORIGINAL_CLAIMS = "ARRAY(SELECT jsonb_array_elements_text(original.payload->'claim_refs'))"
-
-
-def _superseded_sql(*, created_until_param: bool) -> str:
-    """One supersession rule for settlement, watch continuation and the last entry check.
-
-    Evaluated against a trigger aliased `original`. An OI metric revision supersedes by its
-    frozen producer time. A News catalyst supersedes only research whose claims it names as
-    replaced by a parameter, phase or real-world change; information added to the same Event
-    leaves earlier research valid. A source update (correction or evidence change) is an
-    amendment, never a newer trigger.
-    """
-
-    created = " AND newer.created_at_ms<=%s" if created_until_param else ""
-    # Split News and OI so each branch exposes its own index predicate. Count the sparse
-    # claim-target matches: EXISTS assumes an early hit and can prefer a whole-ledger scan
-    # for a missing target even with the GIN index available.
-    return f"""CASE WHEN original.kind='catalyst' THEN (
-          SELECT count(*)>0 FROM trading_triggers newer
-           WHERE newer.kind='catalyst'
-             AND newer.trigger_id<>original.trigger_id{created}
-             AND newer.payload->'superseded_claim_refs' ?| {_ORIGINAL_CLAIMS}
-        ) ELSE EXISTS (
-          SELECT 1 FROM trading_triggers newer
-           WHERE newer.kind=original.kind
-             AND newer.source_fact_key=original.source_fact_key
-             AND newer.trigger_id<>original.trigger_id{created}
-             AND newer.source_revision<>original.source_revision
-             AND COALESCE((newer.payload->>'source_recorded_at_ms')::bigint,newer.first_visible_at_ms)
-               > COALESCE((original.payload->>'source_recorded_at_ms')::bigint,original.first_visible_at_ms)
-        ) END"""  # noqa: S608 -- module-owned predicates; every value stays bound
-
-
-def _refs(value: object) -> list[str]:
-    if (
-        not isinstance(value, (list, tuple))
-        or len(value) > 256
-        or any(not isinstance(item, str) or not item for item in value)
-    ):
-        raise ValueError("analysis_claim_refs_invalid")
-    return sorted(set(value))
+    return hashlib.sha256(_json(value).encode()).hexdigest()
 
 
 class AnalysisStorage:
     conn: Any
 
-    def executor_state(self, account_slot: str) -> dict[str, Any] | None:
-        return cast(
-            dict[str, Any] | None,
-            self.conn.execute(
-                "SELECT heartbeat_at_ns,environment FROM trading_executor_state WHERE account_slot=%s",
-                (account_slot,),
-            ).fetchone(),
-        )
+    def claim_is_current(self, *, case_id: str, claim_token: str, now_ms: int) -> bool:
+        row = self.conn.execute(
+            "SELECT claim_token,lease_until_ms FROM trading_cases WHERE case_id=%s FOR UPDATE", (case_id,)
+        ).fetchone()
+        return row is not None and row["claim_token"] == claim_token and row["lease_until_ms"] > now_ms
+
+    def label_candidates(self, *, now_ms: int, buffer_ms: int, limit: int) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self.conn.execute(
+                "SELECT c.case_id,c.native_symbol,c.decided_at_ms,c.stop_bps,c.tp_bps,c.half_spread_bps,"
+                "c.geometry_version FROM trading_cases c WHERE c.geometry_version IS NOT NULL "
+                "AND c.decided_at_ms IS NOT NULL AND c.decided_at_ms + 14400000 + %s <= %s "
+                "AND (SELECT count(*) FROM trading_paper_legs l WHERE l.case_id=c.case_id "
+                "AND l.geometry_version=c.geometry_version)<2 ORDER BY c.decided_at_ms LIMIT %s",
+                (buffer_ms, now_ms, limit),
+            ).fetchall()
+        ]
+
+    def frozen_cases(self, *, since_ms: int, until_ms: int) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in self.conn.execute(
+                "SELECT case_id,view FROM trading_cases WHERE view IS NOT NULL "
+                "AND created_at_ms>=%s AND created_at_ms<%s ORDER BY created_at_ms,case_id",
+                (since_ms, until_ms),
+            ).fetchall()
+        ]
+
+    def recent_asset_context(
+        self, *, asset_id: str, known_at_ms: int, exclude_trigger_id: str, limit: int = 5
+    ) -> list[dict[str, Any]]:
+        """Only facts and amendments visible before this Case's frozen cutoff."""
+        if not 1 <= limit <= 10:
+            raise ValueError("source_context_limit_invalid")
+        facts = self.conn.execute(
+            "SELECT trigger_id,source_fact_key,kind,payload,first_visible_at_ms "
+            "FROM trading_triggers WHERE selected_asset_id=%s AND trigger_id<>%s "
+            "AND first_visible_at_ms<=%s AND first_visible_at_ms>=%s "
+            "ORDER BY first_visible_at_ms DESC,trigger_id DESC LIMIT %s",
+            (asset_id, exclude_trigger_id, known_at_ms, known_at_ms - 86_400_000, limit),
+        ).fetchall()
+        if not facts:
+            return []
+        keys = [row["source_fact_key"] for row in facts]
+        amendments = self.conn.execute(
+            "SELECT source_fact_key,content_revision,payload,received_at_ms "
+            "FROM trading_source_amendments WHERE source_fact_key=ANY(%s) AND received_at_ms<=%s "
+            "ORDER BY received_at_ms DESC,update_id DESC",
+            (keys, known_at_ms),
+        ).fetchall()
+        by_key: dict[str, list[dict[str, Any]]] = {}
+        for row in amendments:
+            by_key.setdefault(row["source_fact_key"], []).append(dict(row))
+        return [{**dict(row), "amendments": by_key.get(row["source_fact_key"], [])[:3]} for row in facts]
 
     def analysis_runtime(self, runtime_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute(TRADING_ANALYSIS_RUNTIME_SQL, (runtime_id,)).fetchone()
+        row = self.conn.execute(ANALYSIS_RUNTIME_SQL, (runtime_id,)).fetchone()
         return None if row is None else dict(row)
 
-    def heartbeat_analysis_runtime(
+    def analysis_cases(
         self,
         *,
-        runtime_id: str,
-        now_ms: int,
-        active_policy: str,
-        model_name: str | None,
-        model_configured: bool,
-        publish_signals: bool,
-        config_digest: str,
-    ) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO trading_analysis_runtime
-              (runtime_id,heartbeat_at_ms,active_policy,model_name,model_configured,
-               publish_signals,config_digest)
-            VALUES (%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (runtime_id) DO UPDATE SET
-              heartbeat_at_ms=EXCLUDED.heartbeat_at_ms,
-              active_policy=EXCLUDED.active_policy,
-              model_name=EXCLUDED.model_name,
-              model_configured=EXCLUDED.model_configured,
-              publish_signals=EXCLUDED.publish_signals,
-              config_digest=EXCLUDED.config_digest
-            """,
-            (runtime_id, int(now_ms), active_policy, model_name, model_configured, publish_signals, config_digest),
-        )
-
-    def analysis_trigger(self, trigger_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute(TRADING_TRIGGER_BY_ID_SQL, (trigger_id,)).fetchone()
-        return dict(row) if row is not None else None
-
-    def recent_asset_source_context(
-        self,
-        *,
-        asset_id: str,
-        known_at_ms: int,
-        exclude_trigger_id: str,
-        limit: int = 8,
-        topic: str | None = None,
-        lookback_minutes: int | None = None,
-        include_probe: bool = False,
+        since_ms: int,
+        limit: int,
+        state: str | None = None,
+        source_item_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Bounded same-asset source identities visible when this Case was created.
+        if not 1 <= limit <= 100:
+            raise ValueError("analysis_case_limit_invalid")
+        sql = ANALYSIS_CASES_FOR_SOURCE_SQL if source_item_id else ANALYSIS_CASES_SQL
+        params = (source_item_id, state, state, limit) if source_item_id else (since_ms, state, state, limit)
+        return [dict(row) for row in self.conn.execute(sql, params).fetchall()]
 
-        Later decisions and outcome labels never enter the Agent's original input.
-        """
-
-        if not 1 <= limit <= 8:
-            raise ValueError("analysis_source_context_limit_invalid")
-        if lookback_minutes is not None and lookback_minutes not in (15, 60, 240, 1_440):
-            raise ValueError("analysis_source_context_lookback_invalid")
-        if topic is not None and not 1 <= len(topic) <= 80:
-            raise ValueError("analysis_source_context_topic_invalid")
-        pattern = (
-            None if topic is None else "%" + topic.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        )
-        rows = self.conn.execute(
-            "SELECT trigger_id,kind,source_fact_key,source_revision,payload_sha256,"
-            "source_observed_at_ms,first_visible_at_ms,payload "
-            "FROM trading_triggers WHERE asset_id=%s AND trigger_id<>%s "
-            "AND first_visible_at_ms<=%s "
-            "AND (%s::bigint IS NULL OR first_visible_at_ms >= %s::bigint) "
-            "AND (%s::text IS NULL OR EXISTS ("
-            "SELECT 1 FROM jsonb_path_query(payload, '$.** ? (@.type() == \"string\")') AS fact(value) "
-            "WHERE fact.value #>> '{}' ILIKE %s ESCAPE '\\')) "
-            "ORDER BY first_visible_at_ms DESC,trigger_id DESC LIMIT %s",
-            (
-                asset_id,
-                exclude_trigger_id,
-                int(known_at_ms),
-                None if lookback_minutes is None else int(known_at_ms) - lookback_minutes * 60_000,
-                None if lookback_minutes is None else int(known_at_ms) - lookback_minutes * 60_000,
-                pattern,
-                pattern,
-                limit + int(include_probe),
-            ),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def _trigger_superseded(self, trigger_id: str | None, *, known_at_ms: int) -> bool:
-        row = self.conn.execute(
-            f"SELECT {_superseded_sql(created_until_param=True)} AS superseded "  # noqa: S608 -- module-owned predicate
-            "FROM trading_triggers original WHERE original.trigger_id=%s",
-            (int(known_at_ms), int(known_at_ms), trigger_id),
-        ).fetchone()
-        return row is not None and bool(row["superseded"])
+    def analysis_case(self, case_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(ANALYSIS_CASE_SQL, (case_id,)).fetchone()
+        if row is None:
+            return None
+        return {
+            **dict(row),
+            "assessments": [dict(item) for item in self.conn.execute(ASSESSMENTS_BY_CASE_SQL, (case_id,)).fetchall()],
+            "policy_actions": [dict(item) for item in self.conn.execute(ACTIONS_BY_CASE_SQL, (case_id,)).fetchall()],
+            "paper_legs": [dict(item) for item in self.conn.execute(PAPER_BY_CASE_SQL, (case_id,)).fetchall()],
+        }
 
     def accept_trigger(
         self,
@@ -194,189 +159,86 @@ class AnalysisStorage:
         selection: TargetSelection,
         now_ms: int,
         root_ttl_ms: int,
-    ) -> tuple[str, str, str]:
-        """Idempotently record one fact and initial Case in one short transaction.
-
-        Returns (trigger_id, case_id, disposition). A conflicting duplicate
-        retains the first fact and records the attempted digest separately.
-        A catalyst's revision is News' content revision, so its update_id is
-        received once; its freshness starts at `first_available_at_ms`, which
-        a model rerun or a new Event member cannot move.
-        """
-
+    ) -> tuple[str, str | None, str]:
+        """Deduplicate the public News fact; only a selected target gets a Case."""
         if kind not in ("oi", "catalyst") or root_ttl_ms <= 0:
             raise ValueError("analysis_trigger_invalid")
-        if kind == "catalyst":
-            _refs(payload["claim_refs"])
-            _refs(payload["superseded_claim_refs"])
-            first_available = payload["first_available_at_ms"]
-            completed = payload["semantic_completed_at_ms"]
-            if any(not isinstance(value, int) or isinstance(value, bool) for value in (first_available, completed)):
-                raise ValueError("analysis_trigger_clock_invalid")
-            # The producer's recorded time is when the semantic fact existed; freshness is the
-            # information's first availability, never the later completion or relay clock.
-            source_recorded, source_observed, freshness_from = completed, first_available, first_available
-        else:
-            # The timestamp actually frozen by the producer bounds the age of a
-            # delayed relay; retry cannot refresh it.
-            source_recorded = int(payload.get("source_recorded_at_ms") or now_ms)
-            source_observed = int(payload.get("provider_event_at_ms") or source_recorded)
-            freshness_from = source_recorded
-        asset_key = selection.asset_id.key if selection.asset_id is not None else None
-        affected = {asset_key} if asset_key is not None else set()
-        affected.update(
-            str(item["asset_id"])
-            for item in self.conn.execute(
-                "SELECT asset_id FROM trading_triggers WHERE kind=%s AND source_fact_key=%s AND asset_id IS NOT NULL",
-                (kind, source_fact_key),
-            ).fetchall()
-        )
-        for affected_asset in sorted(affected):
-            self.conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 683))", (affected_asset,))
-        source = self.conn.execute(
-            """
-            SELECT trigger_id, payload_sha256 FROM trading_triggers
-             WHERE kind = %s AND source_fact_key = %s AND source_revision = %s
-             FOR UPDATE
-            """,
-            (kind, source_fact_key, source_revision),
-        ).fetchone()
-        if source is not None:
-            trigger_id = str(source["trigger_id"])
-            if source["payload_sha256"] != payload_sha256:
-                self.conn.execute(
-                    """
-                    INSERT INTO trading_trigger_conflicts
-                      (kind, source_fact_key, source_revision, attempted_sha256,
-                       original_sha256, observed_at_ms)
-                    VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
-                    """,
-                    (kind, source_fact_key, source_revision, payload_sha256, source["payload_sha256"], int(now_ms)),
-                )
-                return trigger_id, _sha((trigger_id, "initial", 0)), "source_conflict"
-            return trigger_id, _sha((trigger_id, "initial", 0)), "duplicate"
-
         trigger_id = _sha((kind, source_fact_key, source_revision))
-        case_id = _sha((trigger_id, "initial", 0))
-        root_expires = freshness_from + root_ttl_ms
-        scope = _sha((kind, source_fact_key, asset_key)) if asset_key else None
-        selection_json = {
+        case_id = _sha((trigger_id, "case_v1")) if selection.reason == "selected" else None
+        observed = int(payload.get("first_available_at_ms") or payload.get("provider_event_at_ms") or now_ms)
+        target = {
             "reason": selection.reason,
-            "version": selection.version,
-            "asset_id": asset_key,
-            "candidates": selection.candidates,
-            "registry_snapshot_ref": selection.registry_snapshot_ref,
+            "asset_id": None if selection.asset_id is None else selection.asset_id.key,
             "instrument": None
             if selection.instrument is None
             else {
-                "venue": selection.instrument.venue,
-                "environment": selection.instrument.environment,
-                "product": selection.instrument.product,
                 "native_symbol": selection.instrument.native_symbol,
-                "quote_asset": selection.instrument.quote_asset,
-                "settlement_asset": selection.instrument.settlement_asset,
-                "units_per_contract": str(selection.instrument.units_per_contract),
                 "mapping_semantics_digest": selection.instrument.semantics_digest,
+                "asset_id": selection.instrument.asset_id.key,
+                "units_per_contract": str(selection.instrument.units_per_contract),
             },
+            "candidates": selection.candidates,
+            "registry_snapshot_ref": selection.registry_snapshot_ref,
+            "version": selection.version,
         }
-        manifest = {
-            "manifest_version": "trade_analysis_v1",
-            "trigger_id": trigger_id,
-            "target_selection": selection_json,
-            "source_payload_sha": payload_sha256,
-        }
-        state = "PENDING" if selection.reason == "selected" and now_ms < root_expires else "EXCLUDED"
-        analysis_status = "pending" if state == "PENDING" else "expired" if now_ms >= root_expires else "excluded"
-        reason = "source_expired" if now_ms >= root_expires else selection.reason
-        inserted = self.conn.execute(
-            """
-            INSERT INTO trading_triggers
-              (trigger_id, kind, source_fact_key, source_revision, payload_sha256, payload,
-               asset_id, target_selection, first_visible_at_ms, source_observed_at_ms,
-               root_expires_at_ms, created_at_ms)
-            VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s,%s,%s,%s)
-            ON CONFLICT (kind, source_fact_key, source_revision) DO NOTHING
-            RETURNING trigger_id
-            """,
+        self.conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,746))", (f"source|{source_fact_key}",))
+        self.conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s,746))",
+            (f"{kind}|{source_fact_key}|{source_revision}",),
+        )
+        existing = self.conn.execute(
+            "SELECT trigger_id,payload_sha256 FROM trading_triggers "
+            "WHERE kind=%s AND source_fact_key=%s AND source_revision=%s FOR UPDATE",
+            (kind, source_fact_key, source_revision),
+        ).fetchone()
+        if existing is not None:
+            if existing["payload_sha256"] == payload_sha256:
+                return trigger_id, case_id, "duplicate"
+            self.conn.execute(
+                "INSERT INTO trading_trigger_conflicts "
+                "(kind,source_fact_key,source_revision,attempted_sha256,original_sha256,observed_at_ms) "
+                "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
+                (kind, source_fact_key, source_revision, payload_sha256, existing["payload_sha256"], now_ms),
+            )
+            return trigger_id, case_id, "source_conflict"
+        self.conn.execute(
+            "INSERT INTO trading_triggers (trigger_id,kind,source_fact_key,source_revision,payload_sha256,"
+            "payload,first_visible_at_ms,source_observed_at_ms,selected_asset_id,target_selection,"
+            "exclusion_reason,created_at_ms) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s::jsonb,%s,%s)",
             (
                 trigger_id,
                 kind,
                 source_fact_key,
                 source_revision,
                 payload_sha256,
-                json.dumps(payload),
-                asset_key,
-                json.dumps(selection_json),
-                int(now_ms),
-                source_observed,
-                root_expires,
-                int(now_ms),
-            ),
-        ).fetchone()
-        if inserted is None:
-            # Another relay committed this fact while our initial SELECT was
-            # waiting. Its Case committed in the same transaction.
-            source = self.conn.execute(
-                "SELECT trigger_id, payload_sha256 FROM trading_triggers "
-                "WHERE kind=%s AND source_fact_key=%s AND source_revision=%s FOR UPDATE",
-                (kind, source_fact_key, source_revision),
-            ).fetchone()
-            if source is None:
-                raise RuntimeError("analysis_trigger_conflict_missing")
-            if source["payload_sha256"] != payload_sha256:
-                self.conn.execute(
-                    "INSERT INTO trading_trigger_conflicts "
-                    "(kind,source_fact_key,source_revision,attempted_sha256,original_sha256,observed_at_ms) "
-                    "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                    (kind, source_fact_key, source_revision, payload_sha256, source["payload_sha256"], int(now_ms)),
-                )
-                return str(source["trigger_id"]), case_id, "source_conflict"
-            return str(source["trigger_id"]), case_id, "duplicate"
-        self.conn.execute(
-            """
-            INSERT INTO trading_cases
-              (case_id, underlying_key, trigger_kind, primary_source_key, manifest,
-               manifest_sha256, state, policy_decision, policy_reason, observed_at_ms,
-               source_observed_at_ms, trigger_persisted_at_ms, created_at_ms, updated_at_ms,
-               trigger_id, run_kind, recheck_seq, target_asset_id, target_selection,
-               entry_scope_id, mapping_semantics_digest, root_expires_at_ms,
-               work_deadline_at_ms, next_attempt_at_ms, analysis_status)
-            VALUES (%s,%s,%s,%s,%s::jsonb,%s,%s,'not_run',%s,%s,%s,%s,%s,%s,
-                    %s,'initial',0,%s,%s::jsonb,%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                case_id,
-                asset_key or f"unselected:{trigger_id}",
-                kind,
-                f"{kind}:{source_fact_key}:{source_revision}",
-                json.dumps(manifest),
-                _sha(manifest),
-                state,
-                reason,
-                source_observed,
-                source_observed,
-                source_recorded,
-                int(now_ms),
-                int(now_ms),
-                trigger_id,
-                asset_key,
-                json.dumps(selection_json),
-                scope,
-                selection.instrument.semantics_digest if selection.instrument else None,
-                root_expires,
-                root_expires,
-                int(now_ms),
-                analysis_status,
+                _json(payload),
+                observed,
+                observed,
+                None if selection.asset_id is None or case_id is None else selection.asset_id.key,
+                _json(target),
+                None if case_id is not None else selection.reason,
+                now_ms,
             ),
         )
-        if asset_key is not None:
-            for horizon in _OUTCOME_HORIZONS:
-                self.conn.execute(
-                    "INSERT INTO trading_case_outcomes "
-                    "(case_id,axis,horizon_seconds,label_version,status,available_at_ms) "
-                    "VALUES (%s,'source',%s,%s,'pending',%s)",
-                    (case_id, horizon, _OUTCOME_VERSION, source_observed + horizon * 1_000),
-                )
+        if case_id is not None:
+            if selection.asset_id is None or selection.instrument is None:
+                raise ValueError("selected_trigger_target_missing")
+            self.conn.execute(
+                "INSERT INTO trading_cases (case_id,trigger_id,trigger_kind,asset_id,native_symbol,"
+                "mapping_digest,created_at_ms,root_expires_at_ms,state,updated_at_ms) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s)",
+                (
+                    case_id,
+                    trigger_id,
+                    kind,
+                    selection.asset_id.key,
+                    selection.instrument.native_symbol,
+                    selection.instrument.semantics_digest,
+                    now_ms,
+                    now_ms + root_ttl_ms,
+                    now_ms,
+                ),
+            )
         return trigger_id, case_id, "accepted"
 
     def receive_source_update(
@@ -385,965 +247,358 @@ class AnalysisStorage:
         update_id: str,
         source_fact_key: str,
         content_revision: str,
-        affected_claim_refs: list[str] | tuple[str, ...],
-        retired_claim_refs: list[str] | tuple[str, ...],
+        affected_claim_refs: tuple[str, ...],
+        retired_claim_refs: tuple[str, ...],
         payload: dict[str, Any],
         payload_sha256: str,
         now_ms: int,
     ) -> str:
-        """Record one News correction or evidence change against the claims it names, once per update_id.
-
-        An amendment is research context and the input to the last entry check. It creates no
-        trigger or Case, moves no freshness clock, cancels no order and grants no authority.
-        Returns `accepted`, `duplicate`, or `source_conflict` (the first payload is kept).
-        """
-
-        if not update_id or not source_fact_key or not content_revision:
-            raise ValueError("source_amendment_invalid")
-        affected = _refs(affected_claim_refs)
-        retired = _refs(retired_claim_refs)
-        if not affected or not set(retired) <= set(affected):
+        if not affected_claim_refs or not set(retired_claim_refs) <= set(affected_claim_refs):
             raise ValueError("source_amendment_claims_invalid")
+        self.conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,746))", (f"source|{source_fact_key}",))
         inserted = self.conn.execute(
-            """
-            INSERT INTO trading_source_amendments
-              (update_id, source_fact_key, content_revision, affected_claim_refs,
-               retired_claim_refs, payload, payload_sha256, received_at_ms)
-            VALUES (%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s)
-            ON CONFLICT (update_id) DO NOTHING
-            RETURNING update_id
-            """,
+            "INSERT INTO trading_source_amendments (update_id,source_fact_key,content_revision,"
+            "affected_claim_refs,retired_claim_refs,payload,payload_sha256,received_at_ms) "
+            "VALUES (%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s) "
+            "ON CONFLICT (update_id) DO NOTHING RETURNING update_id",
             (
                 update_id,
                 source_fact_key,
                 content_revision,
-                json.dumps(affected),
-                json.dumps(retired),
-                json.dumps(payload),
+                _json(sorted(set(affected_claim_refs))),
+                _json(sorted(set(retired_claim_refs))),
+                _json(payload),
                 payload_sha256,
-                int(now_ms),
+                now_ms,
             ),
         ).fetchone()
         if inserted is not None:
             return "accepted"
         original = self.conn.execute(
-            "SELECT payload_sha256 FROM trading_source_amendments WHERE update_id=%s",
-            (update_id,),
+            "SELECT payload_sha256 FROM trading_source_amendments WHERE update_id=%s", (update_id,)
         ).fetchone()
         if original is None:
             raise RuntimeError("source_amendment_conflict_missing")
         if original["payload_sha256"] == payload_sha256:
             return "duplicate"
         self.conn.execute(
-            "INSERT INTO trading_trigger_conflicts "
-            "(kind,source_fact_key,source_revision,attempted_sha256,original_sha256,observed_at_ms) "
+            "INSERT INTO trading_trigger_conflicts (kind,source_fact_key,source_revision,"
+            "attempted_sha256,original_sha256,observed_at_ms) "
             "VALUES ('source_update',%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            (source_fact_key, content_revision, payload_sha256, original["payload_sha256"], int(now_ms)),
+            (source_fact_key, content_revision, payload_sha256, original["payload_sha256"], now_ms),
         )
         return "source_conflict"
 
-    def source_amendments(self, *, trigger_id: str, known_at_ms: int, limit: int = 8) -> list[dict[str, Any]]:
-        """Recorded amendments to this catalyst trigger's own claims, as known at the cutoff.
-
-        Amendments to other claims of the same Event are not this research's source.
-        """
-
-        if not 1 <= limit <= 8:
-            raise ValueError("analysis_source_amendment_limit_invalid")
-        rows = self.conn.execute(
-            """
-            SELECT amendment.update_id,amendment.content_revision,amendment.affected_claim_refs,
-                   amendment.retired_claim_refs,amendment.payload,amendment.received_at_ms
-              FROM trading_triggers original
-              JOIN trading_source_amendments amendment ON amendment.affected_claim_refs
-                   ?| ARRAY(SELECT jsonb_array_elements_text(original.payload->'claim_refs'))
-             WHERE original.trigger_id=%s AND original.kind='catalyst'
-               AND amendment.received_at_ms<=%s
-             ORDER BY amendment.received_at_ms,amendment.update_id LIMIT %s
-            """,
-            (trigger_id, int(known_at_ms), limit),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def claim_analysis_case(self, *, now_ms: int, lease_ms: int) -> dict[str, Any] | None:
+    def claim_case(self, *, now_ms: int, lease_ms: int) -> dict[str, Any] | None:
         if lease_ms <= 0:
             raise ValueError("analysis_lease_invalid")
         self.conn.execute(
-            "UPDATE trading_cases SET state='EXCLUDED',analysis_status='expired',"
-            "policy_reason='work_deadline_expired',updated_at_ms=%s "
-            "WHERE case_id IN (SELECT case_id FROM trading_cases "
-            "WHERE trigger_id IS NOT NULL AND state='PENDING' "
-            "AND work_deadline_at_ms<=%s ORDER BY work_deadline_at_ms,case_id "
-            "FOR UPDATE SKIP LOCKED LIMIT 128)",
-            (int(now_ms), int(now_ms)),
+            "UPDATE trading_cases SET state='pending',claim_token=NULL,lease_until_ms=NULL,updated_at_ms=%s "
+            "WHERE state='running' AND lease_until_ms<%s",
+            (now_ms, now_ms),
         )
-        # A former owner loses its fence before another Case for this asset can
-        # become RUNNING. This bounded repair also works after process restart.
-        self.conn.execute(
-            """
-            UPDATE trading_cases SET state='PENDING', claim_token=NULL,
-                   lease_until_ms=NULL, updated_at_ms=%s
-             WHERE case_id IN (
-                 SELECT case_id FROM trading_cases
-                  WHERE trigger_id IS NOT NULL AND state='RUNNING'
-                    AND lease_until_ms<=%s
-                  ORDER BY lease_until_ms, case_id
-                  FOR UPDATE SKIP LOCKED LIMIT 128)
-            """,
-            (int(now_ms), int(now_ms)),
-        )
-        self.conn.execute(
-            "UPDATE trading_case_attempts SET analysis_status='interrupted', "
-            "provider_status=COALESCE(provider_status,'result_unknown'), "
-            "error_code=COALESCE(error_code,'lease_expired'), ended_at_ms=%s "
-            "WHERE analysis_status='running' AND case_id IN "
-            "(SELECT case_id FROM trading_cases WHERE trigger_id IS NOT NULL "
-            "AND state='PENDING' AND claim_attempt>0)",
-            (int(now_ms),),
-        )
-        self.conn.execute(
-            "UPDATE trading_model_calls call SET status='result_unknown' "
-            "WHERE status='requested' AND EXISTS "
-            "(SELECT 1 FROM trading_case_attempts attempt WHERE attempt.case_id=call.case_id "
-            "AND attempt.claim_attempt=call.claim_attempt AND attempt.analysis_status='interrupted')"
-        )
+        # A stale claimant can write only while its token and lease still match.
         row = self.conn.execute(
-            """
-            SELECT c.* FROM trading_cases c
-             WHERE c.trigger_id IS NOT NULL AND c.target_asset_id IS NOT NULL
-               AND c.state = 'PENDING' AND c.next_attempt_at_ms <= %s
-               AND NOT EXISTS (
-                 SELECT 1 FROM trading_cases running
-                  WHERE running.target_asset_id = c.target_asset_id
-                    AND running.case_id <> c.case_id AND running.state = 'RUNNING'
-                    AND running.lease_until_ms > %s)
-             ORDER BY c.created_at_ms, c.case_id
-             FOR UPDATE OF c SKIP LOCKED LIMIT 1
-            """,
-            (int(now_ms), int(now_ms)),
+            "SELECT * FROM trading_cases c WHERE (state='pending' OR "
+            "(state='running' AND lease_until_ms<%s)) "
+            "AND NOT EXISTS (SELECT 1 FROM trading_cases other WHERE other.asset_id=c.asset_id "
+            "AND other.case_id<>c.case_id AND other.state='running' AND other.lease_until_ms>=%s) "
+            "ORDER BY created_at_ms,case_id FOR UPDATE SKIP LOCKED LIMIT 1",
+            (now_ms, now_ms),
         ).fetchone()
         if row is None:
             return None
-        case_id = str(row["case_id"])
-        asset_id = str(row["target_asset_id"])
-        locked = self.conn.execute(
-            "SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 683)) AS locked",
-            (asset_id,),
+        self.conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,746))", (f"case-asset|{row['asset_id']}",))
+        active = self.conn.execute(
+            "SELECT 1 FROM trading_cases WHERE asset_id=%s AND case_id<>%s "
+            "AND state='running' AND lease_until_ms>=%s LIMIT 1",
+            (row["asset_id"], row["case_id"], now_ms),
         ).fetchone()
-        if not locked["locked"]:
-            return None
-        # The first query may have raced a different worker claiming another
-        # Case for this asset. Recheck after acquiring its transaction lock.
-        busy = self.conn.execute(
-            "SELECT 1 FROM trading_cases WHERE target_asset_id=%s AND state='RUNNING' AND lease_until_ms>%s LIMIT 1",
-            (asset_id, int(now_ms)),
-        ).fetchone()
-        if busy is not None:
+        if active is not None:
             return None
         token = uuid.uuid4().hex
-        updated = self.conn.execute(
-            """
-            UPDATE trading_cases SET state='RUNNING', claim_token=%s,
-                   lease_until_ms=%s, claim_attempt=claim_attempt+1,
-                   updated_at_ms=%s
-             WHERE case_id=%s AND root_expires_at_ms>%s AND work_deadline_at_ms>%s
-         RETURNING *
-            """,
-            (
-                token,
-                min(int(now_ms) + lease_ms, int(row["root_expires_at_ms"]), int(row["work_deadline_at_ms"])),
-                int(now_ms),
-                case_id,
-                int(now_ms),
-                int(now_ms),
-            ),
-        ).fetchone()
-        if updated is None:
-            self.conn.execute(
-                """
-                UPDATE trading_cases SET state='EXCLUDED', analysis_status='expired',
-                       policy_reason='source_expired', updated_at_ms=%s
-                 WHERE case_id=%s AND state IN ('PENDING','RUNNING')
-                """,
-                (int(now_ms), case_id),
-            )
-            return None
         self.conn.execute(
-            """
-            INSERT INTO trading_case_attempts
-              (case_id,claim_attempt,claim_token,started_at_ms,analysis_status,cost_unknown_reason)
-            VALUES (%s,%s,%s,%s,'running','not_called')
-            """,
-            (case_id, int(updated["claim_attempt"]), token, int(now_ms)),
+            "UPDATE trading_cases SET state='running',claim_token=%s,lease_until_ms=%s,"
+            "claim_attempt=claim_attempt+1,updated_at_ms=%s WHERE case_id=%s",
+            (token, now_ms + lease_ms, now_ms, row["case_id"]),
         )
-        return dict(updated)
+        return {**dict(row), "state": "running", "claim_token": token, "lease_until_ms": now_ms + lease_ms}
 
-    def finish_analysis_case(
-        self,
-        *,
-        case_id: str,
-        claim_token: str,
-        now_ms: int,
-        analysis_status: str,
-        evidence_ref: str | None,
-        decision: dict[str, Any] | None,
-        assessment_ref: str | None = None,
-        prepared_signal: SignalV4 | None = None,
-        publish_block_reason: str | None = None,
-    ) -> bool:
-        """A late or replaced model answer has no authority to settle or publish."""
-
-        asset = self.conn.execute(
-            "SELECT target_asset_id FROM trading_cases WHERE case_id=%s",
+    def case_trigger(self, case_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT t.* FROM trading_cases c JOIN trading_triggers t USING(trigger_id) WHERE c.case_id=%s",
             (case_id,),
-        ).fetchone()
-        if asset is not None and asset["target_asset_id"] is not None:
-            self.conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 683))", (asset["target_asset_id"],))
-        row = self.conn.execute(
-            """
-            SELECT * FROM trading_cases
-             WHERE case_id=%s AND state='RUNNING' AND claim_token=%s
-               AND lease_until_ms>%s AND root_expires_at_ms>%s
-               AND work_deadline_at_ms>%s FOR UPDATE
-            """,
-            (case_id, claim_token, int(now_ms), int(now_ms), int(now_ms)),
-        ).fetchone()
-        if row is None:
-            return False
-        action = None if decision is None else str(decision["action"])
-        published = False
-        if decision is not None:
-            if decision.get("decision_version") != "trade_decision_v4":
-                raise ValueError("analysis_decision_version_invalid")
-            decision_id = decision_identity(case_id, decision)
-            superseded = self._trigger_superseded(row["trigger_id"], known_at_ms=now_ms)
-            corrected = self.conn.execute(
-                """
-                SELECT EXISTS (
-                    SELECT 1 FROM trading_triggers original
-                    JOIN trading_source_amendments amendment
-                      ON amendment.source_fact_key=original.source_fact_key
-                    WHERE original.trigger_id=%s AND original.kind='catalyst'
-                      AND amendment.retired_claim_refs ?|
-                          ARRAY(SELECT jsonb_array_elements_text(original.payload->'claim_refs'))
-                ) AS corrected
-                """,
-                (row["trigger_id"],),
-            ).fetchone()["corrected"]
-            if corrected:
-                publish_block_reason = "source_corrected"
-            if prepared_signal is not None and not superseded and not corrected:
-                executor = self.executor_state(prepared_signal.account_slot)
-                if (
-                    executor is None
-                    or executor["environment"] != "DEMO"
-                    or now_ms * 1_000_000 - executor["heartbeat_at_ns"] > 5_000_000_000
-                ):
-                    publish_block_reason = "runtime_unavailable"
-            publish_status = (
-                "superseded"
-                if superseded
-                else "not_applicable"
-                if action != "TRADE"
-                else "blocked"
-                if publish_block_reason
-                else "unpublished"
-                if prepared_signal is None
-                else "published"
-            )
-            if prepared_signal is not None and not superseded and not corrected and publish_block_reason is None:
-                signal = prepared_signal
-                if (
-                    not isinstance(signal, SignalV4)
-                    or signal.case_id != case_id
-                    or signal.decision_id != decision_id
-                    or signal.entry_scope_id != row["entry_scope_id"]
-                    or signal.asset_id != row["target_asset_id"]
-                    or signal.mapping_semantics_digest != row["mapping_semantics_digest"]
-                    or signal.side != decision.get("side")
-                    or action != "TRADE"
-                    or signal.expires_at_ns <= int(now_ms) * 1_000_000
-                ):
-                    raise ValueError("analysis_signal_identity_invalid")
-                ExecutorStorage(self.conn).append_signal(signal)
-                published = True
-            self.conn.execute(
-                """
-                INSERT INTO trading_case_decisions
-                  (case_id, decision_id, policy_id, policy_version, input_ref,
-                   assessment_ref, action, decision, publish_status, publish_reason,
-                   decided_at_ms, valid_until_ms)
-                VALUES (%s,%s,'trade_assessment',%s,%s,%s,%s,%s::jsonb,
-                        %s,%s,%s,%s)
-                """,
-                (
-                    case_id,
-                    decision_id,
-                    "v4",
-                    evidence_ref,
-                    assessment_ref,
-                    action,
-                    json.dumps(decision),
-                    publish_status,
-                    "source_superseded"
-                    if superseded
-                    else publish_block_reason
-                    if publish_status == "blocked"
-                    else "publish_disabled"
-                    if publish_status == "unpublished"
-                    else None,
-                    int(now_ms),
-                    int(row["root_expires_at_ms"]),
-                ),
-            )
-            for horizon in _OUTCOME_HORIZONS:
-                self.conn.execute(
-                    "INSERT INTO trading_case_outcomes "
-                    "(case_id,axis,horizon_seconds,label_version,status,available_at_ms) "
-                    "VALUES (%s,'decision',%s,%s,'pending',%s)",
-                    (case_id, horizon, _OUTCOME_VERSION, int(now_ms) + 60_000 + horizon * 1_000),
-                )
-        state = "SIGNAL_EMITTED" if published else "DONE" if decision is not None else "FAILED"
-        policy_decision = (
-            "long"
-            if action == "TRADE" and decision is not None and decision.get("side") == "long"
-            else "short"
-            if action == "TRADE"
-            else "watch"
-            if action == "WATCH"
-            else "no_trade"
-            if action == "NO_TRADE"
-            else "not_run"
-        )
-        self.conn.execute(
-            """
-            UPDATE trading_cases SET state=%s, policy_decision=%s,
-                   policy_reason=%s, analysis_status=%s, evidence_ref=%s,
-                   decided_at_ms=%s, updated_at_ms=%s
-             WHERE case_id=%s
-            """,
-            (
-                state,
-                policy_decision,
-                decision.get("reason_code", "analysis_complete") if decision else analysis_status,
-                analysis_status,
-                evidence_ref,
-                int(now_ms),
-                int(now_ms),
-                case_id,
-            ),
-        )
-        self.conn.execute(
-            "UPDATE trading_case_attempts SET settled=true WHERE case_id=%s AND claim_attempt=%s AND claim_token=%s",
-            (case_id, int(row["claim_attempt"]), claim_token),
-        )
-        if action == "WATCH" and decision is not None and not superseded:
-            self._create_watch_observation(
-                parent=row,
-                decision=decision,
-                evidence_ref=evidence_ref,
-                now_ms=now_ms,
-            )
-        return True
-
-    def record_analysis_attempt(
-        self,
-        *,
-        case_id: str,
-        claim_attempt: int,
-        claim_token: str,
-        brief_ref: str | None,
-        evidence_ref: str | None,
-        assessment_ref: str | None,
-        model_name: str | None,
-        prompt_sha: str | None,
-        started_at_ms: int | None,
-        ended_at_ms: int,
-        provider_status: str | None,
-        analysis_status: str,
-        error_code: str | None,
-        validation_errors: tuple[dict[str, str], ...],
-        input_tokens: int | None,
-        output_tokens: int | None,
-        cost_microusd: int | None,
-        calls: tuple[dict[str, Any], ...],
-        known_cost_microusd: int = 0,
-        unknown_cost_calls: int = 0,
-        cost_upper_estimate_microusd: int | None = None,
-        final_manifest_ref: str | None = None,
-        termination_reason: str | None = None,
-    ) -> None:
-        """A late claim may leave diagnostics, but gains no settlement authority."""
-        dispatched_count = sum(call.get("status") != "not_dispatched" for call in calls)
-        cost_unknown_reason = (
-            ("not_called" if not dispatched_count else "one_or_more_physical_costs_unavailable")
-            if cost_microusd is None
-            else None
-        )
-        self.conn.execute(
-            """
-            UPDATE trading_case_attempts SET
-              brief_ref=COALESCE(brief_ref,%s),evidence_ref=COALESCE(evidence_ref,%s),assessment_ref=%s,
-              model_name=%s,prompt_sha=%s,ended_at_ms=%s,provider_status=%s,
-              analysis_status=%s,error_code=%s,validation_errors=%s::jsonb,
-              physical_call_count=%s,input_tokens=%s,output_tokens=%s,
-              cost_microusd=%s,cost_unknown_reason=%s,
-              known_cost_microusd=%s,unknown_cost_calls=%s,cost_upper_estimate_microusd=%s,
-              final_manifest_ref=%s,termination_reason=%s
-            WHERE case_id=%s AND claim_attempt=%s AND claim_token=%s
-            """,
-            (
-                brief_ref,
-                evidence_ref,
-                assessment_ref,
-                model_name,
-                prompt_sha,
-                int(ended_at_ms),
-                provider_status,
-                analysis_status,
-                error_code,
-                json.dumps(validation_errors),
-                dispatched_count,
-                input_tokens,
-                output_tokens,
-                cost_microusd,
-                cost_unknown_reason,
-                known_cost_microusd,
-                unknown_cost_calls,
-                cost_upper_estimate_microusd,
-                final_manifest_ref,
-                termination_reason,
-                case_id,
-                int(claim_attempt),
-                claim_token,
-            ),
-        )
-        for index, call in enumerate(calls):
-            self.conn.execute(
-                """
-                INSERT INTO trading_model_calls
-                  (case_id,claim_attempt,call_index,request_ref,response_ref,
-                   input_tokens,output_tokens,cost_microusd,cost_unknown_reason,status,finished_at_ms,
-                   phase,endpoint,requested_model,served_model)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (case_id,claim_attempt,call_index) DO UPDATE SET
-                  response_ref=COALESCE(EXCLUDED.response_ref,trading_model_calls.response_ref),
-                  input_tokens=EXCLUDED.input_tokens,
-                  output_tokens=EXCLUDED.output_tokens,
-                  cost_microusd=EXCLUDED.cost_microusd,
-                  cost_unknown_reason=EXCLUDED.cost_unknown_reason,
-                  status=EXCLUDED.status,
-                  finished_at_ms=COALESCE(trading_model_calls.finished_at_ms,EXCLUDED.finished_at_ms),
-                  phase=COALESCE(EXCLUDED.phase,trading_model_calls.phase),
-                  endpoint=COALESCE(EXCLUDED.endpoint,trading_model_calls.endpoint),
-                  requested_model=COALESCE(EXCLUDED.requested_model,trading_model_calls.requested_model),
-                  served_model=COALESCE(EXCLUDED.served_model,trading_model_calls.served_model)
-                """,
-                (
-                    case_id,
-                    int(claim_attempt),
-                    index,
-                    call.get("request_ref"),
-                    call.get("response_ref"),
-                    call.get("input_tokens"),
-                    call.get("output_tokens"),
-                    call.get("cost_microusd"),
-                    call.get("cost_unknown_reason"),
-                    call.get("status", "completed" if call.get("response_ref") else "result_unknown"),
-                    call.get("finished_at_ms"),
-                    call.get("phase"),
-                    call.get("endpoint"),
-                    call.get("requested_model"),
-                    call.get("served_model"),
-                ),
-            )
-
-    def prior_analysis_snapshot(self, *, case_id: str, before_claim_attempt: int) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT evidence_ref,brief_ref FROM trading_case_attempts "
-            "WHERE case_id=%s AND claim_attempt<%s "
-            "AND evidence_ref IS NOT NULL AND brief_ref IS NOT NULL "
-            "ORDER BY claim_attempt LIMIT 1",
-            (case_id, int(before_claim_attempt)),
         ).fetchone()
         return None if row is None else dict(row)
 
-    def record_analysis_snapshot(
-        self,
-        *,
-        case_id: str,
-        claim_attempt: int,
-        claim_token: str,
-        evidence_ref: str | None,
-        brief_ref: str | None,
-        now_ms: int,
-    ) -> bool:
-        updated = self.conn.execute(
-            "UPDATE trading_case_attempts a SET evidence_ref=COALESCE(a.evidence_ref,%s),"
-            "brief_ref=COALESCE(a.brief_ref,%s) "
-            "FROM trading_cases c WHERE a.case_id=c.case_id AND a.case_id=%s "
-            "AND a.claim_attempt=%s AND a.claim_token=%s "
-            "AND c.state='RUNNING' AND c.claim_attempt=a.claim_attempt "
-            "AND c.claim_token=a.claim_token AND c.lease_until_ms>%s "
-            "AND c.work_deadline_at_ms>%s AND c.root_expires_at_ms>%s "
-            "AND (a.evidence_ref IS NULL OR a.evidence_ref=%s) "
-            "AND (a.brief_ref IS NULL OR a.brief_ref=%s)",
-            (
-                evidence_ref,
-                brief_ref,
-                case_id,
-                claim_attempt,
-                claim_token,
-                int(now_ms),
-                int(now_ms),
-                int(now_ms),
-                evidence_ref,
-                brief_ref,
-            ),
-        )
-        return bool(updated.rowcount)
-
-    def record_model_call_start(
-        self,
-        *,
-        case_id: str,
-        claim_attempt: int,
-        claim_token: str,
-        call_index: int,
-        request_ref: str,
-        now_ms: int,
-        timeout_ms: int,
-        reserved_cost_microusd: int | None,
-        phase: str | None = None,
-        endpoint: str | None = None,
-        requested_model: str | None = None,
-    ) -> bool:
-        row = self.conn.execute(
-            "SELECT LEAST(c.lease_until_ms,c.work_deadline_at_ms,c.root_expires_at_ms) AS deadline "
-            "FROM trading_cases c JOIN trading_case_attempts a ON a.case_id=c.case_id "
-            "AND a.claim_attempt=c.claim_attempt AND a.claim_token=c.claim_token "
-            "WHERE c.case_id=%s AND c.claim_attempt=%s AND c.claim_token=%s "
-            "AND c.state='RUNNING' AND c.lease_until_ms>%s AND c.work_deadline_at_ms>%s "
-            "AND c.root_expires_at_ms>%s",
-            (case_id, claim_attempt, claim_token, now_ms, now_ms, now_ms),
+    def publication_source_status(self, *, case_id: str, now_ms: int) -> str | None:
+        """Check News correction and later public facts at the final publish fence."""
+        identity = self.conn.execute(
+            "SELECT t.source_fact_key FROM trading_cases c JOIN trading_triggers t USING(trigger_id) "
+            "WHERE c.case_id=%s",
+            (case_id,),
         ).fetchone()
-        if row is None:
-            return False
-        remaining_ms = int(row["deadline"]) - now_ms
-        actual_timeout_ms = min(timeout_ms, remaining_ms)
+        if identity is None:
+            raise ValueError("analysis_trigger_missing")
         self.conn.execute(
-            "INSERT INTO trading_model_calls "
-            "(case_id,claim_attempt,call_index,request_ref,started_at_ms,timeout_ms,remaining_deadline_ms,"
-            "reserved_cost_microusd,cost_unknown_reason,status,phase,endpoint,requested_model) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'provider_cost_unavailable','requested',%s,%s,%s)",
-            (
-                case_id,
-                claim_attempt,
-                call_index,
-                request_ref,
-                now_ms,
-                actual_timeout_ms,
-                remaining_ms,
-                reserved_cost_microusd,
-                phase,
-                endpoint,
-                requested_model,
-            ),
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s,746))",
+            (f"source|{identity['source_fact_key']}",),
         )
-        return True
+        original = self.conn.execute(
+            "SELECT t.* FROM trading_cases c JOIN trading_triggers t USING(trigger_id) "
+            "WHERE c.case_id=%s FOR SHARE OF c,t",
+            (case_id,),
+        ).fetchone()
+        if original is None:
+            raise ValueError("analysis_trigger_missing")
+        if original["kind"] == "catalyst":
+            claims = list(original["payload"].get("claim_refs") or ())
+            if claims:
+                correction = self.conn.execute(
+                    "SELECT 1 FROM trading_source_amendments WHERE source_fact_key=%s "
+                    "AND received_at_ms<=%s AND retired_claim_refs ?| %s LIMIT 1",
+                    (original["source_fact_key"], now_ms, claims),
+                ).fetchone()
+                if correction is not None:
+                    return "source_corrected"
+                superseded = self.conn.execute(
+                    "SELECT 1 FROM trading_triggers WHERE kind='catalyst' AND trigger_id<>%s "
+                    "AND created_at_ms<=%s AND payload->'superseded_claim_refs' ?| %s LIMIT 1",
+                    (original["trigger_id"], now_ms, claims),
+                ).fetchone()
+                if superseded is not None:
+                    return "source_superseded"
+        else:
+            superseded = self.conn.execute(
+                "SELECT 1 FROM trading_triggers WHERE kind='oi' AND source_fact_key=%s "
+                "AND source_revision<>%s AND source_observed_at_ms>%s AND created_at_ms<=%s LIMIT 1",
+                (original["source_fact_key"], original["source_revision"], original["source_observed_at_ms"], now_ms),
+            ).fetchone()
+            if superseded is not None:
+                return "source_superseded"
+        return None
 
-    def analysis_tool_authorized(
+    def freeze_case(
         self,
         *,
         case_id: str,
-        claim_attempt: int,
         claim_token: str,
         now_ms: int,
+        view: dict[str, Any],
+        raw_snapshot_ref: str,
+        geometry_version: str,
+        stop_bps: int,
+        tp_bps: int,
+        half_spread_bps: Decimal,
+        reference_price: Decimal,
     ) -> bool:
-        """Read-only fence check before a Case tool touches an external source."""
+        digest = _sha(view)
         row = self.conn.execute(
-            "SELECT 1 FROM trading_cases c JOIN trading_case_attempts a "
-            "ON a.case_id=c.case_id AND a.claim_attempt=c.claim_attempt "
-            "AND a.claim_token=c.claim_token "
-            "WHERE c.case_id=%s AND c.claim_attempt=%s AND c.claim_token=%s "
-            "AND c.state='RUNNING' AND c.lease_until_ms>%s "
-            "AND c.work_deadline_at_ms>%s AND c.root_expires_at_ms>%s",
-            (case_id, claim_attempt, claim_token, now_ms, now_ms, now_ms),
+            "UPDATE trading_cases SET view=COALESCE(view,%s::jsonb),"
+            "view_sha256=COALESCE(view_sha256,%s),raw_snapshot_ref=COALESCE(raw_snapshot_ref,%s),"
+            "geometry_version=COALESCE(geometry_version,%s),stop_bps=COALESCE(stop_bps,%s),"
+            "tp_bps=COALESCE(tp_bps,%s),half_spread_bps=COALESCE(half_spread_bps,%s),"
+            "reference_price=COALESCE(reference_price,%s),updated_at_ms=%s "
+            "WHERE case_id=%s AND state='running' AND claim_token=%s AND lease_until_ms>%s "
+            "AND (view_sha256 IS NULL OR view_sha256=%s) RETURNING case_id",
+            (
+                _json(view),
+                digest,
+                raw_snapshot_ref,
+                geometry_version,
+                stop_bps,
+                tp_bps,
+                half_spread_bps,
+                reference_price,
+                now_ms,
+                case_id,
+                claim_token,
+                now_ms,
+                digest,
+            ),
         ).fetchone()
         return row is not None
 
-    def record_model_call_finish(
-        self,
-        *,
-        case_id: str,
-        claim_attempt: int,
-        claim_token: str,
-        call_index: int,
-        response_ref: str | None,
-        finished_at_ms: int,
-        status: str,
-        input_tokens: int | None,
-        output_tokens: int | None,
-        cost_microusd: int | None,
-        served_model: str | None = None,
-    ) -> bool:
-        if status not in ("completed", "result_unknown", "not_dispatched"):
-            raise ValueError("model_call_status_invalid")
-        updated = self.conn.execute(
-            "UPDATE trading_model_calls call SET status=%s,response_ref=%s,finished_at_ms=%s,"
-            "input_tokens=%s,output_tokens=%s,cost_microusd=%s,cost_unknown_reason=%s,"
-            "served_model=COALESCE(%s,served_model) "
-            "WHERE case_id=%s AND claim_attempt=%s AND call_index=%s "
-            "AND EXISTS (SELECT 1 FROM trading_case_attempts attempt "
-            "WHERE attempt.case_id=call.case_id AND attempt.claim_attempt=call.claim_attempt "
-            "AND attempt.claim_token=%s)",
-            (
-                status,
-                response_ref,
-                finished_at_ms,
-                input_tokens,
-                output_tokens,
-                cost_microusd,
-                "not_dispatched"
-                if status == "not_dispatched"
-                else "provider_cost_unavailable"
-                if cost_microusd is None
-                else None,
-                served_model,
-                case_id,
-                claim_attempt,
-                call_index,
-                claim_token,
-            ),
-        )
-        return bool(updated.rowcount)
-
-    def mark_analysis_attempt_unsettled(
-        self,
-        *,
-        case_id: str,
-        claim_attempt: int,
-        claim_token: str,
-    ) -> None:
-        self.conn.execute(
-            "UPDATE trading_case_attempts SET settled=false,error_code='fenced_out' "
-            "WHERE case_id=%s AND claim_attempt=%s AND claim_token=%s",
-            (case_id, claim_attempt, claim_token),
-        )
-
-    def _create_watch_observation(
-        self,
-        *,
-        parent: dict[str, Any],
-        decision: dict[str, Any],
-        evidence_ref: str | None,
-        now_ms: int,
-    ) -> None:
-        if parent["run_kind"] != "initial":
-            return
-        watch = decision.get("watch_condition")
-        if not isinstance(watch, dict):
-            return
-        watch = {**watch, "parent_evidence_ref": evidence_ref}
-        if watch.get("kind") != "closed_1m_directed_cross":
-            return
-        root_expires = int(parent["root_expires_at_ms"])
-        if int(watch.get("expires_at_ms") or 0) != root_expires or now_ms >= root_expires:
-            return
-        if parent["entry_scope_id"] is None:
-            return
-        used = self.conn.execute(
-            "SELECT 1 FROM trading_plans p JOIN trading_signals s ON s.signal_id=p.signal_id "
-            "WHERE s.payload->>'entry_scope_id'=%s LIMIT 1",
-            (parent["entry_scope_id"],),
-        ).fetchone()
-        if used is not None:
-            return
-        self.conn.execute(
-            """
-            INSERT INTO trading_watch_observations
-              (parent_case_id,trigger_id,condition,status,next_check_at_ms,expires_at_ms,created_at_ms,updated_at_ms)
-            VALUES (%s,%s,%s::jsonb,'waiting',%s,%s,%s,%s)
-            ON CONFLICT (trigger_id) DO NOTHING
-            """,
-            (
-                parent["case_id"],
-                parent["trigger_id"],
-                json.dumps(watch),
-                int(now_ms),
-                root_expires,
-                int(now_ms),
-                int(now_ms),
-            ),
-        )
-
-    def due_watch_observations(self, *, now_ms: int, limit: int = 16) -> list[dict[str, Any]]:
+    def pit_base_rates(
+        self, *, trigger_kind: str, known_at_ms: int
+    ) -> dict[str, tuple[int, dict[str, Decimal] | None]]:
         rows = self.conn.execute(
-            """
-            SELECT w.*,c.trigger_id,c.recheck_seq,c.target_selection,c.target_asset_id,
-                   c.entry_scope_id,c.root_expires_at_ms
-              FROM trading_watch_observations w
-              JOIN trading_cases c ON c.case_id=w.parent_case_id
-             WHERE w.status='waiting' AND w.condition ->> 'kind' = 'closed_1m_directed_cross'
-               AND w.next_check_at_ms<=%s
-             ORDER BY w.next_check_at_ms,w.parent_case_id LIMIT %s
-            """,
-            (int(now_ms), max(1, min(128, limit))),
+            "SELECT l.side,l.outcome,count(*) AS n FROM trading_paper_legs l "
+            "JOIN trading_cases c USING(case_id) WHERE c.trigger_kind=%s "
+            "AND l.status='complete' AND l.labeled_at_ms<%s AND l.exit_at_ms<%s "
+            "AND c.created_at_ms>=%s GROUP BY l.side,l.outcome",
+            (trigger_kind, known_at_ms, known_at_ms, known_at_ms - 14 * 86_400_000),
         ).fetchall()
-        return [dict(row) for row in rows]
+        result: dict[str, tuple[int, dict[str, Decimal] | None]] = {}
+        for side in ("long", "short"):
+            counts = {str(row["outcome"]): int(row["n"]) for row in rows if row["side"] == side}
+            total = sum(counts.values())
+            result[side] = (
+                total,
+                None
+                if total < 30
+                else {outcome: Decimal(counts.get(outcome, 0)) / total for outcome in ("tp", "sl", "timeout")},
+            )
+        return result
 
-    def advance_watch_observation(
+    def record_assessment(
         self,
         *,
-        parent_case_id: str,
-        now_ms: int,
-        observation_status: str,
-        observed_at_ms: int | None,
-        observed_value: str | None,
-        previous_close: str | None = None,
-        trigger_side: str | None = None,
-        observed_path: tuple[tuple[int, str], ...] = (),
-        observation_ref: str | None = None,
-    ) -> bool:
-        if observation_status not in ("satisfied", "not_met", "data_missing", "expired", "missed"):
-            raise ValueError("watch_observation_status_invalid")
-        asset = self.conn.execute(
-            "SELECT target_asset_id FROM trading_cases WHERE case_id=%s",
-            (parent_case_id,),
+        case_id: str,
+        program_sha: str,
+        route: str,
+        status: str,
+        forecast: Forecast | None,
+        notes: tuple[str, ...],
+        usage: dict[str, Any],
+        started_at_ms: int,
+        ended_at_ms: int,
+    ) -> None:
+        value = (
+            None
+            if forecast is None
+            else {
+                side: {name: str(getattr(getattr(forecast, side), name)) for name in ("p_tp", "p_sl", "p_timeout")}
+                for side in ("long", "short")
+            }
+        )
+        drivers = [] if forecast is None else [asdict(item) for item in forecast.drivers]
+        inserted = self.conn.execute(
+            "INSERT INTO trading_assessments (case_id,program_sha,route,status,forecast,drivers,notes,"
+            "input_tokens,output_tokens,started_at_ms,ended_at_ms) "
+            "VALUES (%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s,%s) "
+            "ON CONFLICT(case_id,program_sha) DO NOTHING RETURNING case_id",
+            (
+                case_id,
+                program_sha,
+                route,
+                status,
+                None if value is None else _json(value),
+                _json(drivers),
+                _json(notes),
+                usage.get("input_tokens"),
+                usage.get("output_tokens"),
+                started_at_ms,
+                ended_at_ms,
+            ),
         ).fetchone()
-        if asset is not None and asset["target_asset_id"] is not None:
-            self.conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 683))",
-                (asset["target_asset_id"],),
-            )
-        row = self.conn.execute(
-            """
-            SELECT w.*,c.* FROM trading_watch_observations w
-            JOIN trading_cases c ON c.case_id=w.parent_case_id
-            WHERE w.parent_case_id=%s AND w.status='waiting' FOR UPDATE OF w
-            """,
-            (parent_case_id,),
-        ).fetchone()
-        if row is None:
-            return False
-        parent = dict(row)
-        condition = dict(parent["condition"])
-        if observation_status in ("satisfied", "missed", "not_met", "data_missing") and observed_path:
-            if not observation_ref:
-                raise ValueError("watch_observation_evidence_missing")
-            try:
-                if condition.get("kind") != "closed_1m_directed_cross":
-                    raise ValueError("watch_observation_kind_invalid")
-                level = Decimal(str(condition["level"]))
-                side_expected = condition["side"]
-                previous = Decimal(
-                    str(
-                        parent["last_observed_value"]
-                        if parent["last_observed_value"] is not None
-                        else condition["previous_close"]
-                    )
-                )
-            except (InvalidOperation, KeyError, TypeError) as exc:
-                raise ValueError("watch_observation_invalid") from exc
-            expected_at = int(parent["last_observed_at_ms"] or condition["frozen_at_ms"]) + 60_000
-            found_side = None
-            for stamp, raw_close in observed_path:
-                value = Decimal(str(raw_close))
-                if (
-                    stamp != expected_at
-                    or stamp > now_ms
-                    or stamp > int(condition["expires_at_ms"])
-                    or not value.is_finite()
-                    or value <= 0
-                    or not previous.is_finite()
-                    or not level.is_finite()
-                    or level <= 0
-                ):
-                    raise ValueError("watch_observation_path_invalid")
-                side = (
-                    side_expected
-                    if directed_cross(side=side_expected, previous=previous, current=value, level=level)
-                    else None
-                )
-                if side is not None:
-                    found_side = side
-                    if stamp != observed_path[-1][0]:
-                        raise ValueError("watch_observation_not_first_cross")
-                previous, expected_at = value, stamp + 60_000
-            if observed_at_ms != observed_path[-1][0] or observed_value != observed_path[-1][1]:
-                raise ValueError("watch_observation_tail_mismatch")
-            if (observation_status in ("satisfied", "missed")) != (
-                found_side is not None
-            ) or trigger_side != found_side:
-                raise ValueError("watch_observation_condition_unmet")
-        elif observation_status in ("satisfied", "missed"):
-            raise ValueError("watch_observation_path_missing")
-        root_expires = int(parent["root_expires_at_ms"])
-        sequence = 1
-        used = self.conn.execute(
-            "SELECT 1 FROM trading_plans p JOIN trading_signals s ON s.signal_id=p.signal_id "
-            "WHERE s.payload->>'entry_scope_id'=%s LIMIT 1",
-            (parent["entry_scope_id"],),
-        ).fetchone()
-        superseded = self._trigger_superseded(parent["trigger_id"], known_at_ms=now_ms)
-        if used is not None or superseded:
-            final_status = "cancelled"
-        elif now_ms >= root_expires or observation_status == "missed":
-            final_status = "expired"
-        elif observation_status == "satisfied":
-            final_status = (
-                "triggered"
-                if observed_at_ms is not None and now_ms < min(root_expires, observed_at_ms + 120_000)
-                else "expired"
-            )
-        else:
-            final_status = "waiting"
-        child_case_id = None
-        if final_status == "triggered":
-            if observed_at_ms is None:
-                raise ValueError("watch_trigger_clock_missing")
-            child_case_id = _sha((parent["trigger_id"], "conditional_cross", sequence))
-            watch = dict(parent["condition"])
-            parent_decision = self.conn.execute(
-                "SELECT decision_id,decision FROM trading_case_decisions WHERE case_id=%s",
-                (parent_case_id,),
+        if inserted is None:
+            prior = self.conn.execute(
+                "SELECT route,status,forecast FROM trading_assessments WHERE case_id=%s AND program_sha=%s",
+                (case_id, program_sha),
             ).fetchone()
-            manifest = dict(parent["manifest"])
-            manifest.update(
-                {
-                    "parent_case_id": parent_case_id,
-                    "parent_decision_id": None if parent_decision is None else parent_decision["decision_id"],
-                    "parent_decision": None if parent_decision is None else parent_decision["decision"],
-                    "recheck_seq": sequence,
-                    "watch_condition": watch,
-                    "parent_evidence_ref": watch.get("parent_evidence_ref"),
-                    "watch_observed_at_ms": observed_at_ms,
-                    "watch_observed_value": observed_value,
-                    "watch_previous_close": previous_close,
-                    "watch_trigger_side": trigger_side,
-                    "watch_observation_ref": observation_ref,
-                    "triggered_at_ms": int(now_ms),
-                }
-            )
+            if prior is None or (prior["route"], prior["status"], prior["forecast"]) != (route, status, value):
+                raise ValueError("assessment_identity_conflict")
+
+    def record_policy_actions(
+        self, *, case_id: str, program_sha: str, decisions: tuple[PolicyDecision, ...], now_ms: int
+    ) -> None:
+        for item in decisions:
             self.conn.execute(
-                """
-                INSERT INTO trading_cases
-                  (case_id,underlying_key,trigger_kind,primary_source_key,manifest,
-                   manifest_sha256,state,policy_decision,policy_reason,observed_at_ms,
-                   source_observed_at_ms,trigger_persisted_at_ms,created_at_ms,updated_at_ms,
-                   trigger_id,run_kind,recheck_seq,target_asset_id,target_selection,
-                   entry_scope_id,mapping_semantics_digest,root_expires_at_ms,
-                   work_deadline_at_ms,next_attempt_at_ms,analysis_status)
-                VALUES (%s,%s,%s,%s,%s::jsonb,%s,'PENDING','not_run',
-                        'watch_condition_satisfied',%s,%s,%s,%s,%s,%s,'conditional',%s,%s,
-                        %s::jsonb,%s,%s,%s,%s,%s,'pending')
-                ON CONFLICT DO NOTHING
-                """,
+                "INSERT INTO trading_policy_actions (case_id,program_sha,policy_id,policy_version,"
+                "calibrator_version,action,reason,expected_r,publish_status,decided_at_ms) "
+                "VALUES (%s,%s,%s,%s,'identity_v1',%s,%s,%s,%s,%s) "
+                "ON CONFLICT(case_id,program_sha,policy_id,policy_version) DO NOTHING",
                 (
-                    child_case_id,
-                    parent["underlying_key"],
-                    parent["trigger_kind"],
-                    parent["primary_source_key"],
-                    json.dumps(manifest),
-                    _sha(manifest),
-                    parent["observed_at_ms"],
-                    parent["source_observed_at_ms"],
-                    parent["trigger_persisted_at_ms"],
-                    int(now_ms),
-                    int(now_ms),
-                    parent["trigger_id"],
-                    sequence,
-                    parent["target_asset_id"],
-                    json.dumps(parent["target_selection"]),
-                    parent["entry_scope_id"],
-                    parent["mapping_semantics_digest"],
-                    root_expires,
-                    min(int(observed_at_ms) + 120_000, root_expires),
-                    int(now_ms),
+                    case_id,
+                    program_sha,
+                    item.policy_id,
+                    item.version,
+                    item.action,
+                    item.reason,
+                    item.expected_r,
+                    "abstained" if item.action == "abstain" else "not_live",
+                    now_ms,
                 ),
             )
-            exists = self.conn.execute(
-                "SELECT 1 FROM trading_cases WHERE case_id=%s",
-                (child_case_id,),
-            ).fetchone()
-            if exists is None:
-                final_status, child_case_id = "cancelled", None
-        self.conn.execute(
-            """
-            UPDATE trading_watch_observations
-               SET status=%s,last_observation_status=%s,last_observed_at_ms=%s,
-                   last_observed_value=%s,last_observation_ref=%s,next_check_at_ms=%s,
-                   child_case_id=%s,trigger_side=%s,updated_at_ms=%s
-             WHERE parent_case_id=%s
-            """,
-            (
-                final_status,
-                observation_status if observation_status != "expired" else None,
-                observed_at_ms,
-                observed_value if observed_value is not None else parent["last_observed_value"],
-                observation_ref or parent["last_observation_ref"],
-                int(now_ms) + 30_000,
-                child_case_id,
-                trigger_side,
-                int(now_ms),
-                parent_case_id,
-            ),
-        )
-        return True
 
-    def due_analysis_outcomes(
-        self, *, now_ms: int, limit: int = 16, label_version: str | None = None
-    ) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            SELECT o.case_id,o.axis,o.horizon_seconds,o.label_version,o.available_at_ms,
-                   c.source_observed_at_ms,c.decided_at_ms,c.target_selection
-              FROM trading_case_outcomes o JOIN trading_cases c USING (case_id)
-             WHERE o.status='pending' AND o.available_at_ms<=%s
-               AND o.next_attempt_at_ms<=%s
-               AND o.label_version=COALESCE(%s::text,o.label_version)
-             ORDER BY o.available_at_ms,o.case_id,o.axis,o.horizon_seconds LIMIT %s
-            """,
-            (int(now_ms), int(now_ms), label_version, max(1, min(128, limit))),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def settle_analysis_outcome(
+    def set_publication(
         self,
         *,
         case_id: str,
-        axis: str,
-        horizon_seconds: int,
-        label_version: str,
-        status: str,
-        return_bps: str | None,
-        path_ref: str | None,
-        now_ms: int,
+        program_sha: str,
+        policy_id: str,
+        policy_version: str,
+        publish_status: str,
+        signal_id: str | None,
+    ) -> None:
+        row = self.conn.execute(
+            "UPDATE trading_policy_actions SET publish_status=%s,signal_id=%s "
+            "WHERE case_id=%s AND program_sha=%s AND policy_id=%s AND policy_version=%s "
+            "RETURNING case_id",
+            (publish_status, signal_id, case_id, program_sha, policy_id, policy_version),
+        ).fetchone()
+        if row is None:
+            raise ValueError("publication_action_missing")
+
+    def record_paper_legs(
+        self, *, case_id: str, legs: tuple[PaperLeg, PaperLeg], geometry_version: str, now_ms: int
+    ) -> None:
+        for leg in legs:
+            self.conn.execute(
+                "INSERT INTO trading_paper_legs (case_id,side,geometry_version,status,outcome,reason,anchor_at_ms,"
+                "exit_at_ms,anchor_price,exit_price,gross_bps,cost_bps,net_r,labeled_at_ms) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT(case_id,side,geometry_version) DO NOTHING",
+                (
+                    case_id,
+                    leg.side,
+                    geometry_version,
+                    leg.status,
+                    leg.outcome,
+                    leg.reason,
+                    leg.anchor_at_ms,
+                    leg.exit_at_ms,
+                    leg.anchor_price,
+                    leg.exit_price,
+                    leg.gross_bps,
+                    leg.cost_bps,
+                    leg.net_r,
+                    now_ms,
+                ),
+            )
+
+    def finish_case(
+        self, *, case_id: str, claim_token: str, status: str, failure_code: str | None, now_ms: int
     ) -> bool:
-        if status not in ("ok", "missing") or (status == "ok") != (return_bps is not None):
-            raise ValueError("analysis_outcome_invalid")
-        result = self.conn.execute(
-            """
-            UPDATE trading_case_outcomes SET status=%s,return_bps=%s,path_ref=%s,labeled_at_ms=%s
-             WHERE case_id=%s AND axis=%s AND horizon_seconds=%s
-               AND label_version=%s AND status='pending'
-            """,
-            (status, return_bps, path_ref, int(now_ms), case_id, axis, horizon_seconds, label_version),
-        )
-        return bool(result.rowcount)
+        row = self.conn.execute(
+            "UPDATE trading_cases SET state=%s,claim_token=NULL,lease_until_ms=NULL,"
+            "failure_code=%s,decided_at_ms=%s,updated_at_ms=%s "
+            "WHERE case_id=%s AND state='running' AND claim_token=%s AND lease_until_ms>%s RETURNING case_id",
+            (status, failure_code, now_ms, now_ms, case_id, claim_token, now_ms),
+        ).fetchone()
+        return row is not None
 
-    def retry_analysis_outcome(
+    def heartbeat_analysis_runtime(
         self,
         *,
-        case_id: str,
-        axis: str,
-        horizon_seconds: int,
-        label_version: str,
-        next_attempt_at_ms: int,
+        runtime_id: str,
+        now_ms: int,
+        active_policy: str,
+        program_sha: str,
+        model_name: str | None,
+        model_configured: bool,
+        publish_signals: bool,
+        config_digest: str,
+        fault_code: str | None,
     ) -> None:
         self.conn.execute(
-            "UPDATE trading_case_outcomes SET next_attempt_at_ms=%s "
-            "WHERE case_id=%s AND axis=%s AND horizon_seconds=%s "
-            "AND label_version=%s AND status='pending'",
-            (int(next_attempt_at_ms), case_id, axis, horizon_seconds, label_version),
+            "INSERT INTO trading_analysis_runtime (runtime_id,heartbeat_at_ms,active_policy,program_sha,"
+            "model_name,model_configured,publish_signals,config_digest,fault_code) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(runtime_id) DO UPDATE SET "
+            "heartbeat_at_ms=EXCLUDED.heartbeat_at_ms,active_policy=EXCLUDED.active_policy,"
+            "program_sha=EXCLUDED.program_sha,model_name=EXCLUDED.model_name,"
+            "model_configured=EXCLUDED.model_configured,publish_signals=EXCLUDED.publish_signals,"
+            "config_digest=EXCLUDED.config_digest,fault_code=EXCLUDED.fault_code",
+            (
+                runtime_id,
+                now_ms,
+                active_policy,
+                program_sha,
+                model_name,
+                model_configured,
+                publish_signals,
+                config_digest,
+                fault_code,
+            ),
         )

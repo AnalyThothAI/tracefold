@@ -18,7 +18,7 @@ from tracefold.trading.executor.core import SignalV4
 from tracefold.trading.operator_control import prepare_operator_intent
 
 _CURRENT_EVENT_ID = "restore-current-event"
-_CASE_ID = "restore-trading-case"
+_CASE_ID = "a" * 64
 _SIGNAL_ID = "8" * 64
 _COMMAND_ID = "9" * 64
 _ACCOUNT_SLOT = "restore-account"
@@ -108,8 +108,8 @@ def _summary(conn: Any) -> dict[str, Any]:
                    (SELECT count(*) FROM news_notification_decisions WHERE event_id = %s)
                      AS decision_rows,
                    (SELECT count(*) FROM trading_cases
-                     WHERE case_id = %s AND state = 'SIGNAL_EMITTED') AS case_rows,
-                   (SELECT max(manifest_sha256) FROM trading_cases WHERE case_id = %s) AS case_manifest_sha256,
+                     WHERE case_id = %s AND state = 'complete') AS case_rows,
+                   (SELECT max(view_sha256) FROM trading_cases WHERE case_id = %s) AS case_view_sha256,
                    (SELECT count(*) FROM trading_signals
                      WHERE signal_id = %s AND case_id = %s AND payload ->> 'signal_id' = signal_id) AS signal_rows,
                    (SELECT count(*) FROM trading_operator_intents
@@ -174,8 +174,8 @@ def _smoke(conn: Any) -> dict[str, bool]:
         and delivery["document"]["event_id"] == _CURRENT_EVENT_ID
         and summary["update_rows"] == summary["decision_rows"] == summary["delivery_rows"] == 1,
         "trading_case_fact": case is not None
-        and case["state"] == "SIGNAL_EMITTED"
-        and case["manifest_sha256"] == summary["case_manifest_sha256"],
+        and case["state"] == "complete"
+        and case["view_sha256"] == summary["case_view_sha256"],
         "trading_signal_fact": summary["signal_rows"] == 1,
         "trading_execution_facts": all(summary[key] == 1 for key in ("command_rows", "disposition_rows")),
         "trading_execution_read": signal is not None

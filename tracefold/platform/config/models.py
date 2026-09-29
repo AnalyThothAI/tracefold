@@ -210,17 +210,8 @@ class _SystemOneRouteConfig(BaseModel):
         return bool(self.key_configured and self.base_url and self.model)
 
 
-class TradingSemanticsConfig(_SystemOneRouteConfig):
-    """An optional, complete System One route independent of News models."""
-
-    error_prefix: ClassVar[str] = "trading_semantics"
-
-
 class NewsJudgmentConfig(_SystemOneRouteConfig):
-    """The optional News Jev judgment route (#706). It is never inferred from `trading_semantics`.
-
-    Unset, every News judgment runs on the generative News endpoints.
-    """
+    """The optional News Jev judgment route (#706)."""
 
     error_prefix: ClassVar[str] = "news_judgment"
 
@@ -229,7 +220,7 @@ class NewsReaderJudgmentConfig(_SystemOneRouteConfig):
     """The News notification decision route (#742): the reader coverage and importance questions only.
 
     Its key is a secret file (`api_key_file`, relative to the config directory), never an inline value. It is
-    never inferred from `news_judgment` or `trading_semantics`; unset, the generative News route answers the
+    never inferred from `news_judgment`; unset, the generative News route answers the
     same questions with its own measured cuts.
     """
 
@@ -268,7 +259,6 @@ class LlmConfig(BaseModel):
     news_reader_card: _LlmEndpointConfig = Field(default_factory=_LlmEndpointConfig)
     news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
     news_reader_card_fallback: _LlmEndpointConfig = Field(default_factory=_LlmEndpointConfig)
-    trading_semantics: TradingSemanticsConfig = Field(default_factory=TradingSemanticsConfig)
     news_judgment: NewsJudgmentConfig = Field(default_factory=NewsJudgmentConfig)
     news_reader_judgment: NewsReaderJudgmentConfig = Field(default_factory=NewsReaderJudgmentConfig)
 
@@ -713,18 +703,25 @@ class TradingVerifiedRouteSettings(BaseModel):
     evidence_ref: str = Field(min_length=1, max_length=240)
 
 
+class TradingProgramSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class TradingAnalysisSettings(BaseModel):
     """One analysis deployment; model credentials use the existing LLM endpoint."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     model_name: str | None = None
-    active_policy: Literal["entry_plan_v1"] = "entry_plan_v1"
+    program: TradingProgramSettings | None = None
+    active_policy: Literal["forecast", "always_long", "always_short", "abstain", "momentum15m", "fade15m"] = "forecast"
     publish_signals: bool = False
     verified_routes: list[TradingVerifiedRouteSettings] = Field(default_factory=list)
     excluded_asset_ids: list[str] = Field(
         default_factory=lambda: [
-            "commodity:CL",
             "crypto:BTC",
             "crypto:ETH",
             "crypto:USDT",
@@ -734,32 +731,17 @@ class TradingAnalysisSettings(BaseModel):
     root_ttl_seconds: int = Field(default=600, ge=60, le=3_600)
     max_active_cases: int = Field(default=8, ge=1, le=32)
     model_timeout_seconds: int = Field(default=60, ge=1, le=120)
-    max_model_input_bytes: int = Field(default=65_536, ge=1_024, le=131_072)
     max_model_output_tokens: int = Field(default=2_000, ge=256, le=4_096)
     max_model_concurrent_calls: int = Field(default=2, ge=1, le=8)
-    model_cost_budget_microusd: int | None = Field(default=5_000_000, ge=1)
-    model_input_price_ceiling_usd_per_million: Decimal | None = Field(default=Decimal("100"), gt=0)
-    model_output_price_ceiling_usd_per_million: Decimal | None = Field(default=Decimal("500"), gt=0)
     market_max_connections: int = Field(default=8, ge=1, le=32)
     market_max_cached_rows: int = Field(default=50_000, ge=1_000, le=200_000)
     market_weight_soft_limit_1m: int = Field(default=1_800, ge=100, le=5_000)
-
-    @model_validator(mode="after")
-    def validate_model_cost_budget(self) -> TradingAnalysisSettings:
-        values = (
-            self.model_cost_budget_microusd,
-            self.model_input_price_ceiling_usd_per_million,
-            self.model_output_price_ceiling_usd_per_million,
-        )
-        if any(value is not None for value in values) and any(value is None for value in values):
-            raise ValueError("trading_analysis_model_cost_budget_incomplete")
-        return self
 
     @field_validator("excluded_asset_ids")
     @classmethod
     def validate_exclusions(cls, values: list[str]) -> list[str]:
         if len(values) != len(set(values)) or any(
-            value not in {"commodity:CL", "crypto:BTC", "crypto:ETH", "crypto:USDT", "crypto:USDC"}
+            value not in {"crypto:BTC", "crypto:ETH", "crypto:USDT", "crypto:USDC"}
             and not re.fullmatch(r"crypto:[A-Z0-9]+", value)
             for value in values
         ):
