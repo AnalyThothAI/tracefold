@@ -6,6 +6,7 @@ native connection's own HTTP timeout is the per-operation budget the App configu
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -14,7 +15,7 @@ from functools import lru_cache
 from typing import Any, Final
 
 import dspy  # type: ignore[import-untyped]
-from dspy.adapters.types.decision import Choice  # type: ignore[import-untyped]
+from dspy.adapters.types.decision import Choice, Score  # type: ignore[import-untyped]
 from pydantic import ConfigDict, Field, ValidationError
 from typesafe_sdk import TypeSafeAPIConnectionError, TypeSafeAPIError, TypeSafeAPIResponseValidationError
 
@@ -42,14 +43,30 @@ from .judgment import (
     TASK_QUESTIONS,
     Answer,
     BatchResult,
+    Budget,
     ConfigurationFault,
     ContractFault,
     ProviderUnavailable,
     Question,
     Task,
+    error_code,
 )
 from .notification import CardCopy, card_copy_material
 from .projection import PROJECTION_VERSION, extraction_input
+from .reader_judgments import (
+    COVERAGE_QUESTION,
+    IMPORTANCE_LEVELS,
+    IMPORTANCE_QUESTION,
+    READER_INSTRUCTIONS,
+    READER_MESSAGES_MAX,
+    READER_QUESTIONS_IDENTITY,
+    CoverageEvidence,
+    ImportanceEvidence,
+    ReaderBackend,
+    ReaderInput,
+    ReaderJudgment,
+    coverage_options,
+)
 from .topics import MAX_TOPICS
 
 log = logging.getLogger("tracefold.news")
@@ -622,6 +639,28 @@ def native_signature(task: Task, batch_size: int, shared_context: bool, question
     return dspy.Signature(fields, instructions=JUDGMENT_INSTRUCTION)
 
 
+async def _native_predict(signature: Any, lm: Any, *, code: str, **inputs: Any) -> Any:
+    """One System One request through DSPy's decision adapter, with the SDK's failures classified.
+
+    No temperature/max_tokens and no manually decoded HTTP answers.
+    """
+
+    try:
+        return await dspy.Predict(signature).acall(lm=lm, **inputs)
+    except TypeSafeAPIResponseValidationError as exc:
+        # A successful status with an unusable body; the SDK types it as an API error.
+        raise ProviderUnavailable(f"{code}_response_invalid") from exc
+    except TypeSafeAPIError as exc:
+        if exc.status in {401, 403}:
+            raise ConfigurationFault(f"{code}_http_{exc.status}") from exc
+        if exc.status == 429 or exc.status >= 500:
+            raise ProviderUnavailable(f"{code}_http_{exc.status}") from exc
+        raise
+    except TypeSafeAPIConnectionError as exc:
+        # Includes the SDK's own request timeout.
+        raise ProviderUnavailable(f"{code}_{type(exc).__name__}") from exc
+
+
 class NativeJudgments:
     def __init__(self, lm_factory: Callable[[], Any], *, model_identity: str) -> None:
         # The App supplies SystemOneConnection.bind, creating independent history
@@ -642,21 +681,7 @@ class NativeJudgments:
         inputs: dict[str, Any] = {"items": _items(items)}
         if context_json is not None:
             inputs["context"] = json.loads(context_json)
-        try:
-            # No temperature/max_tokens and no manually decoded HTTP answers.
-            prediction = await dspy.Predict(signature).acall(lm=self.lm_factory(), **inputs)
-        except TypeSafeAPIResponseValidationError as exc:
-            # A successful status with an unusable body; the SDK types it as an API error.
-            raise ProviderUnavailable("news_judgment_response_invalid") from exc
-        except TypeSafeAPIError as exc:
-            if exc.status in {401, 403}:
-                raise ConfigurationFault(f"news_judgment_http_{exc.status}") from exc
-            if exc.status == 429 or exc.status >= 500:
-                raise ProviderUnavailable(f"news_judgment_http_{exc.status}") from exc
-            raise
-        except TypeSafeAPIConnectionError as exc:
-            # Includes the SDK's own request timeout.
-            raise ProviderUnavailable(f"news_judgment_{type(exc).__name__}") from exc
+        prediction = await _native_predict(signature, self.lm_factory(), code="news_judgment", **inputs)
         answers = []
         for slot, item in enumerate(items):
             native = getattr(prediction, f"answer_{slot}")
@@ -668,3 +693,149 @@ class NativeJudgments:
                 )
             )
         return BatchResult(answers=tuple(answers))
+
+
+# One native request asks both reader questions; the 2026-09-28 replay measured p50 0.28 s, p99 0.8 s and a
+# 1.04 s maximum (#742 PR-2). A slower answer falls back inside the same stage deadline.
+READER_NATIVE_SECONDS: Final = 3.0
+
+
+@lru_cache(maxsize=READER_MESSAGES_MAX + 1)
+def reader_signature(messages: int) -> Any:
+    """Both reader questions over one shared state: importance always, coverage when messages were recalled.
+
+    The same signature serves System One natively and the generative route through DSPy's decision
+    adapter, so both backends answer exactly the same questions.
+    """
+
+    fields: dict[str, Any] = {
+        "claim": (
+            dict[str, Any],
+            dspy.InputField(desc="One adopted news claim: its structured fields, topics, change and cited sources."),
+        )
+    }
+    if messages:
+        fields["messages"] = (
+            list[dict[str, str]],
+            dspy.InputField(desc="Messages already pushed to this reader, each with its id."),
+        )
+    fields["importance"] = (Score[IMPORTANCE_LEVELS], dspy.OutputField(desc=IMPORTANCE_QUESTION))
+    if messages:
+        fields["covering_message"] = (
+            Choice[coverage_options(messages)],
+            dspy.OutputField(desc=COVERAGE_QUESTION),
+        )
+    return dspy.Signature(fields, instructions=READER_INSTRUCTIONS)
+
+
+def _normalized(values: Mapping[Any, float]) -> dict[Any, float]:
+    total = sum(values.values())
+    if total <= 0:
+        raise ContractFault("news_reader_distribution_empty")
+    return {key: value / total for key, value in values.items()}
+
+
+def _reader_evidence(prediction: Any, messages: int) -> tuple[ImportanceEvidence, CoverageEvidence | None]:
+    score = prediction.importance
+    if score.probabilities is None:
+        raise ContractFault("news_reader_importance_distribution_missing")
+    levels = _normalized(score.probabilities)
+    importance = ImportanceEvidence(
+        value=score.value,
+        probabilities=tuple(levels[index] for index in range(len(IMPORTANCE_LEVELS))),
+        confidence=score.confidence,
+    )
+    if not messages:
+        return importance, None
+    choice = prediction.covering_message
+    if choice.probabilities is None:
+        raise ContractFault("news_reader_coverage_distribution_missing")
+    coverage = CoverageEvidence(
+        probabilities={str(key): value for key, value in _normalized(choice.probabilities).items()},
+        confidence=choice.confidence,
+    )
+    return importance, coverage
+
+
+class DspyReaderJudge:
+    """The reader judgment of one claim: System One when configured, else the generative News route.
+
+    One request asks both questions. A native answer that is unavailable falls back once to the generative
+    route with the same signature; authentication/configuration faults propagate. When neither backend
+    answers, the result is `unavailable` with a bounded code, which the planner waits on and never reuses.
+    """
+
+    def __init__(
+        self,
+        generated_lm_factory: Callable[[], Any],
+        *,
+        generated_model_identity: str,
+        native_lm_factory: Callable[[], Any] | None = None,
+        native_model_identity: str | None = None,
+        native_operation_seconds: float = READER_NATIVE_SECONDS,
+    ) -> None:
+        if (native_lm_factory is None) != (native_model_identity is None):
+            raise ValueError("news_reader_native_route_incomplete")
+        if native_operation_seconds <= 0:
+            raise ValueError("news_reader_native_seconds_invalid")
+        self.generated_lm_factory = generated_lm_factory
+        self.native_lm_factory = native_lm_factory
+        self.native_operation_seconds = native_operation_seconds
+        self.native_identity = (
+            None
+            if native_model_identity is None
+            else identity("news_reader_native", READER_QUESTIONS_IDENTITY, native_model_identity, "dspy-3.4-native")
+        )
+        self.generated_identity = identity(
+            "news_reader_generated", ADAPTER_VERSION, READER_QUESTIONS_IDENTITY, generated_model_identity
+        )
+        self.identity = identity("news_reader_judge", self.native_identity, self.generated_identity)
+
+    async def judge(self, reader: ReaderInput, budget: Budget) -> ReaderJudgment:
+        signature = reader_signature(len(reader.messages))
+        inputs = reader.model_inputs()
+        if self.native_lm_factory is not None:
+            timeout = budget.operation(self.native_operation_seconds)
+            lm = self.native_lm_factory()
+            try:
+                async with asyncio.timeout(timeout):
+                    prediction = await _native_predict(signature, lm, code="news_reader", **inputs)
+                return self._available("native", prediction, reader, served_model=_served_model(lm))
+            except (ProviderUnavailable, ContractFault, TimeoutError) as exc:
+                log.warning("news_reader_native_unavailable", extra={"error_code": _fault_code(exc)})
+        remaining = budget.remaining()
+        try:
+            async with asyncio.timeout(remaining):
+                prediction = await _generate(signature, self.generated_lm_factory(), **inputs)
+            return self._available("generated", prediction, reader, served_model=None)
+        except (ProviderUnavailable, ContractFault, TimeoutError) as exc:
+            return ReaderJudgment(status="unavailable", error_code=_fault_code(exc))
+
+    def _available(
+        self, backend: ReaderBackend, prediction: Any, reader: ReaderInput, *, served_model: str | None
+    ) -> ReaderJudgment:
+        try:
+            importance, coverage = _reader_evidence(prediction, len(reader.messages))
+        except (AttributeError, ValidationError) as exc:
+            raise ContractFault("news_reader_answer_invalid") from exc
+        return ReaderJudgment(
+            status="available",
+            backend=backend,
+            identity=self.native_identity if backend == "native" else self.generated_identity,
+            served_model=served_model,
+            importance=importance,
+            coverage=coverage,
+        )
+
+
+def _fault_code(exc: BaseException) -> str:
+    # The named faults carry code-owned codes; a timeout carries none.
+    if isinstance(exc, (ProviderUnavailable, ContractFault)) and str(exc):
+        return str(exc)
+    return error_code(exc, default="news_reader_timeout")
+
+
+def _served_model(lm: Any) -> str | None:
+    history = getattr(lm, "history", None) or ()
+    model = getattr(history[-1], "served_model", None) if history else None
+    return None if model is None else str(model)
