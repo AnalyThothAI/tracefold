@@ -116,7 +116,7 @@ docker compose exec -T serve tracefold news repair-head-scopes \
 docker compose exec -T serve tracefold news repair-head-scopes --limit 50
 ```
 
-每个执行命令只在一个 Event 事务中锁定并重审当前 head 与证明；不匹配或无法判定时拒绝该 Event。修复可与 News 发送进程并行：发送许可先取得时，其旧 intent 仍由旧 head 的回执结算；修复先提交时，旧 intent 不能再取得发送许可。成功后逐页复查越界活跃 Claim，核对 `news_head_scope_repairs` 的证明、`news_event_updates` 的新旧链和 `news_trade_events` 的 `source_update`。已完成或耗尽的通知工作不重新打开；仍待处理且有预算的工作改为读取修复后 head，保留已消耗尝试。已送回执作为实际外部结果保留。
+每个执行命令只在一个 Event 事务中锁定并重审当前 head 与证明；不匹配或无法判定时拒绝该 Event。修复可与 News 发送进程并行：发送许可先取得时，其旧 intent 仍由旧 head 的回执结算；修复先提交时，旧 intent 不能再取得发送许可。成功后逐页复查越界活跃 Claim，核对 `news_head_scope_repairs` 的证明、`news_event_updates` 的新旧链和 `news_trade_events` 的 `source_update`。已完成的通知工作不重新打开；仍待处理或已 `failed` 的工作改为指向修复后 head（状态、尝试数和错误码不变），失败工作之后按新 head 的 content revision 定向重试。已送回执作为实际外部结果保留。
 
 ### 通知计划失败
 
@@ -126,17 +126,9 @@ docker compose exec -T workers tracefold news retry-work \
   --event EVENT_ID --kind notification --revision CONTENT_REVISION
 ```
 
-这针对失败的通知工作，不等于“忽略已发正文再发一次”。明确的 `no_notification` 不是技术故障：先看不可变决策引用、逐命题的 `retired`、`stale_source`、实际正文覆盖或 `editor_feed_only`。`attention_unavailable_default_notify` 带模型不可用状态和错误码；数据库、配置及整个通知阶段超时仍是失败工作。
+只作用于状态为 `failed` 的通知工作：控制台和 `news why` 显示“通知失败”与 `last_error_code`。三类真实失败会走到这里：规划异常三次（含整个通知阶段超时）、同一未发送 intent 的卡片失败或可重试 `not_sent` 三次、预检证明未发送但不可重试。命令把该版本工作重置为 pending（尝试数归零），并复活同版本中**没有任何发送账本**的失败 intent，冻结卡片按原身份重用；错误码保留到工作完成。它不等于“忽略已发正文再发一次”：已有 `sending` / `sent` / `ambiguous` / `terminal` 账本的 intent 从不重开。
 
-### 卡片生成失败
-
-```bash
-# 写操作：仅适用于当前版本、尚未发送的失败 intent
-docker compose exec -T workers tracefold news retry-work \
-  --event EVENT_ID --kind card --revision CONTENT_REVISION --intent INTENT_ID
-```
-
-必须精确到 intent。已经进入任何发送账本的意图不能通过此命令重开；包括 terminal 或 ambiguous。卡片失败和 planner 失败预算不同，不为恢复文案顺手重置整个通知工作。
+以下都不是失败，不需要重试：明确的 `no_notification`（先看逐命题的 `retired`、`stale_source`、实际正文覆盖或 `editor_feed_only`）；等待本 Event 仍在发送中的命题（`send_outcome_unresolved`，不计尝试，发送结算或孤儿对账后自动继续）；结果不明的命题（`send_outcome_ambiguous`，按可能已送达处理，不重发）；数据库暂时无法应答（不计尝试，推迟一轮后自动再试）。`news_notification_exhausted_legacy` 是 0413 从旧代码耗尽且无原因的工作回填的错误码。
 
 | 发送结果 | 操作原则 |
 | --- | --- |

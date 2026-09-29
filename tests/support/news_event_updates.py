@@ -290,7 +290,7 @@ def persist_plan(conn: Any, update: EventUpdate, plan: NotificationPlan | None, 
         ) VALUES (%s, 'news', %s, %s, %s, %s, 0, %s, %s)
         ON CONFLICT (event_id, channel) DO UPDATE
           SET content_revision = EXCLUDED.content_revision, state = EXCLUDED.state,
-              decision_ref = EXCLUDED.decision_ref, plan = NULL,
+              decision_ref = EXCLUDED.decision_ref,
               reader_revision = EXCLUDED.reader_revision, updated_at_ms = EXCLUDED.updated_at_ms
         """,
         (

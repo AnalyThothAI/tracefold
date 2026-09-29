@@ -35,7 +35,7 @@ from tracefold.news.updates.semantics import assemble_update
 
 # 2026-08-18 14:40 UTC, which the reader's clock (UTC+8) prints as 22:40.
 STAMP = 1_787_064_000_000
-READER_REVISION = f"reader_v1:{STAMP}:{'0' * 64}"
+READER_REVISION = f"reader_v2:{'0' * 64}"
 EVENT_ID = "event-nvda"
 
 

@@ -648,12 +648,12 @@
 | `channel` | `TEXT` | False | `None` |
 | `content_revision` | `TEXT` | False | `None` |
 | `state` | `TEXT` | False | `None` |
-| `plan` | `JSONB` | True | `None` |
 | `reader_revision` | `TEXT` | True | `None` |
 | `attempts` | `INTEGER` | False | `0` |
 | `next_attempt_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `decision_ref` | `TEXT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
 
 ## `news_oi_signals`
 

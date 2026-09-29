@@ -415,15 +415,14 @@ options:
 
 ```
 usage: tracefold news retry-work [-h] --event EVENT
-                                 --kind {semantic,notification,card}
-                                 --revision REVISION [--intent INTENT]
+                                 --kind {semantic,notification}
+                                 --revision REVISION
 
 options:
   -h, --help            show this help message and exit
   --event EVENT         exact Event ID
-  --kind {semantic,notification,card}
+  --kind {semantic,notification}
   --revision REVISION   wanted input revision, or exact content revision
-  --intent INTENT       required only for an unsent failed card intent
 
 ```
 

@@ -4,14 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 from ..updates.contracts import EventUpdate
+from ..updates.notification import NEWS_CHANNEL
 from .sql_values import _dumps
 from .trade_projection import TradeProjectionStorage
 
-NEWS_CHANNEL = "news"
-PUBLIC_TRADE_KINDS = {"catalyst_delta": "catalyst", "source_update": "source_update"}
+# The public kind of a PublicUpdate in the News outbox. A catalyst delta keeps the existing kind.
+PUBLIC_TRADE_KINDS: Final[dict[str, str]] = {"catalyst_delta": "catalyst", "source_update": "source_update"}
 _EVENT_LOCK_NAMESPACE = 0x4E455755  # All head, plan and send-permission writers use this lock.
 
 
@@ -54,8 +55,9 @@ def commit_update(
     """Write the source, immutable update, head, public outbox and work in one transaction.
 
     The caller has already taken the Event lock and checked its source under that lock.
-    A pure scope retraction only retargets still-live work; it does not create work or
-    replenish the budget of a completed or exhausted responsibility.
+    A pure scope retraction only retargets work still owed -- pending, or failed and waiting for an
+    operator retry -- to the new head; it does not create work, reopen a failed one or replenish the
+    budget of any responsibility.
     """
 
     conn = owner.conn
@@ -129,9 +131,9 @@ def commit_update(
     if pure_retraction:
         conn.execute(
             """UPDATE news_notification_work
-                  SET content_revision=%s,plan=NULL,decision_ref=NULL,reader_revision=NULL,
+                  SET content_revision=%s,decision_ref=NULL,reader_revision=NULL,
                       next_attempt_at_ms=LEAST(next_attempt_at_ms,%s)
-                WHERE event_id=%s AND channel=%s AND state='pending' AND attempts < 3""",
+                WHERE event_id=%s AND channel=%s AND state IN ('pending','failed')""",
             (update.content_revision, int(now_ms), event_id, NEWS_CHANNEL),
         )
     else:
@@ -141,7 +143,7 @@ def commit_update(
                VALUES (%s,%s,%s,'pending',0,%s,%s)
                ON CONFLICT (event_id,channel) DO UPDATE SET
                  content_revision=EXCLUDED.content_revision,state='pending',attempts=0,
-                 plan=NULL,decision_ref=NULL,reader_revision=NULL,
+                 last_error_code=NULL,decision_ref=NULL,reader_revision=NULL,
                  next_attempt_at_ms=EXCLUDED.next_attempt_at_ms,updated_at_ms=EXCLUDED.updated_at_ms""",
             (event_id, NEWS_CHANNEL, update.content_revision, int(now_ms), int(now_ms)),
         )

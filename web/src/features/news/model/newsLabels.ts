@@ -49,7 +49,7 @@ const OUTCOME_TONE: Record<NewsOutcomeKind, Tone> = {
   queued_semantic: "info",
   queued_notification: "info",
   notification_deferred: "info",
-  notification_exhausted: "alert",
+  notification_failed: "alert",
   semantic_failed: "alert",
   no_update: "neutral",
   not_notified: "neutral",

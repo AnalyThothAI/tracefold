@@ -64,7 +64,6 @@ from tracefold.news.reader_card import ReaderCard
 from tracefold.news.reader_history import ReaderHistorySnapshot
 from tracefold.news.storage.root import NewsRepository
 from tracefold.news.updates.contracts import EventUpdate
-from tracefold.news.updates.judgment import ProviderUnavailable
 from tracefold.news.updates.notification import FrozenCard, NotificationPlan
 from tracefold.news.updates.ports import IntentLease, SendOutcome
 from tracefold.news.updates.service import NotificationTurn
@@ -149,10 +148,6 @@ class RecordingNews:
                 return []
             if name == "reader_history" and name not in self.responses:
                 return ReaderHistorySnapshot()  # nothing pushed yet
-            if name == "reader_history_revision" and name not in self.responses:
-                history = self.responses.get("reader_history", ReaderHistorySnapshot())
-                value = history(**kwargs) if callable(history) else history
-                return value.ledger_revision
             if name == "latest_evidence_snapshot" and name not in self.responses:
                 card = self.responses.get("event_card") or {}
                 return {
@@ -715,7 +710,9 @@ class ScriptedNotifications:
     core calls it after `atomic_begin_send` -- and reports the settled outcome the way the core does.
     """
 
-    def __init__(self, *intents: Intent, failures: Mapping[str, BaseException] | None = None) -> None:
+    def __init__(
+        self, *intents: Intent, failures: Mapping[str, BaseException | NotificationTurn] | None = None
+    ) -> None:
         self.intents = {update.event_id: (plan, card, update) for plan, card, update in intents}
         self.failures = dict(failures or {})
         self.processed: list[str] = []
@@ -731,8 +728,11 @@ class ScriptedNotifications:
     async def prepare(self, event_id: str, channel: str) -> NotificationTurn:
         assert channel == "news"
         self.processed.append(event_id)
-        if event_id in self.failures:
-            raise self.failures[event_id]
+        failure = self.failures.get(event_id)
+        if isinstance(failure, NotificationTurn):
+            return failure
+        if failure is not None:
+            raise failure
         plan, card, update = self.intents[event_id]
         lease = IntentLease(intent_id=plan.intent_id, lease_token="lease", plan=plan, card=card)
         return NotificationTurn("ready", update=update, lease=lease, card=card)
@@ -858,20 +858,26 @@ def test_the_deliverer_prepares_the_target_and_sends_the_frozen_card_whole() -> 
     assert plan.intent_id == card.intent_id and update.ref == plan.update_ref
 
 
-def test_a_refused_preflight_is_not_sent_and_never_reaches_the_provider() -> None:
-    """A target the provider refuses: provably unsent, and waiting cannot make a bad channel good."""
+@pytest.mark.parametrize(
+    "error",
+    [
+        _provider_error("news_delivery_telegram_preflight_bot_not_admin", commit_phase=COMMIT_PHASE_NOT_SENT),
+        # #742 N9: a timeout or 5xx on a read, and a local admission or closed capability, prove nothing
+        # was posted either; before, they reported `retryable=False` and dropped the notification for good.
+        _provider_error("news_delivery_telegram_preflight_http_failed", commit_phase=COMMIT_PHASE_UNKNOWN),
+        ResourceAdmissionTimeout("finite_operation_admission_timeout:news_delivery_prepare"),
+        RuntimeError("finite_operations_closed"),
+    ],
+)
+def test_any_failed_preflight_is_a_retryable_not_sent_that_never_reaches_the_provider(error: Exception) -> None:
+    """The target check only reads. The intent's own attempt bound is what stops a channel that stays broken."""
 
-    sender = _FailingPrepareSender(
-        _provider_error("news_delivery_telegram_preflight_bot_not_admin", commit_phase=COMMIT_PHASE_NOT_SENT)
-    )
+    sender = _FailingPrepareSender(error)
 
     outcome = _send(_deliverer(sender=sender), _intent())
 
-    assert (outcome.state, outcome.retryable, outcome.error_code) == (
-        "not_sent",
-        False,
-        "news_delivery_telegram_preflight_bot_not_admin",
-    )
+    assert (outcome.state, outcome.retryable) == ("not_sent", True)
+    assert outcome.error_code
     assert sender.cards == []
 
 
@@ -921,6 +927,23 @@ def test_a_refused_send_is_not_sent_and_not_retried() -> None:
     assert (outcome.state, outcome.retryable) == ("not_sent", False)
 
 
+def test_a_send_the_finite_capability_never_admitted_is_not_sent_rather_than_ambiguous() -> None:
+    """#742 N9: an admission timeout is raised before submission, so nothing reached the provider."""
+
+    class NoAdmission(InlineFinite):
+        async def run(self, name: str, fn: Any, /, *args: Any, **kwargs: Any) -> Any:
+            if name == "news_delivery_send":
+                raise ResourceAdmissionTimeout("finite_operation_admission_timeout:news_delivery_send")
+            return await super().run(name, fn, *args, **kwargs)
+
+    sender = RecordingSender([])
+
+    outcome = _send(_deliverer(sender=sender, finite_operations=NoAdmission()), _intent())
+
+    assert (outcome.state, outcome.retryable) == ("not_sent", True)
+    assert sender.cards == []
+
+
 def test_a_send_whose_outcome_the_provider_did_not_report_is_ambiguous_and_never_retried() -> None:
     """#604 N1. A read timeout may already be on a reader's screen; a second card is the worse answer."""
 
@@ -963,14 +986,16 @@ def test_without_a_sender_or_a_notification_service_nothing_is_planned() -> None
 def test_a_turn_runs_every_due_marker_and_a_recorded_failure_does_not_stop_the_next(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A card failure or a deferred plan is already recorded by the core; the loop moves on."""
+    """A card failure or a deferred plan is already recorded by the core and returned; the loop moves on."""
 
     monkeypatch.setattr(logging.getLogger("tracefold.news"), "disabled", False)
 
     notifications = ScriptedNotifications(
         _intent(event_id="ev-card-failed"),
         _intent(event_id="ev-sent"),
-        failures={"ev-card-failed": ProviderUnavailable("news_generation_LMRateLimitError")},
+        failures={
+            "ev-card-failed": NotificationTurn("card_failed", error_code="news_card:ProviderUnavailable"),
+        },
     )
     sender = RecordingSender([])
 
@@ -980,15 +1005,24 @@ def test_a_turn_runs_every_due_marker_and_a_recorded_failure_does_not_stop_the_n
     assert worked == 2
     assert notifications.processed == ["ev-card-failed", "ev-sent"]
     assert notifications.outcomes["ev-sent"].state == "sent" and len(sender.cards) == 1
-    assert "news notification turn failed event_id=ev-card-failed" in caplog.text
-    assert "ProviderUnavailable" in caplog.text
+    assert "news notification turn failed event_id=ev-card-failed status=card_failed" in caplog.text
+    assert "news_card:ProviderUnavailable" in caplog.text
 
 
-def test_an_unclassified_turn_failure_faults_the_capability() -> None:
-    notifications = ScriptedNotifications(_intent(), failures={"ev-strong": KeyError("bug")})
+@pytest.mark.parametrize("error", [KeyError("bug"), TransientError("db_overrun:news_update_record_plan")])
+def test_an_unrecorded_turn_failure_stays_with_its_event(error: Exception) -> None:
+    """#742 N1: whatever one Event's turn raises is that Event's. It is logged and left due, and it neither
+    leaves `advance()` nor stops the other Event's send; it is not counted as work, so an idle loop polls."""
 
-    with pytest.raises(KeyError):
-        asyncio.run(_deliverer(notifications=notifications, sender=RecordingSender()).advance())
+    notifications = ScriptedNotifications(
+        _intent(event_id="ev-broken"), _intent(event_id="ev-sent"), failures={"ev-broken": error}
+    )
+    sender = RecordingSender([])
+
+    worked = asyncio.run(_deliverer(notifications=notifications, sender=sender).advance())
+
+    assert worked == 1
+    assert notifications.outcomes["ev-sent"].state == "sent" and len(sender.cards) == 1
 
 
 def test_fast_preparation_finalizes_before_slow_sibling_and_inflight_work_is_bounded() -> None:
@@ -998,7 +1032,7 @@ def test_fast_preparation_finalizes_before_slow_sibling_and_inflight_work_is_bou
                 _intent(event_id="slow"),
                 _intent(event_id="fast"),
                 _intent(event_id="failed"),
-                failures={"failed": ProviderUnavailable("controlled")},
+                failures={"failed": NotificationTurn("card_failed", error_code="news_card:ProviderUnavailable")},
             )
             self.release = asyncio.Event()
             self.fast_sent = asyncio.Event()
@@ -1653,7 +1687,7 @@ def test_delivery_waits_out_startup_news_lane_contention_before_claiming(
 
 
 def test_delivery_periodically_retries_stale_edit_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("tracefold.news.pipeline.delivery._DELIVERY_EDIT_RECONCILE_SECONDS", 0.01)
+    monkeypatch.setattr("tracefold.news.pipeline.delivery._DELIVERY_RECONCILE_SECONDS", 0.01)
     stop_event = asyncio.Event()
     attempts = 0
 
@@ -1678,10 +1712,39 @@ def test_delivery_periodically_retries_stale_edit_reconciliation(monkeypatch: py
     assert notifications.polls >= 1
 
 
+def test_delivery_periodically_holds_orphan_sends_ambiguous_but_never_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#742 N8: an orphaned `sending` row is reconciled while the loop runs, not only at its next start, and
+    the reconciliation is told which sends this process still owns so it never races their settlement."""
+
+    monkeypatch.setattr("tracefold.news.pipeline.delivery._DELIVERY_RECONCILE_SECONDS", 0.01)
+    stop_event = asyncio.Event()
+    calls: list[dict[str, Any]] = []
+
+    def reconcile(**kwargs: Any) -> int:
+        calls.append(kwargs)
+        if len(calls) == 2:
+            stop_event.set()
+        return 0
+
+    consumer = _deliverer(
+        _delivery_news(terminalize_interrupted_deliveries=reconcile),
+        notifications=ScriptedNotifications(),
+        sender=RecordingSender(),
+    )
+    consumer._sending_intents.add("intent:in-flight")
+
+    asyncio.run(consumer.run(stop_event=stop_event))
+
+    assert len(calls) == 2
+    assert calls[1]["exclude_intent_ids"] == ("intent:in-flight",)
+
+
 def test_delivery_fails_closed_when_periodic_edit_reconciliation_crashes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("tracefold.news.pipeline.delivery._DELIVERY_EDIT_RECONCILE_SECONDS", 0.01)
+    monkeypatch.setattr("tracefold.news.pipeline.delivery._DELIVERY_RECONCILE_SECONDS", 0.01)
 
     def invariant_failure(**_kwargs: Any) -> int:
         raise RuntimeError("edit reconciliation invariant failure")

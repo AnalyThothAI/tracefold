@@ -565,6 +565,7 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
             {
                 "state": row["notification_state"],
                 "attempts": row.get("notification_attempts"),
+                "last_error_code": row.get("notification_last_error_code"),
                 "content_revision": row.get("notification_content_revision"),
                 "action": row.get("notification_action"),
                 "claim_decisions": row.get("notification_claim_decisions"),
@@ -631,6 +632,7 @@ def _notification_outcome_input(work: Mapping[str, Any] | None) -> dict[str, Any
     return {
         "state": work["state"],
         "attempts": work.get("attempts"),
+        "last_error_code": work.get("last_error_code"),
         "content_revision": work.get("content_revision"),
         "action": plan.get("action"),
         "claim_decisions": plan.get("claim_decisions"),

@@ -427,21 +427,22 @@ def test_item_related_events_pages_all_memberships_without_duplicate_events(conn
     assert all(row["sent_count"] == 0 for row in events.values())
 
 
-@pytest.mark.parametrize("action", ["notify", "unresolved"])
-def test_exhausted_planning_agrees_in_feed_detail_and_tab_counts(conn, action: str) -> None:
+def test_failed_notification_agrees_in_feed_detail_and_tab_counts(conn) -> None:
     seeded = _seed(conn)
     news = repositories_for_connection(conn).news
     with conn.transaction():
         conn.execute(
-            "UPDATE news_notification_work SET state='pending', attempts=3,"
-            " plan=jsonb_set(plan, '{action}', to_jsonb(%s::text)) WHERE event_id='agent-silent'",
-            (action,),
+            "UPDATE news_notification_work SET state='failed', attempts=3,"
+            " last_error_code='news_notification_plan:KeyError' WHERE event_id='agent-silent'"
         )
-    # The work's terminal projection does not depend on a decodable cached plan.
+    # The work's terminal state is its own column, whatever its last decision said.
     detail = news.event_detail("agent-silent")
-    assert detail["processing"]["notification"]["state"] == "exhausted"
-    assert detail["outcome"]["kind"] == "notification_exhausted"
+    assert detail["processing"]["notification"]["state"] == "failed"
+    assert detail["processing"]["notification"]["last_error_code"] == "news_notification_plan:KeyError"
+    assert detail["outcome"]["kind"] == "notification_failed"
     rows = {row["event_id"]: row for row in _feed(news)["events"]}
+    assert rows["agent-silent"]["outcome"]["kind"] == "notification_failed"
+    assert "news_notification_plan:KeyError" in rows["agent-silent"]["outcome"]["reason_zh"]
     assert rows["agent-silent"]["outcome"]["group"] == "held"
     for group in ("held", "pending", "pushed"):
         served = {row["event_id"] for row in _feed(news, outcome=group)["events"]}

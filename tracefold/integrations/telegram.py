@@ -66,6 +66,10 @@ _PRIVATE_CHANNEL_ID_RE = re.compile(r"^-100[1-9][0-9]{5,15}$")
 _PUBLIC_CHANNEL_USERNAME_RE = re.compile(r"^@[A-Za-z][A-Za-z0-9_]{4,31}$")
 _TELEGRAM_HTML_TAG_RE = re.compile(r'</?(?:b|strong|blockquote)>|<a href="[^"]+">|</a>')
 _BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage", "editMessageText"})
+# The preflight's calls only read. Whatever they fail with -- a timeout after the write, a 5xx, an answer
+# that does not add up -- nothing was posted, so the failure is `not_sent`; a transport or server failure
+# is also one that passes (#742 N9).
+_READ_ONLY_METHODS = frozenset({"getChat", "getMe", "getChatMember"})
 _NEWSLIQUID_RELAY_HOSTS = frozenset({"news-history.newsliquid.com"})
 _NEWSLIQUID_REUTERS_PATH_RE = re.compile(r"^/b/nL[0-9A-Z]+$")
 
@@ -366,14 +370,20 @@ class TelegramNewsPushSender:
         )
         chat_id = chat.get("id")
         if isinstance(chat_id, bool) or not isinstance(chat_id, int):
-            raise TelegramDeliveryError("news_delivery_telegram_target_chat_mismatch")
+            raise TelegramDeliveryError(
+                "news_delivery_telegram_target_chat_mismatch", commit_phase=COMMIT_PHASE_NOT_SENT
+            )
         if isinstance(self._chat_id, int):
             if chat_id != self._chat_id:
-                raise TelegramDeliveryError("news_delivery_telegram_target_chat_mismatch")
+                raise TelegramDeliveryError(
+                    "news_delivery_telegram_target_chat_mismatch", commit_phase=COMMIT_PHASE_NOT_SENT
+                )
         elif f"@{str(chat.get('username') or '').strip()}".casefold() != self._chat_id:
             # A `@name` binds to whatever channel currently carries it, so the answer has to carry the
             # name back: a renamed or re-registered channel is a different target, not this one.
-            raise TelegramDeliveryError("news_delivery_telegram_target_chat_mismatch")
+            raise TelegramDeliveryError(
+                "news_delivery_telegram_target_chat_mismatch", commit_phase=COMMIT_PHASE_NOT_SENT
+            )
         self._resolved_chat_id = chat_id
         # The exact chat id, and that it is a channel rather than a group or a personal chat, is what
         # binds delivery to one target. Whether that channel also has a public @name is the operator's
@@ -381,7 +391,9 @@ class TelegramNewsPushSender:
         # (#562 §5 row 11). Everything else this preflight proves -- the id, the type, the bot's own
         # identity and its permission to post -- is unchanged.
         if chat.get("type") != "channel":
-            raise TelegramDeliveryError("news_delivery_telegram_target_not_private_channel")
+            raise TelegramDeliveryError(
+                "news_delivery_telegram_target_not_private_channel", commit_phase=COMMIT_PHASE_NOT_SENT
+            )
 
         bot = self._call_api(
             "getMe",
@@ -391,7 +403,9 @@ class TelegramNewsPushSender:
         )
         bot_id = bot.get("id")
         if isinstance(bot_id, bool) or not isinstance(bot_id, int) or bot.get("is_bot") is not True:
-            raise TelegramDeliveryError("news_delivery_telegram_bot_identity_invalid")
+            raise TelegramDeliveryError(
+                "news_delivery_telegram_bot_identity_invalid", commit_phase=COMMIT_PHASE_NOT_SENT
+            )
         membership = self._call_api(
             "getChatMember",
             {"chat_id": self._chat_id, "user_id": bot_id},
@@ -404,9 +418,13 @@ class TelegramNewsPushSender:
             or member_user.get("id") != bot_id
             or member_user.get("is_bot") is not True
         ):
-            raise TelegramDeliveryError("news_delivery_telegram_bot_identity_invalid")
+            raise TelegramDeliveryError(
+                "news_delivery_telegram_bot_identity_invalid", commit_phase=COMMIT_PHASE_NOT_SENT
+            )
         if membership.get("status") != "administrator" or membership.get("can_post_messages") is not True:
-            raise TelegramDeliveryError("news_delivery_telegram_target_post_permission_missing")
+            raise TelegramDeliveryError(
+                "news_delivery_telegram_target_post_permission_missing", commit_phase=COMMIT_PHASE_NOT_SENT
+            )
 
     def _call_api(
         self,
@@ -423,7 +441,7 @@ class TelegramNewsPushSender:
             deadline_at=deadline_at,
         )
         if not isinstance(result, Mapping):
-            raise TelegramDeliveryError(f"{error_prefix}_response_invalid")
+            raise TelegramDeliveryError(f"{error_prefix}_response_invalid", commit_phase=_commit_phase(method))
         return result
 
     def _call_api_result(
@@ -461,7 +479,11 @@ class TelegramNewsPushSender:
                 f"{error_prefix}_transport_failed", commit_phase=COMMIT_PHASE_NOT_SENT, retryable=True
             ) from None
         except (httpx.TimeoutException, httpx.TransportError):
-            raise TelegramDeliveryError(f"{error_prefix}_transport_failed") from None
+            raise TelegramDeliveryError(
+                f"{error_prefix}_transport_failed",
+                commit_phase=_commit_phase(method),
+                retryable=method in _READ_ONLY_METHODS,
+            ) from None
 
         status_code = int(response.status_code)
         if status_code == 429:
@@ -474,7 +496,12 @@ class TelegramNewsPushSender:
             )
         if status_code >= 500:
             # Telegram's own tier answered. It can answer that way after accepting the message.
-            raise TelegramDeliveryError(f"{error_prefix}_http_failed", status_code=status_code)
+            raise TelegramDeliveryError(
+                f"{error_prefix}_http_failed",
+                status_code=status_code,
+                commit_phase=_commit_phase(method),
+                retryable=method in _READ_ONLY_METHODS,
+            )
         if status_code < 200 or status_code >= 300:
             raise TelegramDeliveryError(
                 f"{error_prefix}_http_rejected", status_code=status_code, commit_phase=COMMIT_PHASE_NOT_SENT
@@ -482,7 +509,9 @@ class TelegramNewsPushSender:
         try:
             response_payload = response.json()
         except ValueError:
-            raise TelegramDeliveryError(f"{error_prefix}_response_invalid", status_code=status_code) from None
+            raise TelegramDeliveryError(
+                f"{error_prefix}_response_invalid", status_code=status_code, commit_phase=_commit_phase(method)
+            ) from None
         if not isinstance(response_payload, Mapping) or response_payload.get("ok") is not True:
             raise TelegramDeliveryError(
                 f"{error_prefix}_business_rejected",
@@ -493,6 +522,12 @@ class TelegramNewsPushSender:
 
     def close(self) -> None:
         self._client.close()
+
+
+def _commit_phase(method: str) -> str:
+    """What a failure the call cannot account for proves: nothing, unless the call only reads."""
+
+    return COMMIT_PHASE_NOT_SENT if method in _READ_ONLY_METHODS else COMMIT_PHASE_UNKNOWN
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:

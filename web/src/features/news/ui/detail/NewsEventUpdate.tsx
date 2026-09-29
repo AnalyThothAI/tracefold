@@ -384,6 +384,11 @@ export function NewsProcessingState({ processing }: { processing: NewsProcessing
                 label: "通知",
                 value: notification ? notification.state_zh || notification.state : "",
               },
+              {
+                label: "通知尝试次数",
+                value: notification ? String(notification.attempts ?? 0) : "",
+              },
+              { label: "通知错误", value: notification?.last_error_code ?? "" },
               { label: "通知决定", value: plan ? `${plan.action_zh} · ${plan.reason_zh}` : "" },
               { label: "重点", value: plan?.key ? "是" : "" },
             ]}

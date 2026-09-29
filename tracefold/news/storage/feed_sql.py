@@ -7,7 +7,6 @@ from typing import Final
 # S608 exemptions below compose only the module's fixed feed predicate list; all request values stay bound.
 from ..models import ADMITTED_ADMISSIONS
 from ..source_contracts import EVENT_KINDS
-from ..updates.notification import NOTIFICATION_ATTEMPTS_MAX
 
 ITEM_RELATED_COUNT_SQL: Final = "SELECT count(DISTINCT event_id) AS n FROM news_event_members WHERE item_id=%s"
 ITEM_RELATED_KEYS_SQL: Final = (
@@ -49,7 +48,7 @@ _UPDATE_PENDING_SQL: Final = (
     f"({_SEMANTIC_OWED_SQL} AND sw.last_outcome IS DISTINCT FROM 'failed')"
     f" OR (NOT COALESCE({_SEMANTIC_OWED_SQL}, false) AND h.event_id IS NOT NULL"
     f" AND ((nw.event_id IS NULL AND q.state='pending')"
-    f" OR (nw.state='pending' AND nw.attempts < {NOTIFICATION_ATTEMPTS_MAX})))"
+    " OR nw.state='pending'))"
     f" OR (NOT COALESCE({_SEMANTIC_OWED_SQL}, false) AND nw.state='done' AND d.state='sending')"
     f" OR (NOT COALESCE({_SEMANTIC_OWED_SQL}, false) AND nw.state='done'"
     " AND nd.plan->>'action'='notify' AND q.state='pending'"
@@ -359,6 +358,7 @@ def feed_page_sql(where_sql: str) -> str:
                    ORDER BY position LIMIT 1)
                ) AS update_claim_headline,
                nw.state AS notification_state, nw.attempts AS notification_attempts,
+               nw.last_error_code AS notification_last_error_code,
                nw.content_revision AS notification_content_revision,
                nd.plan ->> 'action' AS notification_action,
                nd.plan -> 'claim_decisions' AS notification_claim_decisions,

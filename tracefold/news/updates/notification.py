@@ -3,7 +3,8 @@
 The planner reads adopted EventUpdate content and the reader's actual receipts. Every claim gets one named
 decision. There is no statement drop, headline-similarity veto,
 same-story count, ticker requirement or importance score. The only reason a plan stays pending is an
-overlapping send whose outcome is not settled.
+overlapping send still in flight; a send whose outcome is ambiguous may already be on the reader's screen,
+so its claims are treated as possibly sent -- never sent again, and never holding the rest of the plan.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Final, Literal, Protocol
@@ -24,6 +26,8 @@ from .judgment import Budget, ContractFault, NewsJudgments, ProviderUnavailable,
 from .judgment import error_code as bounded_error_code
 
 SOURCE_MAX_AGE_MS: Final = 12 * 60 * 60_000
+# The one logical reader channel News notifies (#706). The configured provider is how it is reached.
+NEWS_CHANNEL: Final = "news"
 
 PlanAction = Literal["notify", "no_notification", "unresolved"]
 PlanReason = Literal["uncovered_claims", "send_outcome_unresolved", "no_uncovered_actionable_claims"]
@@ -38,7 +42,9 @@ ClaimReason = Literal[
     "retired",
     "stale_source",
     "covered_by_sent_receipt",
-    # deferred: an overlapping sending/ambiguous intent must settle first
+    # not notified: an earlier send of this claim has no provable outcome, so it may already be read
+    "send_outcome_ambiguous",
+    # deferred: an overlapping send of this Event is still in flight and must settle first
     "send_outcome_unresolved",
 ]
 REASON_DECISIONS: Final[dict[ClaimReason, ClaimDecisionValue]] = {
@@ -51,6 +57,7 @@ REASON_DECISIONS: Final[dict[ClaimReason, ClaimDecisionValue]] = {
     "retired": "not_notified",
     "stale_source": "not_notified",
     "covered_by_sent_receipt": "not_notified",
+    "send_outcome_ambiguous": "not_notified",
     "send_outcome_unresolved": "deferred",
 }
 EDITOR_REASONS: Final[dict[Disposition, ClaimReason]] = {
@@ -91,8 +98,10 @@ class ReaderSnapshot(Exact):
     revision: str
     # Retrieved receipt rows, never observed event heads or unsent drafts.
     receipts: tuple[DeliveredText, ...]
-    # Claims of overlapping sending/ambiguous intents. Never counted as received.
+    # Claims of this Event's sends still in flight. Never counted as received; the plan waits for them.
     blocked_claim_refs: tuple[str, ...] = ()
+    # Claims of this Event's sends with no provable outcome: possibly received, so never sent again.
+    ambiguous_claim_refs: tuple[str, ...] = ()
     invalidated_claim_refs: tuple[str, ...] = ()
     # The reader's code-owned watchlist, as canonical upper-case base symbols supplied by the store.
     watch_symbols: tuple[str, ...] = ()
@@ -112,6 +121,30 @@ class ClaimDecision(Exact):
         return self
 
 
+class ComparedReceipt(Exact):
+    """One actual receipt this plan compared its claims against: which intent, and exactly which body."""
+
+    intent_id: str
+    payload_sha256: str
+
+
+class PlanTimings(Exact):
+    """Where one planning turn spent its time. Audit only: nothing reads it back to decide anything.
+
+    `due_at_ms` is when the work became due and `started_at_ms` when this turn took it, so the wait for a
+    prepare slot is their difference; the three durations are the snapshot read, the coverage judgments
+    and the editor; `planned_at_ms` is when the plan was complete. The decision row's `created_at_ms` is
+    the write, so every stage from adoption to the recorded decision can be read back with SQL alone.
+    """
+
+    due_at_ms: int | None = Field(default=None, ge=0)
+    started_at_ms: int | None = Field(default=None, ge=0)
+    snapshot_ms: int | None = Field(default=None, ge=0)
+    coverage_ms: int | None = Field(default=None, ge=0)
+    assessment_ms: int | None = Field(default=None, ge=0)
+    planned_at_ms: int | None = Field(default=None, ge=0)
+
+
 class NotificationPlan(Exact):
     action: PlanAction
     reason: PlanReason
@@ -129,6 +162,9 @@ class NotificationPlan(Exact):
     assessment_input_digest: str | None = None
     assessment_input: dict[str, object] | None = None
     decision_ref: str | None = None
+    # The receipts the coverage judgments read, so a recorded decision says what "already sent" meant.
+    compared_receipts: tuple[ComparedReceipt, ...] = ()
+    timings: PlanTimings | None = None
 
     @property
     def selected_claim_refs(self) -> tuple[str, ...]:
@@ -285,11 +321,15 @@ class NotificationPlanner:
                 and claim.ref not in corrections
             ):
                 reasons[claim.ref] = "stale_source"
+            elif claim.ref in reader.ambiguous_claim_refs:
+                reasons[claim.ref] = "send_outcome_ambiguous"
             elif claim.ref in reader.blocked_claim_refs:
                 reasons[claim.ref] = "send_outcome_unresolved"
             else:
                 candidates.append(claim)
+        coverage_started = time.monotonic()
         covered = await self._fully_covered(tuple(candidates), reader, budget)
+        coverage_ms = _elapsed_ms(coverage_started)
         ordinary: list[Claim] = []
         for claim in candidates:
             if claim.ref in covered:
@@ -314,7 +354,8 @@ class NotificationPlanner:
         )
         fingerprint = digest(material)
         reused = None
-        if reuse is not None:
+        assessment_started = time.monotonic()
+        if reuse is not None and ordinary:
             previous = await reuse(fingerprint)
             if (
                 previous is not None
@@ -353,8 +394,8 @@ class NotificationPlanner:
                         explanations[claim.ref] = assessment_row.reason_zh
                     status = "available"
                 except (ProviderUnavailable, ContractFault, ValidationError, TimeoutError) as exc:
-                    if budget.remaining() <= 0:
-                        raise TimeoutError("news_notification_stage_expired") from exc
+                    # An expired stage raises here; only a slow or failed editor call is recorded unavailable.
+                    budget.remaining()
                     status = "unavailable"
                     error_code = bounded_error_code(exc, default="news_attention")
                     for claim in ordinary:
@@ -389,6 +430,12 @@ class NotificationPlanner:
             assessment_identity=self.assessor.identity if ordinary else BRIEF_IDENTITY,
             assessment_input_digest=fingerprint,
             assessment_input=material,
+            compared_receipts=tuple(
+                ComparedReceipt(intent_id=row.intent_id, payload_sha256=row.payload_sha256)
+                for row in reader.receipts
+                if row.state == "sent" and row.channel == reader.channel
+            ),
+            timings=PlanTimings(coverage_ms=coverage_ms, assessment_ms=_elapsed_ms(assessment_started)),
         )
 
     async def _fully_covered(
@@ -421,6 +468,10 @@ class NotificationPlanner:
             return set()
         answers = await self.judgments.judge("coverage", tuple(questions), budget)
         return {pairs[row.item_id] for row in answers if row.status == "available" and row.value == "full"}
+
+
+def _elapsed_ms(started: float) -> int:
+    return max(0, int((time.monotonic() - started) * 1000))
 
 
 def _has_han(text: str) -> bool:

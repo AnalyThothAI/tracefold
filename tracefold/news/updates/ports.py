@@ -42,6 +42,8 @@ class NotificationSnapshot(Exact):
     update: EventUpdate
     reader: ReaderSnapshot
     work_updated_at_ms: int | None = None
+    # When the work became due: the start of the wait a planning turn's timings are measured from.
+    work_due_at_ms: int | None = None
 
 
 class IntentLease(Exact):
@@ -52,12 +54,25 @@ class IntentLease(Exact):
 
 
 class PlanCommit(Exact):
-    status: Literal["committed", "head_changed", "reader_changed", "lease_lost", "already_settled", "overlap"]
+    status: Literal["committed", "head_changed", "reader_changed", "already_settled", "overlap"]
     effective_plan: NotificationPlan | None = None
     lease: IntentLease | None = None
 
 
 BeginSendStatus = Literal["begun", "head_changed", "reader_changed", "lease_lost", "already_settled", "overlap"]
+
+
+class DeliveryTimings(Exact):
+    """Where one send spent its time before the provider call, kept beside its receipt. Audit only.
+
+    The card clocks are absent when a frozen card was reused rather than composed by this turn.
+    `send_slot_wait_ms` is from the card being ready to this turn holding the process's one send slot.
+    """
+
+    card_started_at_ms: int | None = Field(default=None, ge=0)
+    card_finished_at_ms: int | None = Field(default=None, ge=0)
+    ready_at_ms: int = Field(ge=0)
+    send_slot_wait_ms: int = Field(ge=0)
 
 
 class SendOutcome(Exact):
@@ -144,25 +159,30 @@ class NewsStore(Protocol):
     async def notification_snapshot(self, event_id: str, channel: str) -> NotificationSnapshot | None:
         """Consistent adopted head and actual-reader snapshot, not observed history.
 
-        blocked_claim_refs comes from overlapping sending/ambiguous intents. It
-        prevents a new ID from blindly retrying an unresolved external send; it
-        does not count those claims as received. watch_symbols is the reader's
-        code-owned watchlist as canonical upper-case base symbols.
+        blocked_claim_refs comes from this Event's sends still in flight and
+        ambiguous_claim_refs from its sends with no provable outcome. Neither is
+        counted as received; the first makes the plan wait, the second is never
+        sent again. The reader revision is the digest of the receipts related to
+        this Event and those claim sets, so only a related change races a plan.
+        watch_symbols is the reader's code-owned watchlist as canonical upper-case
+        base symbols.
         """
         ...
 
     async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
-        """Check head/reader versions; persist or reuse an immutable decision; reserve an intent.
+        """Persist or reuse an immutable decision, check head/reader versions, reserve an intent.
 
-        Every claim_decisions row is persisted with its reason, so the Console can
-        show why a claim was or was not notified. A no_notification plan clears
-        the matching pending marker; not_notified decisions are final for this
-        head and reader revision. An unresolved plan (only overlapping
-        sending/ambiguous intents make one) stays retryable under the existing
-        bounded work policy. A notify result gets one stable intent/queue row;
-        deferred claims remain pending even if other selected claims were
-        reserved successfully. A concurrent active lease, version race, or already
-        sending/sent/ambiguous identity returns a recorded result without a lease.
+        The decision is written before the reader check, so a plan that loses the
+        race keeps its judgments for the next turn to reuse; an identical plan is
+        the same decision row. Every claim_decisions row is persisted with its
+        reason, so the Console can show why a claim was or was not notified. A
+        no_notification plan completes the matching pending marker. An unresolved
+        plan (only a send of this Event still in flight makes one) waits without
+        spending an attempt. A notify result gets one stable intent/queue row
+        bound to this decision; deferred claims keep the marker waiting even if
+        other selected claims were reserved. A selection whose intent already
+        ended is handled, not re-sent. A concurrent active lease or version race
+        returns a recorded result without a lease.
         """
         ...
 
@@ -180,11 +200,14 @@ class NewsStore(Protocol):
         """Release a pending owned intent cancelled before begin_send was called."""
         ...
 
-    async def atomic_begin_send(self, lease: IntentLease, card: FrozenCard) -> BeginSendStatus:
+    async def atomic_begin_send(
+        self, lease: IntentLease, card: FrozenCard, *, timings: DeliveryTimings | None = None
+    ) -> BeginSendStatus:
         """Recheck head, reader revision, lease and in-flight overlap; freeze sending.
 
         On a changed selection, retire only the unsent reservation and leave
         notification pending. Never mutate a sending payload or reset ambiguous.
+        The timings are recorded beside the frozen send.
         """
         ...
 
@@ -199,24 +222,48 @@ class NewsStore(Protocol):
         """Fenced actual receipt + queue outcome, atomically.
 
         Sent retains the exact body/hash, target, provider message ID and time.
-        Not-sent may retry this SAME identity/payload, respecting existing retry
-        limits/backoff. Ambiguous is held for existing reconciliation, not retried.
+        A retryable not-sent retries this SAME identity/payload under the intent's
+        attempt bound and removes the `sending` row that never reached a reader;
+        the last one ends the unsent intent and fails the work. A refused not-sent
+        is terminal. Ambiguous is held, never retried, and its claims count as
+        possibly sent.
         """
         ...
 
-    async def record_card_failure(self, lease: IntentLease, *, error_code: str) -> None: ...
+    async def record_unsent_failure(
+        self,
+        lease: IntentLease,
+        *,
+        error_code: str,
+        retryable: bool,
+        retry_after_ms: int | None = None,
+    ) -> None:
+        """An owned intent failed before any `sending` row: its card, or a proven unsent preflight.
+
+        A retryable failure spends one intent attempt and backs off; the last one, or a refused failure,
+        ends the unsent intent and fails the work with this error code. A lost lease is a no-op.
+        """
+        ...
 
     async def defer_notification(
         self,
         event_id: str,
         channel: str,
-        expected_content_revision: str,
+        expected_content_revision: str | None,
         expected_work_updated_at_ms: int | None = None,
+        *,
+        error_code: str,
     ) -> None:
         """A planning turn failed before a plan was recorded: spend one bounded attempt and back off.
 
-        Semantics, the public outbox and any reserved intent are untouched; the caller reports the error.
+        The last attempt fails the work with this error code. Semantics, the public outbox and any
+        reserved intent are untouched. With no expected revision (the snapshot itself failed) the
+        current pending work of the Event is the one charged.
         """
+        ...
+
+    async def postpone_notification(self, event_id: str, channel: str, expected_content_revision: str | None) -> None:
+        """The database could not answer a planning turn: put the pending work off once, spending nothing."""
         ...
 
     async def reserve_extra_read(self, lineage_id: str, target_ref: str) -> bool:

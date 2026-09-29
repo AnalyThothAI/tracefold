@@ -65,7 +65,7 @@ EVENT_SEMANTIC_OBSERVATIONS_SQL: Final = """
 """
 EVENT_NOTIFICATION_WORK_SQL: Final = """
     SELECT w.event_id, w.channel, w.content_revision, w.state, d.plan, w.decision_ref,
-           w.reader_revision, w.attempts, w.next_attempt_at_ms, w.updated_at_ms
+           w.reader_revision, w.attempts, w.last_error_code, w.next_attempt_at_ms, w.updated_at_ms
       FROM news_notification_work w
       LEFT JOIN news_notification_decisions d ON d.decision_ref = w.decision_ref
      WHERE w.event_id = %s AND w.channel = 'news'

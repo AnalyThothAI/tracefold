@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from .taxonomy import IPTC_SUBJECT_LABELS_ZH, source_authority_zh
 from .updates.contracts import Claim, EventUpdate, Evidence
-from .updates.notification import NOTIFICATION_ATTEMPTS_MAX, NotificationPlan
+from .updates.notification import NotificationPlan
 
 UPDATE_DECODE_ERROR: Final = "news_event_update_undecodable"
 PLAN_DECODE_ERROR: Final = "news_notification_plan_undecodable"
@@ -90,11 +90,11 @@ IMPLICATION_ORIGIN_ZH: Final[dict[str, str]] = {
 PLAN_ACTION_ZH: Final[dict[str, str]] = {
     "notify": "通知",
     "no_notification": "不通知",
-    "unresolved": "等待重叠发送的结果",
+    "unresolved": "等待进行中的发送",
 }
 PLAN_REASON_ZH: Final[dict[str, str]] = {
     "uncovered_claims": "有命题未被已送达内容覆盖",
-    "send_outcome_unresolved": "重叠的发送结果尚未确定",
+    "send_outcome_unresolved": "本事件仍有发送进行中",
     "no_uncovered_actionable_claims": "没有未覆盖且可通知的命题",
 }
 CLAIM_DECISION_ZH: Final[dict[str, str]] = {"notify": "通知", "not_notified": "不通知", "deferred": "暂缓"}
@@ -108,10 +108,11 @@ CLAIM_REASON_ZH: Final[dict[str, str]] = {
     "retired": "已撤回的命题",
     "stale_source": "来源已过时",
     "covered_by_sent_receipt": "已送达内容已覆盖",
-    "send_outcome_unresolved": "重叠发送的结果未定",
+    "send_outcome_ambiguous": "此前发送结果不明，按可能已送达处理，不重发",
+    "send_outcome_unresolved": "本事件仍有发送进行中，等待其结果",
 }
 SEMANTIC_STATE_ZH: Final[dict[str, str]] = {"pending": "处理中", "done": "已完成", "failed": "失败"}
-NOTIFICATION_STATE_ZH: Final[dict[str, str]] = {"pending": "待决定", "done": "已决定", "exhausted": "规划已耗尽"}
+NOTIFICATION_STATE_ZH: Final[dict[str, str]] = {"pending": "待决定", "done": "已决定", "failed": "通知失败"}
 EXTRA_READ_STATE_ZH: Final[dict[str, str]] = {
     "reserved": "补读已预留",
     "attached": "补读材料已附加",
@@ -427,23 +428,17 @@ def plan_view(plan: NotificationPlan, *, statements: Mapping[str, str]) -> dict[
     }
 
 
-def notification_state(work: Mapping[str, Any]) -> str:
-    state = str(work.get("state") or "")
-    if state == "pending" and int(work.get("attempts") or 0) >= NOTIFICATION_ATTEMPTS_MAX:
-        return "exhausted"
-    return state
-
-
 def notification_view(work: Mapping[str, Any] | None, *, statements: Mapping[str, str]) -> dict[str, Any] | None:
     if work is None:
         return None
     plan = decode_plan(work.get("plan"))
-    state = notification_state(work)
+    state = str(work["state"])
     return {
         "state": state,
         "state_zh": _zh(NOTIFICATION_STATE_ZH, state),
         "content_revision": str(work["content_revision"]),
         "attempts": int(work.get("attempts") or 0),
+        "last_error_code": work.get("last_error_code"),
         "next_attempt_at_ms": work.get("next_attempt_at_ms"),
         "updated_at_ms": int(work["updated_at_ms"]),
         "plan": plan_view(plan, statements=statements) if plan is not None else None,

@@ -23,8 +23,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_d
 
 def _seed_numbered_head(notification_state: str = "pending"):
     event_id = "event-alpha"
-    stored_state = "pending" if notification_state == "exhausted" else notification_state
-    attempts = 3 if notification_state == "exhausted" else 0
+    attempts = 3 if notification_state == "failed" else 0
     item_id = f"it-{event_id}"
     seed_event(event_id, text=BODY, title="Digest")
     head, _ = historical_head(item_id)
@@ -70,14 +69,23 @@ def _seed_numbered_head(notification_state: str = "pending"):
     sql(
         """INSERT INTO news_notification_work
              (event_id,channel,content_revision,state,decision_ref,
-              attempts,next_attempt_at_ms,updated_at_ms)
-           VALUES (%s,'news',%s,%s,%s,%s,%s,%s)""",
-        (event_id, head.content_revision, stored_state, decision_ref, attempts, STAMP + 1, STAMP + 1),
+              attempts,last_error_code,next_attempt_at_ms,updated_at_ms)
+           VALUES (%s,'news',%s,%s,%s,%s,%s,%s,%s)""",
+        (
+            event_id,
+            head.content_revision,
+            notification_state,
+            decision_ref,
+            attempts,
+            "news_notification_plan:KeyError" if notification_state == "failed" else None,
+            STAMP + 1,
+            STAMP + 1,
+        ),
     )
     return head
 
 
-@pytest.mark.parametrize("notification_state", ("pending", "done", "exhausted"))
+@pytest.mark.parametrize("notification_state", ("pending", "done", "failed"))
 def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(notification_state: str) -> None:
     event_id = "event-alpha"
     decision_ref = "historical-decision" if notification_state == "done" else None
@@ -139,14 +147,18 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(n
         conn.close()
     assert sql("SELECT count(*) AS n FROM trading_source_amendments")[0]["n"] == 1
     assert sql("SELECT count(*) AS n FROM news_semantic_observations")[0]["n"] == 1
+    # Work still owed follows the repaired head -- pending, or failed and waiting for a retry of exactly that
+    # head -- without its budget replenished; completed work stays with the head it completed.
     assert sql("SELECT content_revision,state,decision_ref FROM news_notification_work")[0] == {
-        "content_revision": revision if notification_state == "pending" else head.content_revision,
-        "state": "pending" if notification_state == "exhausted" else notification_state,
+        "content_revision": head.content_revision if notification_state == "done" else revision,
+        "state": notification_state,
         "decision_ref": decision_ref if notification_state == "done" else None,
     }
-    if notification_state == "exhausted":
-        assert sql("SELECT attempts FROM news_notification_work")[0]["attempts"] == 3
-        assert sql("SELECT event_id FROM news_notification_work WHERE state='pending' AND attempts < 3") == []
+    if notification_state == "failed":
+        assert sql("SELECT attempts,last_error_code FROM news_notification_work")[0] == {
+            "attempts": 3,
+            "last_error_code": "news_notification_plan:KeyError",
+        }
     if notification_state == "done":
         reader = connect_postgres_test(read_only=True)
         try:

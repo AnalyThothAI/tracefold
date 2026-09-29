@@ -14,7 +14,7 @@ from typing import Any, Final, Literal
 
 from .events.storyline import NO_STORYLINE_KEY, storyline_entry
 from .models import ADMITTED_ADMISSIONS
-from .update_view import claim_reasons_zh, notification_state, semantic_state
+from .update_view import claim_reasons_zh, semantic_state
 
 OUTCOME_VERSION: Final = "news_outcome_v1"
 
@@ -29,7 +29,7 @@ OutcomeKind = Literal[
     "no_update",
     "queued_notification",
     "notification_deferred",
-    "notification_exhausted",
+    "notification_failed",
     "not_notified",
     "delivery_ambiguous",
 ]
@@ -46,7 +46,7 @@ OUTCOME_GROUP: Final[dict[str, str]] = {
     "no_update": "held",
     "queued_notification": "pending",
     "notification_deferred": "pending",
-    "notification_exhausted": "held",
+    "notification_failed": "held",
     "not_notified": "held",
     "delivery_ambiguous": "held",
 }
@@ -96,6 +96,7 @@ DELIVERY_ERROR_ZH: Final[dict[str, str]] = {
     "ambiguous_after_crash": "发送状态不确定（进程中断），不重发",
     "news_delivery_settlement_unavailable": "发送后未能记录结果",
     "news_delivery_attempts_exhausted": "投递尝试已耗尽，未送达",
+    "news_notification_exhausted_legacy": "旧版通知规划已耗尽，未记录原因",
 }
 
 
@@ -181,7 +182,7 @@ def event_outcome(
             return _outcome("delivered", "已推送", "")
         return _outcome("no_update", "无可采用内容", "语义处理完成，未形成可采用的事件更新")
 
-    work_state = notification_state(notification or {})
+    work_state = str((notification or {}).get("state") or "")
     action = str((notification or {}).get("action") or "")
     target = str((notification or {}).get("content_revision") or "")
     queue_current = delivery_queue is not None and (not target or delivery_queue.get("content_revision") == target)
@@ -189,8 +190,13 @@ def event_outcome(
     state = str((delivery or {}).get("state") or "")
     queue_state = str((delivery_queue or {}).get("state") or "")
 
-    if work_state == "exhausted":
-        return _outcome("notification_exhausted", "通知规划已耗尽", "本版本不再自动规划，可重试指定版本")
+    if work_state == "failed":
+        error = (notification or {}).get("last_error_code")
+        return _outcome(
+            "notification_failed",
+            "通知失败",
+            f"{delivery_error_zh(error) or '未知错误'}；本版本不再自动重试，可重试指定版本",
+        )
     if notification is None and state in {"sent", "ambiguous", "terminal"}:
         if queue_state == "pending":
             return _outcome("pending_delivery", "待推送", "仍有未完成的通知任务")
@@ -207,7 +213,7 @@ def event_outcome(
         return _outcome("not_notified", "没有待执行通知", "当前没有未完成通知责任")
     if work_state == "pending":
         if action == "unresolved":
-            return _outcome("notification_deferred", "等待前序发送", "重叠的发送结果尚未确定")
+            return _outcome("notification_deferred", "等待前序发送", "本事件仍有发送进行中")
         if action == "notify":
             if delivery_current and state == "sending":
                 return _outcome("pending_delivery", "推送中", "通知已获发送许可，等待实际结果")
