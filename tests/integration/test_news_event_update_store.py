@@ -6,7 +6,6 @@ import asyncio
 import copy
 import hashlib
 import json
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -14,6 +13,14 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_current_delivery import seed_delivery
 from tests.support.news_reader import PushAll
+from tests.support.news_recall_window import (
+    PROBE_RECEIPT,
+    PROBE_STATEMENT,
+    PROBE_STATEMENT_ZH,
+    gold_fixture,
+    gold_window_filler,
+    probe_window,
+)
 from tests.support.news_update_pg import (
     EVENT,
     STAMP,
@@ -66,11 +73,18 @@ from tracefold.news.updates.notification import (
 from tracefold.news.updates.ports import SemanticObservation, SendOutcome
 from tracefold.news.updates.projection import reading_views
 from tracefold.news.updates.public import public_updates
-from tracefold.news.updates.receipt_recall import asset_symbols, commodity_name_patterns, query_for_claim
+from tracefold.news.updates.reader_judgments import ClaimLink, LinkedReceipt, reader_novelty
+from tracefold.news.updates.receipt_recall import (
+    RecallCandidate,
+    asset_symbols,
+    commodity_name_patterns,
+    lexical_evidence,
+    query_for_claim,
+    select_for_claim,
+)
 from tracefold.news.updates.service import Notifications
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
-GOLD_RECALL = Path(__file__).resolve().parents[1] / "fixtures/news/issue_750_gold_recall.json"
 
 
 def head_claim(claim_ref: str, *, statement: str | None = None, **fields: Any) -> dict[str, Any]:
@@ -153,6 +167,31 @@ def seed_sent_receipt(
             digest(body),
         ),
     )
+
+
+def seed_window_receipts(rows: list[tuple[str, str, int]], *, event_id: str = "window-filler") -> None:
+    """Sent receipts `(intent_id, body, settled_at_ms)` projecting no claim: the rest of a window."""
+
+    seed_event(event_id, title=event_id, fingerprint=event_id, at_ms=STAMP - 7_200_000)
+    seed_update_version(event_id, content_revision=digest(event_id), claims=[])
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction(), conn.cursor() as cursor:
+            cursor.executemany(
+                """
+                INSERT INTO news_deliveries
+                  (intent_id, event_id, kind, state, card, receipt, attempted_at_ms, settled_at_ms, created_at_ms,
+                   history_context, content_revision, claim_refs, body, payload_sha256, plan_key)
+                VALUES (%s, %s, 'update', 'sent', '{}'::jsonb, '{}'::jsonb, %s, %s, %s, '{}'::jsonb, %s,
+                        '["cl:window-filler"]'::jsonb, %s, %s, false)
+                """,
+                [
+                    (intent_id, event_id, at_ms, at_ms, at_ms, digest(event_id), body, digest(body))
+                    for intent_id, body, at_ms in rows
+                ],
+            )
+    finally:
+        conn.close()
 
 
 # ------------------------------------------------------------------ identities
@@ -1256,12 +1295,17 @@ def test_a_later_head_of_the_historical_event_does_not_change_its_receipt() -> N
 
 
 def test_gold_claim_recalls_its_history_through_the_real_sql_routes() -> None:
-    """#750 gold case over PostgreSQL: the frozen production receipts and links, projected, routed and selected
-    by the same reader state the snapshot and both CAS sites build."""
+    """#750 gold case over PostgreSQL: the frozen production receipts and links inside a production-shaped
+    48 h window, projected, routed and selected by the same reader state the snapshot and both CAS sites build.
+
+    "prices", "week", "gold" and "low" are as common in the window as in production, so none is rare enough to
+    be lexical evidence: the copper and bitcoin receipts sharing them stay out and every direct antecedent
+    comes back. The pure selector over the same window chooses the same receipts.
+    """
 
     pg, db, clock = store()
     adopted_head(pg, clock)
-    fixture = json.loads(GOLD_RECALL.read_text("utf-8"))
+    fixture = gold_fixture()
     carried = {row["intent_id"]: row["claim_refs"] for row in fixture["link_receipts"]}
     for row in fixture["candidates"]:
         event_id = f"gold-{row['intent_id'][7:19]}"
@@ -1276,6 +1320,8 @@ def test_gold_claim_recalls_its_history_through_the_real_sql_routes() -> None:
             body=row["body"],
             settled_at_ms=row["settled_at_ms"],
         )
+    filler = gold_window_filler(fixture)
+    seed_window_receipts(filler)
     for number, link in enumerate(fixture["links"]):
         sql(
             """INSERT INTO news_claim_links
@@ -1299,16 +1345,71 @@ def test_gold_claim_recalls_its_history_through_the_real_sql_routes() -> None:
             repeatable_read=True,
         )
     )
-    gold, data = (Claim.model_validate(item).ref for item in fixture["claims"])
+    claims = [Claim.model_validate(item) for item in fixture["claims"]]
+    gold, data = (claim.ref for claim in claims)
     selected = {intent[7:13] for intent in state["receipt_intents_by_claim"][gold]}
     labels = fixture["labels"]
-    assert len(state["receipt_intents_by_claim"][gold]) == 16
-    # The stop list holds function words only, so "prices" and "low" are shared content with copper receipts;
-    # 0b4d11 enters the lexical route and takes the last of the 16 places from 585497, the oldest-ranked
-    # structural gold match. The three other direct antecedents stay and no named noise enters.
-    assert {key for key, label in labels.items() if label == 2} - selected == {"585497"}
+    assert len(state["receipt_intents_by_claim"][gold]) <= 16
+    assert {key for key, label in labels.items() if label == 2} <= selected
     assert not selected & {key for key, label in labels.items() if label == 0}
+    assert not selected & {"0b4d11", "177218", "641052", "d903d3"}
     assert state["receipt_intents_by_claim"][data] == ()
+    window = tuple(
+        RecallCandidate(
+            intent_id=row["intent_id"],
+            payload_sha256=row["payload_sha256"],
+            body=row["body"],
+            settled_at_ms=row["settled_at_ms"],
+            claims=tuple(Claim.model_validate(item) for item in row["claims"]),
+        )
+        for row in fixture["candidates"]
+    ) + tuple(RecallCandidate(intent, digest(body), body, at) for intent, body, at in filler)
+    links = tuple(ClaimLink.model_validate(item) for item in fixture["links"])
+    receipts = tuple(LinkedReceipt.model_validate(item) for item in fixture["link_receipts"])
+    for claim in claims:
+        pure = select_for_claim(
+            query_for_claim(claim), reader_novelty(claim.ref, links, receipts), window, as_of_ms=fixture["as_of_ms"]
+        )
+        assert pure.intent_ids == state["receipt_intents_by_claim"][claim.ref]
+
+
+def test_lexical_route_in_sql_counts_only_terms_rare_in_the_window_like_the_python_selector() -> None:
+    """A House probe claim shares "market" and "trading" (市场, 交易) with unrelated receipts; only the receipt
+    sharing rare terms is lexical evidence, in SQL and in the pure selector, term for term."""
+
+    pg, db, clock = store()
+    adopted_head(pg, clock)
+    window = probe_window(clock())
+    seed_window_receipts([(intent, text, at) for _, intent, text, at in window])
+    keys = {intent: key for key, intent, _, _ in window}
+    claims = {
+        language: Claim.model_validate(head_claim(f"cl:probe-{language}", statement=statement, assets=[]))
+        for language, statement in (("en", PROBE_STATEMENT), ("zh", PROBE_STATEMENT_ZH))
+    }
+    queries = {language: query_for_claim(claim) for language, claim in claims.items()}
+    rows = asyncio.run(
+        db.read(
+            "test_probe_route", lambda repos: repos.news._recall_receipt_rows(tuple(queries.values()), now_ms=clock())
+        )
+    )
+    candidates = tuple(RecallCandidate(intent, digest(text), text, at) for _, intent, text, at in window)
+    routed = {
+        language: {
+            keys[str(row["intent_id"])]: tuple(sorted(row["lexical_terms"]))
+            for row in rows
+            if row["current_ref"] == query.ref and row["lexical_rank"] is not None
+        }
+        for language, query in queries.items()
+    }
+    pure = {
+        language: {keys[intent]: terms for intent, (_, terms) in lexical_evidence(query, candidates).items()}
+        for language, query in queries.items()
+    }
+    assert routed == pure
+    assert set(routed["en"]) == set(routed["zh"]) == {PROBE_RECEIPT}
+    english, chinese = set(routed["en"][PROBE_RECEIPT]), set(routed["zh"][PROBE_RECEIPT])
+    assert {"hyperliquid", "oversight", "probe"} <= english and not {"market", "trading", "the"} & english
+    assert {"监督", "调查"} <= chinese and not {"市场", "交易"} & chinese
 
 
 def test_asset_route_in_sql_canonicalizes_symbols_like_the_python_selector() -> None:

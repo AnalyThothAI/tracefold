@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
+import pytest
 
+from tests.support.news_recall_window import (
+    PROBE_NOISE,
+    PROBE_RECEIPT,
+    PROBE_STATEMENT,
+    PROBE_STATEMENT_ZH,
+    WINDOW_RECEIPTS,
+    gold_fixture,
+    gold_window_filler,
+    probe_window,
+)
 from tests.support.news_update_semantic import draft, material
+from tracefold.news.updates import receipt_recall
 from tracefold.news.updates.contracts import Asset, Claim, Extraction, FrozenInput, IdentityHint
 from tracefold.news.updates.identity import digest
 from tracefold.news.updates.reader_judgments import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
 from tracefold.news.updates.receipt_recall import (
     RecallCandidate,
+    RouteEvidence,
     asset_symbols,
+    lexical_evidence,
     query_for_claim,
     reader_context_revision,
     select_for_claim,
@@ -110,26 +122,48 @@ def test_sql_lexical_rank_is_preserved_by_final_fusion() -> None:
         receipt("recent", "Agency approves project", STAMP - 1),
         receipt("ranked-first", "Agency approves project", STAMP - 2),
     )
+    terms = ("agency", "approves", "project")
     selected = select_for_claim(
         query_for_claim(current),
         ReaderNovelty(novelty="unlinked"),
         candidates,
         as_of_ms=STAMP,
-        route_ranks={"recent": (None, 2), "ranked-first": (None, 1)},
+        routes={
+            "recent": RouteEvidence(lexical_rank=2, lexical_terms=terms),
+            "ranked-first": RouteEvidence(lexical_rank=1, lexical_terms=terms),
+        },
     )
     assert selected.intent_ids == ("ranked-first", "recent")
 
 
-def test_sql_stemming_alone_cannot_bypass_shared_content_rule() -> None:
+def test_a_lexical_rank_without_two_qualifying_terms_is_not_evidence() -> None:
     current = claim("Agency approves project")
     selected = select_for_claim(
         query_for_claim(current),
         ReaderNovelty(novelty="unlinked"),
-        (receipt("noise", "unrelated notice", STAMP - 1),),
+        (receipt("noise", "Agency notice", STAMP - 1),),
         as_of_ms=STAMP,
-        route_ranks={"noise": (None, 1)},
+        routes={"noise": RouteEvidence(lexical_rank=1, lexical_terms=("agency",))},
     )
     assert selected.intent_ids == ()
+
+
+def test_only_terms_rare_in_the_window_are_lexical_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A House probe claim shares "market" and "trading" (市场, 交易) with unrelated receipts and rare terms only
+    with the receipt about the probe; the rare ones decide, in English and in Han bigrams."""
+
+    window = tuple(receipt(key, text, at) for key, _, text, at in probe_window(STAMP))
+    for statement in (PROBE_STATEMENT, PROBE_STATEMENT_ZH):
+        query = query_for_claim(claim(statement, subject="House Oversight Committee"))
+        assert set(lexical_evidence(query, window)) == {PROBE_RECEIPT}
+        selected = select_for_claim(query, ReaderNovelty(novelty="unlinked"), window, as_of_ms=STAMP)
+        assert selected.intent_ids == (PROBE_RECEIPT,)
+    english = lexical_evidence(query_for_claim(claim(PROBE_STATEMENT)), window)[PROBE_RECEIPT][1]
+    assert {"hyperliquid", "oversight", "probe"} <= set(english) and not {"market", "trading", "the"} & set(english)
+    # Without the document-frequency rule the common words alone would have let every noise receipt in.
+    monkeypatch.setattr(receipt_recall, "LEXICAL_DF_MAX", 1.0)
+    everything = lexical_evidence(query_for_claim(claim(PROBE_STATEMENT)), window)
+    assert set(PROBE_NOISE) - {"kyiv-zh", "iran-zh"} <= set(everything)
 
 
 def test_grounded_subject_identity_recalls_without_topic_or_text_collision() -> None:
@@ -182,15 +216,15 @@ def test_context_revision_tracks_order_body_and_semantic_state() -> None:
 
 
 def test_issue_750_gold_frozen_production_recall() -> None:
-    """The frozen production candidates of the #750 gold case through the pure routes.
+    """The frozen production receipts of the #750 gold case inside a production-shaped window, pure routes.
 
-    `tests/integration/test_news_event_update_store.py` seeds the same receipts into PostgreSQL and selects
-    through the real SQL routes; both keep the same direct antecedents.
+    Filler receipts complete the 1,321-receipt window so "prices", "week", "gold" and "low" are as common as they
+    were in production; none of them is then rare enough to be evidence, so copper and bitcoin receipts that
+    share them stay out and the gold history comes from the asset route and the semantic links.
+    `tests/integration/test_news_event_update_store.py` runs the same window through PostgreSQL.
     """
 
-    fixture = json.loads(
-        (Path(__file__).resolve().parents[1] / "fixtures/news/issue_750_gold_recall.json").read_text("utf-8")
-    )
+    fixture = gold_fixture()
     candidates = tuple(
         RecallCandidate(
             intent_id=row["intent_id"],
@@ -200,7 +234,8 @@ def test_issue_750_gold_frozen_production_recall() -> None:
             claims=tuple(Claim.model_validate(item) for item in row["claims"]),
         )
         for row in fixture["candidates"]
-    )
+    ) + tuple(receipt(intent, body, at) for intent, body, at in gold_window_filler(fixture))
+    assert len(candidates) == WINDOW_RECEIPTS
     links = tuple(ClaimLink.model_validate(item) for item in fixture["links"])
     receipts = tuple(LinkedReceipt.model_validate(item) for item in fixture["link_receipts"])
     gold, data = (Claim.model_validate(item) for item in fixture["claims"])
@@ -211,11 +246,11 @@ def test_issue_750_gold_frozen_production_recall() -> None:
         query_for_claim(data), reader_novelty(data.ref, links, receipts), candidates, as_of_ms=fixture["as_of_ms"]
     )
     selected = {intent[7:13] for intent in gold_selection.intent_ids}
-    assert len(gold_selection.intent_ids) == 16
-    # With function words as the only stop words, copper receipts sharing "prices" and "low" take the last
-    # place from 585497, the oldest-ranked structural gold match (see the PostgreSQL test).
-    assert {"235d95", "191d10", "585497", "eca8e3"} - selected == {"585497"}
-    assert not selected & {"4e5846", "96059b", "077119", "96b2f0", "ce1b55", "cdae0a"}
+    labels = fixture["labels"]
+    assert len(gold_selection.intent_ids) <= 16
+    assert {key for key, label in labels.items() if label == 2} <= selected
+    assert not selected & {key for key, label in labels.items() if label == 0}
+    assert not selected & {"0b4d11", "177218", "641052", "d903d3"}
     assert data_selection.intent_ids == ()
     assert len(fixture["baseline_message_intents"][gold.ref]) == 16
     assert len(fixture["baseline_message_intents"][data.ref]) == 16
