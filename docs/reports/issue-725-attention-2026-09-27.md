@@ -1,13 +1,16 @@
 # #725 编辑判断有限对照（2026-09-27）
 
-固定输入为 [6 个合成 Event、7 条 Claim](../../tests/fixtures/news/issue_725_attention_cases.json)，由
-[构造脚本](../../scripts/build_news_attention_cases.py)经真实 EventUpdate 合同生成。其中 3 条标为应推、
+> 本报告的构造脚本、对照入口和合成 fixture 已随 #742 退役，读者侧判断改用
+> [eval_news_reader.py](../../scripts/eval_news_reader.py)。下文引用的文件以基线提交 `25228698a` 为准。
+
+固定输入为 6 个合成 Event、7 条 Claim（`tests/fixtures/news/issue_725_attention_cases.json`），由
+构造脚本 `scripts/build_news_attention_cases.py` 经真实 EventUpdate 合同生成。其中 3 条标为应推、
 3 条为明确杂讯；另有 1 条拟议项目进展标为 `uncertain`，它不计入应推或应留 Feed 的错误数。
 这些标签是工程评估样本，不是实际新闻人工 Gold，也不包含后见价格。
 
-使用 [离线对照入口](../../scripts/eval_news_attention.py)先重放合成的“全部普通推”基线，再显式选择
+使用离线对照入口 `scripts/eval_news_attention.py` 先重放合成的“全部普通推”基线，再显式选择
 当前 App 的卡片生成 route 主模型 `openai/qwen3.8-27b`，调用与生产相同的 `DspyAttentionAssessor`
-和[编辑简报](../../tracefold/news/updates/editorial_brief.txt)。基线是合成反例，**不是旧线上政策的测量结果**。
+和编辑简报 `tracefold/news/updates/editorial_brief.txt`。基线是合成反例，**不是旧线上政策的测量结果**。
 
 | 指标 | 合成全部推基线 | 实际模型 |
 | --- | ---: | ---: |

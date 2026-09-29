@@ -285,8 +285,9 @@ stateDiagram-v2
 
 `key` 是编辑判断的重点展示标记，不是另一轮发送审批或仓位权重。
 
-离线重放和显式真实模型对照使用 [eval_news_attention.py](../../scripts/eval_news_attention.py)；
-本次有限样本的调用数、结果及测量范围见 [#725 对照报告](../reports/issue-725-attention-2026-09-27.md)。
+读者侧判断（覆盖与重要性，#742）的离线重放使用 [eval_news_reader.py](../../scripts/eval_news_reader.py)：
+冻结的逐命题输入与独立标注，默认只评分已记录的回答，`--live` 才调用配置的模型。修改档位文本、指令、
+切点或模型都要重跑并把结果写进 PR。#725 编辑器的有限对照见 [#725 对照报告](../reports/issue-725-attention-2026-09-27.md)。
 
 ### 选择：哪些命题需要通知
 
