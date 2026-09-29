@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from ..bus import DeferError, TransientError
@@ -91,26 +91,17 @@ class PgNewsStore:
         if not documents:
             return None
         extraction = documents.get("extraction")
-        understanding = documents.get("understanding")
         return SemanticCheckpoint(
-            work_id=work_id,
-            extraction=None if extraction is None else Extraction.model_validate(extraction),
-            understanding=None if understanding is None else Extraction.model_validate(understanding),
+            work_id=work_id, extraction=None if extraction is None else Extraction.model_validate(extraction)
         )
 
     async def save_extraction(self, work_id: str, extracted: Extraction) -> Extraction:
-        return await self._save_stage(work_id, "extraction", extracted)
-
-    async def save_understanding(self, work_id: str, understood: Extraction) -> Extraction:
-        return await self._save_stage(work_id, "understanding", understood)
-
-    async def _save_stage(self, work_id: str, stage: str, value: Extraction) -> Extraction:
-        document = value.model_dump_json()
+        document = extracted.model_dump_json()
         now_ms = self.clock()
         stored = await self.db.tx(
             "news_update_save_checkpoint",
             lambda repos: repos.news.insert_semantic_checkpoint(
-                work_id=work_id, stage=stage, document_json=document, now_ms=now_ms
+                work_id=work_id, stage="extraction", document_json=document, now_ms=now_ms
             ),
         )
         return Extraction.model_validate(stored)
@@ -574,16 +565,20 @@ class PgJudgmentCache:
         self.db = db
         self.clock = clock
 
-    async def get(self, key: str) -> Answer | None:
-        answer = await self.db.read("news_judgment_cache_get", lambda repos: repos.news.judgment_cache_answer(key))
-        return None if answer is None else Answer.model_validate(answer)
+    async def get_many(self, keys: tuple[str, ...]) -> dict[str, Answer]:
+        if not keys:
+            return {}
+        rows = await self.db.read("news_judgment_cache_get", lambda repos: repos.news.judgment_cache_answers(keys))
+        return {key: Answer.model_validate(answer) for key, answer in rows.items()}
 
-    async def put(self, key: str, answer: Answer) -> None:
-        answer_json = answer.model_dump_json()
+    async def put_many(self, answers: Mapping[str, Answer]) -> None:
+        if not answers:
+            return
+        documents = {key: answer.model_dump_json() for key, answer in answers.items()}
         now_ms = self.clock()
         await self.db.tx(
             "news_judgment_cache_put",
-            lambda repos: repos.news.put_judgment_cache_answer(cache_key=key, answer_json=answer_json, now_ms=now_ms),
+            lambda repos: repos.news.put_judgment_cache_answers(answers=documents, now_ms=now_ms),
         )
 
 

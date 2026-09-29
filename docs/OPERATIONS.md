@@ -80,9 +80,9 @@ docker compose exec -T workers tracefold news why EVENT_ID
 
 结合 Event 详情读取这些身份：**来源修订、wanted / done 输入版本、语义 owner / lease / attempt、当前 content revision、通知工作、intent 与发送账本**。不要只凭 UI 上一个“失败”标签选重试命令。
 
-生成错误区分 `news_generation_output_truncated`、`news_generation_output_empty`、`news_generation_output_schema_invalid`。配置了请求契约具有实质差异的 fallback 时，允许一次替代回答；否则显式失败，不重复同一请求消耗全部预算。引用与配置错误立即失败；provider 限流、超时、服务端或传输错误保留有界恢复。先修正具体输出 / 配置原因，再决定是否精确恢复。
+生成错误区分 `news_generation_output_truncated`、`news_generation_output_empty`、`news_generation_output_schema_invalid`。配置了请求契约具有实质差异的 fallback 时（模型、端点或输出上限不同；抽取 fallback 的输出上限更大），允许一次替代回答；否则显式失败，不重复同一请求消耗全部预算。命题逐条校验：一条命题引文不在来源中或结构无效，只丢弃这一条（原因记在观察的 `discarded_claims`），其余照常采纳；所有命题都不可用才算失败。配置错误立即失败；provider 限流、超时、服务端或传输错误保留有界恢复，错误码保留 LM 错误类型（如 `news_generation_lm_timeout_error`）。先修正具体输出 / 配置原因，再决定是否精确恢复。
 
-状态接口将可领取、等待调度、有效租约和耗尽失败分别记录为 `semantic_pending`、`semantic_deferred`、`semantic_in_progress`、`semantic_failed_exhausted`，不要把最后一类解释成即将自动运行的积压。
+状态接口将可领取、等待调度、有效租约和已失败分别记录为 `semantic_pending`、`semantic_deferred`、`semantic_in_progress`、`semantic_failed_exhausted`，不要把最后一类解释成即将自动运行的积压：它计入当前仍失败、等待新证据或人工恢复的修订，只要大于 0，模型健康就至少为 warn。失败行保留真实尝试次数，一次性的契约错误显示 `attempts=1`。
 
 ### 语义失败
 
@@ -94,9 +94,11 @@ docker compose exec -T workers tracefold news retry-work \
 
 只恢复对应失败工作版本，保留事实、检查点和发送回执。不是更换模型后的全库重跑，也不续期原始来源。最终尝试仍持有有效 lease 时，不能把它当作已经耗尽并手工抢占。
 
-### 已完成工作确认漏范围
+以失败结束的修订（含 Janitor 结算的崩溃最终尝试）会把该次尝试实际送入的任务范围记为隔离（`failed_read_refs`，尝试所读范围在领取时记入 `attempt_read_refs`）：之后该 Event 的新成员只读新材料，不再被同一份坏材料拖累。`retry-work --kind semantic` 清空隔离、重新送入全部隔离材料；只想重读其中一段时，用下节的 `news reanalyze` 按精确修订指定该 `read_ref`。构建冻结输入本身失败（来源缺失、重读范围已变、head 无法解码）只让该 Event 的工作失败，错误码可见，不再让语义消费者故障。
 
-先从 Event 详情或 `news why EVENT_ID` 取得当前 wanted/head，再用 `tracefold news reanalyze --event EVENT_ID --wanted WANTED_REVISION --head HEAD_REVISION` 预览 wanted/done、head 和各来源任务 `read_ref` 清单。没有 head 时 `--head none`。核对原文与确切漏读范围后，用清单中的 wanted、head、read 值提交定向处理修订：
+### 已完成或已失败工作的定向重读
+
+先从 Event 详情或 `news why EVENT_ID` 取得当前 wanted/head，再用 `tracefold news reanalyze --event EVENT_ID --wanted WANTED_REVISION --head HEAD_REVISION` 预览 wanted/done、是否失败及错误码、head 和各来源任务 `read_ref` 清单（`completed` 为已处理，`failed` 为已隔离）。没有 head 时 `--head none`。目标修订必须已完成或已失败。核对原文与确切漏读范围后，用清单中的 wanted、head、read 值提交定向处理修订：
 
 ```bash
 tracefold news reanalyze --event EVENT_ID --wanted WANTED_REVISION \

@@ -117,10 +117,9 @@ class NewsAgent:
         if extracted is None:
             extracted = await self.analyzer.extract(source, budget)
             extracted = await self.store.save_extraction(work_id, extracted)
-        understood = None if saved is None else saved.understanding
-        if understood is None:
-            understood = await self.analyzer.understand(source, extracted, budget, final_attempt=final_attempt)
-            understood = await self.store.save_understanding(work_id, understood)
+        # Understanding is derived again on every attempt against the priors supplied now; each answer it
+        # needs is cached by content, so a retry asks only what changed or failed.
+        understood = await self.analyzer.understand(source, extracted, budget, final_attempt=final_attempt)
 
         completed_at_ms = self.clock()
         # Persisted checkpoints/cache retain successful work if these retries are exhausted.
@@ -132,11 +131,11 @@ class NewsAgent:
                 await self.store.save_observation(observation)
                 await self.store.finish_semantic_work(work_id, lease=lease, reason="newer_head_already_adopted")
                 return "newer_head"
-            head_refs = set() if head is None else {claim.ref for claim in head.claims}
+            head_refs = set() if head is None else {claim.ref for claim in head.current_claims}
             prior_refs = {row.claim.ref for row in source.prior}
             if head is not None and head_refs - prior_refs:
                 priors = {row.claim.ref: row for row in source.prior}
-                for claim in head.claims:
+                for claim in head.current_claims:
                     priors[claim.ref] = PriorClaim(
                         event_id=head.event_id, content_revision=head.content_revision, claim=claim
                     )

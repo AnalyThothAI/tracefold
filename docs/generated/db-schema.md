@@ -761,6 +761,8 @@
 | `reanalysis_read_ref` | `TEXT` | True | `None` |
 | `reanalysis_reason` | `TEXT` | True | `None` |
 | `reanalysis_head_ref` | `TEXT` | True | `None` |
+| `failed_read_refs` | `ARRAY` | False | `'{}'::text[]` |
+| `attempt_read_refs` | `ARRAY` | False | `'{}'::text[]` |
 
 ## `news_symbol_aliases`
 

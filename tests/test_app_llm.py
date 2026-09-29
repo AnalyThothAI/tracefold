@@ -292,8 +292,14 @@ def test_extraction_and_judgment_share_the_triage_route_and_cards_use_the_reader
     assert models.card.fallback is models.extraction.fallback
     extraction = models.extraction.lms()
     assert [lm.model for lm in extraction] == ["openai/triage-model", "openai/fb-model"]
-    assert all(lm.kwargs["max_tokens"] == learning_runtime.EXTRACTION_MAX_TOKENS for lm in extraction)
+    # #742 S2: the fallback answers a truncated extraction with a larger ceiling, so it is a different request.
+    assert [lm.kwargs["max_tokens"] for lm in extraction] == [
+        learning_runtime.EXTRACTION_MAX_TOKENS,
+        learning_runtime.EXTRACTION_FALLBACK_MAX_TOKENS,
+    ]
+    assert learning_runtime.EXTRACTION_FALLBACK_MAX_TOKENS > learning_runtime.EXTRACTION_MAX_TOKENS
     assert all(lm.num_retries == 0 and lm.cache is False for lm in extraction)
+    assert [lm.kwargs["max_tokens"] for lm in models.judgment.lms()] == [learning_runtime.JUDGMENT_MAX_TOKENS] * 2
     assert [lm.kwargs["max_tokens"] for lm in models.card.lms()] == [learning_runtime.CARD_MAX_TOKENS] * 2
     assert models.news_judgment is None
     assert models.status()["judgment_backend"] == "generated"

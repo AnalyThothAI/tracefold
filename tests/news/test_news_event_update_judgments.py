@@ -161,9 +161,9 @@ def test_native_operation_timeout_never_extends_the_shared_stage_deadline() -> N
         )
         with pytest.raises(TimeoutError):
             await judgments.judge("coverage", questions(3), Budget.start(0.15))
-        # The second batch was cut at the stage deadline, not at its own 5 s limit, and an expired
-        # stage has no generated fallback.
-        assert len(native.calls) == 2
+        # The batches run together; the slow one was cut at the stage deadline, not at its own 5 s limit,
+        # and an expired stage has no generated fallback.
+        assert len(native.calls) == 3
         assert generated.calls == []
 
     asyncio.run(run())
@@ -446,3 +446,76 @@ def test_unknown_mode_clarification_does_not_rejudge_other_fused_fields():
         assert {call[0] for call in native.calls} == {"support"}
 
     asyncio.run(run())
+
+
+# ------------------------------------------------------------------ #742 W7 / S8: batches and labels
+
+
+class Scripted:
+    """Answers per batch number: a value, an exception, or a malformed batch; records concurrency."""
+
+    identity = "scripted"
+
+    def __init__(self, script: dict[int, Any], default: str = "unrelated") -> None:
+        self.script = script
+        self.default = default
+        self.calls = 0
+        self.active = 0
+        self.peak = 0
+
+    async def judge(self, task: Task, items: tuple[Question, ...], *, context_json: str | None) -> BatchResult:
+        self.calls += 1
+        number = self.calls
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        try:
+            await asyncio.sleep(0.02)
+            outcome = self.script.get(number, self.default)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            if outcome == "missing":
+                return BatchResult(answers=())
+            return BatchResult(answers=tuple(Answer(item_id=i.item_id, value=outcome, backend="s") for i in items))
+        finally:
+            self.active -= 1
+
+
+def test_batches_run_bounded_in_parallel_and_one_failed_batch_leaves_only_its_items_unavailable() -> None:
+    async def run() -> None:
+        backend = Scripted({2: "missing"})
+        cache = MemoryCache()
+        judgments = NewsJudgments(generated=backend, cache=cache, batch_size=2, parallel_batches=2)
+        answers = await judgments.judge("relation", questions(8), Budget.start(5))
+        assert backend.peak == 2
+        unavailable = [answer.item_id for answer in answers if answer.status == "unavailable"]
+        assert len(unavailable) == 2
+        assert {answer.error_code for answer in answers if answer.status == "unavailable"} == {
+            "news_judgment_missing_or_duplicate_answer"
+        }
+        # One read for the whole question set, one write per answered batch; the failed batch caches nothing.
+        assert len(cache.reads) == 1 and len(cache.writes) == 3
+        assert set(cache.values) and all(answer.value == "unrelated" for answer in cache.values.values())
+        again = await judgments.judge("relation", questions(8), Budget.start(5))
+        assert backend.calls == 5  # only the failed batch is asked again
+        assert all(answer.status == "available" for answer in again)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(("label", "value"), [("Unrelated", "unrelated"), (" real-world change ", "real_world_change")])
+def test_an_option_label_is_read_after_case_and_separator_normalization(label: str, value: str) -> None:
+    answers = asyncio.run(
+        NewsJudgments(generated=Backend(label), cache=MemoryCache()).judge("relation", questions(1), Budget.start(5))
+    )
+    assert (answers[0].status, answers[0].value) == ("available", value)
+
+
+def test_an_unknown_option_leaves_only_that_item_unresolved_and_is_not_cached() -> None:
+    cache = MemoryCache()
+    answers = asyncio.run(
+        NewsJudgments(generated=Backend("maybe"), cache=cache).judge("relation", questions(2), Budget.start(5))
+    )
+    assert {(row.status, row.value, row.error_code) for row in answers} == {
+        ("unavailable", None, "news_judgment_option_invalid")
+    }
+    assert cache.values == {}
