@@ -38,7 +38,7 @@ PIT 基线按同 trigger_kind × side 取前 14 天已到期、且当时已落�
 
 `trading.analysis.program` 用 JSON 路径和 SHA256 钉住一个 `dspy.Predict(ForecastSignature)` 工件；工件不含 LM、endpoint 或密钥。`trading.analysis.model_name` 必须显式设置，并由独立 Analysis 进程调用配置的 LLM endpoint，不从 News triage 猜模型。工件缺失或 sha 不符时状态为 `faulted`，不静默换用别的程序。
 
-Assessor 一次输出两侧三类概率与最多 12 条证据驱动，Pydantic 校验概率和结构。未知证据别名被丢弃并记入 notes。失败分 `parse`、`truncated`、`schema`、`provider`、`timeout`、`rate_limit`；只有暂态错误在同一截止内重试。模型用量随 assessment 入库。
+Assessor 一次输出两侧三类概率与最多 12 条证据驱动，Pydantic 校验概率和结构。未知证据别名被丢弃并记入 notes。失败分 `parse`、`truncated`、`schema`、`provider`、`timeout`、`rate_limit`；只有暂态错误在同一截止内重试。模型调用的截止时间从获得并发槽位后起算，排队等待不消耗 provider 超时预算。模型用量随 assessment 入库。
 
 每个 Case 都保存 `forecast`、`always_long`、`always_short`、`abstain`、`momentum15m`、`fade15m` 六个动作。ForecastPolicy 以恒等校准器计算扣除双边 taker 5 bps 与 LIVE 半点差后的期望 R；阈值以下 abstain。`active_policy` 指定唯一 live policy，默认 `forecast`；`publish_signals` 默认 false。发布前检查执行器心跳、DEMO 合约上市、来源更正 / 替代和根到期，结果作为 `publish_status` 持久保存。Signal v4 仍由 DEMO executor 独立做账户与行情准入；发布不等于受理或成交。
 
