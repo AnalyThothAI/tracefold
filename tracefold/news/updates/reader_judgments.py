@@ -4,9 +4,9 @@ Novelty is code: the persisted semantic links between claims, crossed with the c
 carry (`reader_novelty`). The model answers two questions in one request over one frozen `ReaderInput`: which
 already pushed message reported the claim's core fact (the anchor: the fallback where no link exists, and the
 message an increment is written against), and how strongly what the claim adds beyond those messages deserves
-an interrupting push. The same input is what production asks, what the judgment cache is keyed by and what the
-offline replay (`scripts/eval_news_reader.py`) re-asks. Cuts, the anchor threshold and the rule order are
-code, and every cut belongs to the backend whose answers it was measured on.
+an interrupting push. The same input is what production asks and what the judgment cache is keyed by. Cuts,
+the anchor threshold and the rule order are code, and every cut belongs to the backend whose answers it was
+measured on; the offline replay (`scripts/eval_news_reader.py`) scores them over archived recorded answers.
 """
 
 from __future__ import annotations
@@ -20,13 +20,13 @@ from typing import Any, Final, Literal, Protocol
 from pydantic import Field, model_validator
 
 from ..taxonomy import SourceAuthority
-from .contracts import ChangeKind, Claim, ClaimFields, EventUpdate, Exact, Relation, Source
+from .contracts import Claim, ClaimFields, EventUpdate, Exact, Relation, Source
 from .identity import digest, identity
 from .judgment import Answer, Budget, JudgmentCache
 from .topics import CODEBOOK
 
-READER_INPUT_VERSION: Final = "news_reader_input_v1"
-# Linked receipts first, then the recall; the input never grows past 16 messages.
+READER_INPUT_VERSION: Final = "news_reader_input_v2"
+# Linked receipts first, then the claim's recall; the input never grows past 16 messages.
 READER_MESSAGES_MAX: Final = 16
 # Citation quotes are exact spans and are usually short; the cap only bounds one pathological span.
 READER_QUOTE_CHARS_MAX: Final = 600
@@ -34,7 +34,8 @@ NONE: Final = "none"
 
 # Appendix B of #742, with "already pushed" moved to the links and the anchor question: the score judges what
 # the claim adds beyond the messages. The level texts exist once, here; changing any of them, the
-# instructions, a cut or a model requires the replay in scripts/eval_news_reader.py and its numbers in the PR.
+# instructions or a model requires asking the judge again on current inputs, and a cut the recorded replay in
+# scripts/eval_news_reader.py; the numbers go in the PR.
 READER_INSTRUCTIONS: Final = (
     "You judge one adopted news claim for a professional trader of crypto assets, US and Hong Kong equities, "
     "and global macro instruments (rates, FX, commodities, monetary policy). Every claim is already stored in "
@@ -150,14 +151,13 @@ class ReaderClaim(Exact):
 class ReaderInput(Exact):
     """Everything one reader judgment sees about one claim, and nothing time-relative.
 
-    `messages` are the bodies of sent receipts: those a semantic link reaches first, then the recall. Answers
+    `messages` are the bodies of selected sent receipts for this claim. Answers
     name them by position (m1..mN), so the caller maps an answer back to its own receipts; receipt identities
     are not model input.
     """
 
-    schema_version: Literal["news_reader_input_v1"] = READER_INPUT_VERSION
+    schema_version: Literal["news_reader_input_v2"] = READER_INPUT_VERSION
     claim: ReaderClaim
-    change: ChangeKind | None = None
     sources: tuple[ReaderSource, ...] = Field(min_length=1)
     messages: tuple[str, ...] = Field(default=(), max_length=READER_MESSAGES_MAX)
 
@@ -171,7 +171,6 @@ class ReaderInput(Exact):
                 fields=claim.fields,
                 topics=tuple(topics.get(topic, topic) for topic in claim.topics),
             ),
-            change=next((change.kind for change in update.changes if change.current_ref == claim.ref), None),
             sources=tuple(
                 ReaderSource(
                     publisher=source.publisher_id,
@@ -197,8 +196,6 @@ class ReaderInput(Exact):
         claim.update(_present(self.claim.fields.model_dump(mode="json"), ()))
         if self.claim.topics:
             claim["topics"] = list(self.claim.topics)
-        if self.change is not None:
-            claim["change"] = self.change
         claim["sources"] = [_present(source.model_dump(mode="json"), ("unknown",)) for source in self.sources]
         inputs: dict[str, Any] = {"claim": claim}
         if self.messages:

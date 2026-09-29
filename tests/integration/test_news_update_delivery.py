@@ -571,9 +571,9 @@ def test_two_deliverers_on_one_event_send_one_card() -> None:
 
 
 def _unrelated_copper(source: FrozenInput) -> Extraction:
-    """A claim sharing no word, subject or claim ref with the steel tariff: not a receipt it was told."""
+    """A claim sharing no word, subject, asset or claim ref with the steel tariff."""
 
-    base = _claim(source.evidence[0], "a")
+    base = _claim(source.evidence[0], "a", symbol="COPPER")
     fields = base.fields.model_copy(update={"subject": "Miner", "action": "halts pit", "object": "Chile"})
     return Extraction(claims=(base.model_copy(update={"fields": fields}),))
 

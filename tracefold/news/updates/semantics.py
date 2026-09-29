@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -25,6 +27,7 @@ from .contracts import (
     KnowledgeGap,
     Phase,
     PriorClaim,
+    Quantity,
     RelationDraft,
     SupportDraft,
     content_material,
@@ -79,42 +82,95 @@ def _known_identity(current: DraftClaim, hints: tuple[IdentityHint, ...]) -> tup
     )
 
 
-def equivalent_is_possible(current: DraftClaim, previous: Claim, hints: tuple[IdentityHint, ...] = ()) -> bool:
-    """Refuse demonstrable numeric/modal mismatches; do not guess entity aliases.
+def _calendar_quarter(value: str | None) -> tuple[int, int] | None:
+    """Only an explicit calendar quarter has a comparable period identity."""
 
-    Missing fields are not evidence of equality or conflict. Free-text subject
-    translations cannot be compared by lowercasing; the relation backend owns that.
+    match = re.fullmatch(r"\s*(?:Q([1-4])\s*([12]\d{3})|([12]\d{3})\s*Q([1-4]))\s*", value or "", re.I)
+    if match is None:
+        return None
+    return (int(match.group(2)), int(match.group(1))) if match.group(1) else (int(match.group(3)), int(match.group(4)))
+
+
+def _absolute_time(value: str | None) -> tuple[str, str] | None:
+    """A date or timezone-aware timestamp of explicit precision, never a relative phrase."""
+
+    if value is None:
+        return None
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        try:
+            return "date", datetime.fromisoformat(value).date().isoformat()
+        except ValueError:
+            return None
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})", value):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return "second", parsed.astimezone(UTC).isoformat()
+
+
+def _comparable_quantities(quantities: tuple[Quantity, ...]) -> dict[tuple[str, str, tuple[int, int] | None], Decimal]:
+    """Values keyed by metric, unit and calendar quarter; a quantity over an unparsed period is not comparable."""
+
+    return {
+        (q.name.strip().casefold(), q.unit.strip().casefold(), _calendar_quarter(q.period)): Decimal(q.value)
+        for q in quantities
+        if q.period is None or _calendar_quarter(q.period) is not None
+    }
+
+
+def proven_mismatches(current: DraftClaim, previous: Claim, hints: tuple[IdentityHint, ...] = ()) -> tuple[str, ...]:
+    """Return only differences established by comparable evidence, never prose inequality.
+
+    An empty result means unknown, not proven equivalent. The same result is sent to the relation
+    model and used to veto an equivalent answer.
     """
+
+    mismatches: list[str] = []
     current_facts: dict[str, set[str]] = {}
     previous_facts: dict[str, set[str]] = {}
     for hint in _known_identity(current, hints):
+        if hint.key not in {"subject_id", "object_id"}:
+            continue
         current_facts.setdefault(hint.key, set()).add(hint.value)
     for hint in previous.known_identity:
+        if hint.key not in {"subject_id", "object_id"}:
+            continue
         previous_facts.setdefault(hint.key, set()).add(hint.value)
-    if any(current_facts[key] != previous_facts[key] for key in current_facts.keys() & previous_facts.keys()):
-        return False
+    mismatches.extend(
+        key
+        for key in current_facts.keys() & previous_facts.keys()
+        if len(current_facts[key]) == len(previous_facts[key]) == 1 and current_facts[key] != previous_facts[key]
+    )
     a = current.fields
     b = previous.fields
     if "unknown" not in {a.polarity, b.polarity} and a.polarity != b.polarity:
-        return False
+        mismatches.append("polarity")
     if "unknown" not in {a.mode, b.mode} and a.mode != b.mode:
-        return False
+        mismatches.append("mode")
     if a.phase not in {None, "unknown"} and b.phase not in {None, "unknown"} and a.phase != b.phase:
-        return False
-    if (
-        a.conditions
-        and b.conditions
-        and {value.casefold().strip() for value in a.conditions} != {value.casefold().strip() for value in b.conditions}
+        mismatches.append("phase")
+    a_quarter = _calendar_quarter(a.statistical_period)
+    b_quarter = _calendar_quarter(b.statistical_period)
+    if a_quarter is not None and b_quarter is not None and a_quarter != b_quarter:
+        mismatches.append("statistical_period")
+    for field in ("occurred_at", "effective_at"):
+        left = _absolute_time(getattr(a, field))
+        right = _absolute_time(getattr(b, field))
+        if left is not None and right is not None and left[0] == right[0] and left != right:
+            mismatches.append(field)
+    # Two numbers are comparable only for the same metric and unit over an aligned period: no period on
+    # either side, or one explicit calendar quarter. Who the numbers belong to is not read from free text
+    # ("Nvidia" and "Nvidia Corp" are one issuer); a proven entity difference is `subject_id`/`object_id`.
+    if (a.statistical_period is None and b.statistical_period is None) or (
+        a_quarter is not None and a_quarter == b_quarter
     ):
-        return False
-    for field in ("statistical_period", "effective_at", "occurred_at"):
-        current_value, previous_value = getattr(a, field), getattr(b, field)
-        if current_value and previous_value and current_value.casefold().strip() != previous_value.casefold().strip():
-            return False
-    # Only compare normalized code values, not language-dependent period prose.
-    qa = {(q.name.casefold(), q.unit.casefold(), q.period): Decimal(q.value) for q in a.quantities}
-    qb = {(q.name.casefold(), q.unit.casefold(), q.period): Decimal(q.value) for q in b.quantities}
-    return all(qa[key] == qb[key] for key in qa.keys() & qb.keys())
+        qa = _comparable_quantities(a.quantities)
+        qb = _comparable_quantities(b.quantities)
+        if any(qa[key] != qb[key] for key in qa.keys() & qb.keys()):
+            mismatches.append("quantity")
+    return tuple(sorted(set(mismatches)))
 
 
 def _claim_material(draft: DraftClaim) -> dict[str, Any]:
@@ -396,9 +452,7 @@ class SemanticAnalyzer:
                 payload = {
                     "current": claim,
                     "previous": prior.claim,
-                    "known_numeric_modal_mismatch": not equivalent_is_possible(
-                        claim, prior.claim, source.identity_hints
-                    ),
+                    "proven_mismatches": proven_mismatches(claim, prior.claim, source.identity_hints),
                 }
                 questions.append(Question(item_id=item_id, payload_json=canonical_json(payload)))
         if not questions:
@@ -467,7 +521,7 @@ def _equivalent_prior(
         row
         for row in relations
         if row.relation == "equivalent"
-        and equivalent_is_possible(draft, previous[row.previous_ref].claim, source.identity_hints)
+        and not proven_mismatches(draft, previous[row.previous_ref].claim, source.identity_hints)
         # Only a real-world transition can prevent reuse. A conflict or correction
         # with another Claim changes the relationship, not this proposition's identity.
         # Repeating B after A keeps B's antecedents; A -> B -> A has a new predecessor.
@@ -484,7 +538,7 @@ def _equivalent_prior(
             if row.relation == "unrelated"
             and previous[row.previous_ref].event_id == source.event_id
             and draft.statement == previous[row.previous_ref].claim.statement
-            and equivalent_is_possible(draft, previous[row.previous_ref].claim, source.identity_hints)
+            and not proven_mismatches(draft, previous[row.previous_ref].claim, source.identity_hints)
             and set(_quantity_key(draft)) <= set(_quantity_key(previous[row.previous_ref].claim))
             and any(
                 current.quote

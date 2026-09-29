@@ -89,8 +89,8 @@ class FaultInjectingDatabase:
         self.seen: list[str] = []
         self._port = WorkerNewsDatabase(self)
 
-    async def read(self, name: str, fn: Any, *, timeout_seconds: float = 3.0) -> Any:
-        return await self._port.read(name, fn, timeout_seconds=timeout_seconds)
+    async def read(self, name: str, fn: Any, *, timeout_seconds: float = 3.0, repeatable_read: bool = False) -> Any:
+        return await self._port.read(name, fn, timeout_seconds=timeout_seconds, repeatable_read=repeatable_read)
 
     async def tx(self, name: str, fn: Any, *, timeout_seconds: float = 3.0) -> Any:
         self.seen.append(name)

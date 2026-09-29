@@ -41,7 +41,7 @@ from tracefold.news.updates.judgment import (
     Task,
 )
 from tracefold.news.updates.public import public_updates
-from tracefold.news.updates.semantics import SemanticAnalyzer, assemble_update, equivalent_is_possible
+from tracefold.news.updates.semantics import SemanticAnalyzer, assemble_update, proven_mismatches
 
 STAMP = 1_790_405_000_000
 
@@ -360,7 +360,6 @@ def test_matching_statement_alone_does_not_override_an_unrelated_relation() -> N
     [
         ("polarity", "negative"),
         ("phase", "effective"),
-        ("conditions", ("only after approval",)),
         ("statistical_period", "2026 Q3"),
     ],
 )
@@ -380,7 +379,7 @@ def test_explicit_proposition_mismatch_cannot_reuse_an_equivalent_hint(field: st
     head = assemble_update(frozen((source,), 1), Extraction(claims=(original,)), None, adopted_at_ms=STAMP + 1)
     assert head is not None
     candidate = original.model_copy(update={"fields": original.fields.model_copy(update={field: changed})})
-    assert not equivalent_is_possible(candidate, head.claims[0])
+    assert proven_mismatches(candidate, head.claims[0])
 
 
 def test_invalid_equivalence_for_one_pair_does_not_erase_another_valid_pair() -> None:

@@ -1,7 +1,8 @@
-"""The reader replay scores recorded answers over frozen inputs; it stays offline unless --live is given.
+"""The reader replay scores recorded answers over archived inputs through the current decision and cuts.
 
-The numbers are the 2026-09-28 replay (#742 PR-2). A change of level text, instruction, cut, novelty rule or
-model is re-run with `scripts/eval_news_reader.py --live` and the recorded answers are replaced with its answers.
+The numbers are the 2026-09-28 replay (#742 PR-2) with the #753 key cut for a known core fact. The inputs are the
+archived `news_reader_input_v1` baseline; #750 did not change `reader_decision` or the cuts, so these pins still
+guard the decision layer. They are never sent to the current judge.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ def fixtures() -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[st
     return load_all()
 
 
-def test_fixtures_are_current_reader_inputs_with_independent_labels(fixtures: Any) -> None:
+def test_fixtures_are_archived_reader_inputs_with_independent_labels(fixtures: Any) -> None:
     replay, anchors, coverage, (nvidia, spacex) = fixtures
     assert len(replay) == 397 and len(anchors) == 300 and len(coverage) == 300
     assert {row["label"]["verdict"] for row in replay} == {"keep", "borderline", "demote"}

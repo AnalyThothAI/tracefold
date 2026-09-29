@@ -92,6 +92,18 @@ def test_worker_session_observes_its_outer_transaction_once() -> None:
     assert [name for name, _seconds in telemetry.transactions] == ["news_janitor"]
 
 
+def test_repeatable_read_snapshot_is_set_before_session_configuration() -> None:
+    conn = _FakeConnection()
+    bundle = WorkerDatabase(worker_pool=_FakePool(conn), telemetry=TelemetryRegistry())
+
+    with bundle.worker_session("news_update_notification_snapshot", repeatable_read=True):
+        pass
+
+    assert len(conn.executed) == 2
+    assert conn.executed[0][0] == "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"
+    assert _combined_config(conn.executed[1])["jit"] == "off"
+
+
 def test_business_database_callbacks_receive_only_their_repository_capabilities() -> None:
     async def scenario() -> None:
         database = _InlineWorkerDatabase()
