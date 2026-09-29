@@ -22,7 +22,7 @@ News 不只是“把标题交给模型打分”。当前编辑型链路以 **来
 | [updates/service.py](../../tracefold/news/updates/service.py) | `NewsAgent` 编排、采用与可选补读；`Notifications` 独立续接 |
 | [semantics.py](../../tracefold/news/updates/semantics.py)、[judgment.py](../../tracefold/news/updates/judgment.py) | 引文校验、命题比较、有限问题、内容组装 |
 | [dspy_backend.py](../../tracefold/news/updates/dspy_backend.py) | DSPy 抽取、中文文案、生成式判断与原生有限选项判断 |
-| [notification.py](../../tracefold/news/updates/notification.py)、[attention.py](../../tracefold/news/updates/attention.py) | 已采用命题的编辑判断、实际正文覆盖、稳定意图与冻结卡片 |
+| [notification.py](../../tracefold/news/updates/notification.py)、[reader_judgments.py](../../tracefold/news/updates/reader_judgments.py) | 逐命题决定表、读者新颖度、锚点与增量重要性判断、稳定意图与冻结卡片 |
 | [event_update_store.py](../../tracefold/news/storage/event_update_store.py)、[event_updates.py](../../tracefold/news/storage/event_updates.py) | 短事务、检查点、不可变更新、head 条件采用、计划和发送账本 |
 | [public.py](../../tracefold/news/updates/public.py) | 从已采用知识生成公开更新，不依赖读者卡片 |
 | [delivery.py](../../tracefold/news/pipeline/delivery.py)、[maintenance.py](../../tracefold/news/pipeline/maintenance.py) | 通知轮询、真实投递、补唤醒与有界保留清理 |
@@ -181,13 +181,13 @@ sequenceDiagram
 | 组织 | 提议影响机制与未解问题 | 验证支持关系；区分事实与条件性推论；延续未被显式改变的知识 |
 | 采用 | 不直接写数据库 | 组装 EventUpdate，保存观察，检查 owner / lease / head 后条件采用 |
 
-当前独立判断任务包括 `relation`、`support`、`coverage`、`next_read`。`coverage` 属于通知续接，而非语义采用的必经审批；并非每条消息都需要全部任务。关系始终逐对判断：#742 曾重放“先分诊、再细判”，在本地生成式模型上无法做到关系召回不降（通知侧读者新颖度依赖 `equivalent` / `adds_information` 链接，Trading 依赖更正与替代），且只省约 5% 调用，因此未采用。
+当前独立判断任务包括 `relation`、`support`、`next_read`，并非每条消息都需要全部任务。通知侧的读者判断不在这张任务表里，修改它不会让语义检查点失效。关系始终逐对判断：
 
 可选原生判断通过 DSPy 的有限输出类型连接 Jev / System One。未配置该后端时使用生成式判断；已成功缓存的答案不再找另一个模型投票。一组问题的缓存读取是一条 SQL，每个批次的写入是一条 SQL；批次有界并行（至多 3 个），一个批次响应不可用只让它自己的问题不可得，不连累其他批次或整个修订。选项标签按大小写与分隔符规范化，无法识别的标签只让该条不可得。失败回退、批次与缓存身份由 [judgment.py](../../tracefold/news/updates/judgment.py)及 [DSPy 适配](../../tracefold/news/updates/dspy_backend.py)控制。
 
 ### 模型到底调用几次，为什么有延时
 
-**不是固定三个 DSPy 节点，也不是一个 Event 只调用一次模型。** 一次语义尝试可能包含抽取、多个关系判断批次、缓存命中、回退，以及采用冲突后的缺失关系补算。Jev 抽取同时给出 mode、phase、content_kind 和每条命题的主题，不再对同一输入重复执行原生分类。通知阶段先比较实际已发正文覆盖，再对剩余普通命题进行一次 AttentionAssessor 判断；若有命题选中，再生成中文卡片。
+**不是固定三个 DSPy 节点，也不是一个 Event 只调用一次模型。** 一次语义尝试可能包含抽取、多个关系判断批次、缓存命中、回退，以及采用冲突后的缺失关系补算。Jev 抽取同时给出 mode、phase、content_kind 和每条命题的主题，不再对同一输入重复执行原生分类。通知阶段先按持久化的命题链接判断读者新颖度，再对规则未决定的每条命题发一次读者判断（锚点 + 增量重要性）；若有命题选中，再生成中文卡片。
 
 | 预算 | 当前代码值 | 解释 |
 | --- | --- | --- |
@@ -265,29 +265,34 @@ stateDiagram-v2
 <a id="section-什么决定一条新闻是否推送"></a>
 ## 06 · 什么决定一条新闻是否推送
 
-决定者是 **`NotificationPlanner.plan`**，输入是已采用 EventUpdate、读者观察名单、实际已发送正文及未决发送状态。它为**每条 Claim**给出 `notify` / `not_notified` / `deferred` 与具名原因，不输出一个隐含的全局“重要性分数”。有效且未覆盖的普通命题交给单次 AttentionAssessor，按[编辑简报](../../tracefold/news/updates/editorial_brief.txt)分别给出 `notify`、`key` 或 `feed_only`。
+决定者是 **`NotificationPlanner.plan`** 调用的纯函数 **`decide()`**，输入是已采用 EventUpdate、持久化的命题链接、读者实际收到的回执及未决发送状态。它为**每条 Claim**按固定顺序给出 `notify` / `not_notified` / `deferred` 与具名原因；模型只提供分布，切点、规则顺序和重点都在代码里。
 
-| 判断顺序与情况 | 当前行为 |
-| --- | --- |
-| 命题已退休、替代或被跨 Event 修订失效 | `retired`，不通知 |
-| 主要资产命中读者观察名单 | 告知编辑判断以提高相关性；不能单独强制通知 |
-| 评论、推广、预测、日程或数字 | 由编辑判断具体信息量；不能用固定类型或评分门槛代替 |
-| 大幅市场变化例外 | 商品或指数主要资产的结构化百分比达到 5% 例外；不是所有个股涨 5% 都推送 |
-| 来源过期 | 默认超过首次可用时间 12 小时不通知；明确 correction / conflict 有例外，不给交易来源续期 |
-| 本 Event 的发送结果不明（`ambiguous`） | `send_outcome_ambiguous`，按可能已送达处理：不重发，也不阻塞其他命题 |
-| 本 Event 的发送仍在进行（`sending`） | `send_outcome_unresolved`，暂缓相关命题；等待不计尝试 |
-| 实际已发送正文完整覆盖 | `covered_by_sent_receipt`，不重复通知；部分覆盖不等于完整覆盖 |
-| 尚未被上述规则排除 | 编辑逐命题选择；本地调用不可用时具名记录并默认普通通知 |
+| 顺序 | 情况 | 原因与行为 |
+| --- | --- | --- |
+| 1 | 命题已退休、替代或被跨 Event 修订失效 | `retired`，不通知 |
+| 2 | 本 Event 的发送仍在进行（`sending`） | `send_outcome_unresolved`，暂缓；等待不计尝试 |
+| 3 | 本 Event 的发送结果不明（`ambiguous`） | `send_outcome_ambiguous`，按可能已送达处理：不重发，也不阻塞其他命题 |
+| 4 | 首次可见超过 3 小时（已送内容的更正 12 小时） | `stale_source`，不通知 |
+| 5 | 新颖度 known：链接到读者已收到的命题（等价，或已送命题是更全 / 更新的版本） | `known_to_reader`，不通知 |
+| 6 | 新颖度 in_flight：链接到的命题正在发送 | `linked_send_in_flight`，暂缓 |
+| 7 | 更正已送命题（`corrects`，且本命题首次可见晚于那次送达） | `correction_of_sent`，推送，卡片注明更正此前哪条 |
+| 8 | 上币公告 | `protected_listing`，推送 |
+| 9 | 商品 / 指数的当日价格变动（`level_crossed`、数量是变动而非水平、周期为当日）≥ 5% | `large_daily_move`，推送 |
+| 10 | 其余命题：一次读者判断，按作答后端的切点 | 增量重要性 ≥ KEY_CUT 为 `reader_key`（推送并标重点）；≥ PUSH_CUT 为 `reader_push`；否则 `reader_feed` 只进信息流 |
+| 11 | 读者判断暂不可得 | `reader_unavailable` 暂缓；采纳 10 分钟后仍不可得记为 `reader_unassessed`，不推送 |
 
-更正保留来源时效例外；上币公告与商品/指数至少 5% 的结构化日变化保留保护分支。准确规则顺序与例外以 [notification.py](../../tracefold/news/updates/notification.py)为准。
+**读者新颖度**是纯代码：采纳事务把每个修订 `changes` 里带 `previous_ref` 的比较写入只追加的 `news_claim_links`；通知快照在短事务里从两端读取链接（至多两跳，两跳须经过 `equivalent`），与已送 / 结果不明 / 发送中回执的 `claim_refs` 求交，得到 known / increment / development / in_flight / unlinked。同一对命题以最新一次断言为准，某个修订不再提及不算撤回；因此链接不会因后续修订的 head 不再重复而丢失。
 
-控制台显示逐命题判断原因；原因后面的 `×N` 统计具有该原因的命题数，不是报道数。
+**读者判断**是一次请求两道题（[reader_judgments.py](../../tracefold/news/updates/reader_judgments.py)），共享同一份冻结 `ReaderInput`：命题字段与可读主题、变化类型、来源，以及链接到的已送消息在前、按召回补足的至多 16 条已送正文。
 
-`key` 是编辑判断的重点展示标记，不是另一轮发送审批或仓位权重。
+- 锚点题（`Choice` m1…mN / none）：哪条已送消息已经报过本命题的核心事实（同一主体、动作、对象，允许本命题多出细节）。它只决定卡片是否按“补充”写、记录引用哪条，不决定推不推。
+- 增量重要性题（5 档 `Score`）：本命题相对已送消息新增的信息值不值得打断；没有已送消息时评价命题本身。完全重复自然落在低档。
 
-读者侧判断（覆盖与重要性，#742）的离线重放使用 [eval_news_reader.py](../../scripts/eval_news_reader.py)：
-冻结的逐命题输入与独立标注，默认只评分已记录的回答，`--live` 才调用配置的模型。修改档位文本、指令、
-切点或模型都要重跑并把结果写进 PR。#725 编辑器的有限对照见 [#725 对照报告](../reports/issue-725-attention-2026-09-27.md)。
+原生判断走通知决策层独用的 `llm.news_reader_judgment`（System One）；不可用或超时则同一签名一次回退到生成式 News 路由，两者切点分别测定。答案按“判断器身份 + 冻结输入摘要”写入 `news_judgment_cache`，兄弟命题变化或 CAS 失败都不重问；不可用的答案不缓存。
+
+每条决定记录新颖度、所用链接或锚点回执、渲染方式（完整 / 补充 / 更正）、分值分布与作答后端；控制台显示模板化原因，原因后面的 `×N` 统计具有该原因的命题数，不是报道数。`key` 是重点展示标记，不是另一轮发送审批或仓位权重。`editorial_v1` 历史决定按旧原因显示表只读展示。
+
+离线重放使用 [eval_news_reader.py](../../scripts/eval_news_reader.py)：冻结的逐命题输入、链接与回执、独立标注，默认只评分已记录的回答，`--live` 才调用配置的读者判断。修改档位文本、指令、切点、新颖度规则或模型都要重跑并把结果写进 PR。#725 编辑器的有限对照见 [#725 对照报告](../reports/issue-725-attention-2026-09-27.md)。
 
 ### 选择：哪些命题需要通知
 
@@ -302,12 +307,12 @@ config:
 ---
 flowchart TB
     accTitle: 逐命题通知选择
-    accDescr: 逐命题检查后，未决重叠发送暂缓，其余命题比较实际 sent 正文覆盖并由编辑判断；产物是具名不通知或明确选中集合。
-    Snapshot["已采用知识 + 读者快照"] --> Rules["逐命题内容、时效、失效检查"]
-    Rules --> Overlap{"重叠发送未决？"}
+    accDescr: 逐命题检查后，未决发送暂缓；命题链接给出读者新颖度；其余命题一次读者判断得到锚点与增量重要性，由代码切点决定；产物是具名不通知或明确选中集合。
+    Snapshot["已采用知识 + 读者快照<br/>命题链接与相关回执"] --> Rules["失效、发送中、结果不明、时效"]
+    Rules --> Overlap{"发送未决？"}
     Overlap -->|是| Defer["暂缓相关命题"]
-    Overlap -->|否| Coverage["比较实际 sent 正文覆盖"]
-    Coverage --> Editor["普通命题一次编辑判断"]
+    Overlap -->|否| Coverage["读者新颖度<br/>known / in_flight / 更正"]
+    Coverage --> Editor["一次读者判断<br/>锚点 + 增量重要性 → 切点"]
     Editor --> Select{"有待通知命题？"}
     Select -->|否| Hold["具名不通知原因"]
     Select -->|是| Selected["选中命题与计划身份"]
@@ -358,17 +363,17 @@ class Ledger store;
 
 ### 正文、回执与重试
 
-CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精确引用和最少来源身份，而非完整来源全文或整个知识文档。中文表达必须保留对象、动作、数量、归因与阶段；标题压缩也不能把“宣称”写成“核实”、把“宣布”写成“已经实施”。冻结卡片仍检查 refs 与形状；约束和脚本回归不证明真实模型每次都翻译正确。
+CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精确引用和最少来源身份，而非完整来源全文或整个知识文档；按“补充”或“更正”渲染的命题另带读者已收到的那条消息正文，文案只写新增部分并以“补充：”开头，或以“更正：”注明更正此前哪条。中文表达必须保留对象、动作、数量、归因与阶段；标题压缩也不能把“宣称”写成“核实”、把“宣布”写成“已经实施”。冻结卡片仍检查 refs 与形状；约束和脚本回归不证明真实模型每次都翻译正确。
 
-“选中了某条 Claim”不证明卡片正文完整表达了它。后续覆盖判断读的是当前 `update` 回执的**实际发送正文**，不是来源全文、计划选择集合或某个抽象“已推送 Event”标记；发送正文与摘要必须来自可核验的冻结卡片。
+“选中了某条 Claim”不证明卡片正文完整表达了它。后续读者判断读的是 `update` 回执的**实际发送正文**，不是来源全文、计划选择集合或某个抽象“已推送 Event”标记；发送正文与摘要必须来自可核验的冻结卡片。
 
-计划采用和发送前会在 Event 锁下核对 head 与 reader revision。reader revision 只摘要**本 Event 的相关回执**（本 Event 已送、与命题 ref 或前序 ref 相连、以及按文本相似召回的已送回执，各取 intent 与状态），加上本 Event 发送中 / 结果不明的命题、跨 Event 失效命题和观察名单；快照读到自身时间戳为止，两次 CAS 在短事务里读已结算的全部。无关 Event 的发送不再使计划或就绪卡片失效，相关的新发送必定使其失效。判断先于 reader 检查写入不可变决策，输家计划的编辑判断下一轮直接复用；与上一轮完全相同的计划就是同一决策行，不追加记录。重新租约时 intent 改绑当前决策。
+计划采用和发送前会在 Event 锁下核对 head 与 reader revision。reader revision 只摘要**本 Event 的相关回执**（本 Event 已送、按文本相似召回的已送回执，以及命题链接两跳内可达命题的已送 / 结果不明 / 发送中回执，各取 intent 与状态），加上这些命题链接、本 Event 发送中 / 结果不明的命题、跨 Event 失效命题和观察名单；快照读到自身时间戳为止，两次 CAS 在短事务里读已结算的全部。无关 Event 的发送不再使计划或就绪卡片失效，相关的新发送必定使其失效。判断先于 reader 检查写入不可变决策与判断缓存，输家计划的读者判断下一轮直接复用；与上一轮完全相同的计划就是同一决策行，不追加记录。重新租约时 intent 改绑当前决策。
 
 正文冻结后不因后台新材料到来而改写已开始的发送。适配器区分 `sent`、`not_sent`、`ambiguous`；目标预检只读，任何预检失败都是可重试的 `not_sent`，且不经过 `sending` 行；未进入提交边界的准入超时同样是 `not_sent`。只有已证明未发送且可重试的结果才按原意图重试。已知结果的结算使用同一结果重试，队列或账本保留 lease 与结果身份，即使发送回执后续补充也可验证重复结算；旧 lease 的迟到结果不能结算下一次发送。结果不明不能伪装成功，也不能直接再发一份。
 
 通知准备保持有界并持续补位，最终发送由单个结算者串行执行。一个 Event 的准备失败（包括数据库暂时无法应答）只影响该 Event，不会取消另一个 Event 正在进行的发送；发送由自身持有到结算。停机时不再接新准备，已在途的发送有界等待结算后再退出，就绪但未发送的 intent 释放。进程启动时以及运行期间每 30 秒，把超过 60 秒且无本进程所有者的 `sending` 行对账为 `ambiguous`，并完成它所属的计划。
 
-每次判断保存不可变决策输入与逐命题结果，通知工作和 intent 引用该决策。决策的 `plan` 同时记录比对过的已送回执（`compared_receipts`：intent 与正文摘要）和计时（`timings`：到期、开始、快照 / 覆盖判断 / 编辑判断耗时、完成时间），决策行 `created_at_ms` 即写入时间；发送账本的 `history_context.timings` 记录卡片开始 / 结束、就绪时间与等待发送时隙的时长。采纳 → 决定 → 发送的各段耗时因此可直接用 SQL 从库中取数。编辑评估按实际候选、来源、watchlist 和编辑器身份复用；文案按选中命题的完整表达材料和文案器身份复用；最终计划仍按当前 reader/head 重新检查。模型不可用的默认通知会记录状态和错误码，不将数据库、配置或外层期限故障伪装成编辑判断。
+每次判断保存不可变决策输入与逐命题结果，通知工作和 intent 引用该决策。决策的 `plan` 同时记录比对过的已送回执（`compared_receipts`：intent 与正文摘要）和计时（`timings`：到期、开始、快照 / 读者判断耗时、完成时间），决策行 `created_at_ms` 即写入时间；发送账本的 `history_context.timings` 记录卡片开始 / 结束、就绪时间与等待发送时隙的时长。采纳 → 决定 → 发送的各段耗时因此可直接用 SQL 从库中取数。读者判断按冻结输入与判断器身份逐命题复用；文案按选中命题的完整表达材料（含“补充 / 更正”对照正文）和文案器身份复用；最终计划仍按当前 reader/head 重新检查。读者判断不可用时暂缓并记录错误码，超过上限记为未评估，从不按猜测推送；数据库、配置或外层期限故障不伪装成读者判断。
 
 通知工作状态为 `pending` / `done` / `failed`。只有真实失败才计尝试：规划异常计入工作尝试；卡片失败与可重试 `not_sent` 计入 intent 尝试。第三次失败使工作进入 `failed` 并记录 `last_error_code`，不再自动领取；等待本 Event 在途发送、CAS 失败或数据库暂时无法应答都不计尝试。精确恢复命令及限制见[运维指南](../OPERATIONS.md#news-retry)；任何已有发送账本的 intent 都不能通过 `retry-work` 重开。
 
@@ -380,7 +385,7 @@ CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精�
 | 输入时刻 | 来源变化 | 应阅读的系统事实 |
 | --- | --- | --- |
 | T0 | 公司甲宣布工厂将在下月投产 | Claim 是“宣布未来行动”，不是“已经完成投产”；EventUpdate 保存引文和阶段 |
-| T1 | 另一媒体复述同一公告 | 可能增加来源证据；命题等价不自动产生新的交易催化；已发正文完整覆盖时不重复通知 |
+| T1 | 另一媒体复述同一公告 | 可能增加来源证据；命题等价不自动产生新的交易催化；链接到已送命题即为已知，不重复通知 |
 | T2 | 原记录增加“首期产能为 10 万件” | 保存 Item 修订并抽取新增范围；形成可定位的新增数量 / 条件，独立判断是否通知 |
 | T3 | 公司更正为“5 万件” | 更正明确指向旧 claim refs；保留原有历史，生成适用的 source_update |
 | T4 | 公司宣布实际投产 | 这是动作阶段的新证据，不能仅凭日历到达就提前推断 |
@@ -410,7 +415,7 @@ T2 的卡片生成失败不应回滚 T2 的知识；T3 更正不会改写 T0 冻
 | [updates/service.py](../../tracefold/news/updates/service.py) | `NewsAgent` 编排、采用与可选补读；`Notifications` 独立续接 |
 | [semantics.py](../../tracefold/news/updates/semantics.py)、[judgment.py](../../tracefold/news/updates/judgment.py) | 引文校验、命题比较、有限问题、内容组装 |
 | [dspy_backend.py](../../tracefold/news/updates/dspy_backend.py) | DSPy 抽取、中文文案、生成式判断与原生有限选项判断 |
-| [notification.py](../../tracefold/news/updates/notification.py) | 逐命题通知规则、实际正文覆盖比较、稳定意图与冻结卡片 |
+| [notification.py](../../tracefold/news/updates/notification.py)、[reader_judgments.py](../../tracefold/news/updates/reader_judgments.py) | 逐命题决定表、读者新颖度、锚点与增量重要性判断、稳定意图与冻结卡片 |
 | [event_update_store.py](../../tracefold/news/storage/event_update_store.py)、[event_updates.py](../../tracefold/news/storage/event_updates.py)、[update_commit.py](../../tracefold/news/storage/update_commit.py) | 短事务、检查点、共用 EventUpdate 提交、head 条件采用、计划和发送账本 |
 | [public.py](../../tracefold/news/updates/public.py) | 从已采用知识生成公开更新，不依赖读者卡片 |
 | [delivery.py](../../tracefold/news/pipeline/delivery.py)、[maintenance.py](../../tracefold/news/pipeline/maintenance.py) | 通知轮询、真实投递、补唤醒与有界保留清理 |
