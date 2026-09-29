@@ -20,6 +20,7 @@ from tracefold.app.news_updates import NewsJudgmentEndpoint, news_program_identi
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.updates.service import GENERATION_CALL_SECONDS
 from tracefold.platform.config.models import NewsModelAvailability, news_model_availability
+from tracefold.platform.config.secret_file import read_secure_secret_text
 
 # Code-owned generation ceilings per role. A native Jev route has none: it is not a chat model.
 EXTRACTION_MAX_TOKENS: Final = 4_000
@@ -196,6 +197,22 @@ def compose_news_models(settings: Any) -> NewsRuntimeModels | None:
         card=NewsModelRoute("card", card_primary, card_fallback, CARD_MAX_TOKENS),
         news_judgment=news_judgment,
         availability=availability,
+    )
+
+
+def news_reader_judgment_endpoint(settings: Any) -> NewsJudgmentEndpoint | None:
+    """`llm.news_reader_judgment` with its key read from its secret file; None when the route is unset.
+
+    A configured route whose key file cannot be read raises `SecretFileError`, whose code never names the
+    path or the content. The notification decision layer is its only consumer (#742).
+    """
+
+    route = settings.llm.news_reader_judgment
+    path = settings.news_reader_judgment_api_key_file()
+    if not route.configured or path is None:
+        return None
+    return NewsJudgmentEndpoint(
+        base_url=str(route.base_url), model=str(route.model), api_key=read_secure_secret_text(path)
     )
 
 

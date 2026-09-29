@@ -110,6 +110,14 @@ llm:
     api_key:
     base_url:
     model:
+  news_reader_judgment:
+    # Optional System One route for News notification decisions only (#742), all three or none.
+    # The key is a secret file (relative to this directory), never an inline value. Unset: the
+    # generative News route answers the reader questions with its own cuts. Never inferred from
+    # news_judgment or trading_semantics.
+    api_key_file:
+    base_url:
+    model:
 
 news:
   enabled: true

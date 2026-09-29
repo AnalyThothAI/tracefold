@@ -9,9 +9,11 @@ from typing import Any
 
 from tracefold.app.system_one import SystemOneConnection, SystemOneReceipt
 from tracefold.news.updates.dspy_backend import (
+    READER_NATIVE_SECONDS,
     DspyAttentionAssessor,
     DspyCardComposer,
     DspyExtractor,
+    DspyReaderJudge,
     GeneratedJudgments,
     NativeJudgments,
 )
@@ -142,6 +144,40 @@ def news_program_identity(
     value = _program_identity(analyzer, card_model_identity)
     _PROGRAM_IDENTITIES[key] = value
     return value
+
+
+def compose_reader_judge(
+    *,
+    generated_lm_factory: Callable[[], Any],
+    generated_model_identity: str,
+    reader_judgment: NewsJudgmentEndpoint | None = None,
+    after_native_call: Callable[[SystemOneReceipt], Awaitable[None]] | None = None,
+) -> tuple[DspyReaderJudge, SystemOneConnection | None]:
+    """The notification decision layer's reader judge (#742): its own System One route, else generative only.
+
+    `reader_judgment` is `llm.news_reader_judgment`; the semantic `news_judgment` route and Trading's route
+    are never borrowed. The generative route is the News judgment route. The caller closes the connection.
+    """
+
+    if reader_judgment is None:
+        return DspyReaderJudge(generated_lm_factory, generated_model_identity=generated_model_identity), None
+    connection = SystemOneConnection(
+        base_url=reader_judgment.base_url,
+        api_key=reader_judgment.api_key,
+        model=reader_judgment.model,
+        timeout_seconds=READER_NATIVE_SECONDS,
+    )
+
+    def bind() -> Any:
+        return connection.bind(after_call=after_native_call, timeout_seconds=READER_NATIVE_SECONDS)
+
+    judge = DspyReaderJudge(
+        generated_lm_factory,
+        generated_model_identity=generated_model_identity,
+        native_lm_factory=bind,
+        native_model_identity=reader_judgment.identity,
+    )
+    return judge, connection
 
 
 def compose_news_updates(
