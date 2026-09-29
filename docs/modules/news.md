@@ -291,9 +291,9 @@ stateDiagram-v2
 
 **读者判断**是一次请求两道题（[reader_judgments.py](../../tracefold/news/updates/reader_judgments.py)），每条命题有自己的冻结 `ReaderInput`：命题字段与可读主题、来源，以及至多 16 条实际已送正文。输入不含未指向某条已送消息的单个 `change` 类型；`EventUpdate.changes` 和持久命题链接仍决定更正、增量与新颖度。
 
-回执召回从已送 `news_deliveries` 出发，普通窗口按 `settled_at_ms` 连续覆盖过去 48 小时。每条当前命题独立查询历史已送版本 `(event_id, content_revision)` 中该回执的 `claim_refs`：有效语义代表优先，结构身份 / 主资产与同语言实义词项两路各取最多 32 个候选，确定性融合后可返回 0–16 条。英文词项使用 PostgreSQL `ts_rank_cd`，中文使用对称 CJK bigram；二者不提供无共同实体的通用跨语言语义匹配。共享 SQL 批次和正文缓存，但兄弟命题不共享截断后的列表。缺少历史投影时只可使用真实已送正文的合法词项路径，不借当前 head 补造历史。
+回执召回（[receipt_recall.py](../../tracefold/news/updates/receipt_recall.py)）从已送 `news_deliveries` 出发，普通窗口按 `settled_at_ms` 连续覆盖过去 48 小时。每条当前命题独立查询历史已送版本 `(event_id, content_revision)` 中该回执的 `claim_refs`：有效语义代表优先，结构身份 / 主资产与同语言实义词项两路各取最多 32 个候选，确定性融合后可返回 0–16 条。资产按规范符号比较并保留 `market_type` 与 primary / mentioned 角色：去掉 `$` 与 venue 前缀，经品种目录的种子别名（`XAU`→`GOLD`、`XAG`→`SILVER`、`WTI`→`CL`）解析；商品资产还按 Gate 接地表的中英文名称识别（`现货白银`→`SILVER`），SQL 路线与纯函数用同一张别名表和同一组模式。英文词项使用 PostgreSQL `ts_rank_cd`，停用词只含英文功能词；中文使用对称 CJK bigram；二者不提供无共同实体的通用跨语言语义匹配。共享 SQL 批次和正文缓存，但兄弟命题不共享截断后的列表。缺少历史投影时只可使用真实已送正文的合法词项路径，不借当前 head 补造历史。
 
-同一 reader context 同时生成模型正文与 revision，由快照、记录计划、开始发送前两处校验复用。正文必须与已送 payload digest 一致；`sending` 不当作已读，`ambiguous` 保留去重保护。召回依据仅选上下文，是否已覆盖仍由持久关系、新颖度和 reader 判断决定。等价比较只用可证明的身份、枚举、同口径数量及少数可解析绝对时段冲突否决模型的 equivalent；自由文本差异返回未知，不代表已经证明等价。
+同一 reader context 同时生成模型正文与 revision，由快照、记录计划、开始发送前两处校验复用。正文必须与已送 payload digest 一致；`sending` 不当作已读，`ambiguous` 保留去重保护。召回依据仅选上下文，是否已覆盖仍由持久关系、新颖度和 reader 判断决定。等价比较只用可证明的身份、枚举、同口径数量及少数可解析绝对时段冲突否决模型的 equivalent；同口径数量指同一指标与单位（忽略大小写与首尾空白）、周期可对齐，不要求主体或对象文本一致，主体不同须由 `subject_id` / `object_id` 证明。自由文本差异返回未知，不代表已经证明等价。
 
 - 锚点题（`Choice` m1…mN / none）：哪条已送消息已经报过本命题的核心事实（同一主体、动作、对象，允许本命题多出细节）。未链接的命题有锚点时，推送门槛提高到 KEY_CUT。卡片的“补充”写法也看锚点：进展（development）对所链接的已送命题写“补充”；其余命题只有锚点指向某条已送消息时才写“补充”，并引用那条消息。链接为 increment 而锚点为 none 时按完整渲染，因为一条链接可能把同一故事里的不同事实连在一起。
 - 增量重要性题（5 档 `Score`）：本命题相对已送消息新增的信息值不值得打断；没有已送消息时评价命题本身。完全重复自然落在低档。
@@ -302,7 +302,7 @@ stateDiagram-v2
 
 每条决定记录新颖度、所用链接或锚点回执、渲染方式（完整 / 补充 / 更正）、分值分布与作答后端；控制台显示模板化原因，原因后面的 `×N` 统计具有该原因的命题数，不是报道数。`key` 是重点展示标记，不是另一轮发送审批或仓位权重。`editorial_v1` 历史决定按旧原因显示表只读展示。
 
-离线重放使用 [eval_news_reader.py](../../scripts/eval_news_reader.py)：`--issue-750-gold` 检查黄金候选级正反例；`--issue-750-sample` 检查 120 条独立标签的新输入与冻结候选，`--live` 才重新调用配置的 reader。归档的 v1 输入仅供基线对照，不进入现行模型或缓存。修改档位文本、指令、切点、新颖度规则或模型都要重跑并把结果写进 PR。#750 实测与切换边界见 [评测报告](../reports/issue-750-news-reader-2026-09-29.md)。#725 编辑器的有限对照见 [#725 对照报告](../reports/issue-725-attention-2026-09-27.md)。
+离线重放使用 [eval_news_reader.py](../../scripts/eval_news_reader.py)：在 2026-09-28 归档的 `news_reader_input_v1` 输入与独立标注上，用已记录的回答经现行 `reader_decision` 与切点评分，钉住决策层质量线；它不调用模型，归档输入也不进入现行模型或缓存。修改切点或新颖度规则时重跑它；修改档位文本、指令或模型时，须在现行输入契约上重新提问评测（样本不进仓库），并把结果写进 PR。召回由 [回执召回测试](../../tests/news/test_news_receipt_recall.py) 与真实 PostgreSQL 上的黄金案例覆盖。#725 编辑器的有限对照见 [#725 对照报告](../reports/issue-725-attention-2026-09-27.md)。
 
 ### 选择：哪些命题需要通知
 

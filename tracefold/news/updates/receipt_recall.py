@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
 
+from ..events.grounding import COMMODITY_CONTEXT
+from ..market_review.instruments import ALIAS_SEEDS, resolve_base_symbol
 from .contracts import Claim
 from .identity import digest
 from .reader_judgments import READER_INPUT_VERSION, READER_MESSAGES_MAX, LinkedReceipt, ReaderNovelty
@@ -23,71 +25,149 @@ RRF_K: Final = 60
 LEXICAL_SHARED_MIN: Final = 2
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9]{2,}")
 _HAN = re.compile(r"[\u3400-\u9fff]+")
-_STOP = frozenset(
+# English function words only: PostgreSQL's `english` text-search stop words of three or more letters, which
+# the SQL lexical route already ignores, plus the modals `would`/`could`. A domain word such as "market" or
+# "price" is content: whether it is shared evidence is the route's question, not this list's.
+_STOP: Final = frozenset(
     {
-        "the",
+        "about",
+        "above",
+        "after",
+        "again",
+        "against",
+        "all",
         "and",
+        "any",
+        "are",
+        "because",
+        "been",
+        "before",
+        "being",
+        "below",
+        "between",
+        "both",
+        "but",
+        "can",
+        "could",
+        "does",
+        "did",
+        "doing",
+        "don",
+        "down",
+        "during",
+        "each",
+        "few",
         "for",
         "from",
-        "with",
-        "into",
-        "over",
-        "after",
-        "before",
-        "this",
-        "that",
-        "have",
-        "has",
+        "further",
         "had",
+        "has",
+        "have",
+        "having",
+        "her",
+        "here",
+        "hers",
+        "herself",
+        "him",
+        "himself",
+        "his",
+        "how",
+        "into",
+        "its",
+        "itself",
+        "just",
+        "more",
+        "most",
+        "myself",
+        "nor",
+        "not",
+        "now",
+        "off",
+        "once",
+        "only",
+        "other",
+        "our",
+        "ours",
+        "ourselves",
+        "out",
+        "over",
+        "own",
+        "same",
+        "she",
+        "should",
+        "some",
+        "such",
+        "than",
+        "that",
+        "the",
+        "their",
+        "theirs",
+        "them",
+        "themselves",
+        "then",
+        "there",
+        "these",
+        "they",
+        "this",
+        "those",
+        "through",
+        "too",
+        "under",
+        "until",
+        "very",
         "was",
         "were",
-        "are",
-        "its",
-        "their",
-        "about",
-        "said",
-        "says",
+        "what",
+        "when",
+        "where",
+        "which",
+        "while",
+        "who",
+        "whom",
+        "why",
         "will",
+        "with",
         "would",
-        "could",
-        "should",
-        "more",
-        "than",
-        "data",
-        "focus",
-        "found",
-        "new",
-        "news",
-        "report",
-        "reports",
-        "market",
-        "markets",
-        "price",
-        "prices",
-        "shares",
-        "stock",
-        "stocks",
-        "today",
-        "monday",
-        "tuesday",
-        "wednesday",
-        "thursday",
-        "friday",
+        "you",
+        "your",
+        "yours",
+        "yourself",
+        "yourselves",
     }
 )
-_GENERIC_ENTITY = frozenset({"us", "uk", "market", "markets", "data", "government", "company", "people"})
-# Exact names for the same physical commodity, never a cross-market symbol guess or broad topic.
-_COMMODITY_GOLD_NAMES: Final = frozenset({"gold", "黄金", "现货黄金", "国际现货黄金"})
+# Subjects and objects that name no one in particular; equal text on them is no shared identity.
+_GENERIC_ENTITY: Final = frozenset({"market", "markets", "data", "government", "company", "people"})
+# Asset spellings resolve through the owners that already ground them: ticker aliases from the instrument
+# catalogue's seeds (`XAU`/`XAUT` -> `GOLD`, `XAG` -> `SILVER`, `WTI` -> `CL`), and a commodity written as a word
+# in any language through the Gate's grounding table, whose keys are catalogue commodities. The alias map is
+# closed over hops so the SQL route applies it with one lookup.
+ASSET_ALIASES: Final[Mapping[str, str]] = {alias: resolve_base_symbol(alias) for alias in ALIAS_SEEDS}
+_COMMODITY_NAMES: Final = tuple((resolve_base_symbol(tag), pattern) for tag, pattern in COMMODITY_CONTEXT.items())
+# Leading `$` (cashtags) and surrounding whitespace carry no identity. The SQL route strips the same edges.
+_SYMBOL_EDGES: Final = re.compile(r"^[\s$]+|\s+$")
 
 
-def asset_symbol(symbol: str, market_type: str) -> str:
-    value = symbol.strip().casefold()
-    return "gold" if market_type == "commodity" and value in _COMMODITY_GOLD_NAMES else value
+def asset_symbols(symbol: str, market_type: str) -> frozenset[str]:
+    """Every canonical symbol one claim asset names; two assets are the same when these sets meet.
+
+    `$OKLO` is `OKLO`, `xyz:GOLD` and `XAU` are `GOLD`, and a commodity named in words (`spot gold`,
+    `国际现货黄金`, `现货白银`) is the catalogue commodity the grounding table recognises in it. Anything
+    else keeps its own normalized spelling, so an unknown name still matches the same name exactly.
+    """
+
+    text = _SYMBOL_EDGES.sub("", symbol)
+    names = {resolve_base_symbol(text)}
+    if market_type == "commodity":
+        names.update(base for base, pattern in _COMMODITY_NAMES if pattern.search(text))
+    return frozenset(name for name in names if name)
 
 
-def asset_search_variants(symbol: str, market_type: str) -> frozenset[str]:
-    canonical = asset_symbol(symbol, market_type)
-    return _COMMODITY_GOLD_NAMES if market_type == "commodity" and canonical == "gold" else frozenset({canonical})
+def commodity_name_patterns(symbol: str) -> tuple[str, ...]:
+    """The grounding patterns that name commodity `symbol`, spelled for PostgreSQL's `~*` (`\\y`, not `\\b`)."""
+
+    return tuple(
+        sorted({pattern.pattern.replace(r"\b", r"\y") for base, pattern in _COMMODITY_NAMES if base == symbol})
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +198,15 @@ class ClaimSelection:
     reasons: tuple[tuple[str, tuple[str, ...]], ...]
 
 
+def _asset_pairs(claim: Claim, role: str) -> frozenset[tuple[str, str]]:
+    return frozenset(
+        (symbol, asset.market_type)
+        for asset in claim.fields.assets
+        if asset.role == role
+        for symbol in asset_symbols(asset.symbol, asset.market_type)
+    )
+
+
 def _words(text: str) -> frozenset[str]:
     return frozenset(word for match in _WORD.finditer(text) if (word := match.group().lower()) not in _STOP)
 
@@ -129,20 +218,12 @@ def _han_bigrams(text: str) -> frozenset[str]:
 def query_for_claim(claim: Claim) -> ClaimRecallQuery:
     fields = claim.fields
     text = " ".join((claim.statement, fields.subject, fields.action, fields.object))
-
-    def assets(role: str) -> frozenset[tuple[str, str]]:
-        return frozenset(
-            (asset_symbol(asset.symbol, asset.market_type), asset.market_type)
-            for asset in fields.assets
-            if asset.role == role and asset.symbol.strip()
-        )
-
     return ClaimRecallQuery(
         ref=claim.ref,
         subject="" if fields.subject.strip().casefold() in _GENERIC_ENTITY else fields.subject.strip().casefold(),
         object="" if fields.object.strip().casefold() in _GENERIC_ENTITY else fields.object.strip().casefold(),
-        primary_assets=assets("primary"),
-        mentioned_assets=assets("mentioned"),
+        primary_assets=_asset_pairs(claim, "primary"),
+        mentioned_assets=_asset_pairs(claim, "mentioned"),
         known_identity=frozenset(
             (hint.key, hint.value.strip().casefold())
             for hint in claim.known_identity
@@ -157,16 +238,8 @@ def _structure(query: ClaimRecallQuery, candidate: RecallCandidate) -> tuple[str
     reasons: set[str] = set()
     for claim in candidate.claims:
         fields = claim.fields
-        primary = {
-            (asset_symbol(asset.symbol, asset.market_type), asset.market_type)
-            for asset in fields.assets
-            if asset.role == "primary"
-        }
-        mentioned = {
-            (asset_symbol(asset.symbol, asset.market_type), asset.market_type)
-            for asset in fields.assets
-            if asset.role == "mentioned"
-        }
+        primary = _asset_pairs(claim, "primary")
+        mentioned = _asset_pairs(claim, "mentioned")
         if query.primary_assets & primary:
             reasons.update(f"primary_asset:{market}:{symbol}" for symbol, market in query.primary_assets & primary)
         elif query.primary_assets & mentioned or query.mentioned_assets & primary:

@@ -27,6 +27,7 @@ from .contracts import (
     KnowledgeGap,
     Phase,
     PriorClaim,
+    Quantity,
     RelationDraft,
     SupportDraft,
     content_material,
@@ -109,6 +110,16 @@ def _absolute_time(value: str | None) -> tuple[str, str] | None:
     return "second", parsed.astimezone(UTC).isoformat()
 
 
+def _comparable_quantities(quantities: tuple[Quantity, ...]) -> dict[tuple[str, str, tuple[int, int] | None], Decimal]:
+    """Values keyed by metric, unit and calendar quarter; a quantity over an unparsed period is not comparable."""
+
+    return {
+        (q.name.strip().casefold(), q.unit.strip().casefold(), _calendar_quarter(q.period)): Decimal(q.value)
+        for q in quantities
+        if q.period is None or _calendar_quarter(q.period) is not None
+    }
+
+
 def proven_mismatches(current: DraftClaim, previous: Claim, hints: tuple[IdentityHint, ...] = ()) -> tuple[str, ...]:
     """Return only differences established by comparable evidence, never prose inequality.
 
@@ -149,26 +160,14 @@ def proven_mismatches(current: DraftClaim, previous: Claim, hints: tuple[Identit
         right = _absolute_time(getattr(b, field))
         if left is not None and right is not None and left[0] == right[0] and left != right:
             mismatches.append(field)
-    # Quantity names are free text. Exact metric and unit spellings plus a comparable period are the
-    # narrow case where two numbers can be compared; no missing or differently phrased field is a veto.
-    if (
-        (
-            (a.statistical_period is None and b.statistical_period is None)
-            or (a_quarter is not None and a_quarter == b_quarter)
-        )
-        and a.subject.strip().casefold() == b.subject.strip().casefold()
-        and (not a.object or not b.object or a.object.strip().casefold() == b.object.strip().casefold())
+    # Two numbers are comparable only for the same metric and unit over an aligned period: no period on
+    # either side, or one explicit calendar quarter. Who the numbers belong to is not read from free text
+    # ("Nvidia" and "Nvidia Corp" are one issuer); a proven entity difference is `subject_id`/`object_id`.
+    if (a.statistical_period is None and b.statistical_period is None) or (
+        a_quarter is not None and a_quarter == b_quarter
     ):
-        qa = {
-            (q.name.strip(), q.unit.strip(), _calendar_quarter(q.period)): Decimal(q.value)
-            for q in a.quantities
-            if q.period is None or _calendar_quarter(q.period) is not None
-        }
-        qb = {
-            (q.name.strip(), q.unit.strip(), _calendar_quarter(q.period)): Decimal(q.value)
-            for q in b.quantities
-            if q.period is None or _calendar_quarter(q.period) is not None
-        }
+        qa = _comparable_quantities(a.quantities)
+        qb = _comparable_quantities(b.quantities)
         if any(qa[key] != qb[key] for key in qa.keys() & qb.keys()):
             mismatches.append("quantity")
     return tuple(sorted(set(mismatches)))

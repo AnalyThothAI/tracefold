@@ -49,12 +49,13 @@ from ..updates.ports import BeginSendStatus
 from ..updates.projection import extraction_scopes, item_text, reading_view, reading_views
 from ..updates.reader_judgments import ClaimLink, LinkedReceipt, reader_novelty
 from ..updates.receipt_recall import (
+    ASSET_ALIASES,
     LINKED_RECEIPT_WINDOW_MS,
     RECALL_WINDOW_MS,
     ROUTE_CANDIDATES_MAX,
     ClaimRecallQuery,
     RecallCandidate,
-    asset_search_variants,
+    commodity_name_patterns,
     query_for_claim,
     reader_context_revision,
     select_for_claim,
@@ -1186,11 +1187,17 @@ class EventUpdateStorage:
         query_rows = [
             {
                 "ref": query.ref,
+                # Canonical symbols, plus the grounding patterns of a commodity named in words; the SQL
+                # canonicalizes each historical asset the way `asset_symbols` does.
                 "assets": [
-                    {"symbol": variant, "market_type": market, "role": role}
+                    {
+                        "symbol": symbol,
+                        "market_type": market,
+                        "role": role,
+                        "patterns": list(commodity_name_patterns(symbol)) if market == "commodity" else [],
+                    }
                     for role, values in (("primary", query.primary_assets), ("mentioned", query.mentioned_assets))
                     for symbol, market in sorted(values)
-                    for variant in sorted(asset_search_variants(symbol, market))
                 ],
                 "subject": query.subject,
                 "object": query.object,
@@ -1238,8 +1245,8 @@ class EventUpdateStorage:
                            row_number() OVER (PARTITION BY q.ref ORDER BY b.settled_at_ms DESC, b.intent_id) AS rn
                       FROM queries q JOIN window_receipts b ON EXISTS (
                           SELECT 1 FROM jsonb_array_elements(b.historical_claims) hc
-                           WHERE (q.subject <> '' AND lower(hc -> 'fields' ->> 'subject') = q.subject)
-                              OR (q.object <> '' AND lower(hc -> 'fields' ->> 'object') = q.object)
+                           WHERE (q.subject <> '' AND lower(btrim(hc -> 'fields' ->> 'subject')) = q.subject)
+                              OR (q.object <> '' AND lower(btrim(hc -> 'fields' ->> 'object')) = q.object)
                               OR EXISTS (
                                   SELECT 1
                                     FROM jsonb_array_elements(COALESCE(hc -> 'known_identity', '[]'::jsonb)) hi
@@ -1248,14 +1255,32 @@ class EventUpdateStorage:
                                      AND lower(btrim(hi ->> 'value')) = qi ->> 'value'
                               )
                               OR EXISTS (
+                                  -- `asset_symbols`: strip `$` and whitespace, upper-case, drop the `XYZ-`
+                                  -- and `dex:` prefixes, follow the alias map; or a grounded commodity name.
                                   SELECT 1
                                     FROM jsonb_array_elements(
                                         COALESCE(hc -> 'fields' -> 'assets', '[]'::jsonb)
                                     ) ha
-                                  JOIN jsonb_array_elements(q.assets) qa
-                                    ON lower(ha ->> 'symbol') = qa ->> 'symbol'
-                                   AND ha ->> 'market_type' = qa ->> 'market_type'
-                                   AND (ha ->> 'role' = 'primary' OR qa ->> 'role' = 'primary')
+                                   CROSS JOIN LATERAL (
+                                       SELECT regexp_replace(
+                                                  ha ->> 'symbol', '^[[:space:]$]+|[[:space:]]+$', '', 'g'
+                                              ) AS text
+                                   ) ht
+                                   CROSS JOIN LATERAL (
+                                       SELECT regexp_replace(
+                                                  regexp_replace(upper(ht.text), '^XYZ-', ''), '^[^:]*:', ''
+                                              ) AS symbol
+                                   ) hn
+                                   JOIN jsonb_array_elements(q.assets) qa
+                                     ON ha ->> 'market_type' = qa ->> 'market_type'
+                                    AND (ha ->> 'role' = 'primary' OR qa ->> 'role' = 'primary')
+                                    AND (
+                                        COALESCE(%s::jsonb ->> hn.symbol, hn.symbol) = qa ->> 'symbol'
+                                        OR EXISTS (
+                                            SELECT 1 FROM jsonb_array_elements_text(qa -> 'patterns') pattern
+                                             WHERE ht.text ~* pattern
+                                        )
+                                    )
                               )
                       )
                 ), lexical AS (
@@ -1293,6 +1318,7 @@ class EventUpdateStorage:
                     _dumps(query_rows),
                     int(now_ms) - RECALL_WINDOW_MS,
                     int(now_ms),
+                    _dumps(ASSET_ALIASES),
                     ROUTE_CANDIDATES_MAX,
                     ROUTE_CANDIDATES_MAX,
                 ),
@@ -1698,11 +1724,8 @@ class EventUpdateStorage:
         if reserved is None:
             existing = self.conn.execute(
                 """
-                SELECT q.state, q.lease_token, q.next_attempt_at_ms, q.frozen_card, q.error_code,
-                       d.plan ->> 'reader_revision' AS previous_reader_revision
-                  FROM news_delivery_queue q
-                  LEFT JOIN news_notification_decisions d ON d.decision_ref = q.decision_ref
-                 WHERE q.intent_id = %s FOR UPDATE OF q
+                SELECT state, lease_token, next_attempt_at_ms, frozen_card, error_code
+                  FROM news_delivery_queue WHERE intent_id = %s FOR UPDATE
                 """,
                 (intent_id,),
             ).fetchone()
@@ -1720,18 +1743,12 @@ class EventUpdateStorage:
                 return {"status": "already_settled"}
             if existing["lease_token"] is not None and int(existing["next_attempt_at_ms"]) > int(now_ms):
                 return {"status": "overlap"}
-            # A pre-cut unsent reservation may have the same stable intent ID but a card frozen
-            # against the old reader input. Replan it under the new context before begin_send;
-            # an already started send lives in the ledger and never reaches this branch.
-            old_reader_card = not str(existing["previous_reader_revision"] or "").startswith("reader_v3:")
+            # A re-lease sends under the decision just recorded, not the one that first reserved the intent.
             self.conn.execute(
                 """
                 UPDATE news_delivery_queue
                    SET lease_token = %s, next_attempt_at_ms = %s, last_attempt_at_ms = %s, updated_at_ms = %s,
-                       decision_ref = %s, plan_key = %s,
-                       frozen_card = CASE WHEN %s THEN NULL ELSE frozen_card END,
-                       card_copy_document = CASE WHEN %s THEN NULL ELSE card_copy_document END,
-                       card_copy_input_digest = CASE WHEN %s THEN NULL ELSE card_copy_input_digest END
+                       decision_ref = %s, plan_key = %s
                  WHERE intent_id = %s
                 """,
                 (
@@ -1741,13 +1758,10 @@ class EventUpdateStorage:
                     int(now_ms),
                     plan.record_ref,
                     plan.key,
-                    old_reader_card,
-                    old_reader_card,
-                    old_reader_card,
                     intent_id,
                 ),
             )
-            frozen_card = None if old_reader_card else existing["frozen_card"]
+            frozen_card = existing["frozen_card"]
         # The marker stays pending while the reserved intent is in flight. If this turn dies before
         # the send is settled, the marker comes due after the lease and reclaims the same identity.
         self._settle_work(

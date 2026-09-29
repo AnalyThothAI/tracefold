@@ -4,9 +4,9 @@ Novelty is code: the persisted semantic links between claims, crossed with the c
 carry (`reader_novelty`). The model answers two questions in one request over one frozen `ReaderInput`: which
 already pushed message reported the claim's core fact (the anchor: the fallback where no link exists, and the
 message an increment is written against), and how strongly what the claim adds beyond those messages deserves
-an interrupting push. The same input is what production asks, what the judgment cache is keyed by and what the
-offline replay (`scripts/eval_news_reader.py`) re-asks. Cuts, the anchor threshold and the rule order are
-code, and every cut belongs to the backend whose answers it was measured on.
+an interrupting push. The same input is what production asks and what the judgment cache is keyed by. Cuts,
+the anchor threshold and the rule order are code, and every cut belongs to the backend whose answers it was
+measured on; the offline replay (`scripts/eval_news_reader.py`) scores them over archived recorded answers.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from .judgment import Answer, Budget, JudgmentCache
 from .topics import CODEBOOK
 
 READER_INPUT_VERSION: Final = "news_reader_input_v2"
-# Linked receipts first, then the recall; the input never grows past 16 messages.
+# Linked receipts first, then the claim's recall; the input never grows past 16 messages.
 READER_MESSAGES_MAX: Final = 16
 # Citation quotes are exact spans and are usually short; the cap only bounds one pathological span.
 READER_QUOTE_CHARS_MAX: Final = 600
@@ -34,7 +34,8 @@ NONE: Final = "none"
 
 # Appendix B of #742, with "already pushed" moved to the links and the anchor question: the score judges what
 # the claim adds beyond the messages. The level texts exist once, here; changing any of them, the
-# instructions, a cut or a model requires the replay in scripts/eval_news_reader.py and its numbers in the PR.
+# instructions or a model requires asking the judge again on current inputs, and a cut the recorded replay in
+# scripts/eval_news_reader.py; the numbers go in the PR.
 READER_INSTRUCTIONS: Final = (
     "You judge one adopted news claim for a professional trader of crypto assets, US and Hong Kong equities, "
     "and global macro instruments (rates, FX, commodities, monetary policy). Every claim is already stored in "

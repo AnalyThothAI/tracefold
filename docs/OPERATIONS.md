@@ -107,16 +107,6 @@ tracefold news reanalyze --event EVENT_ID --wanted WANTED_REVISION \
 
 命令使用版本与 head 条件更新；状态已前进、lease 有效或范围不再匹配时返回冲突。它保留原 Event、旧 head、已送账本和来源修订，不授权历史重发。选择名单时记录原文、任务范围与原因；不要对所有旧 Event 盲目执行。
 
-### #750 News reader 一次性切换
-
-先在隔离环境使用 [#750 冻结评测](reports/issue-750-news-reader-2026-09-29.md)核对当前代码、模型输入版本和真实 PostgreSQL 查询计划，保存发送与关系审计快照。发布窗口停止旧 Workers 认领新工作，让 `sending` 结算或由原有对账标成 `ambiguous`，再启动单一新版本；新旧 Worker 不并行消费。此次不需要 schema 迁移，`news_notification_decisions.origin` 仍是 `reader_v2` 决策家族，新输入 `news_reader_input_v2` 与 `reader_v3:` context revision 区分新旧协议。发布前重查旧 `news_delivery_queue` 待发送量、`news_notification_work` pending 状态和 `news_deliveries` 未决状态；已送和未决凭证不删除、不重置。
-
-未开始发送而仍引用旧 reader revision 的 reservation，在重新规划并取得新 lease 后清除旧冻结卡片，再以稳定 intent ID 写新卡片；`begin_send` 仍以当前 head 和 reader context 作 CAS。旧进程若仍持有未过期 lease，等待它停止且 lease 失效后再规划。已有 `sending` / `ambiguous` / `sent` 账本不能作为未送 intent 重启。
-
-等价否决的旧持久链接不会因新代码自动改写。先用只读 `scripts/audit_news_reader_750.py --as-of-ms STAMP --output PATH` 列出仍在有效窗口的 pair、当前 head 对应 read scope 与版本；逐 Event 用上面的 `news reanalyze` 预览 wanted/head/read，再选择确实仍需刷新的 scope 执行。新断言追加至 `news_claim_links`，旧断言保留审计；核对同一 pair 的最新断言胜出、已送/未决行不变，避免对过时来源批量重推。审计的“未知”只表示没有确定性冲突，模型关系是否改变须以重新分析结果为准。
-
-启动后抽查黄金事件与不同资产、不同语言的事件：核对实际输入 digest、每命题所选回执与顺序、`reader_v3:` revision、判断缓存命中/失败、计划到发送的 CAS、延迟和外部发送回执。回退时恢复匹配版本的镜像与数据库兼容状态，保留发布期间写入的不可变决策、关系和发送事实；不在业务代码留旧算法开关。
-
 ### 历史编号事实的 head 归属清理
 
 `tracefold news repair-head-scopes` 按 `--after` / `--limit` 有界预览当前编号事实 Event 的已采用 head，逐 Event 输出当前 head、修复证明和无法自动判定的引用。执行前保存并验证当前数据库备份，核对目标 Event 的来源原文、head 与证明，再逐 Event 运行：

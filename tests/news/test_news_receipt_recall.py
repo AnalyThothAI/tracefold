@@ -11,6 +11,7 @@ from tracefold.news.updates.identity import digest
 from tracefold.news.updates.reader_judgments import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
 from tracefold.news.updates.receipt_recall import (
     RecallCandidate,
+    asset_symbols,
     query_for_claim,
     reader_context_revision,
     select_for_claim,
@@ -20,12 +21,12 @@ from tracefold.news.updates.semantics import assemble_update
 STAMP = 1_790_405_000_000
 
 
-def claim(statement: str, *, asset: str | None = None, market: str = "commodity"):
+def claim(statement: str, *, asset: str | None = None, market: str = "commodity", subject: str | None = None):
     evidence = material(statement)
     original = draft(evidence)
     fields = original.fields.model_copy(
         update={
-            "subject": asset or statement,
+            "subject": subject or asset or statement,
             "object": "",
             "assets": () if asset is None else (Asset(symbol=asset, market_type=market, role="primary"),),
         }
@@ -71,6 +72,36 @@ def test_sibling_claim_and_short_query_do_not_inherit_gold_history() -> None:
     candidates = [receipt("gold", "黄金跌至七周低点", STAMP - 1, old), receipt("htx", "new found in htx", STAMP - 2)]
     assert select(gold, candidates).intent_ids == ("gold",)
     assert select(data, candidates).intent_ids == ()
+
+
+def test_silver_history_is_recalled_across_spellings_and_languages() -> None:
+    silver = claim("Silver climbs back above 50 dollars", asset="Silver")
+    candidates = [
+        receipt("xag", "银价回升", STAMP - 1000, claim("XAG rebounds", asset="XAG")),
+        receipt("baiyin", "白银跌至一个月低点", STAMP - 2000, claim("白银跌至一个月低点", asset="白银")),
+        receipt("spot", "现货白银下跌", STAMP - 3000, claim("现货白银下跌", asset="现货白银")),
+        receipt("gold", "国际现货黄金站上4140", STAMP - 500, claim("国际现货黄金站上4140", asset="国际现货黄金")),
+        receipt(
+            "miner",
+            "银矿股下跌",
+            STAMP - 400,
+            claim("银矿股下跌", asset="Silver", market="equity", subject="Silver miners"),
+        ),
+    ]
+    chosen = select(silver, candidates)
+    assert chosen.intent_ids == ("xag", "baiyin", "spot")
+    assert all("primary_asset:commodity:SILVER" in reasons for _, reasons in chosen.reasons)
+
+
+def test_asset_spelling_is_canonical_but_market_type_still_separates() -> None:
+    assert asset_symbols("$OKLO", "crypto") == asset_symbols(" oklo ", "crypto") == {"OKLO"}
+    assert asset_symbols("xyz:GOLD", "commodity") >= {"GOLD"} and "GOLD" in asset_symbols("spot gold", "commodity")
+    assert asset_symbols("WTI", "commodity") == asset_symbols("oil", "commodity") == {"CL"}
+    # A commodity word names the commodity only on a commodity asset.
+    assert asset_symbols("Silver", "equity") == {"SILVER"} and asset_symbols("白银", "equity") == {"白银"}
+    oklo = claim("Oklo shares jump", asset="OKLO", market="equity")
+    listed = claim("Oklo token listed", asset="$OKLO", market="crypto")
+    assert select(oklo, [receipt("listing", "代币上线", STAMP - 1, listed)]).intent_ids == ()
 
 
 def test_sql_lexical_rank_is_preserved_by_final_fusion() -> None:
@@ -151,6 +182,12 @@ def test_context_revision_tracks_order_body_and_semantic_state() -> None:
 
 
 def test_issue_750_gold_frozen_production_recall() -> None:
+    """The frozen production candidates of the #750 gold case through the pure routes.
+
+    `tests/integration/test_news_event_update_store.py` seeds the same receipts into PostgreSQL and selects
+    through the real SQL routes; both keep the same direct antecedents.
+    """
+
     fixture = json.loads(
         (Path(__file__).resolve().parents[1] / "fixtures/news/issue_750_gold_recall.json").read_text("utf-8")
     )
@@ -168,22 +205,16 @@ def test_issue_750_gold_frozen_production_recall() -> None:
     receipts = tuple(LinkedReceipt.model_validate(item) for item in fixture["link_receipts"])
     gold, data = (Claim.model_validate(item) for item in fixture["claims"])
     gold_selection = select_for_claim(
-        query_for_claim(gold),
-        reader_novelty(gold.ref, links, receipts),
-        candidates,
-        as_of_ms=fixture["as_of_ms"],
-        route_ranks=fixture["route_ranks"][gold.ref],
+        query_for_claim(gold), reader_novelty(gold.ref, links, receipts), candidates, as_of_ms=fixture["as_of_ms"]
     )
     data_selection = select_for_claim(
-        query_for_claim(data),
-        reader_novelty(data.ref, links, receipts),
-        candidates,
-        as_of_ms=fixture["as_of_ms"],
-        route_ranks=fixture["route_ranks"][data.ref],
+        query_for_claim(data), reader_novelty(data.ref, links, receipts), candidates, as_of_ms=fixture["as_of_ms"]
     )
     selected = {intent[7:13] for intent in gold_selection.intent_ids}
-    assert len(gold_selection.intent_ids) <= 16
-    assert {"235d95", "191d10", "585497", "eca8e3"} <= selected
+    assert len(gold_selection.intent_ids) == 16
+    # With function words as the only stop words, copper receipts sharing "prices" and "low" take the last
+    # place from 585497, the oldest-ranked structural gold match (see the PostgreSQL test).
+    assert {"235d95", "191d10", "585497", "eca8e3"} - selected == {"585497"}
     assert not selected & {"4e5846", "96059b", "077119", "96b2f0", "ce1b55", "cdae0a"}
     assert data_selection.intent_ids == ()
     assert len(fixture["baseline_message_intents"][gold.ref]) == 16
