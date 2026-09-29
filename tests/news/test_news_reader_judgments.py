@@ -31,18 +31,25 @@ from tracefold.news.updates.dspy_backend import DspyReaderJudge
 from tracefold.news.updates.identity import digest
 from tracefold.news.updates.judgment import Budget, ConfigurationFault
 from tracefold.news.updates.reader_judgments import (
-    COVERAGE_QUESTION,
+    ANCHOR_QUESTION,
     IMPORTANCE_LEVELS,
     IMPORTANCE_QUESTION,
     READER_CUTS,
     READER_INSTRUCTIONS,
     READER_QUOTE_CHARS_MAX,
-    CoverageEvidence,
+    AnchorEvidence,
+    ClaimLink,
     ImportanceEvidence,
+    LinkedReceipt,
+    ReaderCuts,
     ReaderInput,
     ReaderJudgment,
+    ReaderNovelty,
     cache_key,
     cached_judgment,
+    current_links,
+    reader_decision,
+    reader_novelty,
 )
 from tracefold.news.updates.semantics import assemble_update
 from tracefold.news.updates.topics import CODEBOOK
@@ -194,7 +201,7 @@ def test_one_native_request_asks_both_questions_over_one_shared_state() -> None:
             return _response(
                 {
                     "importance": _score([0.0, 0.1, 0.1, 0.7, 0.1]),
-                    "covering_message": _choice({"m1": 0.85, "m2": 0.05, "none": 0.1}),
+                    "anchor_message": _choice({"m1": 0.85, "m2": 0.05, "none": 0.1}),
                 }
             )
 
@@ -215,15 +222,15 @@ def test_one_native_request_asks_both_questions_over_one_shared_state() -> None:
     importance = request["questions"]["importance"]
     assert importance["type"] == "score" and importance["instructions"] == IMPORTANCE_QUESTION
     assert importance["criteria"] == list(IMPORTANCE_LEVELS)
-    coverage = request["questions"]["covering_message"]
-    assert coverage["type"] == "choice" and coverage["instructions"] == COVERAGE_QUESTION
-    assert list(coverage["criteria"]) == ["m1", "m2", "none"]
+    anchor = request["questions"]["anchor_message"]
+    assert anchor["type"] == "choice" and anchor["instructions"] == ANCHOR_QUESTION
+    assert list(anchor["criteria"]) == ["m1", "m2", "none"]
 
     assert judgment.status == "available" and judgment.backend == "native"
     assert judgment.identity == native_identity and judgment.served_model == "jev-1.13-served"
     assert judgment.importance is not None and judgment.importance.value == pytest.approx(2.8)
     assert judgment.importance.probabilities == pytest.approx((0.0, 0.1, 0.1, 0.7, 0.1))
-    assert judgment.coverage is not None and judgment.coverage.covering(judgment.cuts) == 0
+    assert judgment.anchor is not None and judgment.anchor.anchor(judgment.cuts) == 0
     assert judgment.matches(_reader()) and not judgment.matches(_reader(SENT[:1]))
 
 
@@ -245,14 +252,14 @@ def test_no_recalled_message_asks_only_the_importance_question() -> None:
     judgment, sent = asyncio.run(run())
     assert set(sent[0]["questions"]) == {"importance"}
     assert "messages" not in sent[0]["state"]["inputs"]
-    assert judgment.coverage is None and judgment.importance is not None
+    assert judgment.anchor is None and judgment.importance is not None
     assert judgment.importance.value == pytest.approx(0.5)
 
 
 def _generated_answer(request: Any) -> dict[str, Any]:
     return {
         "importance": {"probabilities": {"0": 0.1, "1": 0.2, "2": 0.4, "3": 0.2, "4": 0.1}, "confidence": 0.6},
-        "covering_message": {"probabilities": {"m1": 0.1, "m2": 0.1, "none": 0.8}, "confidence": 0.7},
+        "anchor_message": {"probabilities": {"m1": 0.1, "m2": 0.1, "none": 0.8}, "confidence": 0.7},
     }
 
 
@@ -279,11 +286,11 @@ def test_an_unavailable_native_answer_falls_back_once_to_the_same_questions_on_t
     assert judgment.status == "available" and judgment.backend == "generated"
     assert judgment.identity == judge.generated_identity and judgment.cuts == READER_CUTS["generated"]
     assert judgment.importance is not None and judgment.importance.value == pytest.approx(2.0)
-    assert judgment.coverage is not None and judgment.coverage.covering(judgment.cuts) is None
+    assert judgment.anchor is not None and judgment.anchor.anchor(judgment.cuts) is None
     request = generated.requests[0]
     prompt = "\n".join([str(request.system or ""), *(message.text for message in request.messages)])
     assert READER_INSTRUCTIONS in prompt
-    for text in (IMPORTANCE_LEVELS[3], COVERAGE_QUESTION):
+    for text in (IMPORTANCE_LEVELS[3], ANCHOR_QUESTION):
         assert json.dumps(text, ensure_ascii=False)[1:-1] in prompt
 
 
@@ -322,7 +329,7 @@ def test_when_neither_backend_answers_the_judgment_is_unavailable_and_never_stor
     first, second, cache = asyncio.run(run())
     assert first.status == second.status == "unavailable"
     assert first.error_code == "news_generation_LMServerError"
-    assert first.importance is None and first.coverage is None
+    assert first.importance is None and first.anchor is None
     assert cache.values == {}
 
 
@@ -354,7 +361,7 @@ class _CountingJudge:
             backend="native",
             identity="native-test",
             importance=ImportanceEvidence(value=2.6, probabilities=(0.0, 0.1, 0.3, 0.5, 0.1), confidence=0.7),
-            coverage=CoverageEvidence(probabilities={"m1": 0.2, "m2": 0.1, "none": 0.7}, confidence=0.7),
+            anchor=AnchorEvidence(probabilities={"m1": 0.2, "m2": 0.1, "none": 0.7}, confidence=0.7),
         )
 
 
@@ -375,20 +382,20 @@ def test_an_available_answer_is_reused_for_exactly_the_same_input() -> None:
 
 
 def test_evidence_shapes_and_judgment_status_are_exact() -> None:
-    with pytest.raises(ValidationError, match="news_reader_coverage_options_invalid"):
-        CoverageEvidence(probabilities={"m1": 0.5, "m3": 0.1, "none": 0.4}, confidence=0.5)
-    with pytest.raises(ValidationError, match="news_reader_coverage_options_invalid"):
-        CoverageEvidence(probabilities={"none": 1.0}, confidence=0.5)
+    with pytest.raises(ValidationError, match="news_reader_anchor_options_invalid"):
+        AnchorEvidence(probabilities={"m1": 0.5, "m3": 0.1, "none": 0.4}, confidence=0.5)
+    with pytest.raises(ValidationError, match="news_reader_anchor_options_invalid"):
+        AnchorEvidence(probabilities={"none": 1.0}, confidence=0.5)
     with pytest.raises(ValidationError):
         ImportanceEvidence(value=2.0, probabilities=(0.5, 0.5), confidence=0.5)
     with pytest.raises(ValidationError, match="news_reader_unavailable_judgment_has_answer"):
         ReaderJudgment(status="unavailable", error_code="x", backend="native")
     with pytest.raises(ValidationError, match="news_reader_available_judgment_incomplete"):
         ReaderJudgment(status="available", backend="native", identity="n")
-    coverage = CoverageEvidence(probabilities={"m1": 0.1, "m2": 0.45, "none": 0.45}, confidence=0.5)
-    assert coverage.covering(READER_CUTS["native"]) == 1
+    anchor = AnchorEvidence(probabilities={"m1": 0.1, "m2": 0.55, "none": 0.35}, confidence=0.5)
+    assert anchor.anchor(READER_CUTS["native"]) == 1
     for cuts in READER_CUTS.values():
-        assert 0 < cuts.push < cuts.key < len(IMPORTANCE_LEVELS) - 1 and 0 < cuts.covered_none_below < 1
+        assert 0 < cuts.push < cuts.key < len(IMPORTANCE_LEVELS) - 1 and 0 < cuts.anchor_none_below < 1
 
 
 def test_the_cache_key_names_the_judge_and_the_frozen_input_only() -> None:
@@ -396,3 +403,102 @@ def test_the_cache_key_names_the_judge_and_the_frozen_input_only() -> None:
     assert cache_key(judge, _reader()) == cache_key(judge, _reader())
     assert cache_key(judge, _reader()) != cache_key(judge, _reader(SENT[:1]))
     assert digest(_reader()) == _reader().digest
+
+
+def _link(current: str, previous: str, relation: str, at: int = 1) -> ClaimLink:
+    return ClaimLink.model_validate(
+        {"current_ref": current, "previous_ref": previous, "relation": relation, "asserted_at_ms": at}
+    )
+
+
+def _sent(intent: str, *refs: str, state: str = "sent", at: int = 10) -> LinkedReceipt:
+    return LinkedReceipt.model_validate(
+        {"intent_id": intent, "state": state, "claim_refs": refs, "settled_at_ms": None if state == "sending" else at}
+    )
+
+
+@pytest.mark.parametrize(
+    ("links", "novelty", "intent"),
+    [
+        # The claim's own adoption compared it with a delivered claim.
+        ([_link("c", "a", "equivalent")], "known", "ra"),
+        ([_link("c", "a", "adds_information")], "increment", "ra"),
+        ([_link("c", "a", "real_world_change")], "development", "ra"),
+        ([_link("c", "a", "corrects")], "development", "ra"),
+        # A delivered claim's later adoption said it adds to, or supersedes, this one: the reader holds more.
+        ([_link("a", "c", "adds_information")], "known", "ra"),
+        ([_link("a", "c", "real_world_change")], "known", "ra"),
+        # A conflict names no order and leaves the claim to the questions.
+        ([_link("c", "a", "conflicts")], "unlinked", None),
+        # Two links pass through an equivalent claim.
+        ([_link("c", "x", "equivalent"), _link("x", "a", "adds_information")], "increment", "ra"),
+        ([_link("c", "x", "adds_information"), _link("x", "a", "equivalent")], "increment", "ra"),
+        ([_link("c", "x", "adds_information"), _link("x", "a", "adds_information")], "unlinked", None),
+        (
+            [_link("c", "x", "equivalent"), _link("x", "y", "equivalent"), _link("y", "a", "equivalent")],
+            "unlinked",
+            None,
+        ),
+        # A later assertion about the same pair replaces the earlier one, whichever side made it.
+        ([_link("c", "a", "adds_information", 1), _link("a", "c", "adds_information", 2)], "known", "ra"),
+        ([_link("c", "a", "equivalent", 1), _link("c", "a", "conflicts", 2)], "unlinked", None),
+    ],
+)
+def test_reader_novelty_reads_persisted_links_against_delivered_claims(
+    links: list[ClaimLink], novelty: str, intent: str | None
+) -> None:
+    result = reader_novelty("c", links, [_sent("ra", "a"), _sent("rz", "z")])
+    assert (result.novelty, result.intent_id) == (novelty, intent)
+    assert result.linked_intents == (() if intent is None else (intent,))
+
+
+def test_known_outranks_in_flight_which_outranks_development_and_increment() -> None:
+    links = [_link("c", "a", "adds_information"), _link("c", "b", "real_world_change"), _link("c", "s", "equivalent")]
+    assert reader_novelty("c", links[:2], [_sent("ra", "a"), _sent("rb", "b")]).novelty == "development"
+    assert reader_novelty("c", links, [_sent("ra", "a"), _sent("rs", "s", state="sending")]).novelty == "in_flight"
+    known = reader_novelty("c", links, [_sent("ra", "a"), _sent("rs", "s", state="ambiguous")])
+    assert (known.novelty, known.intent_id, known.linked_intents) == ("known", "rs", ("rs", "ra"))
+    # A claim a delivered receipt already carries is known without any link.
+    assert reader_novelty("c", [], [_sent("rc", "c")]).novelty == "known"
+    assert current_links([_link("c", "c", "equivalent")]) == ()
+
+
+def _judgment(value: float, anchor: dict[str, float] | None = None) -> ReaderJudgment:
+    return ReaderJudgment(
+        status="available",
+        backend="native",
+        identity="native-test",
+        importance=ImportanceEvidence(value=value, probabilities=(0.2, 0.2, 0.2, 0.2, 0.2), confidence=0.5),
+        anchor=None if anchor is None else AnchorEvidence(probabilities=anchor, confidence=0.5),
+    )
+
+
+def test_reader_decision_rows_in_order() -> None:
+    cuts = READER_CUTS["native"]
+    corrects = ReaderNovelty(
+        novelty="development", intent_id="ra", settled_at_ms=10, path=(_link("c", "a", "corrects"),)
+    )
+    change = corrects.model_copy(update={"path": (_link("c", "a", "real_world_change"),)})
+
+    def decide(novelty: ReaderNovelty, value: float, **options: Any) -> tuple[str, str, str | None]:
+        options.setdefault("first_available_at_ms", 20)
+        result = reader_decision(
+            novelty, _judgment(value, options.pop("anchor", None)), message_intents=("ra", "rb"), **options
+        )
+        return result.outcome, result.render, result.anchor_intent_id
+
+    assert decide(ReaderNovelty(novelty="known", intent_id="ra"), 3.5) == ("known", "full", "ra")
+    assert decide(ReaderNovelty(novelty="in_flight", intent_id="ra"), 3.5)[0] == "in_flight"
+    # A correction of a delivered claim is repaired regardless of its score, but only when it came later.
+    assert decide(corrects, 0.1) == ("correction", "correction", "ra")
+    assert decide(corrects, 0.1, first_available_at_ms=5) == ("feed", "increment", "ra")
+    # A real-world development is pushed on what it adds, as an increment on the earlier message.
+    assert decide(change, cuts.push) == ("push", "increment", "ra")
+    assert decide(change, cuts.push - 0.01)[0] == "feed"
+    assert decide(ReaderNovelty(novelty="increment", intent_id="rb"), cuts.key) == ("key", "increment", "rb")
+    unlinked = ReaderNovelty(novelty="unlinked")
+    assert decide(unlinked, cuts.push, anchor={"m1": 0.1, "m2": 0.8, "none": 0.1}) == ("push", "increment", "rb")
+    assert decide(unlinked, cuts.push, anchor={"m1": 0.1, "m2": 0.1, "none": 0.8}) == ("push", "full", None)
+    assert decide(unlinked, 1.0) == ("feed", "full", None)
+    looser = ReaderCuts(push=0.5, key=3.9, anchor_none_below=0.9)
+    assert decide(unlinked, 1.0, cuts=looser)[0] == "push"

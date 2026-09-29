@@ -54,18 +54,18 @@ from .judgment import (
 from .notification import CardCopy, card_copy_material
 from .projection import PROJECTION_VERSION, extraction_input
 from .reader_judgments import (
-    COVERAGE_QUESTION,
+    ANCHOR_QUESTION,
     IMPORTANCE_LEVELS,
     IMPORTANCE_QUESTION,
     READER_INSTRUCTIONS,
     READER_MESSAGES_MAX,
     READER_QUESTIONS_IDENTITY,
-    CoverageEvidence,
+    AnchorEvidence,
     ImportanceEvidence,
     ReaderBackend,
     ReaderInput,
     ReaderJudgment,
-    coverage_options,
+    anchor_options,
 )
 from .topics import MAX_TOPICS
 
@@ -702,7 +702,7 @@ READER_NATIVE_SECONDS: Final = 3.0
 
 @lru_cache(maxsize=READER_MESSAGES_MAX + 1)
 def reader_signature(messages: int) -> Any:
-    """Both reader questions over one shared state: importance always, coverage when messages were recalled.
+    """Both reader questions over one shared state: importance always, the anchor when messages were supplied.
 
     The same signature serves System One natively and the generative route through DSPy's decision
     adapter, so both backends answer exactly the same questions.
@@ -721,9 +721,9 @@ def reader_signature(messages: int) -> Any:
         )
     fields["importance"] = (Score[IMPORTANCE_LEVELS], dspy.OutputField(desc=IMPORTANCE_QUESTION))
     if messages:
-        fields["covering_message"] = (
-            Choice[coverage_options(messages)],
-            dspy.OutputField(desc=COVERAGE_QUESTION),
+        fields["anchor_message"] = (
+            Choice[anchor_options(messages)],
+            dspy.OutputField(desc=ANCHOR_QUESTION),
         )
     return dspy.Signature(fields, instructions=READER_INSTRUCTIONS)
 
@@ -735,7 +735,7 @@ def _normalized(values: Mapping[Any, float]) -> dict[Any, float]:
     return {key: value / total for key, value in values.items()}
 
 
-def _reader_evidence(prediction: Any, messages: int) -> tuple[ImportanceEvidence, CoverageEvidence | None]:
+def _reader_evidence(prediction: Any, messages: int) -> tuple[ImportanceEvidence, AnchorEvidence | None]:
     score = prediction.importance
     if score.probabilities is None:
         raise ContractFault("news_reader_importance_distribution_missing")
@@ -747,14 +747,14 @@ def _reader_evidence(prediction: Any, messages: int) -> tuple[ImportanceEvidence
     )
     if not messages:
         return importance, None
-    choice = prediction.covering_message
+    choice = prediction.anchor_message
     if choice.probabilities is None:
-        raise ContractFault("news_reader_coverage_distribution_missing")
-    coverage = CoverageEvidence(
+        raise ContractFault("news_reader_anchor_distribution_missing")
+    anchor = AnchorEvidence(
         probabilities={str(key): value for key, value in _normalized(choice.probabilities).items()},
         confidence=choice.confidence,
     )
-    return importance, coverage
+    return importance, anchor
 
 
 class DspyReaderJudge:
@@ -815,7 +815,7 @@ class DspyReaderJudge:
         self, backend: ReaderBackend, prediction: Any, reader: ReaderInput, *, served_model: str | None
     ) -> ReaderJudgment:
         try:
-            importance, coverage = _reader_evidence(prediction, len(reader.messages))
+            importance, anchor = _reader_evidence(prediction, len(reader.messages))
         except (AttributeError, ValidationError) as exc:
             raise ContractFault("news_reader_answer_invalid") from exc
         return ReaderJudgment(
@@ -824,7 +824,7 @@ class DspyReaderJudge:
             identity=self.native_identity if backend == "native" else self.generated_identity,
             served_model=served_model,
             importance=importance,
-            coverage=coverage,
+            anchor=anchor,
         )
 
 
