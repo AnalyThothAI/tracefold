@@ -113,7 +113,7 @@ CLAIM_REASON_ZH: Final[dict[str, str]] = {
     "large_daily_move": "商品/指数当日大幅波动",
     "reader_key": "新增信息重要，标为重点",
     "reader_push": "新增信息值得推送",
-    "reader_feed": "新增信息不足以打断，只进信息流",
+    "reader_feed": "重要性未达推送线，只进信息流",
     "reader_unavailable": "读者判断暂不可用，等待重试",
     "reader_unassessed": "读者判断长时间不可用，未评估，不推送",
 }

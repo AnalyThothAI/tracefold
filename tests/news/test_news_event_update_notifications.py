@@ -251,7 +251,7 @@ def test_an_increment_is_scored_on_what_it_adds_with_the_linked_message_first() 
     # The reader already has the core fact: what the increment adds needs the key cut.
     assert only_reason(run_plan(update, snapshot, judge=FixedReader(cuts.key - 0.01, anchor="m1"))) == "reader_feed"
     # P014 (2026-09-29): a link to an unrelated earlier push that the anchor does not confirm is no "补充".
-    plan = run_plan(update, snapshot, judge=FixedReader(2.94))
+    plan = run_plan(update, snapshot, judge=FixedReader(cuts.key))
     record = plan.claim_decisions[0].reader
     assert only_reason(plan) == "reader_key" and record is not None
     assert (record.novelty, record.render, record.earlier, plan.earlier(ref)) == ("increment", "full", None, None)
