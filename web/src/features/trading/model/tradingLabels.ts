@@ -1,61 +1,3 @@
-/** The whole `trading_cases.state` vocabulary: two while a Case is claimed, three terminal. */
-export const CASE_STATE_ZH: Record<string, string> = {
-  PENDING: "待决",
-  RUNNING: "判定中",
-  DONE: "分析完成",
-  FAILED: "分析不可用",
-  EXCLUDED: "目标排除",
-  BLOCKED: "无法安全判定",
-  NO_TRADE: "不交易",
-  SIGNAL_EMITTED: "已发出 Signal",
-};
-
-/**
- * Why a Case that ran could not reach a decision, keyed exactly as the writer stores it.
- *
- * Every one of these is a *system* fact, never an opinion about the trade: an opinion ends in `NO_TRADE`
- * with its frozen checks attached. A catch-all covering a PostgreSQL timeout and a real refusal alike is
- * deliberately absent — a blocked Case must name which of the three it is.
- */
-export const BLOCKED_REASON_ZH: Record<string, string> = {
-  manifest_invalid: "冻结清单无法解析",
-  policy_identity_retired: "该案例的策略身份已退役",
-  source_stale: "来源事实已过时",
-};
-
-/** The pure policy's own rule names. A rule with no entry renders as itself; it is what an operator greps. */
-export const POLICY_RULE_ZH: Record<string, string> = {
-  move_above_band_chasing: "价格已越过追高上限",
-  not_oi_rise: "持仓不是上升",
-  price_direction_not_confirmed: "价格方向未确认",
-  smart_money_momentum_long: "聪明钱动量 · 做多",
-  smart_money_oi_change_below_floor: "持仓变动低于地板",
-  smart_money_ratio_below_or_equal_floor: "鲸鱼占比未超过地板",
-  source_window_mismatch: "测量窗口不可证",
-};
-
-export function policyReasonLabel(reason: string | null | undefined): string {
-  if (!reason) return "—";
-  return BLOCKED_REASON_ZH[reason] ?? POLICY_RULE_ZH[reason] ?? reason;
-}
-
-/**
- * The one production Alpha policy.
- *
- * The seven retired identities this table used to carry are unreachable from every surface that reads it:
- * `/trading` and the token page both read a rolling 24 h window, and no writer has emitted any of them
- * since V4 landed. A translation nothing can render is a claim about the ledger that the ledger no longer
- * makes; a stored id with no entry here still renders as itself, which is what an operator greps anyway.
- */
-export const POLICY_ZH: Record<string, string> = {
-  source_native_oi_smart_money_long_v5: "来源原生 OI × 聪明钱 · 做多",
-};
-
-export function policyLabel(policyId: string | null | undefined): string {
-  if (!policyId) return "—";
-  return POLICY_ZH[policyId] ?? policyId;
-}
-
 /** The executor readiness projection's closed set of entry block reasons. */
 export const ENTRY_BLOCK_REASON_ZH: Record<string, string> = {
   disabled: "执行通道未启用",
@@ -140,37 +82,6 @@ export const EXIT_REASON_ZH: Record<string, string> = {
   protection_rules_missing: "保护规则缺失，安全平仓",
   partial_protection_exit: "保护部分成交后平仓",
 };
-
-/** The admission ledger's three terminal words, as `trading_candidate_gate_decisions.status` stores them. */
-export const ADMISSION_STATUS_ZH: Record<string, string> = {
-  CASE_CREATED: "成案",
-  REJECTED: "准入拒绝",
-  EXPIRED: "过期",
-};
-
-/**
- * Why admission refused a frame before any policy ran, keyed as the gate writes it.
- *
- * These are the reasons above the Case: a frame that never became a Case has no frozen checks to show,
- * so this table is the only account of it the desk can give. An untranslated key renders as itself.
- */
-export const ADMISSION_REASON_ZH: Record<string, string> = {
-  instrument_unmapped: "无可执行路由",
-  oi_value_below_floor: "持仓价值低于地板",
-  source_contract_invalid: "来源契约无效",
-  source_not_live: "来源未上线",
-  trigger_stale: "触发已陈旧",
-};
-
-export function admissionStatusLabel(status: string | null | undefined): string {
-  if (!status) return "—";
-  return ADMISSION_STATUS_ZH[status] ?? status;
-}
-
-export function admissionReasonLabel(reason: string | null | undefined): string {
-  if (!reason) return "—";
-  return ADMISSION_REASON_ZH[reason] ?? reason;
-}
 
 /**
  * The one thing every ledger on the desk says when it has no rows (#537 PR-5).

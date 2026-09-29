@@ -2,7 +2,7 @@
 
 [手册](README.md) · [系统架构](ARCHITECTURE.md) · [运维](OPERATIONS.md) · [数据库迁移](MIGRATIONS.md)
 
-推荐使用仓库的 **Make + Docker Compose** 启动完整应用。业务配置只有 `TRACEFOLD_HOME/config.yaml` 一份，默认仍为 `~/.tracefold/config.yaml`；前后端一起构建，Nautilus 执行角色独立管理。
+推荐使用仓库的 **Make + Docker Compose** 启动完整应用。业务配置只有 `TRACEFOLD_HOME/config.yaml` 一份，默认仍为 `~/.tracefold/config.yaml`；前后端与可选 Executor 使用同一应用镜像，由 Compose 管理。
 
 <details>
 <summary><strong>本页目录</strong></summary>
@@ -61,7 +61,7 @@ config:
 ---
 flowchart TD
     accTitle: 镜像内初始化与应用启动
-    accDescr: 项目锁保护构建与初始化，先验证配置和运行时 schema 兼容，再启动基础设施，等待迁移成功后启动应用。独立 Nautilus 不由此自动重启。
+    accDescr: 项目锁保护构建与初始化，先验证配置和运行时 schema 兼容，再启动基础设施，等待迁移成功后启动应用。Executor 在同一应用镜像内随配置启动。
     Lock["项目级 OS 锁"] --> Build["构建镜像并读取不可变 ID"]
     Build --> Init["镜像内初始化、配置与运行时清单验证"]
     Init --> Window["活动执行进程的 schema 兼容检查"]
@@ -147,9 +147,9 @@ make help
 | 新闻 / 市场推送 | `news.push` | 默认关闭；Feishu / Telegram 各需自身有效目的地与凭据 |
 | News 通知准备上限 | `news.push.notification_prepare_limit` | 默认 2，可设 1–8；限制实际在途准备，不改变同进程唯一发送时隙 |
 | 钱包净买入 | `news.chain_tape` | 默认关闭；名单、RPC、规则与后续价格能力分开诊断 |
-| Trading Analysis | `trading.enabled`、`trading.analysis` | 默认关闭；需要研究模型和有界市场证据 |
+| Trading Analysis | `trading.enabled`、`trading.analysis` | 默认关闭；需显式模型路由、版本化 Program SHA 与 LIVE 行情 |
 | Signal 发布 | `trading.analysis.publish_signals` | 默认 false；有研究决策也可以不发布 |
-| 账户执行 | `trading.execution` | 默认关闭；另配连接、凭据、风险并显式管理 Runtime |
+| 账户执行 | `trading.execution` | 默认关闭；仅允许 Binance USD-M DEMO，另配凭据与风险 |
 
 以下是**合并到生成配置中的字段示例，不是完整配置文件**；占位值必须替换，未填写前不要期待模型或新闻正常工作：
 
@@ -166,6 +166,12 @@ llm:
 
 trading:
   enabled: false
+  analysis:
+    model_name: "<显式模型名称>"
+    program:
+      path: forecast_v1.json
+      sha256: 39ceec608f2b3ea94f2c85a072d92bd2b12d038d3017da1f5d6b79f9e90b6a56
+    publish_signals: false
 ```
 
 启用的来源 Strategy 在提供商账户管理，不是本地维护一个过时的 ID 白名单。模型 endpoint 组只填一部分会被拒绝；当前 News fallback 与 ReaderCard fallback 也有明确配置依赖，按 Settings 错误路径修正，不复制旧 YAML。
@@ -182,7 +188,7 @@ trading:
 | RabbitMQ 管理 | `127.0.0.1:15672` | 管理接口，不是应用 HTTP |
 | Serve / 工作台 | `127.0.0.1:8765` | 只读 API 与生产静态资源 |
 | Workers 探针 | `127.0.0.1:8766` | Workers 存活、就绪与指标 |
-| Nautilus 探针 | `127.0.0.1:8767` | 仅独立 Runtime 运行时可用 |
+| Executor 探针 | `127.0.0.1:8767` | DEMO Executor 运行时可用 |
 
 [compose.yaml](../compose.yaml)是全部绑定默认值的唯一来源；Make 不再复制一套默认值。Analysis 也有自己的容器健康检查，不应凭空假设还有一个公开端口。
 
@@ -195,7 +201,7 @@ docker compose exec -T workers tracefold news bus-policy verify
 
 初始数据库的 bootstrap 密码与应用用户密码不同。应用角色使用普通应用登录，以装配能力、事务设置和 `application_name` 区分用途；不向 Serve / Workers / Analysis 挂载 bootstrap 超级用户凭据。
 
-在长期运行的角色中，只有 Nautilus 挂载 Binance 执行密钥；短暂运行的可信初始化器以操作者身份初始化其目录。Analysis 使用公共市场 / 模型适配和连接身份，不应为研究顺手获得账户写凭据。
+在长期运行的角色中，只有 Executor 挂载 Binance DEMO 执行密钥；短暂运行的可信初始化器以操作者身份初始化其目录。Analysis 使用公共市场 / 模型适配和连接身份，不应为研究顺手获得账户写凭据。
 
 需要持久化项目、目录或端口时：
 
@@ -220,24 +226,16 @@ Compose 读取 `.env`；业务 Settings 不读取它。显式 Make 参数 / shel
 
 只删除对应 YAML 路径，不批量清除所有同名 key。普通 `init` 保留旧配置，`init --force` 不是迁移工具。0404 / 0405 的前向切换与协调写进程要求见[迁移指南](MIGRATIONS.md)。
 
-已有 Runtime 运行时，不能在其持有账户的同时随意改变数据库契约。`make up` 不会替你重启执行进程；精确镜像替换的范围见[运维](OPERATIONS.md#deployment)。
+升级 #746 时先停止 Analysis 与旧执行进程，按场所签名读确认 DEMO 仓位、普通单和 Algo 单均为零，备份 Trading 表；0417/0418 迁移与新镜像在同一维护窗口完成。运行中 Executor 不可连接不匹配的 schema。
 
-`make deploy-image IMAGE_ID=sha256:<完整 ID>` 仅恢复当前命令契约兼容、且 image / database head 相同的本地镜像，不要求旧镜像与当前 Git HEAD 相同，不构建、不降级数据库、不重启执行。`make db-migrate` 是显式维护操作，会停止应用角色并在迁移后保持停止；日常更新直接使用 `make up`。
+`make deploy-image IMAGE_ID=sha256:<完整 ID>` 仅恢复当前命令契约兼容、且 image / database head 相同的本地镜像，不要求旧镜像与当前 Git HEAD 相同，不构建、不降级数据库。`make db-migrate` 是显式维护操作，会停止应用角色并在迁移后保持停止；日常更新直接使用 `make up`。
 
 只读 `tracefold runtime-manifest` 替代历史数据库 genesis 命令，报告不可变镜像和 News 程序清单。未提交的开发构建标记为 `-dirty`，不伪装成已提交源码；生产应使用审阅后的干净来源。
 
 <a id="section-可选执行生命周期"></a>
-## 07 · 可选执行生命周期
+## 07 · 可选 DEMO Executor
 
-```bash
-make runtime-build
-make runtime-status
-make runtime-logs
-```
-
-`runtime-build` 生成 `tracefold-runtime:<sha>` 镜像。`make runtime-up RUNTIME_IMAGE=<已有镜像>` 不构建、不迁移、不重建 PostgreSQL；先检查启用状态和 image / database head，再操作执行容器。`runtime-restart` 使用实际容器的不可变 image ID，不跟随可变 tag；关闭预算仍为 Compose 中的 90 秒。真正的 `runtime-up`、`runtime-restart`、`runtime-down` 是独立、显式的执行生命周期操作；是否有交易权限取决于实际配置、作用域和账户状态，不取决于是否完成了本安装指南。
-
-没有内置 Paper 模拟器；`trading.execution.binance.environment` 指定原生适配器目标，`LIVE` / `DEMO` / `TESTNET` 也必须配合相应凭据。不要假设未设置环境就一定是测试连接。当前该值同时决定 Analysis 读取的永续行情环境：设为 `DEMO` 时研究行情（spot 除外）来自 DEMO 撮合数据，见 [Trading 行情来源](modules/trading.md#section-行情来源与数据环境)。
+`trading.execution.enabled` 默认 false。启用后由 `make up` 在应用镜像中启动 Executor；账户环境必须为 `DEMO`，签名凭据仅挂到 Executor。Analysis 行情恒为 LIVE，纸面双腿不依赖 Executor。进程停止不会自动平仓，操作见[运维](OPERATIONS.md#trading-operations)。
 
 <a id="section-本地开发"></a>
 ## 08 · 本地开发
@@ -267,7 +265,7 @@ npm run dev
 make down
 ```
 
-先停止 Nautilus，再停止应用与依赖；保留配置和数据卷。不要把 `docker compose down -v` 加入日常升级或排障步骤。进程停止也不表示交易所仓位自动关闭。
+先核实 DEMO 账户状态，再停止应用与依赖；保留配置和数据卷。不要把 `docker compose down -v` 加入日常升级或排障步骤。进程停止也不表示交易所仓位自动关闭。
 
 保留的离线迁移和历史研究工具及其调用时机见 [scripts 工具归属](../scripts/README.md)。普通启动不会执行批量重标注、归档搬迁、历史研究或全局 CLI 安装。
 

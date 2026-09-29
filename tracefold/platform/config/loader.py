@@ -96,15 +96,9 @@ llm:
       temperature: 0
       structured_output: "auto"
       extra_body: {{}}
-  trading_semantics:
-    # Optional System One route. OpenRouter: https://openrouter.ai/api, jev-latest.
-    # Future direct route uses https://api.typesafe.ai with its own key/model.
-    api_key:
-    base_url:
-    model:
   news_judgment:
     # Optional News Jev judgments, all three or none. Unset: generative judgments on the
-    # News endpoints above. Configuring trading_semantics never enables this route.
+    # News endpoints above.
     # OpenRouter: https://openrouter.ai/api with jev-1.13; direct: https://api.typesafe.ai
     # with jev-1.13.0. The SDK appends /v1/systemone; do not repeat it here.
     api_key:
@@ -115,7 +109,7 @@ llm:
     # The key is the secret file news_reader_judgment_api_key in this directory (created empty by
     # init and mounted into Workers), never an inline value: set api_key_file to that name. Unset,
     # or an empty key file: the generative News route answers the reader questions with its own
-    # cuts. Never inferred from news_judgment or trading_semantics.
+    # cuts. Never inferred from news_judgment.
     api_key_file:
     base_url:
     model:
@@ -172,6 +166,13 @@ news:
 
 trading:
   enabled: false
+  analysis:
+    model_name:
+    program:
+      path: forecast_v1.json
+      sha256: 39ceec608f2b3ea94f2c85a072d92bd2b12d038d3017da1f5d6b79f9e90b6a56
+    active_policy: forecast
+    publish_signals: false
   execution:
     enabled: false
     account_slot: binance_usdm_primary

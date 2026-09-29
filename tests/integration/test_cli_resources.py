@@ -62,6 +62,8 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
         "state",
         "active_policy",
         "model_name",
+        "program_sha",
+        "fault_code",
         "publish_signals",
         "config_digest",
         "heartbeat_at_ms",
@@ -130,54 +132,24 @@ def test_trading_issue_records_idempotent_intent_without_interpreting_activation
     }
 
 
-def test_trading_gate_reads_the_admission_ledger_the_deleted_routes_read(postgres_clone_dsn: str) -> None:
-    """#589 PR-2 (T-F13). The CLI is the admission ledger's reader now, over real PostgreSQL.
-
-    `GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` were the only public shapes over
-    `trading_candidate_gate_decisions`, and #553 PR-1 deleted the OI frame table that was their only
-    browser reader. This command runs the same two repository statements: the window read, newest
-    frame first, and the one row by source key.
-    """
-
-    from tests.postgres_test_utils import connect_postgres_test
-
-    now_ms = int(time.time() * 1000)
-    source_key = "oi:cli-gate-evt:oi_signal_v1"
-    conn = connect_postgres_test(read_only=False)
-    try:
-        with conn.transaction():
-            conn.execute(
-                "INSERT INTO trading_candidate_gate_decisions "
-                "(source_key,trigger_kind,underlying_key,source_observed_at_ms,status,stage,reason,"
-                "retryable,evidence,case_id,first_evaluated_at_ms,last_evaluated_at_ms,attempt_count) "
-                "VALUES (%s,'oi','crypto:DELL',%s,'REJECTED','venue','instrument_unmapped',"
-                'false,\'{"market_key":"crypto:perp:DELL:USDT"}\'::jsonb,NULL,%s,%s,1)',
-                (source_key, now_ms - 60_000, now_ms, now_ms),
-            )
-    finally:
-        conn.close()
-
+def test_trading_scoreboard_reads_empty_migrated_ledger(postgres_clone_dsn: str) -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         home = Path(tmpdir)
         write_runtime_config(home, postgres_dsn=postgres_migration_test_dsn(postgres_clone_dsn))
         stdout = io.StringIO()
         with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
-            exit_codes = [
-                main(["trading", "gate"], stdout=stdout),
-                main(["trading", "gate", "--source-key", source_key], stdout=stdout),
-                main(["trading", "gate", "--source-key", "oi:absent:oi_signal_v1"], stdout=stdout),
-            ]
-
-    window, by_key, absent = (json.loads(line) for line in stdout.getvalue().splitlines())
-    assert exit_codes == [0, 0, 0]
-    assert [row["source_key"] for row in window["data"]] == [source_key]
-    assert by_key["data"] == window["data"]
-    # The stored `evidence` jsonb is rendered exactly as the deciding rule wrote it (#532).
-    assert by_key["data"][0]["evidence"]["market_key"] == "crypto:perp:DELL:USDT"
-    assert by_key["data"][0]["status"] == "REJECTED"
-    assert by_key["data"][0]["reason"] == "instrument_unmapped"
-    # A source key with no decision is an empty page, not an error and not a missing key.
-    assert absent == {"ok": True, "data": []}
+            exit_code = main(["trading", "scoreboard", "--since", "2026-09-01", "--until", "2026-09-08"], stdout=stdout)
+    assert exit_code == 0
+    data = json.loads(stdout.getvalue())["data"]
+    assert data["funnel"] == {
+        "triggers": 0,
+        "selected": 0,
+        "assessed": 0,
+        "published": 0,
+        "execution_accepted": 0,
+        "filled": 0,
+    }
+    assert data["programs"] == []
 
 
 def _management_url(url: str) -> str:

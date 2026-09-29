@@ -37,7 +37,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260929_0417"
+HEAD = "20260929_0418"
 PRE_CUT = "20260928_0410"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
@@ -201,6 +201,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260929_0417",
         "20260929_0416",
         "20260929_0415",
         "20260929_0413",
@@ -475,6 +476,9 @@ def test_execution_hard_cut_retires_old_tables_and_is_forward_only() -> None:
     config = _config()
     _empty_the_schema()
     command.upgrade(config, "20260929_0415")
+    command.upgrade(config, "20260929_0417")
+    with pytest.raises(RuntimeError, match="trading_execution_hard_cut_forward_only_restore_verified_backup"):
+        command.downgrade(config, "20260929_0416")
     command.upgrade(config, HEAD)
 
     conn = connect_postgres_test(read_only=True)
@@ -507,8 +511,8 @@ def test_execution_hard_cut_retires_old_tables_and_is_forward_only() -> None:
         )
     finally:
         conn.close()
-    with pytest.raises(RuntimeError, match="trading_execution_hard_cut_forward_only_restore_verified_backup"):
-        command.downgrade(config, "20260929_0415")
+    with pytest.raises(RuntimeError, match="Irreversible #746 Analysis hard cut"):
+        command.downgrade(config, "20260929_0417")
     assert _stamped_revision() == HEAD
 
 

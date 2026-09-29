@@ -5,6 +5,7 @@ import {
 } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
 import {
+  CASE_ID,
   tradingExecutionRowFixture,
   tradingExecutionsFixture,
   tradingLiveExecutionFixture,
@@ -40,16 +41,16 @@ test("positions lead the desk; execution opens a keyboard-dismissible Case and r
   await expectNoDocumentHorizontalOverflow(page);
   const signal = page.getByRole("button", { name: "crypto:perp:BTC:USDT" });
   await signal.click();
-  const drawer = page.getByRole("dialog", { name: "策略判定依据" });
-  await expect(drawer).toContainText("case-btc");
-  expect(new URL(page.url()).searchParams.get("case")).toBe("case-btc");
+  const drawer = page.getByRole("dialog", { name: "冻结 Case" });
+  await expect(drawer).toContainText(CASE_ID);
+  expect(new URL(page.url()).searchParams.get("case")).toBe(CASE_ID);
   await expectNoDocumentHorizontalOverflow(page);
   await page.keyboard.press("Escape");
   await expect(drawer).toHaveCount(0);
   await expect(signal).toBeFocused();
   expect(new URL(page.url()).searchParams.get("tab")).toBe("executions");
-  await page.getByRole("button", { name: "策略判定", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "一条市场线索，如何走到交易" })).toBeVisible();
+  await page.getByRole("button", { name: "冻结 Case", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "冻结 Case" })).toBeVisible();
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoUnhandledApiRequests(page);
 });

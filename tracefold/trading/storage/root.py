@@ -6,23 +6,17 @@ from typing import Any, Protocol
 
 from .analysis import AnalysisStorage
 from .executor import ExecutorStorage
-from .gate import HistoricalGateStorage
 from .history import HistoricalCaseStorage
-from .queries import QueryStorage
+from .scoreboard import ScoreboardStorage
 
 
 class TradingRepository(
     ExecutorStorage,
     AnalysisStorage,
-    HistoricalGateStorage,
     HistoricalCaseStorage,
-    QueryStorage,
+    ScoreboardStorage,
 ):
-    """Connection-bound persistence facade; callers continue to own transactions.
-
-    Historical admission rows remain readable; the Analysis process owns new
-    Trigger and Case writes.
-    """
+    """Connection-bound persistence facade; callers continue to own transactions."""
 
     def __init__(self, conn: Any) -> None:
         self.conn = conn

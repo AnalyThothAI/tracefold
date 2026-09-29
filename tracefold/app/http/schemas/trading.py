@@ -15,9 +15,11 @@ class TradingDecisionRuntimeData(ExactApiSchema):
     """Analysis process liveness and the last durable Case for this deployment."""
 
     last_case_at_ms: int | None = None
-    state: Literal["disabled", "unavailable", "model_unconfigured", "running"]
+    state: Literal["disabled", "unavailable", "model_unconfigured", "faulted", "running"]
     active_policy: str
     model_name: str | None = None
+    program_sha: str | None = None
+    fault_code: str | None = None
     publish_signals: bool
     config_digest: str | None = None
     heartbeat_at_ms: int | None = None
@@ -103,228 +105,118 @@ class TradingStatusData(ExactApiSchema):
     execution: TradingExecutionReadinessData
 
 
-class TradingPolicyCheckData(ExactApiSchema):
-    check: str
-    operator: str
-    threshold: str
-    measured: str | None = None
-    passed: bool
+class TradingAssessmentData(ExactApiSchema):
+    case_id: str
+    program_sha: str
+    route: str
+    status: str
+    forecast: dict[str, Any] | None = None
+    drivers: list[dict[str, Any]] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    started_at_ms: int
+    ended_at_ms: int
 
 
-class TradingAnalysisDecisionData(ExactApiSchema):
-    decision_id: str
+class TradingPolicyActionData(ExactApiSchema):
+    case_id: str
+    program_sha: str
     policy_id: str
     policy_version: str
-    assessment_ref: str | None = None
-    action: str
-    decision: dict[str, Any]
+    calibrator_version: str
+    action: Literal["long", "short", "abstain"]
+    reason: str
+    expected_r: str | None = None
     publish_status: str
-    publish_reason: str | None = None
+    signal_id: str | None = None
     decided_at_ms: int
-    valid_until_ms: int
 
 
-class TradingAnalysisOutcomeData(ExactApiSchema):
-    axis: str
-    horizon_seconds: int
-    label_version: str
-    status: str
-    return_bps: str | None = None
-    available_at_ms: int
-    labeled_at_ms: int | None = None
-    path_ref: str | None = None
-
-
-class TradingPhysicalModelCallData(ExactApiSchema):
-    claim_attempt: int
-    call_index: int
-    status: str
-    phase: str | None = None
-    endpoint: str | None = None
-    requested_model: str | None = None
-    served_model: str | None = None
-    started_at_ms: int | None = None
-    finished_at_ms: int | None = None
-    timeout_ms: int | None = None
-    remaining_deadline_ms: int | None = None
-    reserved_cost_microusd: int | None = None
-    request_ref: str | None = None
-    response_ref: str | None = None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    cost_microusd: int | None = None
-    cost_unknown_reason: str | None = None
-
-
-class TradingAnalysisAttemptData(ExactApiSchema):
+class TradingPaperLegData(ExactApiSchema):
     case_id: str
-    claim_attempt: int
-    brief_ref: str | None = None
-    evidence_ref: str | None = None
-    assessment_ref: str | None = None
-    final_manifest_ref: str | None = None
-    termination_reason: str | None = None
-    model_name: str | None = None
-    prompt_sha: str | None = None
-    started_at_ms: int | None = None
-    ended_at_ms: int | None = None
-    provider_status: str | None = None
-    analysis_status: str
-    error_code: str | None = None
-    validation_errors: list[dict[str, str]] = Field(default_factory=list)
-    physical_call_count: int
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    cost_microusd: int | None = None
-    known_cost_microusd: int = 0
-    unknown_cost_calls: int = 0
-    cost_upper_estimate_microusd: int | None = None
-    cost_unknown_reason: str | None = None
-    settled: bool
-    physical_calls: list[TradingPhysicalModelCallData] = Field(default_factory=list)
-
-
-class TradingWatchObservationData(ExactApiSchema):
-    parent_case_id: str
-    trigger_id: str
-    condition: dict[str, Any]
-    status: str
-    trigger_side: str | None = None
-    last_observation_status: str | None = None
-    last_observed_at_ms: int | None = None
-    last_observation_ref: str | None = None
-    last_observed_value: str | None = None
-    next_check_at_ms: int
-    expires_at_ms: int
-    child_case_id: str | None = None
-    created_at_ms: int
-    updated_at_ms: int
-
-
-class TradingRootChainCaseData(ExactApiSchema):
-    case_id: str
-    run_kind: str | None = None
-    recheck_seq: int | None = None
-    state: str
-    analysis_status: str | None = None
-    created_at_ms: int
-    decided_at_ms: int | None = None
-    action: str | None = None
-    publish_status: str | None = None
-    side: str | None = None
+    side: Literal["long", "short"]
+    geometry_version: str
+    status: Literal["complete", "missing"]
+    outcome: Literal["tp", "sl", "timeout"] | None = None
+    reason: str | None = None
+    anchor_at_ms: int | None = None
+    exit_at_ms: int | None = None
+    anchor_price: str | None = None
+    exit_price: str | None = None
+    gross_bps: str | None = None
+    cost_bps: str | None = None
+    net_r: str | None = None
+    labeled_at_ms: int
 
 
 class TradingCaseData(ExactApiSchema):
-    """One frozen Case, as the drawer behind `?case=<id>` renders it.
-
-    The four measured OI numbers here were a second copy of what `policy_checks` already carries with
-    the threshold each was measured against, `policy_version` a second copy of `policy_id`, and
-    `policy_decision` a required Literal over a nullable column -- exactly the shape that turned a
-    stored `NULL` into a 500 on a read route (#532, #537 PR-5). `policy_config` was the same duplicate
-    one level up: the frozen dictionary it published is where `policy_checks[].threshold` comes from,
-    so every number that was actually tested is already on the row beside what it was measured against,
-    and `policy_config_digest` still identifies the whole set (#604 T3). `state` and `policy_reason`
-    are the terminal answer; `base_symbol` is the identity the drawer titles itself with.
-    """
-
     case_id: str
-    latest_case_id: str | None = None
-    source_item_id: str | None = None
-    event_id: str | None = None
-    base_symbol: str
-    trigger_kind: str | None = None
-    market_key: str | None = None
-    manifest_version: str | None = None
-    # The manifest's own policy identity. Nullable because the manifest is the only writer of it and a
-    # Case whose manifest names no policy must render as that, not 500 the route (#532, #537 PR-3).
-    policy_id: str | None = None
-    policy_config_digest: str | None = None
-    policy_checks: list[TradingPolicyCheckData] = Field(default_factory=list)
-    state: str
-    policy_reason: str | None = None
-    mark_price: str | None = None
-    pre_move_bps: int | None = None
-    observed_at_ms: int
+    trigger_kind: Literal["oi", "catalyst"]
+    asset_id: str
+    native_symbol: str
     created_at_ms: int
+    state: Literal["pending", "running", "complete", "failed"]
+    failure_code: str | None = None
     decided_at_ms: int | None = None
-    trigger_id: str | None = None
-    target_asset_id: str | None = None
-    target_selection: dict[str, Any] | None = None
-    entry_scope_id: str | None = None
-    mapping_semantics_digest: str | None = None
-    analysis_status: str | None = None
-    analysis_action: str | None = None
-    analysis_publish_status: str | None = None
-    analysis_side: str | None = None
-    evidence_ref: str | None = None
-    analysis_decision: TradingAnalysisDecisionData | None = None
-    analysis_outcomes: list[TradingAnalysisOutcomeData] = Field(default_factory=list)
-    analysis_attempts: list[TradingAnalysisAttemptData] = Field(default_factory=list)
-    watch_observation: TradingWatchObservationData | None = None
-    root_chain: list[TradingRootChainCaseData] = Field(default_factory=list)
-    review_mode: Literal["none", "event_wait", "research_note"] = "none"
-    run_kind: str | None = None
-    recheck_seq: int | None = None
-    root_expires_at_ms: int | None = None
-
-
-class TradingAdmissionCountData(ExactApiSchema):
-    """How many frames admission answered this way in the window.
-
-    A count, not a row: #589 PR-2 deleted a `decisions[]` that published one object per frame with its
-    whole evidence blob, 400 of them on every 15 s poll, and nothing rendered them. This is the
-    distribution the desk's funnel draws its top from -- at most a dozen `(status, reason)` pairs
-    whatever the window holds -- and no frame identity, evidence or Case link travels with it.
-    `reason` is nullable because the ledger's own column is.
-    """
-
-    status: str
-    reason: str | None = None
-    count: int = Field(ge=0)
-
-
-class TradingDecisionCountData(ExactApiSchema):
-    """Agent outcome and publication status for Cases created in the 24 h window."""
-
-    action: str
-    publish_status: str
-    count: int = Field(ge=0)
+    geometry_version: str | None = None
+    view_sha256: str | None = None
+    raw_snapshot_ref: str | None = None
+    view: dict[str, Any] | None = None
+    assessments: list[TradingAssessmentData] = Field(default_factory=list)
+    policy_actions: list[TradingPolicyActionData] = Field(default_factory=list)
+    paper_legs: list[TradingPaperLegData] = Field(default_factory=list)
 
 
 class TradingCasesData(ExactApiSchema):
-    """The Case behind `?case_id=<id>`, plus the three durable 24 h distributions.
-
-    There is no `next_cursor` and no cursor parameter: the desk opens one Case at a time from
-    `?case=<id>` and renders one 24 h count card, and no reader ever asked for a second page (#537 PR-5).
-    `cases` is that one Case or nothing at all: without `case_id` it is empty, because the unconditional
-    100-row page this route used to send on every poll was rendered by nothing and could not reach the
-    `NO_TRADE` Cases an operator most wants to open (#604 T3). `complete` still says the answer was not
-    truncated, which for a primary-key read it never is.
-    """
-
     cases: list[TradingCaseData] = Field(default_factory=list)
-    total: int = 0
-    next_cursor: str | None = None
-    window_from_ms: int = 0
-    window_to_ms: int = 0
-    state_counts_24h: dict[str, int] = Field(default_factory=dict)
-    decision_counts_24h: list[TradingDecisionCountData] = Field(default_factory=list)
-    admission_counts_24h: list[TradingAdmissionCountData] = Field(default_factory=list, max_length=64)
+    total: int
     complete: bool
-    window_hours: int
 
 
-class TradingAnalysisReplayData(ExactApiSchema):
-    case_id: str
-    status: str
-    selected_attempt: int | None = None
-    source_fact: dict[str, Any] | None = None
-    evidence: dict[str, Any] | None = None
-    assessment: dict[str, Any] | None = None
-    final_manifest: dict[str, Any] | None = None
-    tool_observations: list[dict[str, Any]] = Field(default_factory=list)
-    decision: TradingAnalysisDecisionData | None = None
-    attempts: list[TradingAnalysisAttemptData] = Field(default_factory=list)
+class TradingScoreboardPolicyData(ExactApiSchema):
+    policy_id: str
+    policy_version: str
+    cases: int
+    actions: int
+    scored: int
+    coverage: str
+    average_r: str | None = None
+    win_rate: str | None = None
+    ci_low: str | None = None
+    ci_high: str | None = None
+    status: Literal["ok", "insufficient_data"]
+
+
+class TradingReliabilityBinData(ExactApiSchema):
+    bin: int
+    count: int
+    observed_tp_rate: str
+
+
+class TradingScoreboardForecastData(ExactApiSchema):
+    legs: int
+    multiclass_brier: str | None = None
+    log_loss: str | None = None
+    brier_skill_score: str | None = None
+    reliability: list[TradingReliabilityBinData] = Field(default_factory=list)
+    status: Literal["ok", "insufficient_data"]
+
+
+class TradingScoreboardProgramData(ExactApiSchema):
+    program_sha: str
+    route: str
+    assessments: int
+    failures: dict[str, int]
+    policies: list[TradingScoreboardPolicyData]
+    forecast: TradingScoreboardForecastData
+    execution_deviation: dict[str, Any]
+
+
+class TradingScoreboardData(ExactApiSchema):
+    window: dict[str, int]
+    funnel: dict[str, int]
+    programs: list[TradingScoreboardProgramData]
 
 
 class TradingExecutionRowData(ExactApiSchema):

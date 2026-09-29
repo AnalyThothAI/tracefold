@@ -318,9 +318,9 @@ def test_route_identities_are_secret_free_and_ignore_key_rotation() -> None:
     assert other.program_identity != before.program_identity
 
 
-def test_news_jev_is_its_own_route_and_trading_semantics_never_enables_it() -> None:
+def test_news_jev_is_opt_in() -> None:
     jev = {"api_key": "jev-key", "base_url": "https://openrouter.ai/api/", "model": "jev-1.13"}
-    trading_only = learning_runtime.compose_news_models(_news_settings(trading_semantics=jev))
+    trading_only = learning_runtime.compose_news_models(_news_settings())
     native = learning_runtime.compose_news_models(_news_settings(news_judgment=jev))
     assert trading_only is not None and native is not None
     assert trading_only.news_judgment is None
@@ -417,7 +417,7 @@ def test_the_reader_judgment_route_reads_its_key_file_and_nothing_else(tmp_path:
     from tracefold.platform.config.secret_file import SecretFileError
 
     jev = {"api_key": "jev-key", "base_url": "https://openrouter.ai/api", "model": "jev-1.13"}
-    unset = _news_settings(news_judgment=jev, trading_semantics=jev)
+    unset = _news_settings(news_judgment=jev)
     assert learning_runtime.news_reader_judgment_endpoint(unset) is None
 
     settings = _news_settings(
