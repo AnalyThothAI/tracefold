@@ -38,6 +38,7 @@ from tracefold.news.updates.notification import (
     ReaderSnapshot,
     card_copy_material,
     large_daily_move,
+    stale_occurrence,
 )
 from tracefold.news.updates.reader_judgments import READER_CUTS, ClaimLink, LinkedReceipt
 from tracefold.news.updates.semantics import assemble_update
@@ -233,9 +234,10 @@ def test_an_increment_is_scored_on_what_it_adds_with_the_linked_message_first() 
         link_receipts=(delivered("r-old", "old"),),
         linked=(earlier,),
     )
-    judge = FixedReader(cuts := READER_CUTS["native"].push)
+    cuts = READER_CUTS["native"]
+    judge = FixedReader(cuts.key, anchor="m1")
     plan = run_plan(update, snapshot, judge=judge)
-    assert cuts and only_reason(plan) == "reader_push"
+    assert only_reason(plan) == "reader_key"
     assert judge.asked[0].messages == ("英伟达宣布1500亿美元回购", "无关消息")
     record = plan.claim_decisions[0].reader
     assert record is not None and record.novelty == "increment" and record.render == "increment"
@@ -245,6 +247,69 @@ def test_an_increment_is_scored_on_what_it_adds_with_the_linked_message_first() 
         update.claims, {item.ref: item.source for item in update.evidence}, {ref: record.earlier}
     )
     assert material[0]["earlier"] == {"render": "increment", "delivered_text": "英伟达宣布1500亿美元回购"}
+    # The reader already has the core fact: what the increment adds needs the key cut.
+    assert only_reason(run_plan(update, snapshot, judge=FixedReader(cuts.key - 0.01, anchor="m1"))) == "reader_feed"
+    # P014 (2026-09-29): a link to an unrelated earlier push that the anchor does not confirm is no "补充".
+    plan = run_plan(update, snapshot, judge=FixedReader(2.94))
+    record = plan.claim_decisions[0].reader
+    assert only_reason(plan) == "reader_key" and record is not None
+    assert (record.novelty, record.render, record.earlier, plan.earlier(ref)) == ("increment", "full", None, None)
+
+
+def occurred(occurred_at: str, *, quote: str | None = None, kind: str = "state_change", **fields: Any) -> EventUpdate:
+    """One claim reporting what happened on `occurred_at`, first visible at STAMP (2026-09-26 UTC)."""
+
+    item = evidence(quote or f"Agency acted on {occurred_at}.")
+    draft = DraftClaim(
+        slot="a",
+        statement=item.text,
+        fields=ClaimFields.model_validate(
+            {"subject": "Agency", "action": "acted", "content_kind": kind, "occurred_at": occurred_at, **fields}
+        ),
+        citations=(Citation(evidence_ref=item.ref, quote=item.text),),
+    )
+    return adopted((draft, item))
+
+
+@pytest.mark.parametrize(
+    ("update", "stale"),
+    [
+        # P014: an X roundup of old stablecoin news, "Hong Kong licensed its first issuers in April".
+        (occurred("April", quote="Hong Kong licensed its first stablecoin issuers in April."), True),
+        (occurred("late July", kind="other"), True),
+        (occurred("October 2025", kind="official_measure", quote="Live since October 2025."), True),
+        # P008: the extractor dated "Sept. 10" 2023; the year nearest the source still makes it old.
+        (occurred("2023-09-10", quote="Drone strikes damaged the East-West pipeline on Sept. 10."), True),
+        (occurred("2025-09-20", quote="On 20 September 2025 the plant closed."), True),
+        # An invented year on a recent day, a figure's month (its statistical period), a speaker's statement,
+        # the current month and a day written out are not read as old.
+        (occurred("2023-09-25", quote="The plant closed yesterday."), False),
+        (occurred("2023-09-29", quote="The plant closes on Sept. 29."), False),
+        (occurred("August", kind="new_quantity", quote="Exports rose 5% in August."), False),
+        (occurred("April", speaker="Minister", quote="The minister said the law passed in April."), False),
+        (occurred("September"), False),
+        (occurred("Sept. 10"), False),
+        (occurred("decade"), False),
+    ],
+)
+def test_a_claim_reporting_an_old_occurrence_is_not_notified(update: EventUpdate, stale: bool) -> None:
+    """#742 PR-4: freshness is the claim's first visibility; the day it reports must be recent as well."""
+
+    assert stale_occurrence(update.claims[0]) is stale
+    reason = only_reason(run_plan(update, judge=FixedReader(3.5)))
+    assert reason == ("stale_occurrence" if stale else "reader_key")
+
+
+def test_an_old_occurrence_follows_the_source_age_and_never_holds_a_correction() -> None:
+    judge = FixedReader(0.1)
+    update = occurred("April")
+    ref = update.claims[0].ref
+    assert only_reason(run_plan(update, now_ms=STAMP + 3 * HOUR_MS + 1, judge=judge)) == "stale_source"
+    known = reader(links=(link(ref, "old", "equivalent"),), link_receipts=(delivered("r-old", "old"),))
+    assert only_reason(run_plan(update, known, judge=judge)) == "stale_occurrence"
+    corrects = reader(links=(link(ref, "old", "corrects"),), link_receipts=(delivered("r-old", "old"),))
+    assert only_reason(run_plan(update, corrects, judge=judge)) == "correction_of_sent"
+    assert judge.asked == []
 
 
 def test_an_unavailable_judgment_waits_then_is_recorded_unassessed_and_never_cached() -> None:

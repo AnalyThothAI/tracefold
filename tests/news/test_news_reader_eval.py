@@ -50,11 +50,15 @@ def test_recorded_native_answers_meet_the_bar(fixtures: Any) -> None:
     assert report["importance"]["auc_keep_borderline_vs_demote"] >= 0.80
     at_push = next(row for row in report["decision_table"] if row["cut"] == report["cuts"]["push"])
     assert at_push["precision_keep_borderline"] >= 0.40
+    # #742 PR-4: a known core fact needs the key cut (before: 140 claims a day, 0.516, keep recall 0.826).
+    pinned = (at_push["claims_per_day"], at_push["precision_keep_borderline"], at_push["keep_recall"])
+    assert pinned == (120, 0.58, 0.79)
     cut = report["cuts"]["anchor_none_below"]
     fully_said = next(row for row in report["anchor"]["fully_said"] if row["none_below"] == cut)
     assert (fully_said["anchor_recall"], fully_said["false_anchor_rate"]) == (0.973, 0.0)
     # Against the core-fact labels the Issue's 97 % / 1 % is not reached at any cut; a missed anchor renders
-    # the claim in full and changes no push, so the cut keeps false anchors low (weighted to the day).
+    # the claim in full at the push cut, a false one holds it to the key cut as an increment of another
+    # message, so the cut keeps false anchors low (weighted to the day).
     core_fact = next(row for row in report["anchor"]["core_fact"] if row["none_below"] == cut)
     assert (core_fact["anchor_recall"], core_fact["false_anchor_rate"]) == (0.515, 0.013)
     nvidia, spacex = report["clusters"]

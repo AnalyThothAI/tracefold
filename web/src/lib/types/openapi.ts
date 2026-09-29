@@ -923,7 +923,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "retired" | "send_outcome_unresolved" | "send_outcome_ambiguous" | "stale_source" | "known_to_reader" | "linked_send_in_flight" | "correction_of_sent" | "protected_listing" | "large_daily_move" | "reader_key" | "reader_push" | "reader_feed" | "reader_unavailable" | "reader_unassessed" | "editor_notify" | "editor_key" | "editor_feed_only" | "attention_unavailable_default_notify" | "covered_by_sent_receipt";
+            reason: "retired" | "send_outcome_unresolved" | "send_outcome_ambiguous" | "stale_source" | "stale_occurrence" | "known_to_reader" | "linked_send_in_flight" | "correction_of_sent" | "protected_listing" | "large_daily_move" | "reader_key" | "reader_push" | "reader_feed" | "reader_unavailable" | "reader_unassessed" | "editor_notify" | "editor_key" | "editor_feed_only" | "attention_unavailable_default_notify" | "covered_by_sent_receipt";
             /**
              * Reason Zh
              * @default
