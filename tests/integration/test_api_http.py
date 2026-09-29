@@ -167,7 +167,7 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         "no_update",
         "queued_notification",
         "notification_deferred",
-        "notification_exhausted",
+        "notification_failed",
         "not_notified",
         "delivery_ambiguous",
     }
