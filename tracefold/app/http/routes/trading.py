@@ -67,8 +67,8 @@ def get_trading_status(request: Request) -> Response:
         last_case_at_ms = repos.trading.latest_case_created_at_ms()
         execution = runtime.settings.trading.execution
         analysis_runtime = repos.trading.analysis_runtime(execution.account_slot)
-        execution_state = repos.trading.execution_runtime_state(execution.account_slot)
-        execution_control = repos.trading.execution_runtime_control_state(execution.account_slot)
+        execution_state = repos.trading.state(execution.account_slot)
+        execution_control = repos.trading.control(execution.account_slot)
     execution_status = execution_readiness_projection(
         execution, execution_state, execution_control, now_ns=time.time_ns()
     )
@@ -359,6 +359,7 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
     reason = _string_or_none(row.get("disposition_reason"))
     fill_quantity = _string_or_none(row.get("fill_quantity"))
     stop_trigger_price = _string_or_none(row.get("stop_trigger_price"))
+    take_profit_trigger_price = _string_or_none(row.get("take_profit_trigger_price"))
     realized = _string_or_none(row.get("realized_pnl_usd"))
     net = _string_or_none(row.get("net_pnl_usd"))
     return {
@@ -369,33 +370,26 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
         "direction": str(row["direction"]),
         "observed_at_ns": int(row["observed_at_ns"]),
         "disposition_reason": reason,
-        "order_reject_reason": _string_or_none(row.get("order_reject_reason")),
         "fill_quantity": fill_quantity,
         "fill_avg_price": _string_or_none(row.get("fill_avg_price")),
         "stop_trigger_price": stop_trigger_price,
-        "take_profit_trigger_price": _string_or_none(row.get("take_profit_trigger_price")),
+        "take_profit_trigger_price": take_profit_trigger_price,
         "entry_filled_at_ns": _int_or_none(row.get("entry_filled_at_ns")),
         "position_closed_at_ns": _int_or_none(row.get("position_closed_at_ns")),
         "exit_price": _string_or_none(row.get("exit_price")),
         "realized_pnl_usd": realized,
         "fees_usd": _string_or_none(row.get("fees_usd")),
-        "funding_usd": _string_or_none(row.get("funding_usd")),
         "net_pnl_usd": net,
         "exit_reason": _string_or_none(row.get("exit_reason")),
-        "result_evidence_source": _string_or_none(row.get("result_evidence_source")),
-        "result_verified_at_ns": _int_or_none(row.get("result_verified_at_ns")),
+        "pnl_status": _string_or_none(row.get("pnl_status")),
         "plan_status": _string_or_none(row.get("plan_status")),
         "account_slot": _string_or_none(row.get("account_slot")),
         "instrument_id": _string_or_none(row.get("instrument_id")),
         "entry_client_order_id": _string_or_none(row.get("entry_client_order_id")),
-        "risk_budget_usd": _string_or_none(row.get("risk_budget_usd")),
-        "max_leverage_at_creation": _int_or_none(row.get("max_leverage_at_creation")),
+        "entry_error_code": _int_or_none(row.get("entry_error_code")),
         "stop_distance_bps": _int_or_none(row.get("stop_distance_bps")),
-        "exit_policy_id": _string_or_none(row.get("exit_policy_id")),
         "take_profit_bps": _int_or_none(row.get("take_profit_bps")),
         "max_holding_ns": _int_or_none(row.get("max_holding_ns")),
-        "pnl_known": realized is not None,
-        "net_known": net is not None,
         "duration_ns": _int_or_none(row.get("duration_ns")),
         # The venue's own `order_status` and `position_status` are inputs to this word, not a second
         # answer beside it (#537 PR-5). The Signal's own TTL is an input for the same reason (#604 T3).
@@ -406,6 +400,7 @@ def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
             order_status=_string_or_none(row.get("order_status")),
             fill_quantity=fill_quantity,
             stop_trigger_price=stop_trigger_price,
+            take_profit_trigger_price=take_profit_trigger_price,
             position_status=_string_or_none(row.get("position_status")),
             expires_at_ns=_int_or_none(row.get("expires_at_ns")),
             now_ns=now_ns,

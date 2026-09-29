@@ -9255,400 +9255,10 @@
         "title": "TradingDecisionRuntimeData",
         "type": "object"
       },
-      "TradingExecutionAccountData": {
-        "additionalProperties": false,
-        "description": "What the account holds, read from the Nautilus Cache the Runtime executes against (#680).\n\nNautilus reconciles that Cache with the venue at start and every five seconds after; this is the\nRuntime's own picture, published whole. `complete` says every position could be marked and the\nbalance was known, so equity and the drawdown are whole numbers.",
-        "properties": {
-          "complete": {
-            "title": "Complete",
-            "type": "boolean"
-          },
-          "daily_drawdown_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Daily Drawdown Bps"
-          },
-          "daily_drawdown_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Daily Drawdown Usd"
-          },
-          "equity_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Equity Usd"
-          },
-          "findings": {
-            "items": {
-              "$ref": "#/components/schemas/TradingExecutionFindingData"
-            },
-            "maxItems": 100,
-            "title": "Findings",
-            "type": "array"
-          },
-          "findings_total": {
-            "minimum": 0.0,
-            "title": "Findings Total",
-            "type": "integer"
-          },
-          "inflight_orders_count": {
-            "minimum": 0.0,
-            "title": "Inflight Orders Count",
-            "type": "integer"
-          },
-          "observed_at_ms": {
-            "title": "Observed At Ms",
-            "type": "integer"
-          },
-          "open_orders_count": {
-            "minimum": 0.0,
-            "title": "Open Orders Count",
-            "type": "integer"
-          },
-          "orders": {
-            "items": {
-              "$ref": "#/components/schemas/TradingExecutionOrderData"
-            },
-            "maxItems": 200,
-            "title": "Orders",
-            "type": "array"
-          },
-          "orders_total": {
-            "minimum": 0.0,
-            "title": "Orders Total",
-            "type": "integer"
-          },
-          "positions": {
-            "items": {
-              "$ref": "#/components/schemas/TradingExecutionPositionData"
-            },
-            "maxItems": 100,
-            "title": "Positions",
-            "type": "array"
-          },
-          "positions_total": {
-            "minimum": 0.0,
-            "title": "Positions Total",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "observed_at_ms",
-          "positions_total",
-          "orders_total",
-          "findings_total",
-          "open_orders_count",
-          "inflight_orders_count",
-          "complete"
-        ],
-        "title": "TradingExecutionAccountData",
-        "type": "object"
-      },
-      "TradingExecutionFindingData": {
-        "additionalProperties": false,
-        "properties": {
-          "cache_quantity": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cache Quantity"
-          },
-          "instrument_id": {
-            "title": "Instrument Id",
-            "type": "string"
-          },
-          "kind": {
-            "enum": [
-              "unclaimed_position",
-              "unexpected_order",
-              "ownership_mismatch",
-              "venue_cache_mismatch",
-              "close_unconfirmed",
-              "ambiguous",
-              "submission_unknown"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "object_id": {
-            "title": "Object Id",
-            "type": "string"
-          },
-          "observed_at_ms": {
-            "title": "Observed At Ms",
-            "type": "integer"
-          },
-          "plan_entry_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Plan Entry Id"
-          },
-          "venue_quantity": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Venue Quantity"
-          }
-        },
-        "required": [
-          "kind",
-          "object_id",
-          "instrument_id",
-          "observed_at_ms"
-        ],
-        "title": "TradingExecutionFindingData",
-        "type": "object"
-      },
-      "TradingExecutionOrderData": {
-        "additionalProperties": false,
-        "properties": {
-          "client_order_id": {
-            "title": "Client Order Id",
-            "type": "string"
-          },
-          "instrument_id": {
-            "title": "Instrument Id",
-            "type": "string"
-          },
-          "leg": {
-            "enum": [
-              "entry",
-              "stop",
-              "take_profit",
-              "exit",
-              "unknown"
-            ],
-            "title": "Leg",
-            "type": "string"
-          },
-          "owned": {
-            "title": "Owned",
-            "type": "boolean"
-          },
-          "plan_entry_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Plan Entry Id"
-          },
-          "quantity": {
-            "title": "Quantity",
-            "type": "string"
-          },
-          "reduce_only": {
-            "title": "Reduce Only",
-            "type": "boolean"
-          },
-          "state": {
-            "enum": [
-              "open",
-              "inflight"
-            ],
-            "title": "State",
-            "type": "string"
-          },
-          "trigger_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Trigger Price"
-          }
-        },
-        "required": [
-          "client_order_id",
-          "instrument_id",
-          "state",
-          "leg",
-          "quantity",
-          "reduce_only",
-          "owned"
-        ],
-        "title": "TradingExecutionOrderData",
-        "type": "object"
-      },
-      "TradingExecutionPositionData": {
-        "additionalProperties": false,
-        "properties": {
-          "entry_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Entry Price"
-          },
-          "instrument_id": {
-            "title": "Instrument Id",
-            "type": "string"
-          },
-          "mark_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mark Price"
-          },
-          "owned": {
-            "title": "Owned",
-            "type": "boolean"
-          },
-          "plan_entry_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Plan Entry Id"
-          },
-          "position_id": {
-            "title": "Position Id",
-            "type": "string"
-          },
-          "protection_status": {
-            "enum": [
-              "protected",
-              "pending",
-              "unprotected",
-              "unknown"
-            ],
-            "title": "Protection Status",
-            "type": "string"
-          },
-          "quantity": {
-            "title": "Quantity",
-            "type": "string"
-          },
-          "side": {
-            "enum": [
-              "long",
-              "short"
-            ],
-            "title": "Side",
-            "type": "string"
-          },
-          "source": {
-            "enum": [
-              "cache",
-              "venue"
-            ],
-            "title": "Source",
-            "type": "string"
-          },
-          "stop_trigger_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Stop Trigger Price"
-          },
-          "take_profit_trigger_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Take Profit Trigger Price"
-          },
-          "unrealized_pnl_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Unrealized Pnl Usd"
-          }
-        },
-        "required": [
-          "position_id",
-          "instrument_id",
-          "source",
-          "side",
-          "quantity",
-          "owned",
-          "protection_status"
-        ],
-        "title": "TradingExecutionPositionData",
-        "type": "object"
-      },
       "TradingExecutionReadinessData": {
         "additionalProperties": false,
-        "description": "One field per operator question, and the CLI `tracefold trading status` block is this same dict.\n\n`execution_safe`, `startup_reconciled`, `reconciliation_age_ms` and `account_flat_proven` answered\nquestions about the Runtime's private account proof, and went with it (#680): Nautilus reconciles\nthe venue before the Strategy starts, so a fresh heartbeat is the freshness of `current_account`.",
+        "description": "Executor heartbeat, admission state and the last signed DEMO account read.",
         "properties": {
-          "account_projection_failure": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Account Projection Failure"
-          },
           "account_slot": {
             "title": "Account Slot",
             "type": "string"
@@ -9670,12 +9280,7 @@
           "connection": {
             "anyOf": [
               {
-                "enum": [
-                  "LIVE",
-                  "DEMO",
-                  "TESTNET",
-                  "SDK_DEFAULT"
-                ],
+                "const": "DEMO",
                 "type": "string"
               },
               {
@@ -9694,38 +9299,6 @@
               }
             ],
             "title": "Connection Observed At Ms"
-          },
-          "convergence_checked_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Convergence Checked At Ms"
-          },
-          "convergence_failure": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Convergence Failure"
-          },
-          "current_account": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingExecutionAccountData"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "emergency_halted": {
             "default": false,
@@ -9785,19 +9358,18 @@
             ],
             "title": "Heartbeat At Ms"
           },
-          "protection_status": {
-            "default": "not_applicable",
-            "enum": [
-              "not_applicable",
-              "protected",
-              "pending",
-              "unprotected",
-              "unknown"
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
             ],
-            "title": "Protection Status",
-            "type": "string"
+            "title": "Last Error"
           },
-          "recovery_attempted_at_ms": {
+          "last_full_reconcile_at_ms": {
             "anyOf": [
               {
                 "type": "integer"
@@ -9806,73 +9378,22 @@
                 "type": "null"
               }
             ],
-            "title": "Recovery Attempted At Ms"
+            "title": "Last Full Reconcile At Ms"
           },
-          "recovery_result": {
+          "signed_account": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/TradingSignedAccountData"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Recovery Result"
-          },
-          "reported_entry_block_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reported Entry Block Reason"
-          },
-          "routes_count": {
-            "default": 0,
-            "minimum": 0.0,
-            "title": "Routes Count",
-            "type": "integer"
+            ]
           },
           "unexpected_exposure": {
             "default": false,
             "title": "Unexpected Exposure",
             "type": "boolean"
-          },
-          "venue_read_completed_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Venue Read Completed At Ms"
-          },
-          "venue_read_failure": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Venue Read Failure"
-          },
-          "venue_read_started_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Venue Read Started At Ms"
           }
         },
         "required": [
@@ -9886,7 +9407,7 @@
       },
       "TradingExecutionRowData": {
         "additionalProperties": false,
-        "description": "One entry identity's whole execution, folded from its plan and its own observations.\n\n`entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,\nor the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so\n`case_id` is absent on those rows rather than invented.\n\n`realized_pnl_usd` retains the historical fee-adjusted fill fold. Net PnL\nadditionally requires complete signed funding-income coverage and unambiguous\naccount-slot attribution over the fill-to-fill holding interval.",
+        "description": "One disposition or plan, folded from the executor's durable venue evidence.",
         "properties": {
           "account_slot": {
             "anyOf": [
@@ -9951,6 +9472,17 @@
             ],
             "title": "Entry Client Order Id"
           },
+          "entry_error_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Error Code"
+          },
           "entry_filled_at_ns": {
             "anyOf": [
               {
@@ -9965,17 +9497,6 @@
           "entry_id": {
             "title": "Entry Id",
             "type": "string"
-          },
-          "exit_policy_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Exit Policy Id"
           },
           "exit_price": {
             "anyOf": [
@@ -10032,17 +9553,6 @@
             ],
             "title": "Fill Quantity"
           },
-          "funding_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Funding Usd"
-          },
           "instrument_id": {
             "anyOf": [
               {
@@ -10069,21 +9579,6 @@
             ],
             "title": "Max Holding Ns"
           },
-          "max_leverage_at_creation": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Leverage At Creation"
-          },
-          "net_known": {
-            "title": "Net Known",
-            "type": "boolean"
-          },
           "net_pnl_usd": {
             "anyOf": [
               {
@@ -10099,17 +9594,6 @@
             "title": "Observed At Ns",
             "type": "integer"
           },
-          "order_reject_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Order Reject Reason"
-          },
           "plan_status": {
             "anyOf": [
               {
@@ -10121,9 +9605,21 @@
             ],
             "title": "Plan Status"
           },
-          "pnl_known": {
-            "title": "Pnl Known",
-            "type": "boolean"
+          "pnl_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "pending",
+                  "complete",
+                  "evidence_incomplete"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pnl Status"
           },
           "position_closed_at_ns": {
             "anyOf": [
@@ -10147,40 +9643,6 @@
             ],
             "title": "Realized Pnl Usd"
           },
-          "result_evidence_source": {
-            "anyOf": [
-              {
-                "const": "signed_native_trades",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Result Evidence Source"
-          },
-          "result_verified_at_ns": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Result Verified At Ns"
-          },
-          "risk_budget_usd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Risk Budget Usd"
-          },
           "source": {
             "enum": [
               "signal",
@@ -10192,6 +9654,8 @@
           "stage": {
             "enum": [
               "pending",
+              "accepted",
+              "submission_unknown",
               "rejected",
               "expired",
               "ordered",
@@ -10253,8 +9717,6 @@
           "market_key",
           "direction",
           "observed_at_ns",
-          "pnl_known",
-          "net_known",
           "stage"
         ],
         "title": "TradingExecutionRowData",
@@ -10731,6 +10193,302 @@
           "created_at_ms"
         ],
         "title": "TradingRootChainCaseData",
+        "type": "object"
+      },
+      "TradingSignedAccountData": {
+        "additionalProperties": false,
+        "description": "Bounded projection of one complete signed DEMO REST account read.",
+        "properties": {
+          "algos": {
+            "items": {
+              "$ref": "#/components/schemas/TradingSignedAlgoData"
+            },
+            "maxItems": 100,
+            "title": "Algos",
+            "type": "array"
+          },
+          "algos_total": {
+            "minimum": 0.0,
+            "title": "Algos Total",
+            "type": "integer"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "equity_usdt": {
+            "title": "Equity Usdt",
+            "type": "string"
+          },
+          "observed_at_ns": {
+            "title": "Observed At Ns",
+            "type": "integer"
+          },
+          "orders": {
+            "items": {
+              "$ref": "#/components/schemas/TradingSignedOrderData"
+            },
+            "maxItems": 100,
+            "title": "Orders",
+            "type": "array"
+          },
+          "orders_total": {
+            "minimum": 0.0,
+            "title": "Orders Total",
+            "type": "integer"
+          },
+          "positions": {
+            "items": {
+              "$ref": "#/components/schemas/TradingSignedPositionData"
+            },
+            "maxItems": 100,
+            "title": "Positions",
+            "type": "array"
+          },
+          "positions_total": {
+            "minimum": 0.0,
+            "title": "Positions Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "observed_at_ns",
+          "equity_usdt",
+          "positions_total",
+          "orders_total",
+          "algos_total",
+          "complete",
+          "positions",
+          "orders",
+          "algos"
+        ],
+        "title": "TradingSignedAccountData",
+        "type": "object"
+      },
+      "TradingSignedAlgoData": {
+        "additionalProperties": false,
+        "properties": {
+          "algoStatus": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Algostatus"
+          },
+          "clientAlgoId": {
+            "title": "Clientalgoid",
+            "type": "string"
+          },
+          "closePosition": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closeposition"
+          },
+          "orderType": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ordertype"
+          },
+          "owned": {
+            "title": "Owned",
+            "type": "boolean"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "reduceOnly": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reduceonly"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "triggerPrice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Triggerprice"
+          }
+        },
+        "required": [
+          "symbol",
+          "clientAlgoId",
+          "owned"
+        ],
+        "title": "TradingSignedAlgoData",
+        "type": "object"
+      },
+      "TradingSignedOrderData": {
+        "additionalProperties": false,
+        "properties": {
+          "clientOrderId": {
+            "title": "Clientorderid",
+            "type": "string"
+          },
+          "origQty": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origqty"
+          },
+          "owned": {
+            "title": "Owned",
+            "type": "boolean"
+          },
+          "reduceOnly": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reduceonly"
+          },
+          "side": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Side"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "symbol",
+          "clientOrderId",
+          "owned"
+        ],
+        "title": "TradingSignedOrderData",
+        "type": "object"
+      },
+      "TradingSignedPositionData": {
+        "additionalProperties": false,
+        "properties": {
+          "entryPrice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entryprice"
+          },
+          "markPrice": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Markprice"
+          },
+          "owned": {
+            "title": "Owned",
+            "type": "boolean"
+          },
+          "positionAmt": {
+            "title": "Positionamt",
+            "type": "string"
+          },
+          "positionSide": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Positionside"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          },
+          "unRealizedProfit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unrealizedprofit"
+          }
+        },
+        "required": [
+          "symbol",
+          "positionAmt",
+          "owned"
+        ],
+        "title": "TradingSignedPositionData",
         "type": "object"
       },
       "TradingStatusData": {

@@ -1,11 +1,4 @@
-"""The two process-host helpers the Workers and Nautilus roots both need.
-
-Both roots are one supervised asyncio process behind one internal HTTP port: they take SIGINT and
-SIGTERM away from uvicorn so their own shutdown path owns the deadline, and they publish liveness
-and readiness on the same two routes. Those parts were byte-identical in the two roots and in the
-two probe modules, so they live here once (#589 P-F16). Everything that differs -- what readiness
-means, whether the process exports `/metrics`, which port it binds -- stays with its owner.
-"""
+"""Workers process signal handling and HTTP health probes."""
 
 from __future__ import annotations
 
@@ -46,18 +39,7 @@ def create_probe_app(
     render_metrics: Callable[[], str] | None = None,
     readiness_status_gate: bool = True,
 ) -> FastAPI:
-    """Liveness, readiness and -- only where the process exports one -- a Prometheus route.
-
-    `/healthz` never calls `readiness`: it answers whether the process is running at all. `/readyz`
-    answers the owner's question, and the owner chooses what the status code means.
-
-    Workers keeps the gate: a Compose healthcheck and `make up` both wait on that endpoint, so "not
-    ready" has to be a non-2xx there. The execution runtime turns it off (#598 D5-b). Its payload is
-    the whole diagnosis -- `alive`, `entries_armed`, `entry_block_reason`, the position and
-    order counts -- and an operator asking `make runtime-status` what is wrong with the process that
-    owns live exposure was answered with a 503 whose body `curl -fsS` then threw away. `ok` still
-    says the same thing; it says it inside the payload, where it can be read.
-    """
+    """Expose process liveness and readiness; optionally expose Prometheus metrics."""
 
     app = FastAPI(title=title, docs_url=None, redoc_url=None, openapi_url=None)
 

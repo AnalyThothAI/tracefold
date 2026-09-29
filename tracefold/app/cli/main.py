@@ -33,10 +33,10 @@ def main(argv: list[str] | None = None, *, stdout: TextIO = sys.stdout) -> int:
         from .commands import analysis
 
         return _finish(analysis.handle_analysis(args), stdout)
-    if command == "nautilus":
-        from .commands import nautilus
+    if command == "executor":
+        from .commands import executor
 
-        return _finish(nautilus.handle_nautilus(args), stdout)
+        return _finish(executor.handle_executor(args), stdout)
     if command == "config":
         from .commands import config
 

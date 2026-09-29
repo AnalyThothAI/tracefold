@@ -33,13 +33,14 @@ class _Repos:
         self.sql.append(statement)
         return _Rows()
 
-    def execution_runtime_state(self, _slot: str) -> None:
+    def state(self, _slot: str) -> None:
         return None
 
-    def execution_diagnostic_evidence(
-        self, _slot: str
-    ) -> tuple[tuple[dict[str, int], ...], tuple[dict[str, int], ...]]:
-        return tuple({"n": n} for n in range(1001)), ({"seq": 1},)
+    def control(self, _slot: str) -> dict[str, bool]:
+        return {"entries_paused": True, "emergency_halted": False}
+
+    def active_plans(self, _slot: str) -> list[dict[str, int]]:
+        return [{"n": n} for n in range(1001)]
 
 
 def test_diagnose_has_real_sample_bounds_and_independent_source_clocks(monkeypatch: Any) -> None:
@@ -57,8 +58,7 @@ def test_diagnose_has_real_sample_bounds_and_independent_source_clocks(monkeypat
     data = payload["data"]
     assert code == 0 and len(data["database"]["open_plans"]) == 1000
     assert data["database"]["open_plans_truncated"] is True
-    assert data["database"]["recent_risks"] == [{"seq": 1}]
-    assert data["database"]["projection"]["entry_block_reason"] == "runtime_state_missing"
+    assert data["database"]["projection"]["entry_block_reason"] == "executor_state_missing"
     assert data["started_at_ns"] <= data["database"]["started_at_ns"] <= data["completed_at_ns"]
     assert repos.sql == [
         "SET TRANSACTION READ ONLY",

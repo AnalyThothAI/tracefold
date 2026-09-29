@@ -56,15 +56,14 @@ class CliTests(unittest.TestCase):
 
         assert parser.parse_args(["serve"]).command == "serve"
         assert parser.parse_args(["workers"]).command == "workers"
-        nautilus = parser.parse_args(["nautilus", "run"])
-        assert (nautilus.command, nautilus.nautilus_command) == ("nautilus", "run")
+        assert parser.parse_args(["executor"]).command == "executor"
 
     def test_representative_command_namespaces_are_stable(self):
         parser = build_parser()
         cases = (
             (
-                ["nautilus", "run"],
-                {"command": "nautilus", "nautilus_command": "run"},
+                ["executor"],
+                {"command": "executor"},
             ),
             (["db", "audit", "--deep"], {"command": "db", "db_command": "audit", "deep": True}),
             (
@@ -412,7 +411,7 @@ class CliTests(unittest.TestCase):
                 # here is reported so an operator can read the limits the Runtime runs under.
                 "risk": {
                     "risk_fraction_per_trade": 0.01,
-                    "max_leverage": 1,
+                    "max_leverage": 5,
                     "stop_distance_bps": 100,
                     "max_spread_fraction_of_stop": 0.3,
                     "post_stop_cooldown_seconds": 14400,

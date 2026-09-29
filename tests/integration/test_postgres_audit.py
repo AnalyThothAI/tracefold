@@ -178,7 +178,7 @@ def test_query_audit_analyzes_all_route_query_families_on_empty_schema(
         "trading_console_cases_filtered",
         "trading_console_commands_filtered",
         "trading_signal_ledger",
-        "trading_observation_ledger",
+        "trading_fill_ledger",
         "trading_status_latest_case",
         "trading_gate_decisions_since",
         "trading_gate_decision_for_source_key",

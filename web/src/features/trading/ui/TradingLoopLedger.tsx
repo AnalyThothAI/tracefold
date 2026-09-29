@@ -86,8 +86,8 @@ export function TradingLoopLedger({
                       {EXECUTION_STAGE_ZH[row.stage] ?? row.stage}
                     </b>
                     <small>{signalDispositionLabel(row.disposition_reason)}</small>
-                    {row.order_reject_reason ? (
-                      <small data-tone="caution">{row.order_reject_reason}</small>
+                    {row.entry_error_code != null ? (
+                      <small data-tone="caution">交易所错误 {row.entry_error_code}</small>
                     ) : null}
                   </span>
                   <span data-label="成交数量 / 入场均价">
@@ -96,7 +96,7 @@ export function TradingLoopLedger({
                   </span>
                   <span data-label="净收益">
                     <b data-tone={moneyTone(row.net_pnl_usd)}>
-                      {row.net_known
+                      {row.net_pnl_usd != null
                         ? moneyLabel(row.net_pnl_usd)
                         : row.stage === "closed"
                           ? "净收益未知"
@@ -163,15 +163,6 @@ function ExecutionDetail({
               <dd>冻结止损 {row.stop_distance_bps} bps</dd>
             </div>
           ) : null}
-          {row.risk_budget_usd != null ? (
-            <div>
-              <dt>风险预算</dt>
-              <dd>
-                风险预算 {moneyLabel(row.risk_budget_usd)} · 杠杆上限 {row.max_leverage_at_creation}
-                ×
-              </dd>
-            </div>
-          ) : null}
           <div>
             <dt>退出价</dt>
             <dd>{row.exit_price ?? "—"}</dd>
@@ -196,7 +187,7 @@ function ExecutionDetail({
               <dd>{EXIT_REASON_ZH[row.exit_reason] ?? row.exit_reason}</dd>
             </div>
           ) : null}
-          {row.result_evidence_source === "signed_native_trades" ? (
+          {row.pnl_status === "complete" ? (
             <>
               <div>
                 <dt>结果来源</dt>
@@ -206,10 +197,6 @@ function ExecutionDetail({
                 <dt>实际退出时间</dt>
                 <dd>{nsClock(row.position_closed_at_ns)}</dd>
               </div>
-              <div>
-                <dt>核验时间</dt>
-                <dd>{nsClock(row.result_verified_at_ns)}</dd>
-              </div>
             </>
           ) : null}
         </dl>
@@ -218,21 +205,17 @@ function ExecutionDetail({
         <h3>收益归因</h3>
         <dl>
           <div>
-            <dt>手续费后已实现</dt>
+            <dt>已实现盈亏（手续费前）</dt>
             <dd>{row.realized_pnl_usd == null ? "未取得" : moneyLabel(row.realized_pnl_usd)}</dd>
           </div>
           <div>
-            <dt>手续费（已扣除）</dt>
+            <dt>手续费</dt>
             <dd>{row.fees_usd == null ? "未取得" : moneyLabel(row.fees_usd)}</dd>
-          </div>
-          <div>
-            <dt>资金费</dt>
-            <dd>{row.funding_usd == null ? "未取得完整归因" : moneyLabel(row.funding_usd)}</dd>
           </div>
           <div>
             <dt>净收益</dt>
             <dd>
-              {row.net_known
+              {row.net_pnl_usd != null
                 ? moneyLabel(row.net_pnl_usd)
                 : row.stage === "closed"
                   ? "净收益未知"
@@ -240,7 +223,7 @@ function ExecutionDetail({
             </dd>
           </div>
         </dl>
-        <p>只有资金费覆盖完整且归因唯一时才展示净收益；已知部分不代表完整结果。</p>
+        <p>净收益仅在交易所原生成交、手续费与执行归因完整时展示；缺失结果不计为零。</p>
       </div>
       <div className="trading-entry-identity">
         <code>{row.entry_id}</code>

@@ -568,7 +568,7 @@ def test_valid_trade_analysis_records_publication_refusal(tmp_path) -> None:
             "publish_status": "blocked",
             "publish_reason": "analysis_signal_expired",
         }
-        assert conn.execute("SELECT count(*) AS n FROM trading_trade_signals").fetchone()["n"] == 0
+        assert conn.execute("SELECT count(*) AS n FROM trading_signals").fetchone()["n"] == 0
     finally:
         conn.close()
 

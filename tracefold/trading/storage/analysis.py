@@ -11,8 +11,8 @@ from typing import Any, cast
 from tracefold.trading.engine.plans import directed_cross
 from tracefold.trading.engine.policy import decision_identity
 from tracefold.trading.engine.target import TargetSelection
-from tracefold.trading.execution_contracts import TradeSignalV3
-from tracefold.trading.storage.execution_stream import ExecutionStreamStorage, PreparedTradeSignal
+from tracefold.trading.executor.core import SignalV4
+from tracefold.trading.storage.executor import ExecutorStorage
 
 
 def _sha(value: object) -> str:
@@ -82,6 +82,15 @@ def _refs(value: object) -> list[str]:
 class AnalysisStorage:
     conn: Any
 
+    def executor_state(self, account_slot: str) -> dict[str, Any] | None:
+        return cast(
+            dict[str, Any] | None,
+            self.conn.execute(
+                "SELECT heartbeat_at_ns,environment FROM trading_executor_state WHERE account_slot=%s",
+                (account_slot,),
+            ).fetchone(),
+        )
+
     def analysis_runtime(self, runtime_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(TRADING_ANALYSIS_RUNTIME_SQL, (runtime_id,)).fetchone()
         return None if row is None else dict(row)
@@ -113,15 +122,6 @@ class AnalysisStorage:
             """,
             (runtime_id, int(now_ms), active_policy, model_name, model_configured, publish_signals, config_digest),
         )
-
-    def latest_entry_validity_check(self, entry_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT check_version,checked_at_ns,allowed,reason "
-            "FROM trading_entry_validity_checks WHERE entry_id=%s "
-            "ORDER BY checked_at_ns DESC,check_id DESC LIMIT 1",
-            (entry_id,),
-        ).fetchone()
-        return None if row is None else dict(row)
 
     def analysis_trigger(self, trigger_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(TRADING_TRIGGER_BY_ID_SQL, (trigger_id,)).fetchone()
@@ -588,7 +588,7 @@ class AnalysisStorage:
         evidence_ref: str | None,
         decision: dict[str, Any] | None,
         assessment_ref: str | None = None,
-        prepared_signal: PreparedTradeSignal | None = None,
+        prepared_signal: SignalV4 | None = None,
         publish_block_reason: str | None = None,
     ) -> bool:
         """A late or replaced model answer has no authority to settle or publish."""
@@ -617,31 +617,55 @@ class AnalysisStorage:
                 raise ValueError("analysis_decision_version_invalid")
             decision_id = decision_identity(case_id, decision)
             superseded = self._trigger_superseded(row["trigger_id"], known_at_ms=now_ms)
+            corrected = self.conn.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM trading_triggers original
+                    JOIN trading_source_amendments amendment
+                      ON amendment.source_fact_key=original.source_fact_key
+                    WHERE original.trigger_id=%s AND original.kind='catalyst'
+                      AND amendment.retired_claim_refs ?|
+                          ARRAY(SELECT jsonb_array_elements_text(original.payload->'claim_refs'))
+                ) AS corrected
+                """,
+                (row["trigger_id"],),
+            ).fetchone()["corrected"]
+            if corrected:
+                publish_block_reason = "source_corrected"
+            if prepared_signal is not None and not superseded and not corrected:
+                executor = self.executor_state(prepared_signal.account_slot)
+                if (
+                    executor is None
+                    or executor["environment"] != "DEMO"
+                    or now_ms * 1_000_000 - executor["heartbeat_at_ns"] > 5_000_000_000
+                ):
+                    publish_block_reason = "runtime_unavailable"
             publish_status = (
                 "superseded"
                 if superseded
-                else ("blocked" if publish_block_reason else "unpublished")
-                if action == "TRADE" and prepared_signal is None
                 else "not_applicable"
                 if action != "TRADE"
+                else "blocked"
+                if publish_block_reason
+                else "unpublished"
+                if prepared_signal is None
                 else "published"
             )
-            if prepared_signal is not None and not superseded:
-                signal = prepared_signal.value
+            if prepared_signal is not None and not superseded and not corrected and publish_block_reason is None:
+                signal = prepared_signal
                 if (
-                    not isinstance(signal, TradeSignalV3)
+                    not isinstance(signal, SignalV4)
                     or signal.case_id != case_id
                     or signal.decision_id != decision_id
                     or signal.entry_scope_id != row["entry_scope_id"]
                     or signal.asset_id != row["target_asset_id"]
                     or signal.mapping_semantics_digest != row["mapping_semantics_digest"]
-                    or signal.direction != decision.get("side")
-                    or signal.entry_envelope.plan_id != decision.get("selected_plan_id")
+                    or signal.side != decision.get("side")
                     or action != "TRADE"
                     or signal.expires_at_ns <= int(now_ms) * 1_000_000
                 ):
                     raise ValueError("analysis_signal_identity_invalid")
-                cast(ExecutionStreamStorage, self).append_trade_signal(prepared_signal)
+                ExecutorStorage(self.conn).append_signal(signal)
                 published = True
             self.conn.execute(
                 """
@@ -1029,7 +1053,8 @@ class AnalysisStorage:
         if parent["entry_scope_id"] is None:
             return
         used = self.conn.execute(
-            "SELECT 1 FROM trading_trade_plans WHERE entry_scope_id=%s LIMIT 1",
+            "SELECT 1 FROM trading_plans p JOIN trading_signals s ON s.signal_id=p.signal_id "
+            "WHERE s.payload->>'entry_scope_id'=%s LIMIT 1",
             (parent["entry_scope_id"],),
         ).fetchone()
         if used is not None:
@@ -1156,7 +1181,8 @@ class AnalysisStorage:
         root_expires = int(parent["root_expires_at_ms"])
         sequence = 1
         used = self.conn.execute(
-            "SELECT 1 FROM trading_trade_plans WHERE entry_scope_id=%s LIMIT 1",
+            "SELECT 1 FROM trading_plans p JOIN trading_signals s ON s.signal_id=p.signal_id "
+            "WHERE s.payload->>'entry_scope_id'=%s LIMIT 1",
             (parent["entry_scope_id"],),
         ).fetchone()
         superseded = self._trigger_superseded(parent["trigger_id"], known_at_ms=now_ms)
@@ -1321,74 +1347,3 @@ class AnalysisStorage:
             "AND label_version=%s AND status='pending'",
             (int(next_attempt_at_ms), case_id, axis, horizon_seconds, label_version),
         )
-
-    def validate_signal_entry(self, *, entry_id: str, now_ns: int) -> tuple[bool, str]:
-        """Persist the last Trading fact check before Nautilus submits a V3 entry."""
-        asset = self.conn.execute(
-            "SELECT c.target_asset_id FROM trading_trade_signals s "
-            "JOIN trading_cases c ON c.case_id=s.case_id WHERE s.signal_id=%s",
-            (entry_id,),
-        ).fetchone()
-        if asset is not None and asset["target_asset_id"] is not None:
-            self.conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 683))", (asset["target_asset_id"],))
-        row = self.conn.execute(
-            f"""
-            SELECT plan.entry_id,plan.entry_scope_id,plan.account_slot,
-                   plan.market_key,plan.direction,
-                   plan.terminal_at_ns,signal.payload,signal.seq,
-                   case_row.state,case_row.target_asset_id,
-                   case_row.mapping_semantics_digest,case_row.root_expires_at_ms,
-                   decision.publish_status,decision.decision_id,decision.decision,
-                   {_superseded_sql(created_until_param=False)} AS superseded,
-                   (original.kind='catalyst' AND (
-                     SELECT count(*)>0 FROM trading_source_amendments amendment
-                      WHERE amendment.retired_claim_refs ?| {_ORIGINAL_CLAIMS}
-                   )) AS corrected
-              FROM trading_trade_plans plan
-              JOIN trading_trade_signals signal ON signal.signal_id=plan.entry_id
-              JOIN trading_cases case_row ON case_row.case_id=signal.case_id
-              LEFT JOIN trading_triggers original ON original.trigger_id=case_row.trigger_id
-              JOIN trading_case_decisions decision ON decision.case_id=case_row.case_id
-             WHERE plan.entry_id=%s
-            """,  # noqa: S608 -- module-owned predicates; the entry id stays bound
-            (entry_id,),
-        ).fetchone()
-        reason = "valid"
-        if row is None:
-            reason = "entry_fact_missing"
-        else:
-            signal = TradeSignalV3.model_validate_json(json.dumps(dict(row["payload"]) | {"seq": int(row["seq"])}))
-            if row["terminal_at_ns"] is not None:
-                reason = "plan_terminal"
-            elif signal.expires_at_ns <= now_ns or signal.entry_envelope.root_expires_at_ns <= now_ns:
-                reason = "expired"
-            elif row["state"] != "SIGNAL_EMITTED" or row["publish_status"] != "published":
-                reason = "decision_not_published"
-            elif (
-                row["decision_id"] != signal.decision_id
-                or row["decision"].get("selected_plan_id") != signal.entry_envelope.plan_id
-                or row["decision"].get("side") != signal.direction
-            ):
-                reason = "decision_plan_changed"
-            elif row["superseded"]:
-                reason = "source_superseded"
-            elif row["corrected"]:
-                # A News correction retired a claim this entry's research cited. Refuse the
-                # unsubmitted entry; nothing already submitted is cancelled here.
-                reason = "source_corrected"
-            elif (
-                row["entry_scope_id"] != signal.entry_scope_id
-                or row["account_slot"] != signal.account_slot
-                or row["market_key"] != signal.market_key
-                or row["direction"] != signal.direction
-                or row["target_asset_id"] != signal.asset_id
-                or row["mapping_semantics_digest"] != signal.mapping_semantics_digest
-            ):
-                reason = "entry_identity_changed"
-        self.conn.execute(
-            "INSERT INTO trading_entry_validity_checks "
-            "(entry_id,check_version,checked_at_ns,allowed,reason) "
-            "VALUES (%s,'entry_validity_v1',%s,%s,%s)",
-            (entry_id, int(now_ns), reason == "valid", reason),
-        )
-        return reason == "valid", reason

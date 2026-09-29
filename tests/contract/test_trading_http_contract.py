@@ -33,11 +33,11 @@ class _Trading:
     def analysis_runtime(self, _runtime_id: str) -> None:
         return None
 
-    def execution_runtime_state(self, _account_slot: str) -> None:
+    def state(self, _account_slot: str) -> None:
         return None
 
-    def execution_runtime_control_state(self, _account_slot: str) -> None:
-        return None
+    def control(self, _account_slot: str) -> dict[str, Any]:
+        return {"entries_paused": True, "emergency_halted": False}
 
     def console_case(self, **kwargs: Any) -> dict[str, Any] | None:
         self.calls.append(("console_case", kwargs))
@@ -296,7 +296,8 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
         "credential_fingerprint",
         "lifecycle_state",
     }.isdisjoint(data["execution"])
-    assert data["execution"]["routes_count"] == 0
+    assert data["execution"]["signed_account"] is None
+    assert "current_account" not in data["execution"]
     assert data["execution"]["facts_expire_at_ms"] is None
     # #528: the four counts nothing rendered are gone, and so is the whole `alpha` block -- the
     # policy identity is on every Case row that used it.
@@ -544,7 +545,7 @@ def test_executions_is_one_row_per_entry_identity_with_a_backend_derived_stage(
     assert closed["entry_filled_at_ns"] == (NOW + 20_000) * 1_000_000
     assert closed["position_closed_at_ns"] == (NOW + 60_000) * 1_000_000
     assert closed["entry_filled_at_ns"] < closed["position_closed_at_ns"]
-    assert closed["order_reject_reason"] is None
+    assert "order_reject_reason" not in closed
     assert refused["stage"] == "rejected"
     assert refused["disposition_reason"] == "entries_paused"
     assert refused["realized_pnl_usd"] is None
@@ -555,9 +556,8 @@ def test_executions_is_one_row_per_entry_identity_with_a_backend_derived_stage(
     assert stale["stage"] == "expired"
     assert stale["disposition_reason"] is None
 
-    # #604 T1. The venue's own refusal text, verbatim, on the entry order it refused.
-    assert rejected_order["stage"] == "ordered"
-    assert rejected_order["order_reject_reason"] == "Order's notional must be no smaller than 5.0"
+    assert rejected_order["stage"] == "rejected"
+    assert "order_reject_reason" not in rejected_order
 
     # A manual entry is its own row, keyed on the Command that opened it and holding no Case.
     assert manual["source"] == "manual"

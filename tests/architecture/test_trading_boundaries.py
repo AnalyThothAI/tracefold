@@ -32,13 +32,10 @@ SIGNAL_PATH = (
     "trading/storage/queries.py",
 )
 EXECUTION_PATH = {
-    "trading/native_fills.py",
-    "trading/execution_contracts.py",
+    "trading/executor/core.py",
     "trading/stages.py",
     "trading/operator_control.py",
-    "trading/storage/execution_stream.py",
-    "trading/storage/trade_plans.py",
-    "trading/trade_plan.py",
+    "trading/storage/executor.py",
 }
 BANNED_FRAMEWORKS = {"autogen", "crewai", "deepagents", "dspy", "langchain", "langgraph", "langsmith"}
 BANNED_CAPABILITIES = {"boto3", "httpx", "os", "pathlib", "requests", "shutil", "socket", "subprocess"}

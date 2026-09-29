@@ -5,20 +5,18 @@ from __future__ import annotations
 from typing import Any, Protocol
 
 from .analysis import AnalysisStorage
-from .execution_stream import ExecutionStreamStorage
+from .executor import ExecutorStorage
 from .gate import HistoricalGateStorage
 from .history import HistoricalCaseStorage
 from .queries import QueryStorage
-from .trade_plans import TradePlanStorage
 
 
 class TradingRepository(
+    ExecutorStorage,
     AnalysisStorage,
     HistoricalGateStorage,
-    ExecutionStreamStorage,
     HistoricalCaseStorage,
     QueryStorage,
-    TradePlanStorage,
 ):
     """Connection-bound persistence facade; callers continue to own transactions.
 

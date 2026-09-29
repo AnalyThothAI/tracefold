@@ -40,7 +40,7 @@ export function TradingTally({
   totals: TradingRealizedTotals | undefined;
   stale: boolean;
 }) {
-  const account = execution?.current_account;
+  const signed = execution?.signed_account;
   const venue = entrySplit(executions);
   const today = totals?.net_known_today_usd;
   const total = totals?.net_known_total_usd;
@@ -48,7 +48,7 @@ export function TradingTally({
   return (
     <Card
       data-block="tally"
-      hint="含手工入场，按 UTC 日界聚合；净收益需场所资金费完整覆盖"
+      hint="含手工入场，按 UTC 日界聚合；净收益按 DEMO 原生成交和手续费计算"
       title="账户收益与记录范围"
     >
       {/*
@@ -82,21 +82,20 @@ export function TradingTally({
             受理 {venue.accepted} · 拒绝 {venue.refused}
           </small>
         </span>
-        <span
-          className="trading-fact"
-          data-tone={account?.positions?.length ? "caution" : undefined}
-        >
+        <span className="trading-fact" data-tone={signed?.positions_total ? "caution" : undefined}>
           <small>{stale ? "上次读取敞口" : "当前敞口"}</small>
-          <b>{account ? (account.positions?.length ?? 0) : "UNAVAILABLE"}</b>
-          <small>{account ? `挂单 ${account.open_orders_count}` : "读自 /status"}</small>
+          <b>{signed ? signed.positions_total : "UNAVAILABLE"}</b>
+          <small>
+            {signed ? `挂单 ${signed.orders_total + signed.algos_total}` : "读自 /status"}
+          </small>
         </span>
       </div>
       {totals && totals.net_missing_total > 0 ? (
         <p className="trading-empty-note" data-tone="caution">
-          {`${totals.net_missing_total} 笔已平仓交易缺少完整成交、手续费或资金费归因；已知部分不能视为账户完整净利润。`}
+          {`${totals.net_missing_total} 笔已平仓交易缺少完整成交或手续费归因；已知部分不能视为账户完整净利润。`}
         </p>
       ) : null}
-      <SourceLine path="GET /api/trading/executions → totals · GET /api/trading/status → execution.current_account" />
+      <SourceLine path="GET /api/trading/executions → totals · GET /api/trading/status → execution.signed_account" />
     </Card>
   );
 }

@@ -4,18 +4,12 @@ import { SourceLine } from "@shared/ui/SourceLine";
 import type { ReactNode } from "react";
 
 import type { TradingExecutionReadiness } from "../api/tradingQueries";
-import {
-  bpsPercent,
-  caseClock,
-  entryBlockReasonLabel,
-  moneyLabel,
-  orderLegLabel,
-  protectionStatusLabel,
-} from "../model/tradingLabels";
+import { caseClock, entryBlockReasonLabel, moneyLabel } from "../model/tradingLabels";
 
 import { TradingPriceRange } from "./TradingPriceRange";
 
-/** Read one current-state contract, keeping expired or failed observations historical. */
+type SignedAccount = NonNullable<TradingExecutionReadiness["signed_account"]>;
+
 export function TradingSafetyStrip({
   execution,
   stale,
@@ -24,24 +18,18 @@ export function TradingSafetyStrip({
   stale: boolean;
 }) {
   const connectionSummary = execution.connection
-    ? `Binance USD-M · ${execution.connection} · ${execution.account_slot} · 最后报告 ${caseClock(execution.connection_observed_at_ms)}${stale || execution.entry_block_reason === "runtime_heartbeat_stale" ? " · 状态过期，连接状态未知" : ""}${execution.configured_connection !== execution.connection ? ` · 配置待重启：${execution.configured_connection}` : ""}`
+    ? `Binance USD-M · ${execution.connection} · ${execution.account_slot} · 最后报告 ${caseClock(execution.connection_observed_at_ms)}${stale ? " · 状态过期" : ""}`
     : `已配置连接：Binance USD-M · ${execution.configured_connection} · ${execution.account_slot}；尚未连接`;
   return (
     <div className="trading-risk" data-block="safety">
-      {/*
-       * Two words. `当前仓位可保护 / 退出` was the third and answered `execution_safe`, a claim about the
-       * Runtime's private account proof; Nautilus owns execution state now and reconciles the venue itself
-       * (#680), so the proof and the tile went together. What remains is whether the process is alive and
-       * whether it will take a new entry — and if not, the reason it names.
-       */}
       <div className="trading-safety-grid" aria-label="执行安全状态">
         <div
           className="trading-safety-fact"
           data-tone={!stale && execution.alive ? "ready" : "caution"}
         >
-          <span>执行状态通道</span>
+          <span>执行器心跳</span>
           <b>{safety(execution.alive, stale)}</b>
-          <small>Runtime 心跳经数据库与 HTTP 发布</small>
+          <small>PostgreSQL 持久心跳</small>
         </div>
         <div
           className="trading-safety-fact"
@@ -53,56 +41,32 @@ export function TradingSafetyStrip({
             {stale ? "等待新状态" : entryBlockReasonLabel(execution.entry_block_reason)}
           </small>
         </div>
-        <span className="trading-connection-tag">
-          {stale ? "上次连接：" : ""}
-          {execution.connection ?? "尚未连接"}
-        </span>
+        <span className="trading-connection-tag">{execution.connection ?? "尚未连接"}</span>
       </div>
       {stale ? (
         <p role="status" className="trading-alert-line" data-tone="caution">
-          状态通道失联：未取得有效期内的新状态，无法确认 Runtime 当前运行情况；下方保留上次观察。
+          状态通道失联：未取得有效期内的新状态；下方保留上次签名读取。
         </p>
       ) : null}
-      {!stale && execution.account_projection_failure ? (
+      {!stale && execution.last_error ? (
         <p role="status" className="trading-alert-line" data-tone="caution">
-          执行服务仍在发布心跳；账户投影失败（{execution.account_projection_failure}
-          ），账户资料取自上次成功观察。
+          执行器错误：{execution.last_error}；新增仓位已关闭。
         </p>
       ) : null}
-      {!stale && execution.convergence_failure ? (
+      {!stale && execution.entry_block_reason === "account_reconcile_stale" ? (
         <p role="status" className="trading-alert-line" data-tone="caution">
-          认领检查失败（{execution.convergence_failure}）；上次检查结论仍保留，新增仓位待重新核实。
-        </p>
-      ) : null}
-      {!stale && execution.venue_read_failure ? (
-        <p role="status" className="trading-alert-line" data-tone="caution">
-          最近一次场所读取失败（{execution.venue_read_failure}
-          ）；上次成功的场所证据不会被当作新观察。
-        </p>
-      ) : null}
-      {!stale && execution.recovery_result ? (
-        <p
-          role="status"
-          className="trading-alert-line"
-          data-tone={execution.recovery_result === "succeeded" ? "neutral" : "caution"}
-        >
-          原生对账：
-          {execution.recovery_result === "running"
-            ? "进行中"
-            : execution.recovery_result === "succeeded"
-              ? "已完成，等待新的场所证据确认"
-              : "未收敛，保留风险提示"}
+          DEMO 签名账户读取已过期；新增仓位待重新核实。
         </p>
       ) : null}
       <p className="trading-connection-summary">{connectionSummary}</p>
       <p className="trading-routes-line">
-        可执行市场 {execution.routes_count} 个 · 账户槽位 <code>{execution.account_slot}</code>
+        上次全账户读取 {observedTime(execution.last_full_reconcile_at_ms)} · 账户槽位{" "}
+        <code>{execution.account_slot}</code>
       </p>
     </div>
   );
 }
 
-/** Account rows, Plan association and venue differences from one Runtime observation. */
 export function TradingExposure({
   execution,
   stale,
@@ -110,203 +74,151 @@ export function TradingExposure({
   execution: TradingExecutionReadiness;
   stale: boolean;
 }) {
-  const account = execution.current_account;
-  const positions = account?.positions ?? [];
-  const orders = account?.orders ?? [];
-  const findings = account?.findings ?? [];
-  const accountUnconfirmed = stale || Boolean(execution.account_projection_failure);
-  const riskUnconfirmed = accountUnconfirmed || Boolean(execution.convergence_failure);
+  const account = execution.signed_account;
+  const unconfirmed =
+    stale ||
+    execution.entry_block_reason === "account_reconcile_stale" ||
+    Boolean(execution.last_error) ||
+    !execution.alive;
   const open =
-    (account?.positions_total ?? 0) > 0 || orders.length > 0 || execution.unexpected_exposure;
+    (account?.positions_total ?? 0) > 0 ||
+    (account?.orders_total ?? 0) + (account?.algos_total ?? 0) > 0 ||
+    execution.unexpected_exposure;
   return (
-    <Card
-      data-block="exposure"
-      flush
-      title={accountUnconfirmed ? "上次读取的仓位与保护" : "当前仓位与保护"}
-    >
+    <Card data-block="exposure" flush title={unconfirmed ? "上次签名账户读取" : "最近签名账户读取"}>
       <details className="trading-exposure" open={open}>
         <summary>
           <span>
-            仓位 {account?.positions_total ?? "—"} · 挂单 {account?.open_orders_count ?? "—"} · 保护{" "}
-            {accountUnconfirmed ? "待确认" : protectionStatusLabel(execution.protection_status)}
+            仓位 {account?.positions_total ?? "—"} · 普通挂单 {account?.orders_total ?? "—"} · Algo
+            挂单 {account?.algos_total ?? "—"}
           </span>
-          <small>
-            {open
-              ? accountUnconfirmed
-                ? "上次观察的仓位与订单"
-                : "最近观察的仓位与订单"
-              : account == null
-                ? "未取得 Runtime 账户快照"
-                : accountUnconfirmed
-                  ? "上次读取未见仓位"
-                  : "Runtime 当前未见仓位"}
-          </small>
+          <small>{unconfirmed ? "场所当前状态待确认" : "Binance DEMO 签名 REST"}</small>
         </summary>
-
         {execution.unexpected_exposure ? (
-          <div className="trading-alert-line" data-tone="alert">
-            <b>
-              {riskUnconfirmed
-                ? stale
-                  ? "上次检查发现异常；最新状态未取得。"
-                  : "上次检查发现异常；最新检查未取得。"
-                : "最近检查发现异常；新增仓位受阻。"}
-            </b>
-            {findings.length ? (
-              <ul>
-                {findings.map((finding) => (
-                  <li key={finding.kind + finding.object_id}>
-                    {findingLabel(finding.kind)}：{finding.instrument_id} · {finding.object_id}
-                    {finding.plan_entry_id ? " · Plan " + finding.plan_entry_id : ""}
-                    {finding.venue_quantity != null || finding.cache_quantity != null
-                      ? " · 场所 " +
-                        (finding.venue_quantity ?? "未知") +
-                        " / 本地 " +
-                        (finding.cache_quantity ?? "未知")
-                      : ""}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p>旧检查未保存对象明细；需要 Runtime 的新检查。</p>
-            )}
-            {account && account.findings_total > findings.length ? (
-              <p>另有 {account.findings_total - findings.length} 项未在本页展开。</p>
-            ) : null}
-          </div>
-        ) : null}
-        {account &&
-        (account.positions_total > positions.length || account.orders_total > orders.length) ? (
-          <p className="trading-alert-line" data-tone="caution">
-            账户列表已截断：仓位 {positions.length}/{account.positions_total}，订单 {orders.length}/
-            {account.orders_total}。
+          <p className="trading-alert-line" data-tone="alert">
+            发现未认领的场所仓位或订单；新增仓位已暂停，请按场所身份核实。
           </p>
         ) : null}
-
-        <p className="trading-routes-line">
-          账户采样 {observedTime(account?.observed_at_ms)} · 认领检查{" "}
-          {observedTime(execution.convergence_checked_at_ms)} · 上次成功场所读取{" "}
-          {observedTime(execution.venue_read_completed_at_ms)}
-        </p>
-        <div className="trading-fact-grid">
-          <Fact
-            label={stale ? "上次账户权益" : "账户权益"}
-            value={moneyLabel(account?.equity_usd)}
-          />
-          <Fact
-            label={stale ? "上次当日回撤" : "当日回撤"}
-            value={
-              account?.daily_drawdown_usd == null
-                ? "未取得"
-                : `${moneyLabel(account.daily_drawdown_usd)} · ${bpsPercent(account.daily_drawdown_bps)}`
-            }
-            warn={Number(account?.daily_drawdown_usd ?? 0) > 0}
-          />
-          <Fact
-            label="账户字段"
-            value={
-              account?.complete
-                ? accountUnconfirmed
-                  ? "上次采样字段完整"
-                  : "字段完整"
-                : account
-                  ? "部分字段缺失"
-                  : "未取得"
-            }
-            warn={!account?.complete}
-          />
-          <Fact label="在途订单" value={account?.inflight_orders_count ?? "—"} />
-        </div>
-
-        {positions.length ? (
-          <div className="trading-position-list">
-            {positions.map((position) => {
-              const guarded = position.protection_status === "protected";
-              return (
-                <article className="trading-position-row" key={position.position_id}>
-                  <div className="trading-position-identity">
-                    <b>{position.instrument_id}</b>
-                    <span data-tone={position.side === "long" ? "long" : "short"}>
-                      {position.side === "long" ? "多仓" : "空仓"}
-                    </span>
-                    {position.source === "venue" ? (
-                      <span data-tone="caution">上次场所观察</span>
-                    ) : null}
-                    {position.plan_entry_id ? <span>Plan {position.plan_entry_id}</span> : null}
-                    {!position.owned ? <span data-tone="alert">计划关联待核实</span> : null}
-                  </div>
-                  <div className="trading-position-facts">
-                    <Fact label="数量" value={position.quantity} />
-                    <Fact label="入场均价" value={position.entry_price ?? "未取得"} />
-                    <Fact label="标记价格" value={position.mark_price ?? "未取得"} />
-                    <Fact
-                      label="未实现盈亏"
-                      value={moneyLabel(position.unrealized_pnl_usd)}
-                      warn={position.unrealized_pnl_usd == null}
-                    />
-                  </div>
-                  <TradingPriceRange position={position} stale={riskUnconfirmed} />
-                  <div
-                    className="trading-protection-strip"
-                    data-tone={!accountUnconfirmed && guarded ? "protected" : "caution"}
-                  >
-                    <b>
-                      {accountUnconfirmed
-                        ? "上次观察的保护；当前未确认"
-                        : protectionStatusLabel(position.protection_status)}
-                    </b>
-                    <span>止损 {position.stop_trigger_price ?? "未挂"}</span>
-                    <span>止盈 {position.take_profit_trigger_price ?? "未挂"}</span>
-                  </div>
-                </article>
-              );
-            })}
-          </div>
+        {account ? (
+          <SignedExposure account={account} unconfirmed={unconfirmed} />
         ) : (
           <EmptyNote className="trading-empty-note">
-            {account == null
-              ? "未取得 Runtime 账户快照，不能据此断言没有仓位。"
-              : accountUnconfirmed
-                ? "上次读取时 Runtime 未见仓位；当前状态待确认。"
-                : "Runtime 当前未见仓位。"}
+            未取得 DEMO 签名账户快照，不能据此断言没有仓位。
           </EmptyNote>
         )}
-
-        {orders.length ? (
-          <div className="trading-current-order-list">
-            {orders.map((order) => (
-              <article className="trading-current-order-row" key={order.client_order_id}>
-                <b>{order.instrument_id}</b>
-                <span>{order.state.toUpperCase()}</span>
-                <span data-tone={order.leg === "unknown" ? "caution" : undefined}>
-                  {orderLegLabel(order.leg)} · Qty {order.quantity}
-                </span>
-                <span>Trigger {order.trigger_price ?? "—"}</span>
-                <span data-tone={!order.owned ? "caution" : undefined}>
-                  {order.owned ? "关联计划" : "计划关联待核实"}
-                  {order.reduce_only ? " · REDUCE ONLY" : ""}
-                </span>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <p className="trading-inline-empty">
-            {account == null
-              ? "未取得挂单与在途订单。"
-              : accountUnconfirmed
-                ? "上次读取时未见挂单或在途订单。"
-                : "Runtime 当前未见挂单或在途订单。"}
-          </p>
-        )}
       </details>
-      <SourceLine path="GET /api/trading/status → execution.current_account / findings" />
+      <SourceLine path="GET /api/trading/status → execution.signed_account（DEMO 签名 REST）" />
     </Card>
   );
 }
 
-function Fact({ label, value, warn = false }: { label: string; value: ReactNode; warn?: boolean }) {
+function SignedExposure({
+  account,
+  unconfirmed,
+}: {
+  account: SignedAccount;
+  unconfirmed: boolean;
+}) {
   return (
-    <span className="trading-fact" data-tone={warn ? "caution" : undefined}>
+    <>
+      {!account.complete ? (
+        <p className="trading-alert-line" data-tone="caution">
+          列表超过显示上限；上述总数来自完整场所读取。
+        </p>
+      ) : null}
+      <p className="trading-routes-line">
+        场所读取 {observedTime(Math.floor(account.observed_at_ns / 1_000_000))}
+      </p>
+      <div className="trading-fact-grid">
+        <Fact label="DEMO 保证金权益" value={moneyLabel(account.equity_usdt)} />
+        <Fact label="普通挂单" value={account.orders_total} />
+        <Fact label="Algo 挂单" value={account.algos_total} />
+      </div>
+      {account.positions.length ? (
+        <div className="trading-position-list">
+          {account.positions.map((position) => {
+            const stop = account.algos.find(
+              (order) => order.symbol === position.symbol && order.orderType === "STOP_MARKET",
+            );
+            const takeProfit = account.algos.find(
+              (order) =>
+                order.symbol === position.symbol && order.orderType === "TAKE_PROFIT_MARKET",
+            );
+            const guarded = Boolean(stop && takeProfit && stop.owned && takeProfit.owned);
+            return (
+              <article
+                className="trading-position-row"
+                key={`${position.symbol}:${position.positionSide ?? "BOTH"}`}
+              >
+                <div className="trading-position-identity">
+                  <b>{position.symbol}</b>
+                  <span>{Number(position.positionAmt) > 0 ? "多仓" : "空仓"}</span>
+                  {!position.owned ? <span data-tone="alert">未认领仓位</span> : null}
+                </div>
+                <div className="trading-position-facts">
+                  <Fact label="数量" value={position.positionAmt} />
+                  <Fact label="入场均价" value={position.entryPrice ?? "未取得"} />
+                  <Fact label="标记价格" value={position.markPrice ?? "未取得"} />
+                  <Fact label="未实现盈亏" value={moneyLabel(position.unRealizedProfit)} />
+                </div>
+                <TradingPriceRange
+                  position={{
+                    stop_trigger_price: stop?.triggerPrice ?? null,
+                    take_profit_trigger_price: takeProfit?.triggerPrice ?? null,
+                    entry_price: position.entryPrice ?? null,
+                    mark_price: position.markPrice ?? null,
+                  }}
+                  stale={unconfirmed}
+                />
+                <div
+                  className="trading-protection-strip"
+                  data-tone={guarded && !unconfirmed ? "protected" : "caution"}
+                >
+                  <b>
+                    {unconfirmed ? "保护待重新核实" : guarded ? "止损及止盈已挂" : "保护不完整"}
+                  </b>
+                  <span>止损 {stop?.triggerPrice ?? "未挂"}</span>
+                  <span>止盈 {takeProfit?.triggerPrice ?? "未挂"}</span>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <EmptyNote className="trading-empty-note">
+          该次签名读取未见非零仓位；下一次读取前状态可能变化。
+        </EmptyNote>
+      )}
+      {account.orders
+        .map((order) => ({
+          symbol: order.symbol,
+          clientId: order.clientOrderId,
+          side: order.side,
+          status: order.status,
+          owned: order.owned,
+        }))
+        .concat(
+          account.algos.map((order) => ({
+            symbol: order.symbol,
+            clientId: order.clientAlgoId,
+            side: order.orderType,
+            status: order.algoStatus,
+            owned: order.owned,
+          })),
+        )
+        .map((order) => (
+          <p className="trading-current-order-row" key={order.clientId}>
+            <b>{order.symbol}</b> · {order.side ?? "—"} · {order.status ?? "—"} · {order.clientId}
+            {!order.owned ? " · 未认领" : ""}
+          </p>
+        ))}
+    </>
+  );
+}
+
+function Fact({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <span className="trading-fact">
       <small>{label}</small>
       <b>{value}</b>
     </span>
@@ -314,21 +226,7 @@ function Fact({ label, value, warn = false }: { label: string; value: ReactNode;
 }
 
 function safety(value: boolean, stale: boolean): string {
-  if (stale) return "待确认";
-  return value ? "是" : "否";
-}
-
-function findingLabel(kind: string): string {
-  const labels: Record<string, string> = {
-    unclaimed_position: "未认领仓位",
-    unexpected_order: "非预期订单",
-    ownership_mismatch: "计划与仓位身份不符",
-    venue_cache_mismatch: "场所与本地数量不符",
-    close_unconfirmed: "平仓尚未确认",
-    ambiguous: "多个计划可能关联",
-    submission_unknown: "提交结果未知，等待场所订单确认",
-  };
-  return labels[kind] ?? kind;
+  return stale ? "待确认" : value ? "是" : "否";
 }
 
 function observedTime(value: number | null | undefined): string {
