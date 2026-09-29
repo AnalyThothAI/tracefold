@@ -27,21 +27,11 @@ def test_container_healthcheck_uses_liveness_endpoint():
     assert "http://127.0.0.1:8765/readyz" not in compose_yaml
 
 
-def test_the_execution_runtime_is_health_checked_on_liveness_not_readiness():
-    """Its `/readyz` answers 200 with the payload now, so it is a diagnosis and not a signal.
-
-    It should not be one either (#598 D5-b): a runtime that is alive but blocked -- a generation
-    rebuilding, unexpected exposure, entries paused -- is exactly the process an
-    operator has to be able to reach, and `restart: unless-stopped` on an unhealthy container would
-    restart the owner of an open position instead of leaving it there to be read.
-    """
-
-    compose_yaml = Path("compose.yaml").read_text()
-
-    assert "http://127.0.0.1:8767/healthz" in compose_yaml
-    assert "http://127.0.0.1:8767/readyz" not in compose_yaml
-    # Workers keeps its readiness gate: `make up` waits on that endpoint to call a deploy finished.
-    assert "http://127.0.0.1:8766/readyz" in compose_yaml
+def test_executor_runs_as_the_default_application_service():
+    compose = yaml.safe_load(Path("compose.yaml").read_text())
+    assert compose["services"]["executor"]["command"] == ["tracefold", "executor"]
+    assert "profiles" not in compose["services"]["executor"]
+    assert "nautilus" not in compose["services"]
 
 
 def test_workers_start_period_outlasts_the_broker_settle_it_waits_on():
@@ -65,7 +55,7 @@ def test_workers_start_period_outlasts_the_broker_settle_it_waits_on():
 def test_every_probe_allows_for_the_interpreter_it_spawns():
     """Each probe starts a Python process before it makes its request; 2 s did not cover that under load."""
 
-    for service in ("serve", "workers", "nautilus"):
+    for service in ("serve", "workers"):
         assert _seconds(_healthcheck(service)["timeout"]) >= 5.0, service
 
 
@@ -73,9 +63,3 @@ def test_postgres_is_bound_to_loopback_for_host_cli():
     compose_yaml = Path("compose.yaml").read_text()
 
     assert '"${TRACEFOLD_POSTGRES_HOST:-127.0.0.1}:${TRACEFOLD_POSTGRES_PORT:-56532}:5432"' in compose_yaml
-
-
-def test_dormant_execution_runtime_is_excluded_from_the_default_compose_model():
-    compose = yaml.safe_load(Path("compose.yaml").read_text())
-
-    assert compose["services"]["nautilus"]["profiles"] == ["execution"]

@@ -28,7 +28,7 @@
 | 配置 | [models.py](../tracefold/platform/config/models.py)、[loader.py](../tracefold/platform/config/loader.py) | 初始化生成配置与校验测试 |
 | 数据库 | [Alembic versions](../tracefold/platform/postgres/alembic/versions/) | [db-schema.md](generated/db-schema.md)，隔离迁移数据库生成 |
 | News 知识与通知 | [updates/contracts.py](../tracefold/news/updates/contracts.py)、[notification.py](../tracefold/news/updates/notification.py) | 引用、版本、采用、实际正文与发送测试 |
-| Trading 执行交接 | [execution_contracts.py](../tracefold/trading/execution_contracts.py) | Signal / 意图 / 观察与作用域测试 |
+| Trading 执行交接 | [executor/core.py](../tracefold/trading/executor/core.py)、[operator_control.py](../tracefold/trading/operator_control.py) | Signal v4、操作员意图与执行决策 |
 
 生成物保留机器标识和源语法；文档中文化不改变 JSON 字段、CLI 参数、错误码或协议版本。
 
@@ -127,11 +127,11 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 <a id="section-trading操作与执行"></a>
 ## 05 · Trading、操作与执行
 
-`TradeSignalV3`、`OperatorIntentV1` 和 Runtime observation 的身份与作用域由执行契约定义，模型不能自由添加未知字段来绕过编译器。Signal 绑定 Case / decision、计划、映射、账户槽位、entry scope 与截止时间。
+`SignalV4` 与 `OperatorIntentV1` 的身份与作用域由执行契约定义，模型不能自由添加未知字段来绕过编译器。Signal 绑定 Case / decision、几何、映射、账户槽位、entry scope 与截止时间；订单与成交由 DEMO 场所对账确认。
 
 本地 `trading issue` 使用关闭的命令语法，必须有稳定 `--request-id` 和调用方封存的 `--requested-at-ns`，重试保留两者。它记录本地 OS 认证的意图，不证明交易所动作完成。
 
-执行结果只从与 Plan 精确绑定的交易所原生成交计算。普通 fill 保留事件审计用途；缺少原生依据时数量与收益显示未知。Runtime 自动核验仍有责任的订单，不提供已关闭旧账的在线补正命令。
+执行结果只从与 Plan 精确绑定的交易所原生成交计算。原生成交按交易所交易 ID 去重，延迟归因另记不可变绑定；缺少完整成交或 USDT 手续费时净收益显示未知。执行器周期性核验仍有责任的订单与账户。
 
 <a id="section-cli-与配置"></a>
 ## 06 · CLI 与配置

@@ -3646,137 +3646,10 @@ export interface components {
             state: "disabled" | "unavailable" | "model_unconfigured" | "running";
         };
         /**
-         * TradingExecutionAccountData
-         * @description What the account holds, read from the Nautilus Cache the Runtime executes against (#680).
-         *
-         *     Nautilus reconciles that Cache with the venue at start and every five seconds after; this is the
-         *     Runtime's own picture, published whole. `complete` says every position could be marked and the
-         *     balance was known, so equity and the drawdown are whole numbers.
-         */
-        TradingExecutionAccountData: {
-            /** Complete */
-            complete: boolean;
-            /** Daily Drawdown Bps */
-            daily_drawdown_bps?: number | null;
-            /** Daily Drawdown Usd */
-            daily_drawdown_usd?: string | null;
-            /** Equity Usd */
-            equity_usd?: string | null;
-            /** Findings */
-            findings?: components["schemas"]["TradingExecutionFindingData"][];
-            /** Findings Total */
-            findings_total: number;
-            /** Inflight Orders Count */
-            inflight_orders_count: number;
-            /** Observed At Ms */
-            observed_at_ms: number;
-            /** Open Orders Count */
-            open_orders_count: number;
-            /** Orders */
-            orders?: components["schemas"]["TradingExecutionOrderData"][];
-            /** Orders Total */
-            orders_total: number;
-            /** Positions */
-            positions?: components["schemas"]["TradingExecutionPositionData"][];
-            /** Positions Total */
-            positions_total: number;
-        };
-        /** TradingExecutionFindingData */
-        TradingExecutionFindingData: {
-            /** Cache Quantity */
-            cache_quantity?: string | null;
-            /** Instrument Id */
-            instrument_id: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "unclaimed_position" | "unexpected_order" | "ownership_mismatch" | "venue_cache_mismatch" | "close_unconfirmed" | "ambiguous" | "submission_unknown";
-            /** Object Id */
-            object_id: string;
-            /** Observed At Ms */
-            observed_at_ms: number;
-            /** Plan Entry Id */
-            plan_entry_id?: string | null;
-            /** Venue Quantity */
-            venue_quantity?: string | null;
-        };
-        /** TradingExecutionOrderData */
-        TradingExecutionOrderData: {
-            /** Client Order Id */
-            client_order_id: string;
-            /** Instrument Id */
-            instrument_id: string;
-            /**
-             * Leg
-             * @enum {string}
-             */
-            leg: "entry" | "stop" | "take_profit" | "exit" | "unknown";
-            /** Owned */
-            owned: boolean;
-            /** Plan Entry Id */
-            plan_entry_id?: string | null;
-            /** Quantity */
-            quantity: string;
-            /** Reduce Only */
-            reduce_only: boolean;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "open" | "inflight";
-            /** Trigger Price */
-            trigger_price?: string | null;
-        };
-        /** TradingExecutionPositionData */
-        TradingExecutionPositionData: {
-            /** Entry Price */
-            entry_price?: string | null;
-            /** Instrument Id */
-            instrument_id: string;
-            /** Mark Price */
-            mark_price?: string | null;
-            /** Owned */
-            owned: boolean;
-            /** Plan Entry Id */
-            plan_entry_id?: string | null;
-            /** Position Id */
-            position_id: string;
-            /**
-             * Protection Status
-             * @enum {string}
-             */
-            protection_status: "protected" | "pending" | "unprotected" | "unknown";
-            /** Quantity */
-            quantity: string;
-            /**
-             * Side
-             * @enum {string}
-             */
-            side: "long" | "short";
-            /**
-             * Source
-             * @enum {string}
-             */
-            source: "cache" | "venue";
-            /** Stop Trigger Price */
-            stop_trigger_price?: string | null;
-            /** Take Profit Trigger Price */
-            take_profit_trigger_price?: string | null;
-            /** Unrealized Pnl Usd */
-            unrealized_pnl_usd?: string | null;
-        };
-        /**
          * TradingExecutionReadinessData
-         * @description One field per operator question, and the CLI `tracefold trading status` block is this same dict.
-         *
-         *     `execution_safe`, `startup_reconciled`, `reconciliation_age_ms` and `account_flat_proven` answered
-         *     questions about the Runtime's private account proof, and went with it (#680): Nautilus reconciles
-         *     the venue before the Strategy starts, so a fresh heartbeat is the freshness of `current_account`.
+         * @description Executor heartbeat, admission state and the last signed DEMO account read.
          */
         TradingExecutionReadinessData: {
-            /** Account Projection Failure */
-            account_projection_failure?: string | null;
             /** Account Slot */
             account_slot: string;
             /** Alive */
@@ -3787,14 +3660,9 @@ export interface components {
              */
             configured_connection: "LIVE" | "DEMO" | "TESTNET" | "SDK_DEFAULT";
             /** Connection */
-            connection?: ("LIVE" | "DEMO" | "TESTNET" | "SDK_DEFAULT") | null;
+            connection?: "DEMO" | null;
             /** Connection Observed At Ms */
             connection_observed_at_ms?: number | null;
-            /** Convergence Checked At Ms */
-            convergence_checked_at_ms?: number | null;
-            /** Convergence Failure */
-            convergence_failure?: string | null;
-            current_account?: components["schemas"]["TradingExecutionAccountData"] | null;
             /**
              * Emergency Halted
              * @default false
@@ -3815,46 +3683,20 @@ export interface components {
             facts_remaining_ms?: number | null;
             /** Heartbeat At Ms */
             heartbeat_at_ms?: number | null;
-            /**
-             * Protection Status
-             * @default not_applicable
-             * @enum {string}
-             */
-            protection_status: "not_applicable" | "protected" | "pending" | "unprotected" | "unknown";
-            /** Recovery Attempted At Ms */
-            recovery_attempted_at_ms?: number | null;
-            /** Recovery Result */
-            recovery_result?: string | null;
-            /** Reported Entry Block Reason */
-            reported_entry_block_reason?: string | null;
-            /**
-             * Routes Count
-             * @default 0
-             */
-            routes_count: number;
+            /** Last Error */
+            last_error?: string | null;
+            /** Last Full Reconcile At Ms */
+            last_full_reconcile_at_ms?: number | null;
+            signed_account?: components["schemas"]["TradingSignedAccountData"] | null;
             /**
              * Unexpected Exposure
              * @default false
              */
             unexpected_exposure: boolean;
-            /** Venue Read Completed At Ms */
-            venue_read_completed_at_ms?: number | null;
-            /** Venue Read Failure */
-            venue_read_failure?: string | null;
-            /** Venue Read Started At Ms */
-            venue_read_started_at_ms?: number | null;
         };
         /**
          * TradingExecutionRowData
-         * @description One entry identity's whole execution, folded from its plan and its own observations.
-         *
-         *     `entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,
-         *     or the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so
-         *     `case_id` is absent on those rows rather than invented.
-         *
-         *     `realized_pnl_usd` retains the historical fee-adjusted fill fold. Net PnL
-         *     additionally requires complete signed funding-income coverage and unambiguous
-         *     account-slot attribution over the fill-to-fill holding interval.
+         * @description One disposition or plan, folded from the executor's durable venue evidence.
          */
         TradingExecutionRowData: {
             /** Account Slot */
@@ -3872,12 +3714,12 @@ export interface components {
             duration_ns?: number | null;
             /** Entry Client Order Id */
             entry_client_order_id?: string | null;
+            /** Entry Error Code */
+            entry_error_code?: number | null;
             /** Entry Filled At Ns */
             entry_filled_at_ns?: number | null;
             /** Entry Id */
             entry_id: string;
-            /** Exit Policy Id */
-            exit_policy_id?: string | null;
             /** Exit Price */
             exit_price?: string | null;
             /** Exit Reason */
@@ -3888,38 +3730,24 @@ export interface components {
             fill_avg_price?: string | null;
             /** Fill Quantity */
             fill_quantity?: string | null;
-            /** Funding Usd */
-            funding_usd?: string | null;
             /** Instrument Id */
             instrument_id?: string | null;
             /** Market Key */
             market_key: string;
             /** Max Holding Ns */
             max_holding_ns?: number | null;
-            /** Max Leverage At Creation */
-            max_leverage_at_creation?: number | null;
-            /** Net Known */
-            net_known: boolean;
             /** Net Pnl Usd */
             net_pnl_usd?: string | null;
             /** Observed At Ns */
             observed_at_ns: number;
-            /** Order Reject Reason */
-            order_reject_reason?: string | null;
             /** Plan Status */
             plan_status?: string | null;
-            /** Pnl Known */
-            pnl_known: boolean;
+            /** Pnl Status */
+            pnl_status?: ("pending" | "complete" | "evidence_incomplete") | null;
             /** Position Closed At Ns */
             position_closed_at_ns?: number | null;
             /** Realized Pnl Usd */
             realized_pnl_usd?: string | null;
-            /** Result Evidence Source */
-            result_evidence_source?: "signed_native_trades" | null;
-            /** Result Verified At Ns */
-            result_verified_at_ns?: number | null;
-            /** Risk Budget Usd */
-            risk_budget_usd?: string | null;
             /**
              * Source
              * @enum {string}
@@ -3929,7 +3757,7 @@ export interface components {
              * Stage
              * @enum {string}
              */
-            stage: "pending" | "rejected" | "expired" | "ordered" | "filled" | "protected" | "closed";
+            stage: "pending" | "accepted" | "submission_unknown" | "rejected" | "expired" | "ordered" | "filled" | "protected" | "closed";
             /** Stop Distance Bps */
             stop_distance_bps?: number | null;
             /** Stop Trigger Price */
@@ -4059,6 +3887,85 @@ export interface components {
             side?: string | null;
             /** State */
             state: string;
+        };
+        /**
+         * TradingSignedAccountData
+         * @description Bounded projection of one complete signed DEMO REST account read.
+         */
+        TradingSignedAccountData: {
+            /** Algos */
+            algos: components["schemas"]["TradingSignedAlgoData"][];
+            /** Algos Total */
+            algos_total: number;
+            /** Complete */
+            complete: boolean;
+            /** Equity Usdt */
+            equity_usdt: string;
+            /** Observed At Ns */
+            observed_at_ns: number;
+            /** Orders */
+            orders: components["schemas"]["TradingSignedOrderData"][];
+            /** Orders Total */
+            orders_total: number;
+            /** Positions */
+            positions: components["schemas"]["TradingSignedPositionData"][];
+            /** Positions Total */
+            positions_total: number;
+        };
+        /** TradingSignedAlgoData */
+        TradingSignedAlgoData: {
+            /** Algostatus */
+            algoStatus?: string | null;
+            /** Clientalgoid */
+            clientAlgoId: string;
+            /** Closeposition */
+            closePosition?: boolean | null;
+            /** Ordertype */
+            orderType?: string | null;
+            /** Owned */
+            owned: boolean;
+            /** Quantity */
+            quantity?: string | null;
+            /** Reduceonly */
+            reduceOnly?: boolean | null;
+            /** Symbol */
+            symbol: string;
+            /** Triggerprice */
+            triggerPrice?: string | null;
+        };
+        /** TradingSignedOrderData */
+        TradingSignedOrderData: {
+            /** Clientorderid */
+            clientOrderId: string;
+            /** Origqty */
+            origQty?: string | null;
+            /** Owned */
+            owned: boolean;
+            /** Reduceonly */
+            reduceOnly?: boolean | null;
+            /** Side */
+            side?: string | null;
+            /** Status */
+            status?: string | null;
+            /** Symbol */
+            symbol: string;
+        };
+        /** TradingSignedPositionData */
+        TradingSignedPositionData: {
+            /** Entryprice */
+            entryPrice?: string | null;
+            /** Markprice */
+            markPrice?: string | null;
+            /** Owned */
+            owned: boolean;
+            /** Positionamt */
+            positionAmt: string;
+            /** Positionside */
+            positionSide?: string | null;
+            /** Symbol */
+            symbol: string;
+            /** Unrealizedprofit */
+            unRealizedProfit?: string | null;
         };
         /**
          * TradingStatusData

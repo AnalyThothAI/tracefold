@@ -7,9 +7,10 @@ import time
 from dataclasses import replace
 
 import httpx
+import pytest
 
 from tracefold.integrations.marketdata.binance import BinanceMarketData
-from tracefold.trading.engine.marketdata import MarketDataRequest
+from tracefold.trading.engine.marketdata import MarketDataRequest, analysis_market_request
 
 
 def _request(*, start: int = 0, end: int = 120_000, dataset: str = "perp_bars") -> MarketDataRequest:
@@ -17,7 +18,7 @@ def _request(*, start: int = 0, end: int = 120_000, dataset: str = "perp_bars") 
         dataset=dataset,
         native_symbol="SOLUSDT",
         venue="binance.usdm",
-        environment="demo",
+        environment="live",
         product="spot" if dataset == "spot_bars" else "perpetual",
         source_identity="binance_public_v1",
         unit_definition="native_quote_v1",
@@ -31,6 +32,29 @@ def _request(*, start: int = 0, end: int = 120_000, dataset: str = "perp_bars") 
 
 def _bar(open_at: int) -> list[object]:
     return [open_at, "100", "101", "99", "100", "3", open_at + 59_999, "300", 1, "1", "100", "0"]
+
+
+def test_analysis_market_requests_are_live_and_demo_requests_fail_before_dispatch() -> None:
+    for dataset in ("perp_bars", "spot_bars", "open_interest", "funding_basis", "instrument_rules"):
+        request = analysis_market_request(
+            dataset=dataset,
+            native_symbol="SOLUSDT",
+            end_ms=120_000 if dataset.endswith("bars") else None,
+            window_minutes=1 if dataset.endswith("bars") else None,
+            deadline_at_monotonic=time.monotonic() + 2,
+        )
+        assert request.environment == "live"
+
+    async def reject_demo() -> None:
+        async def unexpected(_request: httpx.Request) -> httpx.Response:
+            raise AssertionError("DEMO request was dispatched")
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(unexpected)) as client:
+            adapter = BinanceMarketData(client=client)
+            with pytest.raises(ValueError, match="market_data_environment_unsupported"):
+                await adapter.fetch(replace(_request(), environment="demo"))
+
+    asyncio.run(reject_demo())
 
 
 def test_instrument_rules_fetch_and_cache_are_symbol_scoped() -> None:
@@ -226,7 +250,7 @@ async def _latest_deadline_and_clock() -> None:
         dataset="open_interest",
         native_symbol="SOLUSDT",
         venue="binance.usdm",
-        environment="demo",
+        environment="live",
         product="perpetual",
         source_identity="binance_public_v1",
         unit_definition="native_quantity_v1",
@@ -267,7 +291,7 @@ async def _latest_clock_boundaries() -> None:
             dataset="open_interest",
             native_symbol="SOLUSDT",
             venue="binance.usdm",
-            environment="demo",
+            environment="live",
             product="perpetual",
             source_identity="binance_public_v1",
             unit_definition="native_contract_quantity_v1",
@@ -362,7 +386,7 @@ async def _shadow_market_sources() -> None:
             dataset="book_ticker",
             native_symbol="SOLUSDT",
             venue="binance.usdm",
-            environment="demo",
+            environment="live",
             product="perpetual",
             source_identity="binance_public_v1",
             unit_definition="bid_ask_quote_and_base_size_v2",
@@ -377,7 +401,7 @@ async def _shadow_market_sources() -> None:
             dataset="funding_history",
             native_symbol="SOLUSDT",
             venue="binance.usdm",
-            environment="demo",
+            environment="live",
             product="perpetual",
             source_identity="binance_public_v1",
             unit_definition="funding_rate_and_mark_price_v2",
@@ -408,4 +432,4 @@ async def _shadow_market_sources() -> None:
     assert "/fapi/v1/ticker/bookTicker" in paths
     assert "/fapi/v1/markPriceKlines" in paths
     assert "/fapi/v1/fundingRate" in paths
-    assert hosts == {"demo-fapi.binance.com"}
+    assert hosts == {"fapi.binance.com"}

@@ -271,72 +271,29 @@ services:
       retries: 3
       start_period: 30s
 
-  # The execution runtime does not share the application anchor (#537 PR-2). It owns a live Binance
-  # account, so it owns its own image tag and its own lifecycle: `make runtime-build` produces
-  # `tracefold-runtime:<sha>` and `make runtime-up` starts exactly that tag, while `make up` never
-  # names this service at all. The `:local` default is deliberately never built, so a bare
-  # `docker compose --profile execution up` fails closed instead of starting an unproven image.
-  nautilus:
-    image: ${TRACEFOLD_RUNTIME_IMAGE:-tracefold-runtime:local}
-    build:
-      context: .
-      target: runtime
-      args:
-        TRACEFOLD_BUILD_REVISION: ${TRACEFOLD_BUILD_REVISION:-}
-    # The image cannot hash itself at build time, so the digest arrives at start time;
-    # `make runtime-up` computes it from the image it is about to run.
-    environment:
-      TRACEFOLD_IMAGE_DIGEST: ${TRACEFOLD_IMAGE_DIGEST:-}
-    # The lifecycle runner includes the profile in its model but only explicit
-    # runtime-up starts this service, after validating execution.enabled.
-    profiles: ["execution"]
+  # DEMO execution shares the application image and migration lifecycle.
+  executor:
+    <<: *tracefold-app
     init: true
     restart: unless-stopped
-    # PostgreSQL and nothing else. A News broker outage or a one-shot migration that has not been
-    # rerun since the last boot must never be what keeps the process that owns exposure from coming
-    # back; the schema head it needs is asserted inside the process before it takes the account-slot
-    # lock, which is a stronger check than an ordering edge (#537 D4).
     depends_on:
       postgres:
         condition: service_healthy
-    ports:
-      - "${TRACEFOLD_NAUTILUS_HOST:-127.0.0.1}:${TRACEFOLD_NAUTILUS_PORT:-8767}:8767"
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/config.yaml:/root/.tracefold/config.yaml:ro
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password:/root/.tracefold/postgres_database_password:ro
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/binance_usdm_api_key:/root/.tracefold/binance_usdm_api_key:ro
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/binance_usdm_api_secret:/root/.tracefold/binance_usdm_api_secret:ro
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/logs:/root/.tracefold/logs
-    command: ["tracefold", "nautilus", "run"]
-    # Worst-case shutdown is three sequential 20 s Nautilus stop budgets plus the final projection
-    # write; 40 s made SIGKILL the normal exit, which skips `singleton.release()` and leaves a ghost
-    # session holding the account-slot advisory lock. `tests/deploy/test_runtime_lifecycle.py` pins
-    # `3 * _STOP_TIMEOUT_SECONDS + 20 <= 90` against this number.
-    stop_grace_period: 90s
+    command: ["tracefold", "executor"]
+    stop_grace_period: 45s
     deploy:
       resources:
         limits:
           cpus: "2.0"
           memory: 2G
-    healthcheck:
-      # Liveness, like Serve's. `/readyz` answers 200 with the payload now (#598 D5-b), so it can no
-      # longer be a health signal, and it should not be one: a runtime that is alive but blocked --
-      # startup reconciliation unproven, unexpected exposure, entries paused -- is exactly the
-      # process an operator must be able to reach, and `restart: unless-stopped` on an unhealthy
-      # container is not an instruction to restart the owner of an open position. What is wrong is in the
-      # payload `make runtime-status` prints.
-      test:
-        [
-          "CMD",
-          "python",
-          "-c",
-          "from urllib.request import urlopen; urlopen('http://127.0.0.1:8767/healthz', timeout=1).read()",
-        ]
-      interval: 10s
-      # Same interpreter-spawn cost as the other two probes.
-      timeout: 5s
-      retries: 3
-      start_period: 120s
 
 volumes:
   tracefold-postgres:

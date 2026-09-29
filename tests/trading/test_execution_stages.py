@@ -15,6 +15,7 @@ def _stage(**overrides: str | int | None) -> str:
         "order_status": None,
         "fill_quantity": None,
         "stop_trigger_price": None,
+        "take_profit_trigger_price": None,
         "position_status": None,
         "expires_at_ns": None,
         "now_ns": _NOW_NS,
@@ -51,7 +52,7 @@ def test_a_signal_that_never_got_a_disposition_expires_when_its_own_ttl_passes()
 @pytest.mark.parametrize(
     ("reason", "expected"),
     [
-        ("accepted", "ordered"),
+        ("accepted", "accepted"),
         # `accepted` is written only once the venue took the order (#680); the old query-first words
         # are history rows that also carry the order facts `stage` reads first.
         ("venue_rejected", "rejected"),
@@ -68,7 +69,7 @@ def test_a_disposition_alone_decides_between_ordered_expired_and_rejected(reason
 @pytest.mark.parametrize(
     ("reason", "verdict", "expected"),
     [
-        ("accepted", "accepted", "ordered"),
+        ("accepted", "accepted", "accepted"),
         ("account_slot_mismatch", "rejected", "rejected"),
         ("expired", "rejected", "expired"),
     ],
@@ -101,6 +102,7 @@ def test_the_newest_venue_fact_wins_over_every_earlier_one() -> None:
             order_status="filled",
             fill_quantity="0.049",
             stop_trigger_price="9800",
+            take_profit_trigger_price="10200",
             position_status="opened",
         )
         == "protected"
@@ -111,6 +113,7 @@ def test_the_newest_venue_fact_wins_over_every_earlier_one() -> None:
             order_status="filled",
             fill_quantity="0.049",
             stop_trigger_price="9800",
+            take_profit_trigger_price="10200",
             position_status="closed",
         )
         == "closed"
@@ -124,11 +127,15 @@ def test_an_entry_order_without_its_disposition_row_is_still_ordered() -> None:
 
 
 def test_a_plan_decides_the_stage_and_a_refused_entry_plan_is_a_rejection_not_a_closed_trade() -> None:
-    assert _stage(plan_status="prepared") == "pending"
+    assert _stage(plan_status="prepared") == "accepted"
     assert _stage(plan_status="prepared", order_status="submitted") == "ordered"
+    assert _stage(plan_status="prepared", order_status="RESERVED") == "accepted"
+    assert _stage(plan_status="prepared", order_status="UNKNOWN") == "submission_unknown"
     assert _stage(plan_status="open", fill_quantity="0.049") == "filled"
-    assert _stage(plan_status="open", stop_trigger_price="9800") == "protected"
+    assert _stage(plan_status="open", stop_trigger_price="9800") == "filled"
+    assert _stage(plan_status="open", stop_trigger_price="9800", take_profit_trigger_price="10200") == "protected"
     assert _stage(plan_status="closed", exit_reason="stop_filled") == "closed"
     assert _stage(plan_status="closed", exit_reason="venue_unknown") == "closed"
     # #680. A venue that refused the entry order ended the plan before anything traded.
-    assert _stage(plan_status="closed", exit_reason="not_submitted", order_status="rejected") == "rejected"
+    assert _stage(plan_status="closed", exit_reason="entry_rejected", order_status="rejected") == "rejected"
+    assert _stage(plan_status="closed", exit_reason="entry_rejected", order_status="rejected") == "rejected"

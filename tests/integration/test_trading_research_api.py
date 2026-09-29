@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import json
 import time
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.helpers.prepared_signal_v3 import prepared_v3_signal
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import Settings
+from tracefold.trading.executor.core import SignalV4
 from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -48,15 +49,37 @@ def test_filtered_decisions_page_past_the_old_limit_and_link_by_saved_identity(t
             conn.execute(
                 "UPDATE trading_cases SET state='SIGNAL_EMITTED', policy_decision='long' WHERE case_id='research-125'"
             )
-            TradingRepository(conn).append_trade_signal(
-                prepared_v3_signal(
+            TradingRepository(conn).append_signal(
+                SignalV4(
+                    seq=1,
                     signal_id="d" * 64,
+                    decision_id="e" * 64,
                     case_id="research-125",
-                    market_key="crypto:perp:BTC:USDT",
-                    direction="long",
-                    observed_at_ns=old_at * 1_000_000,
+                    account_slot="binance_usdm_primary",
+                    entry_scope_id="f" * 64,
+                    asset_id="crypto:BTC",
+                    native_symbol="BTCUSDT",
+                    mapping_semantics_digest="a" * 64,
+                    side="long",
+                    reference_price=Decimal("100"),
+                    max_drift_bps=200,
+                    stop_bps=100,
+                    tp_bps=200,
+                    max_hold_s=14_400,
+                    policy_id="research",
+                    policy_version="v1",
+                    geometry_version="v1",
+                    decided_at_ns=old_at * 1_000_000,
                     expires_at_ns=(old_at + 60_000) * 1_000_000,
                 )
+            )
+            TradingRepository(conn).record_disposition(
+                kind="signal",
+                input_id="d" * 64,
+                account_slot="binance_usdm_primary",
+                disposition="expired",
+                reason="expired",
+                now_ns=(old_at + 60_000) * 1_000_000,
             )
     finally:
         conn.close()

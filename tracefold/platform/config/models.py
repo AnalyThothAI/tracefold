@@ -630,7 +630,7 @@ class TradingExecutionRiskSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     risk_fraction_per_trade: Decimal = Decimal("0.01")
-    max_leverage: int = 1
+    max_leverage: int = 5
     stop_distance_bps: int = 100
     # The widest spread an entry may cross, as a fraction of the stop distance: 0.3 of a 100 bps stop
     # is 30 bps. An entry waits for a narrower book within its Signal's TTL rather than being refused

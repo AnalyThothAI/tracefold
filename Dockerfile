@@ -62,9 +62,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN /app/.venv/bin/python -c \
     'from tracefold.app.news_updates import news_program_identity; news_program_identity(extraction_model_identity="build", judgment_model_identity="build", card_model_identity="build")'
 
-RUN /app/.venv/bin/python -c \
-    'import sys; from nautilus_trader.live.node import TradingNode; assert sys.version_info[:2] == (3, 13); assert TradingNode.__module__ == "nautilus_trader.live.node"'
-
 FROM python:3.13-slim-bookworm@sha256:c45a22ea000adfd9cda29364bbe7edd23001ce5cc2ad15857cfbf7766943b9ca AS base
 
 ARG TRACEFOLD_BUILD_REVISION
@@ -81,22 +78,7 @@ COPY --from=python-deps /app /app
 ENV PATH="/app/.venv/bin:${PATH}"
 
 
-# The execution runtime (#537 PR-2). It owns a live Binance account, so it gets its own image and
-# its own `tracefold-runtime:<sha>` tag: a News/Serve/Workers deploy then changes no bytes this
-# process runs, and `make up` has nothing to recreate. It carries no console bundle, because
-# nothing in it serves one.
-FROM base AS runtime
-
-RUN cd / \
-    && python -c 'from tracefold.app.nautilus.root import run_nautilus'
-
-EXPOSE 8767
-
-CMD ["tracefold", "nautilus", "run"]
-
-
-# Last, therefore the default build target: `docker compose build migrate|serve|workers` and a bare
-# `docker build .` must keep producing the console-carrying application image.
+# The application image also runs the DEMO executor.
 FROM base AS app
 
 COPY --from=web-builder /app/web/dist /app/tracefold/web/dist

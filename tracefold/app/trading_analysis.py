@@ -15,6 +15,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any, cast
 
+import httpx
+
 from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.system_one import SystemOneConnection
 from tracefold.app.trading_analyst import AnalystCallReceipt, PhysicalModelCall, TradeAnalyst
@@ -58,13 +60,7 @@ from tracefold.trading.engine.plans import (
 )
 from tracefold.trading.engine.policy import InvalidAssessment, decision_identity
 from tracefold.trading.engine.target import SourceAsset, TargetSelection, TriggerKind, select_target
-from tracefold.trading.execution_contracts import (
-    SignalEntryEnvelopeV3,
-    SignalExitPlanV1,
-    TradeSignalV3,
-    market_key,
-)
-from tracefold.trading.storage.execution_stream import PreparedTradeSignal, prepare_trade_signal_v3
+from tracefold.trading.executor.core import SignalV4
 
 _BAR_MS = 60_000
 _LOG = logging.getLogger(__name__)
@@ -232,13 +228,12 @@ class FrameReader:
         now = _clock_ms()
         end = now // _BAR_MS * _BAR_MS
         deadline = time.monotonic() + 5.0
-        environment = str(instrument["environment"])
+        environment = "live"
 
         def request(dataset: Dataset) -> MarketDataRequest:
             return analysis_market_request(
                 dataset=dataset,
                 native_symbol=native,
-                instrument_environment=environment,
                 end_ms=end if dataset in ("perp_bars", "spot_bars", "market_bars") else None,
                 window_minutes=(
                     240 if dataset == "perp_bars" else 60 if dataset in ("spot_bars", "market_bars") else None
@@ -749,7 +744,7 @@ class AnalysisRunner:
         """
 
         events = await self._db_async(lambda repos: repos.news.unacknowledged_trade_events(limit=batch_size))
-        environment = (self.settings.trading.execution.binance.environment or "LIVE").lower()
+        environment = "live"
         for event in events:
             try:
                 disposition = await self._receive_trade_event(event, environment=environment)
@@ -848,7 +843,7 @@ class AnalysisRunner:
         receipt = None
         tool_context: CaseToolContext | None = None
         decision = None
-        prepared_signal: PreparedTradeSignal | None = None
+        prepared_signal: SignalV4 | None = None
         publish_block_reason: str | None = None
         analysis_error_code: str | None = None
         validation_errors: tuple[dict[str, str], ...] = ()
@@ -1061,7 +1056,9 @@ class AnalysisRunner:
                     if compiled.action == "TRADE" and self.settings.trading.analysis.publish_signals:
                         try:
                             selected = tool_context.plans[decision["selected_plan_id"]]
-                            prepared_signal = self._prepare_signal(case, selected, decision)
+                            publish_block_reason = await self._publication_reason(case)
+                            if publish_block_reason is None:
+                                prepared_signal = self._prepare_signal(case, selected, decision)
                         except ValueError as exc:
                             # The analysis remains valid, but an invalid or expired
                             # execution envelope must be visible as a publication refusal.
@@ -1226,6 +1223,35 @@ class AnalysisRunner:
             )
         return True
 
+    async def _publication_reason(self, case: dict[str, Any]) -> str | None:
+        """Execution availability is checked separately from LIVE analysis evidence."""
+
+        execution = self.settings.trading.execution
+        if not execution.enabled or execution.binance.environment != "DEMO":
+            return "runtime_unavailable"
+        state = await self._db_async(lambda repos: repos.trading.executor_state(execution.account_slot))
+        if state is None or _clock_ms() * 1_000_000 - state["heartbeat_at_ns"] > 5_000_000_000:
+            return "runtime_unavailable"
+        instrument = case["target_selection"]["instrument"]
+        symbol = str(instrument["native_symbol"])
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            try:
+                response = await client.get("https://demo-fapi.binance.com/fapi/v1/exchangeInfo")
+                response.raise_for_status()
+                symbols = response.json()["symbols"]
+            except (httpx.HTTPError, KeyError, ValueError):
+                return "runtime_unavailable"
+        if not any(
+            row.get("symbol") == symbol
+            and row.get("baseAsset") == str(case["target_asset_id"]).split(":", 1)[-1]
+            and row.get("quoteAsset") == "USDT"
+            and row.get("contractType") == "PERPETUAL"
+            and row.get("status") == "TRADING"
+            for row in symbols
+        ):
+            return "execution_venue_unlisted"
+        return None
+
     async def _read_executable_quote(self, case: dict[str, Any]) -> dict[str, Any]:
         instrument = case["target_selection"]["instrument"]
         identity = {
@@ -1237,7 +1263,7 @@ class AnalysisRunner:
             dataset="book_ticker",
             native_symbol=str(instrument["native_symbol"]),
             venue="binance.usdm",
-            environment=str(instrument["environment"]),
+            environment="live",
             product="perpetual",
             source_identity="binance_public_v1",
             unit_definition="bid_ask_quote_and_base_size_v2",
@@ -1253,7 +1279,7 @@ class AnalysisRunner:
                 **identity,
                 "status": result.status,
                 "payload": result.payload,
-                "environment": str(instrument["environment"]),
+                "environment": "live",
                 "source_identity": result.source_identity,
                 "unit_definition": result.unit_definition,
                 "request_receipts": result.request_receipts,
@@ -1267,7 +1293,7 @@ class AnalysisRunner:
         case: dict[str, Any],
         selected: EntryPlan,
         decision: dict[str, Any],
-    ) -> PreparedTradeSignal | None:
+    ) -> SignalV4:
         plan = decision.get("exit_plan")
         if not isinstance(plan, dict) or decision.get("side") not in ("long", "short"):
             raise ValueError("analysis_trade_plan_invalid")
@@ -1276,27 +1302,12 @@ class AnalysisRunner:
         if not native.endswith("USDT") or len(native) <= 4:
             raise ValueError("analysis_native_market_unsupported")
         now_ns = _clock_ms() * 1_000_000
-        expiry_ns = min(
-            int(case["root_expires_at_ms"]) * 1_000_000,
-            selected.expires_at_ms * 1_000_000,
-            int(case["work_deadline_at_ms"]) * 1_000_000,
-        )
-        if expiry_ns <= now_ns:
-            raise ValueError("analysis_signal_expired")
+        expiry_ns = now_ns + 300_000_000_000
         decision_id = decision_identity(str(case["case_id"]), decision)
         signal_id = hashlib.sha256(
-            f"{case['case_id']}:{decision_id}:signal_v3".encode(),
+            f"{case['case_id']}:{decision_id}:signal_v4".encode(),
         ).hexdigest()
-        parent_condition = (
-            (case.get("manifest") or {}).get("watch_condition") if case.get("run_kind") == "conditional" else None
-        )
-        if parent_condition is not None and (
-            parent_condition.get("kind") != "closed_1m_directed_cross"
-            or parent_condition.get("side") != selected.side
-            or selected.parent_plan_id != parent_condition.get("plan_id")
-        ):
-            raise ValueError("analysis_parent_plan_mismatch")
-        signal = TradeSignalV3(
+        return SignalV4(
             seq=1,
             signal_id=signal_id,
             case_id=str(case["case_id"]),
@@ -1304,29 +1315,20 @@ class AnalysisRunner:
             account_slot=self.settings.trading.execution.account_slot,
             entry_scope_id=str(case["entry_scope_id"]),
             asset_id=str(case["target_asset_id"]),
-            market_key=market_key(native[:-4]),
             native_symbol=native,
             mapping_semantics_digest=str(case["mapping_semantics_digest"]),
-            direction=decision["side"],
-            observed_at_ns=now_ns,
+            side=decision["side"],
+            reference_price=selected.reference_price,
+            max_drift_bps=200,
+            stop_bps=int(plan["stop_distance_bps"]),
+            tp_bps=int(plan["take_profit_bps"]),
+            max_hold_s=int(plan["max_holding_seconds"]),
+            policy_id="trade_assessment",
+            policy_version="v4",
+            geometry_version="analysis_dynamic_v1",
+            decided_at_ns=now_ns,
             expires_at_ns=expiry_ns,
-            exit_plan=SignalExitPlanV1(
-                stop_distance_bps=int(plan["stop_distance_bps"]),
-                take_profit_bps=int(plan["take_profit_bps"]),
-                max_holding_ns=int(plan["max_holding_seconds"]) * 1_000_000_000,
-            ),
-            entry_envelope=SignalEntryEnvelopeV3(
-                plan_id=selected.plan_id,
-                entry_kind="closed_bar_cross_v1" if parent_condition is not None else "immediate_entry_v1",
-                root_expires_at_ns=int(case["root_expires_at_ms"]) * 1_000_000,
-                reference_price=selected.reference_price,
-                structure_level=None if parent_condition is None else Decimal(str(parent_condition["level"])),
-                parent_plan_id=None if parent_condition is None else str(parent_condition["plan_id"]),
-                max_price_drift_bps=200,
-                universe_version=self._universe.digest,
-            ),
         )
-        return prepare_trade_signal_v3(signal)
 
     def _completed(self, task: asyncio.Task[bool]) -> None:
         self._active.discard(task)
@@ -1364,7 +1366,7 @@ class AnalysisRunner:
                     dataset="perp_bars",
                     native_symbol=str(instrument["native_symbol"]),
                     venue="binance.usdm",
-                    environment=str(instrument["environment"]),
+                    environment="live",
                     product="perpetual",
                     source_identity="binance_public_v1",
                     unit_definition="native_quote_v1",
@@ -1469,7 +1471,7 @@ class AnalysisRunner:
                         dataset="perp_bars",
                         native_symbol=str(instrument["native_symbol"]),
                         venue="binance.usdm",
-                        environment=str(instrument["environment"]),
+                        environment="live",
                         product="perpetual",
                         source_identity="binance_public_v1",
                         unit_definition="quote_per_base_and_volume_v1",

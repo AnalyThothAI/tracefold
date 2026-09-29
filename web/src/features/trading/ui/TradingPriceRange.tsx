@@ -1,10 +1,11 @@
 import type { CSSProperties } from "react";
 
-import type { TradingExecutionReadiness } from "../api/tradingQueries";
-
-type Position = NonNullable<
-  NonNullable<TradingExecutionReadiness["current_account"]>["positions"]
->[number];
+type Position = {
+  stop_trigger_price: string | null;
+  take_profit_trigger_price: string | null;
+  entry_price: string | null;
+  mark_price: string | null;
+};
 
 /** Price geometry only. Original decimal strings remain the displayed facts. */
 export function TradingPriceRange({ position, stale }: { position: Position; stale: boolean }) {

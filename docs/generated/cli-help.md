@@ -6,14 +6,14 @@
 
 ```
 usage: tracefold [-h]
-                 {serve,workers,analysis,nautilus,init,config,runtime-manifest,db,news,trading,ops} ...
+                 {serve,workers,analysis,executor,init,config,runtime-manifest,db,news,trading,ops} ...
 
 positional arguments:
-  {serve,workers,analysis,nautilus,init,config,runtime-manifest,db,news,trading,ops}
+  {serve,workers,analysis,executor,init,config,runtime-manifest,db,news,trading,ops}
     serve               run the HTTP and frontend runtime
     workers             run the News ingestion, triage, and delivery runtime
     analysis            run the Trading analysis runtime
-    nautilus            run the single OI Nautilus Runtime
+    executor            run the DEMO Binance executor
     init                initialize the configured operator home (default
                         ~/.tracefold)
     config              print effective runtime configuration
@@ -60,24 +60,10 @@ options:
 
 ```
 
-## `nautilus`
+## `executor`
 
 ```
-usage: tracefold nautilus [-h] {run} ...
-
-positional arguments:
-  {run}
-    run       run the configured Binance execution Runtime
-
-options:
-  -h, --help  show this help message and exit
-
-```
-
-## `nautilus run`
-
-```
-usage: tracefold nautilus run [-h]
+usage: tracefold executor [-h]
 
 options:
   -h, --help  show this help message and exit
@@ -479,15 +465,15 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,diagnose,cases,signals,observations,gate,commands,issue} ...
+                         {status,diagnose,cases,signals,fills,gate,commands,issue} ...
 
 positional arguments:
-  {status,diagnose,cases,signals,observations,gate,commands,issue}
+  {status,diagnose,cases,signals,fills,gate,commands,issue}
     status              show Alpha producer and execution readiness
     diagnose            sample bounded read-only execution evidence
     cases               list Trading cases newest first
-    signals             list engine-neutral TradeSignalV3 rows
-    observations        list append-only Runtime observations
+    signals             list TradeSignalV4 rows
+    fills               list signed DEMO venue fills
     gate                read the candidate admission ledger
     commands            list authenticated OperatorIntentV1 rows
     issue               durably record one local OS-authenticated operator
@@ -511,13 +497,10 @@ options:
 ## `trading diagnose`
 
 ```
-usage: tracefold trading diagnose [-h] [--probe-url PROBE_URL]
-                                  [--status-url STATUS_URL]
+usage: tracefold trading diagnose [-h] [--status-url STATUS_URL]
 
 options:
   -h, --help            show this help message and exit
-  --probe-url PROBE_URL
-                        optional Runtime /readyz URL
   --status-url STATUS_URL
                         optional serve /api/trading/status URL
 
@@ -548,10 +531,10 @@ options:
 
 ```
 
-## `trading observations`
+## `trading fills`
 
 ```
-usage: tracefold trading observations [-h] [--limit LIMIT]
+usage: tracefold trading fills [-h] [--limit LIMIT]
 
 options:
   -h, --help     show this help message and exit

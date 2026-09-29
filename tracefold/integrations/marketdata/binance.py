@@ -16,7 +16,6 @@ import httpx
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult
 
 _FUTURES = "https://fapi.binance.com"
-_DEMO_FUTURES = "https://demo-fapi.binance.com"
 _SPOT = "https://api.binance.com"
 _BAR_INTERVALS = {60_000: "1m", 300_000: "5m"}
 _OI_INTERVALS = {
@@ -35,8 +34,6 @@ _OI_INTERVALS = {
 def _futures_base(environment: str) -> str:
     if environment == "live":
         return _FUTURES
-    if environment in ("demo", "testnet"):
-        return _DEMO_FUTURES
     raise ValueError("market_data_environment_unsupported")
 
 

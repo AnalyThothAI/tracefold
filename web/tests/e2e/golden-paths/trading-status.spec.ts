@@ -37,7 +37,7 @@ test("live status stays current across polling windows, expires on lost reads, a
   const safety = page.getByLabel("执行安全状态");
   const strip = page.locator(".trading-protection-strip");
   await expect(safety.getByText("是", { exact: true })).toHaveCount(2);
-  await expect(strip.getByText("已受保护", { exact: true })).toBeVisible();
+  await expect(strip.getByText("止损及止盈已挂", { exact: true })).toBeVisible();
   // Observe every second, including the gap between the former 15 s polls.
   for (let second = 0; second < 35; second += 1) {
     await page.clock.runFor(1_000);
@@ -52,13 +52,13 @@ test("live status stays current across polling windows, expires on lost reads, a
   await page.clock.runFor(6_000);
   await expect(safety.getByText("是", { exact: true })).toHaveCount(0);
   await expect(page.getByText(/状态通道失联：未取得有效期内的新状态/)).toBeVisible();
-  await expect(page.getByText("已受保护", { exact: true })).toHaveCount(0);
-  await expect(page.getByText("上次观察的保护；当前未确认", { exact: true })).toBeVisible();
+  await expect(page.getByText("止损及止盈已挂", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("保护待重新核实", { exact: true })).toBeVisible();
   // The trigger prices are the last read, kept and labelled as such rather than blanked.
   await expect(strip.getByText("止损 9800", { exact: true })).toBeVisible();
   unavailable = false;
   await page.clock.runFor(1_000);
   await expect(safety.getByText("是", { exact: true })).toHaveCount(2);
-  await expect(strip.getByText("已受保护", { exact: true })).toBeVisible();
+  await expect(strip.getByText("止损及止盈已挂", { exact: true })).toBeVisible();
   await expect(page.getByText(/状态通道失联：未取得有效期内的新状态/)).toHaveCount(0);
 });

@@ -42,7 +42,7 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
     assert set(services) == {
         "analysis",
         "migrate",
-        "nautilus",
+        "executor",
         "postgres",
         "rabbitmq",
         "rabbitmq-policy",
@@ -92,48 +92,31 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
         "target": "app",
         "args": {"TRACEFOLD_BUILD_REVISION": "${TRACEFOLD_BUILD_REVISION:-}"},
     }
-    for service_name in ("migrate", "serve", "workers", "analysis", "nautilus"):
+    for service_name in ("migrate", "serve", "workers", "analysis", "executor"):
         assert credential in services[service_name]["volumes"]
         assert services[service_name]["depends_on"]["postgres"]["condition"] == "service_healthy"
-    for service_name in ("migrate", "serve", "workers", "analysis", "rabbitmq-policy"):
+    for service_name in ("migrate", "serve", "workers", "analysis", "executor", "rabbitmq-policy"):
         assert services[service_name]["image"] == shared_app_image
         assert services[service_name]["build"] == shared_app_build
-    # The execution runtime is not on the shared anchor (#537 PR-2): its own image tag and its own
-    # `runtime` build target are what let `make up` rebuild and recreate the application without
-    # touching the one process that owns live exposure.
-    assert services["nautilus"]["image"] == "${TRACEFOLD_RUNTIME_IMAGE:-tracefold-runtime:local}"
-    assert services["nautilus"]["build"] == {
-        "context": ".",
-        "target": "runtime",
-        "args": {"TRACEFOLD_BUILD_REVISION": "${TRACEFOLD_BUILD_REVISION:-}"},
-    }
-    # PostgreSQL and nothing else. A broker outage or a migration container that has not been rerun
-    # must never be what keeps the exposure owner from coming back (#537 D4); the schema head is
-    # asserted inside the process instead.
-    assert services["nautilus"]["depends_on"] == {"postgres": {"condition": "service_healthy"}}
+    assert services["executor"]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
     # Image identity and nothing else. The News genesis preflight JSON that used to travel with it
     # is deleted along with the `db migrate` broker check that read it (#598 D5-d).
     assert services["migrate"]["environment"] == {"TRACEFOLD_IMAGE_DIGEST": "${TRACEFOLD_IMAGE_DIGEST:-}"}
-    for service_name in ("serve", "workers", "analysis", "nautilus"):
+    for service_name in ("serve", "workers", "analysis", "executor"):
         assert "rsshub" not in services[service_name]["depends_on"]
-    for service_name in ("serve", "workers", "analysis"):
+    for service_name in ("serve", "workers", "analysis", "executor"):
         assert services[service_name]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
     assert services["migrate"]["command"] == ["tracefold", "db", "migrate"]
     assert services["serve"]["command"] == ["tracefold", "serve"]
     assert services["workers"]["command"] == ["tracefold", "workers"]
     assert services["analysis"]["command"] == ["tracefold", "analysis"]
-    assert services["nautilus"]["command"] == ["tracefold", "nautilus", "run"]
-    assert services["nautilus"]["profiles"] == ["execution"]
+    assert services["executor"]["command"] == ["tracefold", "executor"]
+    assert "profiles" not in services["executor"]
     assert services["serve"]["ports"] == ["${TRACEFOLD_API_HOST:-127.0.0.1}:${TRACEFOLD_API_PORT:-8765}:8765"]
     assert services["serve"]["healthcheck"]["test"][2] == "-c"
     assert "/healthz" in services["serve"]["healthcheck"]["test"][3]
     assert services["workers"]["ports"] == ["${TRACEFOLD_WORKERS_HOST:-127.0.0.1}:${TRACEFOLD_WORKERS_PORT:-8766}:8766"]
-    assert services["nautilus"]["ports"] == [
-        "${TRACEFOLD_NAUTILUS_HOST:-127.0.0.1}:${TRACEFOLD_NAUTILUS_PORT:-8767}:8767"
-    ]
-    # Liveness, like Serve. The runtime's `/readyz` answers 200 with its payload now (#598 D5-b), so
-    # it cannot be a health signal, and a blocked-but-alive exposure owner must not be restarted.
-    assert "http://127.0.0.1:8767/healthz" in services["nautilus"]["healthcheck"]["test"][3]
+    assert "ports" not in services["executor"]
     assert set(compose["secrets"]) == {"postgres_password", DATABASE_SECRET}
     assert (
         compose["secrets"][DATABASE_SECRET]["file"]
@@ -203,7 +186,7 @@ def test_compose_preserves_non_postgres_secret_isolation() -> None:
     services = compose["services"]
     serve_volumes = services["serve"].get("volumes", [])
     worker_volumes = services["workers"].get("volumes", [])
-    nautilus_volumes = services["nautilus"].get("volumes", [])
+    executor_volumes = services["executor"].get("volumes", [])
 
     assert (
         "${TRACEFOLD_HOME:-${HOME}/.tracefold}/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro"
@@ -224,15 +207,15 @@ def test_compose_preserves_non_postgres_secret_isolation() -> None:
     # #520 PR-B: Serve authenticates the one command write with the bootstrap token it already
     # holds, so it mounts no secret file at all.
     assert all("trading_console_write_token" not in volume for volume in serve_volumes)
-    assert any("binance_usdm_api_key" in volume for volume in nautilus_volumes)
-    assert any("binance_usdm_api_secret" in volume for volume in nautilus_volumes)
+    assert any("binance_usdm_api_key" in volume for volume in executor_volumes)
+    assert any("binance_usdm_api_secret" in volume for volume in executor_volumes)
     for service_name, service in services.items():
-        if service_name != "nautilus":
+        if service_name != "executor":
             assert not any(
                 "binance_usdm_api_key" in volume
                 or "binance_usdm_api_secret" in volume
                 or "hyperliquid_private_key" in volume
                 for volume in service.get("volumes", [])
             )
-    assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes, *nautilus_volumes])
+    assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes, *executor_volumes])
     assert "tracefold-postgres" in compose["volumes"]

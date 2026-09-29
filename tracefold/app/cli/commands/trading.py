@@ -15,7 +15,6 @@ import socket
 import time
 from datetime import UTC, datetime
 from http.client import HTTPConnection
-from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -56,8 +55,8 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
             )
             execution_status = execution_readiness_projection(
                 execution,
-                trading.execution_runtime_state(execution.account_slot),
-                trading.execution_runtime_control_state(execution.account_slot),
+                trading.state(execution.account_slot),
+                trading.control(execution.account_slot),
                 now_ns=now_ms * 1_000_000,
             )
             # The same dict `GET /api/trading/status` publishes. One projection, so an operator who
@@ -93,10 +92,10 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     limit=int(getattr(args, "limit", 20) or 20),
                 ),
             }
-        if command == "observations":
+        if command == "fills":
             return 0, {
                 "ok": True,
-                "data": trading.observation_ledger(
+                "data": trading.fill_ledger(
                     since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
                     limit=int(getattr(args, "limit", 20) or 20),
                 ),
@@ -136,16 +135,11 @@ def _diagnose(args: Any, *, settings: Any) -> tuple[int, dict[str, Any]]:
 
     started_at_ns = time.time_ns()
     execution = settings.trading.execution
-    try:
-        nautilus_version = version("nautilus_trader")
-    except PackageNotFoundError:
-        nautilus_version = None
     result: dict[str, Any] = {
         "scope": {"account_slot": execution.account_slot},
         "caller_identity": {
             "image_digest": os.environ.get("TRACEFOLD_IMAGE_DIGEST") or None,
             "runtime_revision": os.environ.get("TRACEFOLD_RUNTIME_REVISION") or None,
-            "nautilus_version": nautilus_version,
             "image_migration_head": latest_migration_version(),
         },
         "started_at_ns": started_at_ns,
@@ -157,22 +151,18 @@ def _diagnose(args: Any, *, settings: Any) -> tuple[int, dict[str, Any]]:
                 repos.conn.execute("SET TRANSACTION READ ONLY")
                 repos.conn.execute("SET LOCAL statement_timeout = '3s'")
                 db_head = database_migration_version(repos.conn)
-                state = repos.trading.execution_runtime_state(execution.account_slot)
-                plans, risks = repos.trading.execution_diagnostic_evidence(execution.account_slot)
+                state = repos.trading.state(execution.account_slot)
+                control = repos.trading.control(execution.account_slot)
+                plans = repos.trading.active_plans(execution.account_slot)
             read_at_ns = time.time_ns()
             result["database"] = {
                 "started_at_ns": db_started,
                 "completed_at_ns": read_at_ns,
                 "migration_head": db_head,
-                "runtime_id": None if state is None else str(state.runtime_id),
-                "heartbeat_at_ns": None if state is None else state.heartbeat_at_ns,
-                "account_observed_at_ns": (
-                    None if state is None or state.account_snapshot is None else state.account_snapshot.observed_at_ns
-                ),
-                "projection": execution_readiness_projection(execution, state, None, now_ns=read_at_ns),
+                "heartbeat_at_ns": None if state is None else state["heartbeat_at_ns"],
+                "projection": execution_readiness_projection(execution, state, control, now_ns=read_at_ns),
                 "open_plans": list(plans[:1000]),
                 "open_plans_truncated": len(plans) > 1000,
-                "recent_risks": list(risks),
             }
     except Exception as exc:
         result["database"] = {
@@ -180,9 +170,6 @@ def _diagnose(args: Any, *, settings: Any) -> tuple[int, dict[str, Any]]:
             "completed_at_ns": time.time_ns(),
             "error": type(exc).__name__,
         }
-    probe_url = getattr(args, "probe_url", None)
-    if probe_url:
-        result["probe"] = _diagnostic_http(str(probe_url), token=None)
     status_url = getattr(args, "status_url", None)
     if status_url:
         result["http_status"] = _diagnostic_http(str(status_url), token=settings.ws_token)
@@ -190,7 +177,6 @@ def _diagnose(args: Any, *, settings: Any) -> tuple[int, dict[str, Any]]:
     db = result["database"]
     result["summary"] = {
         "database_ok": "error" not in db,
-        "probe_ok": result.get("probe", {}).get("status_code") == 200 if probe_url else None,
         "http_ok": result.get("http_status", {}).get("status_code") == 200 if status_url else None,
         "evidence_is_sequential": True,
     }
@@ -201,12 +187,12 @@ def _diagnostic_http(url: str, *, token: str | None) -> dict[str, Any]:
     """A bounded GET; never put a token in the URL or output."""
     started_at_ns = time.time_ns()
     parts = urlsplit(url)
-    allowed_hosts = {"localhost", "127.0.0.1", "serve" if token is not None else "nautilus"}
+    allowed_hosts = {"localhost", "127.0.0.1", "serve"}
     if parts.scheme != "http" or parts.hostname not in allowed_hosts:
         return {"started_at_ns": started_at_ns, "error": "diagnostic_url_not_local"}
     if parts.username or parts.password or parts.query or parts.fragment:
         return {"started_at_ns": started_at_ns, "error": "diagnostic_url_invalid"}
-    expected_path = "/api/trading/status" if token is not None else "/readyz"
+    expected_path = "/api/trading/status"
     if parts.path != expected_path:
         return {"started_at_ns": started_at_ns, "error": "diagnostic_url_path_invalid"}
     headers = {} if token is None else {"Authorization": f"Bearer {token}"}

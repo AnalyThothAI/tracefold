@@ -15,7 +15,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from tracefold.trading.storage.execution_stream import PreparedOperatorIntent, prepare_operator_intent
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _COMMAND_MAX_BYTES = 1_024
 _CONTROL_TTL_SECONDS = 300
@@ -25,6 +25,49 @@ _MARKET_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
 # How far ahead of the ingress's own clock a caller-sealed `requested_at_ns` may be. One number, so
 # the HTTP console and the local CLI cannot disagree about which sealed commands are from the future.
 _MAX_FUTURE_SKEW_NS = 30_000_000_000
+
+
+class OperatorIntentV1(BaseModel):
+    """Authenticated, expiring operator input with no capital or order parameters."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False, strict=True)
+
+    intent_version: Literal["operator_intent_v1"] = "operator_intent_v1"
+    seq: int = Field(ge=1)
+    command_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    account_slot: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$")
+    action: Literal["pause_entries", "resume_entries", "emergency_halt", "flatten", "manual_entry"]
+    scope: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=256)
+    operator_identity: str = Field(min_length=1, max_length=128)
+    authentication_identity: str = Field(min_length=1, max_length=256)
+    requested_at_ns: int = Field(gt=0)
+    expires_at_ns: int = Field(gt=0)
+    market_key: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$")
+    direction: Literal["long", "short"] | None = None
+
+    @field_validator("scope", "reason", "operator_identity", "authentication_identity")
+    @classmethod
+    def validate_text_fields(cls, value: str) -> str:
+        if "\x00" in value:
+            raise ValueError("operator_intent_text_invalid")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError("operator_intent_text_invalid") from exc
+        return value
+
+    @model_validator(mode="after")
+    def validate_intent(self) -> OperatorIntentV1:
+        ttl_ns = self.expires_at_ns - self.requested_at_ns
+        if ttl_ns <= 0 or ttl_ns > 3_600_000_000_000:
+            raise ValueError("operator_intent_clock_invalid")
+        if self.action == "manual_entry":
+            if self.market_key is None or self.direction is None:
+                raise ValueError("operator_manual_entry_market_required")
+        elif self.market_key is not None or self.direction is not None:
+            raise ValueError("operator_control_market_not_allowed")
+        return self
 
 
 def _canonical_sha256(payload: dict[str, object]) -> str:
@@ -57,6 +100,20 @@ class ParsedOperatorCommand:
     ttl_seconds: int
     market_key: str | None = None
     direction: Literal["long", "short"] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedOperatorIntent:
+    value: OperatorIntentV1
+    payload_json: str
+
+
+def prepare_operator_intent(**fields: object) -> PreparedOperatorIntent:
+    value = OperatorIntentV1.model_validate({"seq": 1, **fields})
+    return PreparedOperatorIntent(
+        value=value,
+        payload_json=json.dumps(value.model_dump(mode="json", exclude={"seq"}), sort_keys=True, separators=(",", ":")),
+    )
 
 
 def parse_operator_command(text: str) -> ParsedOperatorCommand:
@@ -174,6 +231,7 @@ def _short_ttl(value: str) -> int:
 
 __all__ = [
     "OperatorCommandError",
+    "OperatorIntentV1",
     "ParsedOperatorCommand",
     "parse_operator_command",
     "prepare_parsed_operator_intent",

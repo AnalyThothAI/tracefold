@@ -39,8 +39,6 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       configured_connection: "LIVE",
       connection: null,
       connection_observed_at_ms: null,
-      protection_status: "not_applicable",
-      routes_count: 0,
       unexpected_exposure: false,
     },
     ...overrides,
@@ -54,15 +52,14 @@ export function tradingExecutionFixture(
 }
 
 /**
- * A live paper Runtime whose facts are still inside their published budget: the heartbeat plus five
- * seconds, which is the whole of `facts_expire_at_ms` since Nautilus owns the account picture (#680).
+ * A live DEMO executor whose signed facts are still inside their published budget.
  */
 export function tradingLiveExecutionFixture(
   overrides: Partial<TradingExecutionReadiness> = {},
 ): TradingExecutionReadiness {
   return tradingExecutionFixture({
     alive: true,
-    current_account: tradingCurrentAccountFixture(),
+    signed_account: tradingSignedAccountFixture(),
     entries_armed: false,
     entries_paused: true,
     entry_block_reason: "entries_paused",
@@ -71,70 +68,49 @@ export function tradingLiveExecutionFixture(
     configured_connection: "DEMO",
     connection: "DEMO",
     connection_observed_at_ms: TRADING_NOW_MS,
-    protection_status: "protected",
-    routes_count: 12,
     ...overrides,
   });
 }
 
-/**
- * What the Runtime's Nautilus Cache holds: one long a trade plan claims, with its stop and its take-profit
- * both resting on the venue, which is what makes a position protected (#680).
- */
-export function tradingCurrentAccountFixture(
-  overrides: Partial<NonNullable<TradingExecutionReadiness["current_account"]>> = {},
-): NonNullable<TradingExecutionReadiness["current_account"]> {
+/** A bounded signed REST projection with a claimed position and two Algo guards. */
+export function tradingSignedAccountFixture(
+  overrides: Partial<NonNullable<TradingExecutionReadiness["signed_account"]>> = {},
+): NonNullable<TradingExecutionReadiness["signed_account"]> {
   return {
+    observed_at_ns: TRADING_NOW_MS * 1_000_000,
+    equity_usdt: "997.50",
     complete: true,
-    daily_drawdown_bps: 25,
-    daily_drawdown_usd: "2.50",
-    equity_usd: "997.50",
-    inflight_orders_count: 0,
-    open_orders_count: 2,
-    observed_at_ms: TRADING_NOW_MS,
-    orders_total: overrides.orders?.length ?? 2,
+    orders_total: overrides.orders?.length ?? 0,
+    algos_total: overrides.algos?.length ?? 2,
     positions_total: overrides.positions?.length ?? 1,
-    findings: [],
-    findings_total: overrides.findings?.length ?? 0,
-    orders: [
+    orders: [],
+    algos: [
       {
-        client_order_id: "stop-order-1",
-        instrument_id: "BTCUSDT-PERP.BINANCE",
-        leg: "stop",
+        symbol: "BTCUSDT",
+        clientAlgoId: "stop-order-1",
+        orderType: "STOP_MARKET",
+        triggerPrice: "9800",
+        algoStatus: "NEW",
         owned: true,
-        plan_entry_id: "plan-1",
-        quantity: "0.05",
-        reduce_only: true,
-        state: "open",
-        trigger_price: "9800",
       },
       {
-        client_order_id: "take-profit-order-1",
-        instrument_id: "BTCUSDT-PERP.BINANCE",
-        leg: "take_profit",
+        symbol: "BTCUSDT",
+        clientAlgoId: "take-profit-order-1",
+        orderType: "TAKE_PROFIT_MARKET",
+        triggerPrice: "10200",
+        algoStatus: "NEW",
         owned: true,
-        plan_entry_id: "plan-1",
-        quantity: "0.05",
-        reduce_only: true,
-        state: "open",
-        trigger_price: "10200",
       },
     ],
     positions: [
       {
-        entry_price: "10000",
-        instrument_id: "BTCUSDT-PERP.BINANCE",
-        mark_price: "9999.5",
+        symbol: "BTCUSDT",
+        positionSide: "BOTH",
+        positionAmt: "0.05",
+        entryPrice: "10000",
+        markPrice: "9999.5",
+        unRealizedProfit: "-0.025",
         owned: true,
-        plan_entry_id: "plan-1",
-        protection_status: "protected",
-        source: "cache",
-        position_id: "position-1",
-        quantity: "0.05",
-        side: "long",
-        stop_trigger_price: "9800",
-        take_profit_trigger_price: "10200",
-        unrealized_pnl_usd: "-0.025",
       },
     ],
     ...overrides,
@@ -238,24 +214,14 @@ export function tradingExecutionRowFixture(
     market_key: "crypto:perp:BTC:USDT",
     entry_filled_at_ns: (TRADING_NOW_MS - 118_000) * 1_000_000,
     observed_at_ns: (TRADING_NOW_MS - 120_000) * 1_000_000,
-    order_reject_reason: null,
     position_closed_at_ns: (TRADING_NOW_MS - 25_500) * 1_000_000,
-    realized_pnl_usd: "-14.92274518",
-    // (9699.0 − 10000) × 0.049 = −14.749 gross, less 0.17374518 of commissions on both legs.
+    realized_pnl_usd: "-14.749",
     fees_usd: "0.17374518",
-    pnl_known: overrides.realized_pnl_usd !== null,
-    funding_usd: "0",
-    net_pnl_usd:
-      overrides.net_pnl_usd !== undefined
-        ? overrides.net_pnl_usd
-        : (overrides.realized_pnl_usd ?? "-14.92274518"),
-    net_known: overrides.net_pnl_usd !== null && overrides.realized_pnl_usd !== null,
+    pnl_status: "complete",
+    net_pnl_usd: overrides.net_pnl_usd !== undefined ? overrides.net_pnl_usd : "-14.92274518",
     stop_distance_bps: 200,
-    risk_budget_usd: "10",
-    max_leverage_at_creation: 2,
     take_profit_bps: 200,
     max_holding_ns: 14_400_000_000_000,
-    exit_policy_id: "oi_fixed_v1",
     source: "signal",
     stage: "closed",
     stop_trigger_price: "9800",
@@ -272,26 +238,26 @@ export function tradingExecutionsFixture(
     executions: [
       tradingExecutionRowFixture(),
       /*
-       * A Signal whose entry order the venue refused (#680). Its plan closed as `not_submitted`, which
-       * the server stages `rejected` rather than `closed`: nothing filled, so every venue column is
-       * absent rather than zero, and the venue's own words ride on `order_reject_reason`.
+       * A Signal admitted by the executor whose entry order the venue refused.
        */
       tradingExecutionRowFixture({
         case_id: "case-nvda",
         direction: "long",
-        disposition_reason: "venue_rejected",
+        disposition_reason: "accepted",
+        entry_error_code: -2019,
         entry_filled_at_ns: null,
         entry_id: "2".repeat(64),
         exit_price: null,
-        exit_reason: "not_submitted",
+        exit_reason: "entry_rejected",
         fees_usd: null,
+        net_pnl_usd: null,
         fill_avg_price: null,
         fill_quantity: null,
         market_key: "crypto:perp:NVDA:USDT",
         observed_at_ns: (TRADING_NOW_MS - 300_000) * 1_000_000,
-        order_reject_reason: "Order would immediately trigger.",
         position_closed_at_ns: (TRADING_NOW_MS - 299_000) * 1_000_000,
         realized_pnl_usd: null,
+        pnl_status: null,
         stage: "rejected",
         stop_trigger_price: null,
         take_profit_trigger_price: null,
@@ -305,19 +271,18 @@ export function tradingExecutionsFixture(
         exit_price: null,
         exit_reason: null,
         fees_usd: null,
+        net_pnl_usd: null,
         fill_avg_price: null,
         fill_quantity: null,
         market_key: "crypto:perp:SOL:USDT",
         observed_at_ns: (TRADING_NOW_MS - 600_000) * 1_000_000,
         position_closed_at_ns: null,
         realized_pnl_usd: null,
+        pnl_status: null,
         stage: "expired",
         stop_distance_bps: null,
-        risk_budget_usd: null,
-        max_leverage_at_creation: null,
         take_profit_bps: null,
         max_holding_ns: null,
-        exit_policy_id: null,
         stop_trigger_price: null,
         take_profit_trigger_price: null,
       }),
@@ -338,6 +303,7 @@ export function tradingExecutionsFixture(
         observed_at_ns: (TRADING_NOW_MS - 90_000) * 1_000_000,
         position_closed_at_ns: (TRADING_NOW_MS - 32_000) * 1_000_000,
         realized_pnl_usd: "1.11984726",
+        net_pnl_usd: "1.11984726",
         source: "manual",
         stop_trigger_price: "82749.4",
         take_profit_trigger_price: "79504.4",

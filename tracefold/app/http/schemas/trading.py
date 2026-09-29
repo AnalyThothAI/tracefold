@@ -23,113 +23,71 @@ class TradingDecisionRuntimeData(ExactApiSchema):
     heartbeat_at_ms: int | None = None
 
 
-class TradingExecutionPositionData(ExactApiSchema):
-    position_id: str
-    instrument_id: str
-    source: Literal["cache", "venue"]
-    side: Literal["long", "short"]
-    quantity: str
-    entry_price: str | None = None
-    mark_price: str | None = None
-    unrealized_pnl_usd: str | None = None
-    # Whether a non-terminal plan claims this instrument; exposure no plan claims blocks new entries.
+class TradingSignedPositionData(ExactApiSchema):
+    symbol: str
+    positionSide: str | None = None
+    positionAmt: str
+    entryPrice: str | None = None
+    markPrice: str | None = None
+    unRealizedProfit: str | None = None
     owned: bool
-    plan_entry_id: str | None = None
-    protection_status: Literal["protected", "pending", "unprotected", "unknown"]
-    # The reduce-only stop and take-profit resting against this position, as the Nautilus Cache
-    # holds them; `None` where there is none.
-    stop_trigger_price: str | None = None
-    take_profit_trigger_price: str | None = None
 
 
-class TradingExecutionOrderData(ExactApiSchema):
-    client_order_id: str
-    instrument_id: str
-    state: Literal["open", "inflight"]
-    leg: Literal["entry", "stop", "take_profit", "exit", "unknown"]
-    quantity: str
-    reduce_only: bool
-    trigger_price: str | None = None
+class TradingSignedOrderData(ExactApiSchema):
+    symbol: str
+    clientOrderId: str
+    side: str | None = None
+    origQty: str | None = None
+    reduceOnly: bool | None = None
+    status: str | None = None
     owned: bool
-    plan_entry_id: str | None = None
 
 
-class TradingExecutionFindingData(ExactApiSchema):
-    kind: Literal[
-        "unclaimed_position",
-        "unexpected_order",
-        "ownership_mismatch",
-        "venue_cache_mismatch",
-        "close_unconfirmed",
-        "ambiguous",
-        "submission_unknown",
-    ]
-    object_id: str
-    instrument_id: str
-    plan_entry_id: str | None = None
-    cache_quantity: str | None = None
-    venue_quantity: str | None = None
-    observed_at_ms: int
+class TradingSignedAlgoData(ExactApiSchema):
+    symbol: str
+    clientAlgoId: str
+    orderType: str | None = None
+    triggerPrice: str | None = None
+    quantity: str | None = None
+    closePosition: bool | None = None
+    reduceOnly: bool | None = None
+    algoStatus: str | None = None
+    owned: bool
 
 
-class TradingExecutionAccountData(ExactApiSchema):
-    """What the account holds, read from the Nautilus Cache the Runtime executes against (#680).
+class TradingSignedAccountData(ExactApiSchema):
+    """Bounded projection of one complete signed DEMO REST account read."""
 
-    Nautilus reconciles that Cache with the venue at start and every five seconds after; this is the
-    Runtime's own picture, published whole. `complete` says every position could be marked and the
-    balance was known, so equity and the drawdown are whole numbers.
-    """
-
-    observed_at_ms: int
-    equity_usd: str | None = None
-    daily_drawdown_usd: str | None = None
-    daily_drawdown_bps: int | None = None
-    positions: list[TradingExecutionPositionData] = Field(default_factory=list, max_length=100)
+    observed_at_ns: int
+    equity_usdt: str
     positions_total: int = Field(ge=0)
-    orders: list[TradingExecutionOrderData] = Field(default_factory=list, max_length=200)
     orders_total: int = Field(ge=0)
-    findings: list[TradingExecutionFindingData] = Field(default_factory=list, max_length=100)
-    findings_total: int = Field(ge=0)
-    open_orders_count: int = Field(ge=0)
-    inflight_orders_count: int = Field(ge=0)
+    algos_total: int = Field(ge=0)
     complete: bool
+    positions: list[TradingSignedPositionData] = Field(max_length=100)
+    orders: list[TradingSignedOrderData] = Field(max_length=100)
+    algos: list[TradingSignedAlgoData] = Field(max_length=100)
 
 
 class TradingExecutionReadinessData(ExactApiSchema):
-    """One field per operator question, and the CLI `tracefold trading status` block is this same dict.
-
-    `execution_safe`, `startup_reconciled`, `reconciliation_age_ms` and `account_flat_proven` answered
-    questions about the Runtime's private account proof, and went with it (#680): Nautilus reconciles
-    the venue before the Strategy starts, so a fresh heartbeat is the freshness of `current_account`.
-    """
+    """Executor heartbeat, admission state and the last signed DEMO account read."""
 
     configured_connection: Literal["LIVE", "DEMO", "TESTNET", "SDK_DEFAULT"]
-    connection: Literal["LIVE", "DEMO", "TESTNET", "SDK_DEFAULT"] | None = None
+    connection: Literal["DEMO"] | None = None
     connection_observed_at_ms: int | None = None
     account_slot: str
     alive: bool
     entries_armed: bool
     entry_block_reason: str | None = None
-    reported_entry_block_reason: str | None = None
     entries_paused: bool = True
     emergency_halted: bool = False
     unexpected_exposure: bool = False
-    protection_status: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"] = "not_applicable"
-    routes_count: int = Field(default=0, ge=0)
-    # The instant this projection stops being current: the Runtime heartbeat's freshness budget.
-    # `None` when there is no Runtime row to age.
+    last_error: str | None = None
     heartbeat_at_ms: int | None = None
     facts_expire_at_ms: int | None = None
     facts_remaining_ms: int | None = None
-    account_projection_failure: str | None = None
-    convergence_checked_at_ms: int | None = None
-    convergence_failure: str | None = None
-    venue_read_started_at_ms: int | None = None
-    venue_read_completed_at_ms: int | None = None
-    venue_read_failure: str | None = None
-    recovery_attempted_at_ms: int | None = None
-    recovery_result: str | None = None
-    current_account: TradingExecutionAccountData | None = None
+    last_full_reconcile_at_ms: int | None = None
+    signed_account: TradingSignedAccountData | None = None
 
 
 class TradingStatusData(ExactApiSchema):
@@ -370,16 +328,7 @@ class TradingAnalysisReplayData(ExactApiSchema):
 
 
 class TradingExecutionRowData(ExactApiSchema):
-    """One entry identity's whole execution, folded from its plan and its own observations.
-
-    `entry_id` is the identity the Runtime correlates the venue facts under: a Signal's `signal_id`,
-    or the `command_id` of a manual entry, which `source` tells apart. A manual entry has no Case, so
-    `case_id` is absent on those rows rather than invented.
-
-    `realized_pnl_usd` retains the historical fee-adjusted fill fold. Net PnL
-    additionally requires complete signed funding-income coverage and unambiguous
-    account-slot attribution over the fill-to-fill holding interval.
-    """
+    """One disposition or plan, folded from the executor's durable venue evidence."""
 
     source: Literal["signal", "manual"]
     entry_id: str
@@ -388,36 +337,26 @@ class TradingExecutionRowData(ExactApiSchema):
     direction: Literal["long", "short"]
     observed_at_ns: int
     disposition_reason: str | None = None
-    # The venue's own words for a refused entry order (#604 T1).
-    order_reject_reason: str | None = None
     fill_quantity: str | None = None
     fill_avg_price: str | None = None
     stop_trigger_price: str | None = None
     take_profit_trigger_price: str | None = None
-    # The two instants a holding time is the distance between: the entry's first fill and the close of
-    # the position it opened. `observed_at_ns` is when the Signal was written, which is neither.
     entry_filled_at_ns: int | None = None
     position_closed_at_ns: int | None = None
     exit_price: str | None = None
     realized_pnl_usd: str | None = None
     fees_usd: str | None = None
-    funding_usd: str | None = None
     net_pnl_usd: str | None = None
     exit_reason: str | None = None
-    result_evidence_source: Literal["signed_native_trades"] | None = None
-    result_verified_at_ns: int | None = None
+    pnl_status: Literal["pending", "complete", "evidence_incomplete"] | None = None
     plan_status: str | None = None
     account_slot: str | None = None
     instrument_id: str | None = None
     entry_client_order_id: str | None = None
-    risk_budget_usd: str | None = None
-    max_leverage_at_creation: int | None = None
+    entry_error_code: int | None = None
     stop_distance_bps: int | None = None
-    exit_policy_id: str | None = None
     take_profit_bps: int | None = None
     max_holding_ns: int | None = None
-    pnl_known: bool
-    net_known: bool
     duration_ns: int | None = None
     stage: ExecutionStage
 
