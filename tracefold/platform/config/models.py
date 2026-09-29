@@ -923,6 +923,8 @@ class NewsModelAvailability:
     Extraction and the generative judgments run on the `news_triage_model` endpoint (and its fallback);
     cards run on `news_reader_card`, or on the extraction endpoint when no dedicated one is configured.
     `news_judgment_model` is the optional Jev route; `None` means generative judgments.
+    `news_reader_judgment_model` is the notification decision layer's own System One route; `None` means
+    the generative News route answers the reader questions.
     """
 
     extraction_model: str | None
@@ -932,6 +934,7 @@ class NewsModelAvailability:
     card_fallback_model: str | None = None
     card_fallback_dedicated: bool = False
     news_judgment_model: str | None = None
+    news_reader_judgment_model: str | None = None
 
     @property
     def configured(self) -> bool:
@@ -964,6 +967,9 @@ def news_model_availability(settings: Settings) -> NewsModelAvailability:
         ),
         card_fallback_dedicated=bool(reader_fallback_ok),
         news_judgment_model=judgment.model if judgment.configured else None,
+        news_reader_judgment_model=(
+            settings.llm.news_reader_judgment.model if settings.llm.news_reader_judgment.configured else None
+        ),
     )
 
 

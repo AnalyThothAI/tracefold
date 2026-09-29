@@ -101,6 +101,12 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                         # The optional News Jev route; unset means generative judgments.
                         "news_judgment_configured": settings.llm.news_judgment.configured,
                         "news_judgment_model": model_availability.news_judgment_model,
+                        # The notification decision route; its key is a secret file, reported as a path only.
+                        "news_reader_judgment_configured": settings.llm.news_reader_judgment.configured,
+                        "news_reader_judgment_model": model_availability.news_reader_judgment_model,
+                        "news_reader_judgment_api_key_file": (
+                            str(path) if (path := settings.news_reader_judgment_api_key_file()) else None
+                        ),
                     },
                     "triage": settings.news.triage.model_dump(),
                     "watchlist": sorted(settings.news.watchlist_symbols),

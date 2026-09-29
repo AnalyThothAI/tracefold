@@ -1,18 +1,20 @@
-"""NotificationPlanner: explicit content rules, named per-claim decisions and the key designation.
+"""NotificationPlanner and `decide()`: ordered rules, reader novelty from links, one reader judgment per claim.
 
-Every rule has a case where it applies and one where it does not. Judgment backends are test doubles.
+Every rule has a case where it applies and one where it does not. The reader judge is a test double.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
-from tests.support.news_update_semantic import MemoryCache, TaskBackend
-from tracefold.news.updates.attention import AttentionAssessment, AttentionDecision
+from tests.support.news_reader import FixedReader, Unavailable
+from tests.support.news_update_semantic import MemoryCache
 from tracefold.news.updates.contracts import (
     Asset,
     Citation,
@@ -26,23 +28,23 @@ from tracefold.news.updates.contracts import (
     SupportDraft,
 )
 from tracefold.news.updates.identity import digest, identity
-from tracefold.news.updates.judgment import (
-    Budget,
-    NewsJudgments,
-    ProviderUnavailable,
-)
+from tracefold.news.updates.judgment import Budget
 from tracefold.news.updates.notification import (
+    READER_WAIT_MAX_MS,
     ClaimDecision,
     DeliveredText,
     NotificationPlan,
     NotificationPlanner,
     ReaderSnapshot,
     card_copy_material,
+    large_daily_move,
 )
+from tracefold.news.updates.reader_judgments import READER_CUTS, ClaimLink, LinkedReceipt
 from tracefold.news.updates.semantics import assemble_update
 
 STAMP = 1_790_405_000_000
 HOUR_MS = 60 * 60_000
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures/news"
 TARIFF = "medtop:20000384"
 CRYPTO = "medtop:20001279"
 
@@ -126,15 +128,11 @@ def run_plan(
     update: EventUpdate,
     snapshot: ReaderSnapshot | None = None,
     *,
-    generated: TaskBackend | None = None,
-    native: TaskBackend | None = None,
     now_ms: int = STAMP + 60_000,
-    judgments: NewsJudgments | None = None,
-    assessor: Any | None = None,
+    judge: Any | None = None,
+    cache: MemoryCache | None = None,
 ) -> NotificationPlan:
-    if judgments is None:
-        judgments = NewsJudgments(generated=generated or TaskBackend(), native=native, cache=MemoryCache())
-    planner = NotificationPlanner(judgments, assessor or Assessor())
+    planner = NotificationPlanner(judge or FixedReader(), cache or MemoryCache())
     return asyncio.run(planner.plan(update, snapshot or reader(), Budget.start(5), now_ms=now_ms))
 
 
@@ -148,9 +146,9 @@ def only_reason(plan: NotificationPlan) -> str:
     return plan.claim_decisions[0].reason
 
 
-def sent(body: str) -> DeliveredText:
+def sent(body: str, intent: str = "earlier", refs: tuple[str, ...] = ()) -> DeliveredText:
     return DeliveredText(
-        intent_id="earlier",
+        intent_id=intent,
         channel="telegram:a",
         state="sent",
         body=body,
@@ -160,175 +158,140 @@ def sent(body: str) -> DeliveredText:
     )
 
 
-class Assessor:
-    identity = "scripted_editor_v1"
+def link(current: str, previous: str, relation: str, at: int = STAMP) -> ClaimLink:
+    return ClaimLink.model_validate(
+        {"current_ref": current, "previous_ref": previous, "relation": relation, "asserted_at_ms": at}
+    )
 
-    def __init__(self, dispositions: dict[str, str] | None = None, *, error: BaseException | None = None):
-        self.dispositions = dispositions or {}
-        self.error = error
-        self.calls: list[tuple[str, ...]] = []
 
-    async def assess(self, claims, *, sources, watch_symbols):
-        self.calls.append(tuple(row.ref for row in claims))
-        if self.error is not None:
-            raise self.error
-        return AttentionAssessment(
-            decisions=tuple(
-                AttentionDecision(claim_ref=row.ref, disposition=self.dispositions.get(row.statement, "notify"))
-                for row in claims
+def delivered(intent: str, *refs: str, state: str = "sent", at: int = STAMP - 60_000) -> LinkedReceipt:
+    return LinkedReceipt.model_validate(
+        {"intent_id": intent, "state": state, "claim_refs": refs, "settled_at_ms": None if state == "sending" else at}
+    )
+
+
+def test_incremental_importance_decides_push_key_and_feed_against_the_backend_cuts() -> None:
+    cuts = READER_CUTS["native"]
+    for value, reason, key in (
+        (cuts.key, "reader_key", True),
+        (cuts.push, "reader_push", False),
+        (1.0, "reader_feed", False),
+    ):
+        plan = run_plan(single(), judge=FixedReader(value))
+        assert only_reason(plan) == reason and plan.key is key
+        record = plan.claim_decisions[0].reader
+        assert record is not None and record.novelty == "unlinked" and record.judgment is not None
+        assert record.input_digest is not None and plan.reader_identity == FixedReader.identity
+
+
+def test_rules_before_the_judgment_are_ordered_and_ask_nothing() -> None:
+    judge = FixedReader(3.5)
+    update = single()
+    ref = update.claims[0].ref
+    assert only_reason(run_plan(update, reader(invalidated_claim_refs=(ref,)), judge=judge)) == "retired"
+    assert only_reason(run_plan(update, reader(blocked_claim_refs=(ref,)), judge=judge)) == "send_outcome_unresolved"
+    assert only_reason(run_plan(update, reader(ambiguous_claim_refs=(ref,)), judge=judge)) == "send_outcome_ambiguous"
+    assert only_reason(run_plan(update, now_ms=STAMP + 3 * HOUR_MS + 1, judge=judge)) == "stale_source"
+    assert (
+        only_reason(run_plan(update, reader(protected_listing_claim_refs=(ref,)), judge=judge)) == "protected_listing"
+    )
+    assert judge.asked == []
+
+
+def test_novelty_from_persisted_links_decides_known_in_flight_and_corrections() -> None:
+    judge = FixedReader(3.5)
+    update = single()
+    ref = update.claims[0].ref
+    known = reader(links=(link(ref, "old", "equivalent"),), link_receipts=(delivered("r-old", "old"),))
+    assert only_reason(run_plan(update, known, judge=judge)) == "known_to_reader"
+    flight = reader(
+        links=(link(ref, "old", "adds_information"),), link_receipts=(delivered("r-old", "old", state="sending"),)
+    )
+    plan = run_plan(update, flight, judge=judge)
+    assert only_reason(plan) == "linked_send_in_flight" and plan.action == "unresolved"
+    corrects = reader(links=(link(ref, "old", "corrects"),), link_receipts=(delivered("r-old", "old"),))
+    earlier = sent("旧消息", "r-old")
+    plan = run_plan(update, corrects.model_copy(update={"linked": (earlier,)}), judge=FixedReader(0.1))
+    assert only_reason(plan) == "correction_of_sent"
+    record = plan.claim_decisions[0].reader
+    assert record is not None and record.render == "correction" and record.earlier is not None
+    assert record.earlier.body == "旧消息" and plan.earlier(ref) == record.earlier
+    # A correction stays a push for twelve hours; an ordinary claim is stale after three.
+    assert only_reason(run_plan(update, corrects, now_ms=STAMP + 5 * HOUR_MS, judge=FixedReader(0.1))) == (
+        "correction_of_sent"
+    )
+    assert judge.asked == []
+
+
+def test_an_increment_is_scored_on_what_it_adds_with_the_linked_message_first() -> None:
+    update = single()
+    ref = update.claims[0].ref
+    earlier = sent("英伟达宣布1500亿美元回购", "r-old")
+    snapshot = reader(
+        receipts=(sent("无关消息", "r-other"),),
+        links=(link(ref, "old", "adds_information"),),
+        link_receipts=(delivered("r-old", "old"),),
+        linked=(earlier,),
+    )
+    judge = FixedReader(cuts := READER_CUTS["native"].push)
+    plan = run_plan(update, snapshot, judge=judge)
+    assert cuts and only_reason(plan) == "reader_push"
+    assert judge.asked[0].messages == ("英伟达宣布1500亿美元回购", "无关消息")
+    record = plan.claim_decisions[0].reader
+    assert record is not None and record.novelty == "increment" and record.render == "increment"
+    assert record.message_intents == ("r-old", "r-other")
+    assert [row.intent_id for row in plan.compared_receipts] == ["r-old", "r-other"]
+    material = card_copy_material(
+        update.claims, {item.ref: item.source for item in update.evidence}, {ref: record.earlier}
+    )
+    assert material[0]["earlier"] == {"render": "increment", "delivered_text": "英伟达宣布1500亿美元回购"}
+
+
+def test_an_unavailable_judgment_waits_then_is_recorded_unassessed_and_never_cached() -> None:
+    update = single()
+    judge = Unavailable()
+    cache = MemoryCache()
+    plan = run_plan(update, judge=judge, cache=cache)
+    assert only_reason(plan) == "reader_unavailable" and plan.action == "unresolved"
+    late = run_plan(update, judge=judge, cache=cache, now_ms=update.adopted_at_ms + READER_WAIT_MAX_MS + 1)
+    assert only_reason(late) == "reader_unassessed" and late.action == "no_notification"
+    assert judge.calls == 2 and cache.values == {}
+
+
+def test_judgments_are_reused_per_claim_so_a_sibling_change_asks_only_the_new_claim() -> None:
+    first, second = evidence("Agency orders a 25% tariff."), evidence("Agency delays the plan.")
+    cache = MemoryCache()
+    judge = FixedReader()
+    run_plan(adopted((claim("a", first), first)), judge=judge, cache=cache)
+    run_plan(adopted((claim("a", first), first), (claim("b", second), second)), judge=judge, cache=cache)
+    assert [row.claim.statement for row in judge.asked] == ["Agency orders a 25% tariff.", "Agency delays the plan."]
+    # The same plan asked again, as after a lost CAS, asks nothing.
+    run_plan(adopted((claim("a", first), first), (claim("b", second), second)), judge=judge, cache=cache)
+    assert len(judge.asked) == 2
+
+
+def test_large_daily_move_fires_only_on_same_day_moves_of_a_whole_market() -> None:
+    cases = json.loads((FIXTURES / "large_daily_move_2026-09-28.json").read_text(encoding="utf-8"))["cases"]
+    fired = []
+    for case in cases:
+        fields = ClaimFields.model_validate(case["fields"])
+        item = evidence(case["statement"])
+        update = adopted(
+            (
+                DraftClaim(
+                    slot="a",
+                    statement=case["statement"],
+                    fields=fields,
+                    citations=(Citation(evidence_ref=item.ref, quote=case["statement"]),),
+                ),
+                item,
             )
         )
-
-
-def test_real_litigation_and_normal_product_progress_are_ordinary_candidates():
-    case = single("$ACME was sued for securities fraud; complaint seeks $2 billion.")
-    product = single("ACME launched a paid feature that lowers operating costs.", mode="unknown")
-    for update in (case, product):
-        plan = run_plan(update)
-        assert plan.action == "notify"
-        assert plan.claim_decisions[0].reason == "editor_notify"
-        assert plan.assessment_status == "available"
-
-
-def test_promotion_and_mixed_news_are_decided_per_claim_without_a_mode_gate():
-    ad = evidence("Rosen Law encourages investors to contact the firm.")
-    lawsuit = evidence("ACME faces a new securities class action seeking $2 billion.")
-    update = adopted((claim("ad", ad, mode="promotion"), ad), (claim("case", lawsuit, mode="unknown"), lawsuit))
-    editor = Assessor({ad.text: "feed_only", lawsuit.text: "notify"})
-    plan = run_plan(update, assessor=editor)
-    assert reasons(plan, update) == {ad.text: "editor_feed_only", lawsuit.text: "editor_notify"}
-    assert plan.selected_claim_refs == (next(c.ref for c in update.claims if c.statement == lawsuit.text),)
-
-
-def test_key_marks_only_its_claim_and_optional_reason_is_not_required():
-    major = evidence("Exchange halted withdrawals after a security breach.")
-    minor = evidence("Exchange changed its developer documentation.")
-    update = adopted((claim("major", major), major), (claim("minor", minor), minor))
-    plan = run_plan(update, assessor=Assessor({major.text: "key", minor.text: "notify"}))
-    assert plan.key and plan.action == "notify"
-    assert reasons(plan, update) == {major.text: "editor_key", minor.text: "editor_notify"}
-    assert all(row.reason_zh is None for row in plan.claim_decisions)
-
-
-def test_protected_listing_and_structured_daily_move_bypass_editor_only_for_their_refs():
-    listing = evidence("Venue lists ACME for trading.")
-    other = evidence("A founder gives a promotional speech.")
-    update = adopted((claim("listing", listing), listing), (claim("other", other), other))
-    listing_ref = next(c.ref for c in update.claims if c.statement == listing.text)
-    editor = Assessor({other.text: "feed_only"})
-    plan = run_plan(update, reader(protected_listing_claim_refs=(listing_ref,)), assessor=editor)
-    assert reasons(plan, update) == {listing.text: "protected_listing", other.text: "editor_feed_only"}
-    assert editor.calls == [(next(c.ref for c in update.claims if c.statement == other.text),)]
-    editor = Assessor()
-    move = single(
-        "Index rose 5% in one day.",
-        mode="observation",
-        kind="level_crossed",
-        assets=(Asset(symbol="X", market_type="index", role="primary"),),
-        quantities=({"name": "daily change", "value": "5", "unit": "%"},),
-    )
-    assert only_reason(run_plan(move, assessor=editor)) == "large_daily_move"
-    assert editor.calls == []
-
-
-def test_watchlist_is_context_not_an_automatic_push():
-    update = single(
-        "BTC giveaway. Contact us to claim.",
-        mode="promotion",
-        assets=(Asset(symbol="BTC", market_type="crypto", role="primary"),),
-    )
-    plan = run_plan(
-        update, reader(watch_symbols=("BTC",)), assessor=Assessor({update.claims[0].statement: "feed_only"})
-    )
-    assert only_reason(plan) == "editor_feed_only"
-
-
-def test_stale_retired_and_full_coverage_skip_attention():
-    update = single()
-    editor = Assessor()
-    assert only_reason(run_plan(update, now_ms=STAMP + 13 * HOUR_MS, assessor=editor)) == "stale_source"
-    assert editor.calls == []
-    plan = run_plan(
-        update,
-        reader(receipts=(sent("机构宣布 25% 关税。"),)),
-        generated=TaskBackend({"coverage": "full"}),
-        assessor=editor,
-    )
-    assert only_reason(plan) == "covered_by_sent_receipt"
-    assert editor.calls == []
-
-
-def test_partial_coverage_is_still_an_editor_candidate():
-    update = single()
-    editor = Assessor()
-    plan = run_plan(
-        update,
-        reader(receipts=(sent("仅提及关税。"),)),
-        generated=TaskBackend({"coverage": "partial"}),
-        assessor=editor,
-    )
-    assert only_reason(plan) == "editor_notify"
-    assert len(editor.calls) == 1
-
-
-def test_local_editor_failure_defaults_to_normal_notify_with_visible_status():
-    update = single()
-    plan = run_plan(update, assessor=Assessor(error=ProviderUnavailable("news_generation_unavailable")))
-    assert plan.action == "notify" and not plan.key
-    assert only_reason(plan) == "attention_unavailable_default_notify"
-    assert plan.assessment_status == "unavailable"
-    assert plan.assessment_error_code == "news_generation_unavailable"
-
-
-def test_programming_failure_is_not_silently_treated_as_editor_outage():
-    with pytest.raises(RuntimeError, match="bug"):
-        run_plan(single(), assessor=Assessor(error=RuntimeError("bug")))
-
-
-def test_editor_must_cover_exact_candidate_refs():
-    class Wrong(Assessor):
-        async def assess(self, claims, *, sources, watch_symbols):
-            return AttentionAssessment(decisions=(AttentionDecision(claim_ref="claim:unknown", disposition="key"),))
-
-    plan = run_plan(single(), assessor=Wrong())
-    assert plan.assessment_status == "unavailable"
-    assert plan.claim_decisions[0].reason == "attention_unavailable_default_notify"
-
-
-def test_editorial_input_survives_partial_receipt_while_final_plan_tracks_reader_revision():
-    update = single()
-    first = run_plan(update, reader(revision="r1"))
-    second = run_plan(update, reader(revision="r2"))
-    assert first.assessment_input_digest == second.assessment_input_digest
-    assert first.record_ref != second.record_ref
-    changed = run_plan(
-        update,
-        reader(revision="r3", receipts=(sent("different copy"),)),
-        generated=TaskBackend({"coverage": "partial"}),
-    )
-    assert changed.assessment_input_digest == first.assessment_input_digest
-    assert changed.record_ref != first.record_ref
-
-
-def test_editorial_reuse_skips_unchanged_model_input_but_replans_current_reader():
-    update = single()
-    assessor = Assessor()
-    planner = NotificationPlanner(NewsJudgments(generated=TaskBackend(), cache=MemoryCache()), assessor)
-
-    async def scenario() -> tuple[NotificationPlan, NotificationPlan]:
-        first = await planner.plan(update, reader(revision="r1"), Budget.start(5), now_ms=STAMP + 60_000)
-
-        async def reuse(fingerprint: str) -> NotificationPlan | None:
-            assert fingerprint == first.assessment_input_digest
-            return first
-
-        second = await planner.plan(update, reader(revision="r2"), Budget.start(5), now_ms=STAMP + 60_000, reuse=reuse)
-        return first, second
-
-    first, second = asyncio.run(scenario())
-    assert assessor.calls == [(update.claims[0].ref,)]
-    assert first.assessment_input_digest == second.assessment_input_digest
-    assert first.record_ref != second.record_ref
+        assert large_daily_move(update.claims[0]) is case["large_daily_move"], case["statement"]
+        fired.append(case["large_daily_move"])
+        if case["large_daily_move"] and fields.mode == "observation":
+            assert only_reason(run_plan(update, judge=FixedReader(0.1))) == "large_daily_move"
+    assert (sum(fired), len(fired)) == (6, 17)
 
 
 def test_card_copy_input_changes_for_same_ref_with_changed_expression_or_source():

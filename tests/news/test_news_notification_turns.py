@@ -42,9 +42,9 @@ from tracefold.news.updates.service import Notifications
 
 def _plan(update: EventUpdate, *, notify: bool = True) -> NotificationPlan:
     decision = (
-        ClaimDecision(claim_ref=update.claims[0].ref, decision="notify", reason="editor_notify")
+        ClaimDecision(claim_ref=update.claims[0].ref, decision="notify", reason="reader_push")
         if notify
-        else ClaimDecision(claim_ref=update.claims[0].ref, decision="not_notified", reason="editor_feed_only")
+        else ClaimDecision(claim_ref=update.claims[0].ref, decision="not_notified", reason="reader_feed")
     )
     return NotificationPlan(
         action="notify" if notify else "no_notification",
@@ -53,6 +53,8 @@ def _plan(update: EventUpdate, *, notify: bool = True) -> NotificationPlan:
         claim_decisions=(decision,),
         channel="news",
         reader_revision=READER_REVISION,
+        reader_identity="fixture_reader",
+        input_digest="fixture-input",
     )
 
 
@@ -155,7 +157,7 @@ class Composer:
         self.error = error
         self.calls = 0
 
-    async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
+    async def compose(self, claims: tuple[Any, ...], *, sources: Any, earlier: Any = None) -> CardCopy:
         self.calls += 1
         if self.error is not None:
             raise self.error
@@ -345,7 +347,7 @@ def test_copy_that_cannot_be_frozen_is_a_card_failure_too() -> None:
     store = Store(update)
 
     class UnsafeComposer(Composer):
-        async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
+        async def compose(self, claims: tuple[Any, ...], *, sources: Any, earlier: Any = None) -> CardCopy:
             self.calls += 1
             return copy_for(_plan(update), "看 https://evil.example 的标题")
 

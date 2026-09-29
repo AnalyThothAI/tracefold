@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from tests.support.news_attention import NotifyAll
+from tests.support.news_reader import PushAll
 from tests.support.news_update_semantic import (
     MemoryCache,
     TaskBackend,
@@ -30,43 +30,16 @@ from tracefold.news.updates.contracts import (
     Source,
 )
 from tracefold.news.updates.dspy_backend import (
-    DspyAttentionAssessor,
+    CARD_INSTRUCTION,
     DspyCardComposer,
     DspyExtractor,
     GeneratedJudgments,
 )
 from tracefold.news.updates.judgment import Budget, ContractFault, NewsJudgments, Question
-from tracefold.news.updates.notification import NotificationPlanner, ReaderSnapshot
+from tracefold.news.updates.notification import ReaderRepairContext
 from tracefold.news.updates.semantics import SemanticAnalyzer, assemble_update
 
 STAMP = 1_790_405_000_000
-
-
-def test_attention_assesses_all_candidates_in_one_physical_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    _source, _extraction, update = update_one()
-    claims = (update.claims[0], update.claims[0].model_copy(update={"ref": "cl:second"}))
-    calls = generated(
-        monkeypatch,
-        {
-            "decisions": [
-                {"claim_ref": "c1", "disposition": "notify", "reason_zh": "具体更新"},
-                {"claim_ref": "c2", "disposition": "feed_only", "reason_zh": "无新增事实"},
-            ]
-        },
-    )
-    assessor = DspyAttentionAssessor(lambda: None, model_identity="fixture")
-    answer = asyncio.run(
-        assessor.assess(
-            claims,
-            sources={item.ref: item.source for item in update.evidence},
-            watch_symbols=("BTC",),
-        )
-    )
-    assert len(calls) == 1
-    assert [row.claim_ref for row in answer.decisions] == [claim.ref for claim in claims]
-    request = json.loads(calls[0]["candidates_json"])
-    assert [row["ref"] for row in request["claims"]] == ["c1", "c2"]
-    assert request["watch_symbols"] == ["BTC"]
 
 
 def extraction_source() -> tuple[FrozenInput, dict[str, Any]]:
@@ -199,7 +172,7 @@ def test_mode_is_clarified_and_cached_before_adoption_never_in_notification(
         head = assemble_update(source, first, None, adopted_at_ms=STAMP + 1)
         assert head is not None
         count = len(backend.calls)
-        plan = await NotificationPlanner(judgments, NotifyAll()).plan(
+        plan = await NotificationPlanner(PushAll(), MemoryCache()).plan(
             head,
             ReaderSnapshot(channel="news", revision="test", receipts=()),
             Budget.start(5),
@@ -231,6 +204,29 @@ def test_card_aliases_decode_and_only_cited_provenance_is_passed(monkeypatch: py
     assert sent[0]["citations"][0]["source"]["publisher_id"] == "wire"
     assert set(sent[0]) == {"claim_ref", "statement", "fields", "citations"}
     assert set(sent[0]["citations"][0]["source"]) == {"publisher_id", "attribution", "origin_id"}
+
+
+def test_an_increment_or_correction_card_is_written_against_the_earlier_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#742 item 13: the composer gets the text the reader already has and is told how to use it."""
+
+    source, _extracted, head = update_one()
+    calls = generated(
+        monkeypatch,
+        {"headline_zh": "补充：关税下月生效", "lines": [{"claim_ref": "c1", "text_zh": "补充：关税将于下月生效。"}]},
+    )
+    earlier = ReaderRepairContext(render="increment", intent_id="intent:earlier", body="机构宣布加征关税")
+    asyncio.run(
+        DspyCardComposer(lambda: None, model_identity="test").compose(
+            head.claims,
+            sources={source.evidence[0].ref: source.evidence[0].source},
+            earlier={head.claims[0].ref: earlier},
+        )
+    )
+    sent = json.loads(calls[0]["selected_claims_json"])
+    assert sent[0]["earlier"] == {"render": "increment", "delivered_text": "机构宣布加征关税"}
+    assert "补充：" in CARD_INSTRUCTION and "更正：" in CARD_INSTRUCTION
 
 
 def test_bug_c_frozen_claim_gives_composer_the_exact_drone_and_capture_fact(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -288,16 +284,16 @@ def test_card_cannot_name_an_unselected_alias(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_generated_judgment_maps_local_answers_to_original_cache_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = generated(monkeypatch, {"answers": [{"item_id": "q1", "value": "full"}]})
+    calls = generated(monkeypatch, {"answers": [{"item_id": "q1", "value": "supports"}]})
     result = asyncio.run(
         GeneratedJudgments(lambda: None, model_identity="fixture").judge(
-            "coverage",
-            (Question(item_id="coverage:stable-hash", payload_json='{"claim": "A"}'),),
+            "support",
+            (Question(item_id="support:stable-hash", payload_json='{"claim": "A"}'),),
             context_json=None,
         )
     )
     assert calls[0]["items"][0]["item_id"] == "q1"
-    assert result.answers[0].item_id == "coverage:stable-hash"
+    assert result.answers[0].item_id == "support:stable-hash"
 
 
 @pytest.mark.parametrize("unknown_ref", ["p1", "t1", "q99"])

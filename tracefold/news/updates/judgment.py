@@ -18,7 +18,6 @@ Task = Literal[
     "content_kind",
     "relation",
     "support",
-    "coverage",
     "next_read",
 ]
 QUESTION_VERSION: Final = "news_questions_v3"
@@ -33,7 +32,6 @@ TASK_QUESTIONS: Final[dict[Task, str]] = {
     "content_kind": "Which kind of new content does this claim state?",
     "relation": "How does the current claim relate to the previous claim?",
     "support": "How does this material relate to this exact claim?",
-    "coverage": "How much of this claim does the actually delivered text cover?",
     "next_read": "Would reading this supplied target resolve the stated gap?",
 }
 
@@ -128,19 +126,6 @@ OPTIONS: Final[dict[Task, tuple[tuple[str, str], ...]]] = {
         ("reports", "This material merely attributes or repeats the proposition; not independent confirmation."),
         ("not_addressed", "This material does not address this proposition."),
         ("unresolved", "The support relationship is not established."),
-    ),
-    "coverage": (
-        (
-            "full",
-            "The actual delivered text contains the whole selected proposition, including its quantities, "
-            "period, negation and conditions.",
-        ),
-        ("partial", "The actual delivered text covers only part of the selected proposition."),
-        (
-            "none",
-            "The actual delivered text does not cover this proposition. Topic/story similarity is not coverage.",
-        ),
-        ("unresolved", "Coverage cannot be established from this text."),
     ),
     "next_read": (
         ("read", "Reading this supplied existing target may resolve the stated important gap."),

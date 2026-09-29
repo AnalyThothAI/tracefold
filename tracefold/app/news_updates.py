@@ -10,7 +10,6 @@ from typing import Any
 from tracefold.app.system_one import SystemOneConnection, SystemOneReceipt
 from tracefold.news.updates.dspy_backend import (
     READER_NATIVE_SECONDS,
-    DspyAttentionAssessor,
     DspyCardComposer,
     DspyExtractor,
     DspyReaderJudge,
@@ -46,10 +45,12 @@ class NewsUpdateRuntime:
     notifications: Notifications
     program_identity: str
     judgment_connection: SystemOneConnection | None
+    reader_connection: SystemOneConnection | None = None
 
     async def aclose(self) -> None:
-        if self.judgment_connection is not None:
-            await self.judgment_connection.aclose()
+        for connection in (self.judgment_connection, self.reader_connection):
+            if connection is not None:
+                await connection.aclose()
 
 
 def _source_identity() -> str:
@@ -191,6 +192,7 @@ def compose_news_updates(
     card_model_identity: str,
     judgment_model_identity: str,
     news_judgment: NewsJudgmentEndpoint | None = None,
+    news_reader_judgment: NewsJudgmentEndpoint | None = None,
     after_native_call: Callable[[SystemOneReceipt], Awaitable[None]] | None = None,
     source_reader: ExistingSourceReader | None = None,
 ) -> NewsUpdateRuntime:
@@ -198,7 +200,8 @@ def compose_news_updates(
 
     Factories borrow the existing configured generative endpoints, with their existing generation
     settings; each returns one LM or an ordered primary/fallback route. news_judgment is the sole
-    optional decision slot; this function never reads Trading's model configuration. The caller owns
+    semantic decision slot and news_reader_judgment the notification decision slot; neither is inferred
+    from the other, and this function never reads Trading's model configuration. The caller owns
     closing this runtime in the existing worker lifetime. The App relay is the only News→Trading
     relay, so nothing here reads the public outbox.
     """
@@ -231,18 +234,23 @@ def compose_news_updates(
         native_factory=native_factory,
     )
     program_identity = _program_identity(analyzer, card_model_identity)
+    # The notification decision layer's own route; its answers are cached apart, keyed by its identity.
+    reader_judge, reader_connection = compose_reader_judge(
+        generated_lm_factory=judgment_lm_factory,
+        generated_model_identity=judgment_model_identity,
+        reader_judgment=news_reader_judgment,
+        after_native_call=after_native_call,
+    )
     return NewsUpdateRuntime(
         agent=NewsAgent(store, analyzer, program_identity=program_identity, source_reader=source_reader),
         judgments=analyzer.judgments,
         # The Deliverer owns the provider side and hands its sender to each notification turn.
         notifications=Notifications(
             store,
-            NotificationPlanner(
-                analyzer.judgments,
-                DspyAttentionAssessor(card_lm_factory, model_identity=card_model_identity),
-            ),
+            NotificationPlanner(reader_judge, relation_cache),
             DspyCardComposer(card_lm_factory, model_identity=card_model_identity),
         ),
         program_identity=program_identity,
         judgment_connection=connection,
+        reader_connection=reader_connection,
     )

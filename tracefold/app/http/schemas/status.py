@@ -135,6 +135,10 @@ class NewsPipelineStatusData(ExactApiSchema):
     news_judgment_configured: bool = False
     judgment_backend: Literal["native", "generated"] | None = None
     judgment_model: str | None = None
+    # The notification decision layer's reader judgment: its own System One route when configured, else
+    # the generative News route (#742).
+    reader_judgment_backend: Literal["native", "generated"] | None = None
+    reader_judgment_model: str | None = None
     news_program_identity: str | None = None
     # The semantic stage's last 24 h: completed turns, adopted content revisions, visibly failed work
     # (with its codes) and the bounded pending backlog.

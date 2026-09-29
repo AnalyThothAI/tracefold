@@ -55,6 +55,16 @@ def test_recorded_native_answers_meet_the_bar(fixtures: Any) -> None:
     assert len(spacex["pushed"]) <= 2
 
 
+def test_recorded_generative_fallback_answers_meet_the_bar_with_their_own_cuts(fixtures: Any) -> None:
+    replay, coverage, clusters = fixtures
+    report = evaluate(replay, coverage, clusters, recorded(replay, "generated"), "generated")
+
+    assert report["answered"]["reader_replay"] == 397
+    assert report["importance"]["auc_keep_borderline_vs_demote"] >= 0.80
+    at_push = next(row for row in report["decision_table"] if row["cut"] == report["cuts"]["push"])
+    assert at_push["precision_keep_borderline"] >= 0.40
+
+
 def test_a_recorded_answer_round_trips(fixtures: Any) -> None:
     replay, coverage, _ = fixtures
     for rows in (replay, coverage):

@@ -157,6 +157,8 @@ def _retry_delay(delays: Sequence[int], attempts: int) -> int:
 def reader_revision(
     receipts: Iterable[Mapping[str, Any]],
     *,
+    linked: Iterable[Mapping[str, Any]] = (),
+    links: Iterable[Mapping[str, Any]] = (),
     blocked_claim_refs: Iterable[str],
     ambiguous_claim_refs: Iterable[str],
     watch_symbols: Iterable[str],
@@ -170,6 +172,9 @@ def reader_revision(
 
     material = {
         "receipts": sorted({(str(row["intent_id"]), "sent") for row in receipts}),
+        # Receipts a semantic link reaches, by their state: one that settles changes what the reader holds.
+        "linked": sorted({(str(row["intent_id"]), str(row["state"])) for row in linked}),
+        "links": sorted({(str(row["update_ref"]), str(row["current_ref"]), str(row["previous_ref"])) for row in links}),
         "blocked": sorted(set(blocked_claim_refs)),
         "ambiguous": sorted(set(ambiguous_claim_refs)),
         "invalidated": sorted(set(invalidated_claim_refs)),
@@ -186,7 +191,7 @@ def linked_refs(update: EventUpdate, invalidated: Iterable[str] = ()) -> set[str
 
 
 def delivered_text(row: Mapping[str, Any]) -> DeliveredText | None:
-    """One sent receipt with a provably exact frozen body for coverage judgment."""
+    """One sent (or ambiguous) receipt with a provably exact frozen body the reader may have read."""
 
     body = row.get("body")
     payload_sha256 = row.get("payload_sha256")
@@ -198,13 +203,16 @@ def delivered_text(row: Mapping[str, Any]) -> DeliveredText | None:
     if isinstance(receipt, Mapping):
         value = receipt.get("provider_message_id", receipt.get("message_id"))
         message_id = None if value is None else str(value)
+    state = str(row.get("state") or "sent")
+    if state not in {"sent", "ambiguous"}:
+        return None
     return DeliveredText(
         intent_id=str(row["intent_id"]),
         channel=NEWS_CHANNEL,
-        state="sent",
+        state="sent" if state == "sent" else "ambiguous",
         body=body,
         payload_sha256=payload_sha256,
-        received_at_ms=int(row["settled_at_ms"]),
+        received_at_ms=int(row["settled_at_ms"]) if state == "sent" else None,
         provider_message_id=message_id,
     )
 
@@ -1208,20 +1216,12 @@ class EventUpdateStorage:
                 source=SemanticSource(observation_result_id),
                 public_rows=public_rows,
                 now_ms=now_ms,
+                prior_events={row.claim.ref: row.event_id for row in lease.source.prior},
             )
         except ValueError as exc:
             raise EventUpdateConflict(str(exc)) from exc
 
     # ------------------------------------------------------------------ notification snapshot and plan
-    def lookup_notification_decision(self, *, event_id: str, channel: str, input_digest: str) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """SELECT plan FROM news_notification_decisions
-                WHERE event_id = %s AND channel = %s AND input_digest = %s
-                ORDER BY created_at_ms DESC, decision_ref DESC LIMIT 1""",
-            (event_id, channel, input_digest),
-        ).fetchone()
-        return None if row is None else dict(row["plan"])
-
     def invalidated_claim_refs(self, event_id: str) -> list[str]:
         """Read the adopted change ledger; no second writable claim-status authority."""
         rows = self.conn.execute(
@@ -1306,8 +1306,30 @@ class EventUpdateStorage:
             ).fetchall()
         ]
 
-    def _linked_receipt_rows(self, refs: Sequence[str], *, now_ms: int, until_ms: int | None) -> list[dict[str, Any]]:
-        """Receipts of any Event that carried one of these claims or their antecedents."""
+    def _claim_links(self, refs: Sequence[str]) -> list[dict[str, Any]]:
+        """Persisted links within two hops of these claims, read from both ends (#742)."""
+
+        if not refs:
+            return []
+        query = """
+            SELECT update_ref, current_ref, previous_ref, relation, asserted_at_ms FROM news_claim_links
+             WHERE current_ref = ANY(%s) OR previous_ref = ANY(%s)
+        """
+        first = self.conn.execute(query, (list(refs), list(refs))).fetchall()
+        reached = sorted({str(row[key]) for row in first for key in ("current_ref", "previous_ref")} - set(refs))
+        second = self.conn.execute(query, (reached, reached)).fetchall() if reached else []
+        rows = {
+            (str(row["update_ref"]), str(row["current_ref"]), str(row["previous_ref"])): dict(row)
+            for row in (*first, *second)
+        }
+        return [rows[key] for key in sorted(rows)]
+
+    def _link_receipt_rows(self, refs: Sequence[str], *, now_ms: int, until_ms: int | None) -> list[dict[str, Any]]:
+        """Receipts of any Event carrying a claim the links reach: delivered, ambiguous or still sending.
+
+        Only a delivered receipt is bounded by the snapshot stamp; an unsettled one is read as it is now,
+        like this Event's own unsettled claims, so the snapshot and the CAS read it the same way.
+        """
 
         if not refs:
             return []
@@ -1315,13 +1337,16 @@ class EventUpdateStorage:
             dict(row)
             for row in self.conn.execute(
                 f"""
-                SELECT {_RECEIPT_COLUMNS} FROM news_deliveries d
-                 WHERE d.kind = 'update' AND d.state = 'sent'
-                   AND d.delete_state IS DISTINCT FROM 'deleted'
-                   AND d.settled_at_ms >= %s AND (%s::bigint IS NULL OR d.settled_at_ms < %s)
+                SELECT {_RECEIPT_COLUMNS}, d.state FROM news_deliveries d
+                 WHERE d.kind = 'update' AND d.delete_state IS DISTINCT FROM 'deleted'
                    AND d.claim_refs ?| %s::text[]
+                   AND (d.state = 'sending'
+                        OR (d.state = 'ambiguous' AND d.settled_at_ms >= %s)
+                        OR (d.state = 'sent' AND d.settled_at_ms >= %s
+                            AND (%s::bigint IS NULL OR d.settled_at_ms < %s)))
+                 ORDER BY d.intent_id
                 """,  # noqa: S608 - a module-owned column list
-                (int(now_ms) - TARGETED_HISTORY_WINDOW_MS, until_ms, until_ms, list(refs)),
+                (list(refs), *(int(now_ms) - TARGETED_HISTORY_WINDOW_MS,) * 2, until_ms, until_ms),
             ).fetchall()
         ]
 
@@ -1351,7 +1376,10 @@ class EventUpdateStorage:
         queries = receipt_queries(head, str(event["comparison_title"] or "") if event else "", invalidated)
         own = self._receipt_rows([event_id], until_ms=until_ms)
         similar = self._similar_receipt_rows(queries, now_ms=now_ms, until_ms=until_ms)
-        linked = self._linked_receipt_rows(sorted(linked_refs(head, invalidated)), now_ms=now_ms, until_ms=until_ms)
+        active = linked_refs(head, invalidated)
+        links = self._claim_links(sorted(active))
+        reached = active | {str(row[key]) for row in links for key in ("current_ref", "previous_ref")}
+        linked = self._link_receipt_rows(sorted(reached), now_ms=now_ms, until_ms=until_ms)
         return {
             "event": None if event is None else dict(event),
             "queries": queries,
@@ -1360,8 +1388,12 @@ class EventUpdateStorage:
             "invalidated": invalidated,
             "own": own,
             "similar": similar,
+            "links": links,
+            "linked": linked,
             "revision": reader_revision(
-                (*own, *similar, *linked),
+                (*own, *similar),
+                linked=linked,
+                links=links,
                 blocked_claim_refs=sending,
                 ambiguous_claim_refs=ambiguous,
                 watch_symbols=watch_symbols,
@@ -1428,6 +1460,8 @@ class EventUpdateStorage:
             "revision": reader["revision"],
             "receipt_queries": reader["queries"],
             "receipt_rows": [*reader["own"], *band, *reader["similar"]],
+            "links": reader["links"],
+            "link_receipts": reader["linked"],
             "listing_members": [dict(row) for row in listing_members],
         }
 
@@ -1440,7 +1474,7 @@ class EventUpdateStorage:
             """
             INSERT INTO news_notification_decisions
               (decision_ref,event_id,update_ref,channel,input_digest,input_snapshot,plan,origin,created_at_ms)
-            VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,'editorial_v1',%s)
+            VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,'reader_v2',%s)
             ON CONFLICT DO NOTHING
             """,
             (
@@ -1448,8 +1482,13 @@ class EventUpdateStorage:
                 event_id,
                 plan.update_ref,
                 plan.channel,
-                plan.assessment_input_digest,
-                _dumps(plan.assessment_input or {}),
+                plan.input_digest,
+                _dumps(
+                    {
+                        "reader_identity": plan.reader_identity,
+                        "compared_receipts": [row.model_dump(mode="json") for row in plan.compared_receipts],
+                    }
+                ),
                 plan_json,
                 int(now_ms),
             ),

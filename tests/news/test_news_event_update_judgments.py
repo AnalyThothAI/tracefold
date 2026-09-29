@@ -46,7 +46,7 @@ class Backend:
 
     def __init__(
         self,
-        value: str | bool = "none",
+        value: str | bool = "not_addressed",
         *,
         identity: str = "test-backend",
         fail_batch: int | None = None,
@@ -83,7 +83,7 @@ def test_failed_native_batch_does_not_rejudge_successful_batch_or_truncate_tail(
         native = Backend(fail_batch=2, identity="native")
         generated = Backend(identity="generated")
         judgments = NewsJudgments(generated=generated, native=native, cache=MemoryCache(), batch_size=3)
-        answers = await judgments.judge("coverage", questions(8), Budget.start(10))
+        answers = await judgments.judge("support", questions(8), Budget.start(10))
         assert len(answers) == 8
         assert len(native.calls) == 3
         assert [call[1] for call in generated.calls] == [("3", "4", "5")]
@@ -96,7 +96,7 @@ def test_cancelled_native_batch_never_falls_back() -> None:
         generated = Backend(identity="generated")
         judgments = NewsJudgments(generated=generated, native=Backend(cancel=True), cache=MemoryCache())
         with pytest.raises(asyncio.CancelledError):
-            await judgments.judge("coverage", questions(1), Budget.start(5))
+            await judgments.judge("support", questions(1), Budget.start(5))
         assert generated.calls == []
 
     asyncio.run(run())
@@ -115,7 +115,7 @@ def test_each_native_batch_has_its_own_operation_timeout() -> None:
             batch_size=1,
             native_operation_seconds=0.1,
         )
-        answers = await judgments.judge("coverage", questions(5), Budget.start(5))
+        answers = await judgments.judge("support", questions(5), Budget.start(5))
         assert {answer.backend for answer in answers} == {"native"}
         assert len(native.calls) == 5
         assert generated.calls == []
@@ -134,7 +134,7 @@ def test_a_slow_native_batch_falls_back_alone() -> None:
             batch_size=2,
             native_operation_seconds=0.05,
         )
-        answers = await judgments.judge("coverage", questions(6), Budget.start(5))
+        answers = await judgments.judge("support", questions(6), Budget.start(5))
         assert [answer.backend for answer in answers] == [
             "native",
             "native",
@@ -160,7 +160,7 @@ def test_native_operation_timeout_never_extends_the_shared_stage_deadline() -> N
             native_operation_seconds=5.0,
         )
         with pytest.raises(TimeoutError):
-            await judgments.judge("coverage", questions(3), Budget.start(0.15))
+            await judgments.judge("support", questions(3), Budget.start(0.15))
         # The batches run together; the slow one was cut at the stage deadline, not at its own 5 s limit,
         # and an expired stage has no generated fallback.
         assert len(native.calls) == 3
@@ -197,7 +197,7 @@ def test_unavailable_generated_answer_is_explicit_and_not_cached() -> None:
         generated = Backend(identity="generated", fail_batch=1)
         cache = MemoryCache()
         judgments = NewsJudgments(generated=generated, cache=cache)
-        answers = await judgments.judge("coverage", questions(2), Budget.start(5))
+        answers = await judgments.judge("support", questions(2), Budget.start(5))
         assert {answer.status for answer in answers} == {"unavailable"}
         assert all(answer.value is None for answer in answers)
         assert cache.values == {}
@@ -313,17 +313,20 @@ def test_native_server_error_falls_back_to_generated_for_that_batch_only() -> No
             requests += 1
             if requests == 1:
                 return httpx2.Response(529, json={"error": {"message": "overloaded"}})
-            return _response({"answer_0": _choice("coverage", "none")})
+            return _response({"answer_0": _choice("support", "not_addressed")})
 
         connection = _connection(respond)
-        generated = Backend("partial", identity="generated")
+        generated = Backend("reports", identity="generated")
         try:
             native = NativeJudgments(lambda: connection.bind(timeout_seconds=2.0), model_identity="jev-test")
             judgments = NewsJudgments(generated=generated, native=native, cache=MemoryCache(), batch_size=1)
-            answers = await judgments.judge("coverage", questions(2), Budget.start(5))
+            answers = await judgments.judge("support", questions(2), Budget.start(5))
         finally:
             await connection.aclose()
-        assert [(row.value, row.backend) for row in answers] == [("partial", "generated"), ("none", native.identity)]
+        assert [(row.value, row.backend) for row in answers] == [
+            ("reports", "generated"),
+            ("not_addressed", native.identity),
+        ]
         assert requests == 2
 
     asyncio.run(run())
@@ -340,7 +343,7 @@ def test_native_authentication_error_is_never_hidden_by_fallback() -> None:
             native = NativeJudgments(lambda: connection.bind(timeout_seconds=2.0), model_identity="jev-test")
             judgments = NewsJudgments(generated=generated, native=native, cache=MemoryCache())
             with pytest.raises(ConfigurationFault):
-                await judgments.judge("coverage", questions(1), Budget.start(5))
+                await judgments.judge("support", questions(1), Budget.start(5))
         finally:
             await connection.aclose()
         assert generated.calls == []

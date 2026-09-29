@@ -309,15 +309,7 @@ class Notifications:
             # The stage deadline surfaces here as TimeoutError, so an expired plan is recorded like any
             # other failed one instead of leaving its work due again at once.
             async with asyncio.timeout(budget.remaining()):
-                plan = await self.planner.plan(
-                    snapshot.update,
-                    snapshot.reader,
-                    budget,
-                    now_ms=self.clock(),
-                    reuse=lambda fingerprint: self.store.lookup_notification_decision(
-                        snapshot.update.event_id, channel, fingerprint
-                    ),
-                )
+                plan = await self.planner.plan(snapshot.update, snapshot.reader, budget, now_ms=self.clock())
             timings = plan.timings or PlanTimings()
             plan = plan.model_copy(
                 update={
@@ -452,11 +444,13 @@ class Notifications:
 
         plan = lease.plan
         selected = tuple(claim for claim in update.claims if claim.ref in plan.selected_claim_refs)
+        # An increment or a correction is written against the earlier message the reader already has.
+        earlier = {claim.ref: context for claim in selected if (context := plan.earlier(claim.ref)) is not None}
         async with asyncio.timeout(budget.remaining()):
             cited = {citation.evidence_ref for claim in selected for citation in claim.citations}
             sources = {item.ref: item.source for item in update.evidence if item.ref in cited}
             input_digest = identity(
-                "news_card_copy_input", self.composer.identity, card_copy_material(selected, sources)
+                "news_card_copy_input", self.composer.identity, card_copy_material(selected, sources, earlier)
             )
             copy = await self.store.lookup_card_copy(input_digest)
             logger.info(
@@ -467,7 +461,7 @@ class Notifications:
                 copy is not None,
             )
             if copy is None:
-                copy = await self.composer.compose(selected, sources=sources)
+                copy = await self.composer.compose(selected, sources=sources, earlier=earlier)
         frozen = freeze_card(plan, update, copy)
         return await self.store.save_card(lease, frozen, copy=copy, input_digest=input_digest)
 

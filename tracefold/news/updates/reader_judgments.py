@@ -118,10 +118,11 @@ class ReaderCuts:
     anchor_none_below: float
 
 
-# Native: jev-1.13 replay of 2026-09-28 with links and production recall, about 110 messages (37 key) a day.
+# The 2026-09-28 replay with links and production recall: native jev-1.13 gives about 116 messages (37 key)
+# a day; the generative qwen3.8-27b route scores the top higher, so its cuts match that volume.
 READER_CUTS: Final[dict[ReaderBackend, ReaderCuts]] = {
     "native": ReaderCuts(push=2.5, key=2.8, anchor_none_below=0.4),
-    "generated": ReaderCuts(push=2.0, key=2.4, anchor_none_below=0.6),
+    "generated": ReaderCuts(push=2.6, key=3.1, anchor_none_below=0.6),
 }
 
 
@@ -392,25 +393,13 @@ class ReaderDecision:
     anchor_intent_id: str | None = None
 
 
-def reader_decision(
-    novelty: ReaderNovelty,
-    judgment: ReaderJudgment,
-    *,
-    first_available_at_ms: int,
-    message_intents: Sequence[str],
-    cuts: ReaderCuts | None = None,
-) -> ReaderDecision:
-    """The reader rows of the decision table, in order, for one claim with an available judgment.
+def novelty_outcome(novelty: ReaderNovelty, *, first_available_at_ms: int) -> ReaderDecision | None:
+    """The reader rows that need no judgment: known, in flight, and the correction of a delivered claim.
 
-    Known and in-flight claims are never pushed. A correction of a delivered claim that became visible after
-    that delivery is repaired regardless of its score. Everything else, a real-world development of a
-    delivered claim included, is pushed on what it adds: its incremental importance against the push and key
-    cuts of the backend that answered (the replay passes others). `message_intents` are the receipts behind
-    `ReaderInput.messages`.
+    A correction is repaired regardless of its score, but only when it became visible after the delivery it
+    corrects; an older report that merely disagrees with a later one is not a correction of what was sent.
     """
 
-    if judgment.importance is None:
-        raise ValueError("news_reader_judgment_unavailable")
     if novelty.novelty == "known":
         return ReaderDecision("known", "full", novelty.intent_id)
     if novelty.novelty == "in_flight":
@@ -422,6 +411,30 @@ def reader_decision(
         and first_available_at_ms > (novelty.settled_at_ms or first_available_at_ms)
     ):
         return ReaderDecision("correction", "correction", novelty.intent_id)
+    return None
+
+
+def reader_decision(
+    novelty: ReaderNovelty,
+    judgment: ReaderJudgment,
+    *,
+    first_available_at_ms: int,
+    message_intents: Sequence[str],
+    cuts: ReaderCuts | None = None,
+) -> ReaderDecision:
+    """The reader rows of the decision table, in order, for one claim with an available judgment.
+
+    Known and in-flight claims are never pushed, and a later correction of a delivered claim always is
+    (`novelty_outcome`). Everything else, a real-world development of a delivered claim included, is pushed
+    on what it adds: its incremental importance against the push and key cuts of the backend that answered
+    (the replay passes others). `message_intents` are the receipts behind `ReaderInput.messages`.
+    """
+
+    decided = novelty_outcome(novelty, first_available_at_ms=first_available_at_ms)
+    if decided is not None:
+        return decided
+    if judgment.importance is None:
+        raise ValueError("news_reader_judgment_unavailable")
     cuts = cuts or judgment.cuts
     anchor = novelty.intent_id
     if novelty.novelty == "unlinked" and judgment.anchor is not None:
@@ -499,6 +512,7 @@ __all__ = [
     "cached_judgment",
     "current_links",
     "message_id",
+    "novelty_outcome",
     "reader_decision",
     "reader_novelty",
 ]
