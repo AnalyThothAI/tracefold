@@ -13,12 +13,13 @@ from tracefold.news.updates.reader_judgments import (
 
 
 class FixedReader:
-    """Answers every claim with one importance value and no anchor; counts what it was asked."""
+    """Answers every claim with one importance value and one anchor, none by default; counts what it was asked."""
 
     identity = "fixture_reader_fixed"
 
-    def __init__(self, value: float = 2.6) -> None:
+    def __init__(self, value: float = 2.6, anchor: str = "none") -> None:
         self.value = value
+        self.anchor = anchor
         self.asked: list[ReaderInput] = []
 
     async def judge(self, reader: ReaderInput, budget: Budget) -> ReaderJudgment:
@@ -32,7 +33,7 @@ class FixedReader:
             anchor=None
             if not options
             else AnchorEvidence(
-                probabilities={value: 1.0 if value == "none" else 0.0 for value, _ in options}, confidence=0.9
+                probabilities={value: 1.0 if value == self.anchor else 0.0 for value, _ in options}, confidence=0.9
             ),
         )
 

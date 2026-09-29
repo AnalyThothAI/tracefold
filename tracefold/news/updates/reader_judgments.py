@@ -2,11 +2,11 @@
 
 Novelty is code: the persisted semantic links between claims, crossed with the claims the reader's receipts
 carry (`reader_novelty`). The model answers two questions in one request over one frozen `ReaderInput`: which
-already pushed message reported the claim's core fact (the anchor, a fallback where no link exists), and how
-strongly what the claim adds beyond those messages deserves an interrupting push. The same input is what
-production asks, what the judgment cache is keyed by and what the offline replay
-(`scripts/eval_news_reader.py`) re-asks. Cuts, the anchor threshold and the rule order are code, and every
-cut belongs to the backend whose answers it was measured on.
+already pushed message reported the claim's core fact (the anchor: the fallback where no link exists, and the
+message an increment is written against), and how strongly what the claim adds beyond those messages deserves
+an interrupting push. The same input is what production asks, what the judgment cache is keyed by and what the
+offline replay (`scripts/eval_news_reader.py`) re-asks. Cuts, the anchor threshold and the rule order are
+code, and every cut belongs to the backend whose answers it was measured on.
 """
 
 from __future__ import annotations
@@ -111,19 +111,21 @@ ReaderBackend = Literal["native", "generated"]
 class ReaderCuts:
     """One backend's policy numbers, measured by its own replay (#742 PR-2)."""
 
-    # Importance value (0..4) at or above which a claim is pushed, and pushed as key.
+    # Importance value (0..4) at or above which a claim is pushed, and pushed as key. A claim whose core fact
+    # the reader already has, linked as an increment or anchored, is pushed only at the key cut.
     push: float
     key: float
-    # An unlinked claim is anchored to its most likely message when P(none) is below this; the anchor picks
-    # the increment rendering and is recorded, it does not decide the push.
+    # A claim is anchored to its most likely message when P(none) is below this. An increment is written
+    # against the anchored message; a linked increment without an anchor is written in full.
     anchor_none_below: float
 
 
 # The 2026-09-28 replay with links and production recall: native jev-1.13 gives about 116 messages (37 key)
 # a day; the generative qwen3.8-27b route scores the top higher, so its cuts match that volume. The anchor
-# cut favours a missed anchor (full rendering, as before) over a wrong one (an increment of another message):
-# at 0.2 both backends anchor >= 97 % of fully said claims with no false anchor, but only about half of the
-# claims that add detail to a reported core fact (`scripts/eval_news_reader.py`).
+# cut favours a missed anchor (full rendering at the push cut) over a wrong one (an increment of another
+# message, held to the key cut): at 0.2 both backends anchor >= 97 % of fully said claims with no false
+# anchor, but only about half of the claims that add detail to a reported core fact
+# (`scripts/eval_news_reader.py`).
 READER_CUTS: Final[dict[ReaderBackend, ReaderCuts]] = {
     "native": ReaderCuts(push=2.5, key=2.8, anchor_none_below=0.2),
     "generated": ReaderCuts(push=2.6, key=3.1, anchor_none_below=0.2),
@@ -393,7 +395,8 @@ Render = Literal["full", "increment", "correction"]
 class ReaderDecision:
     outcome: ReaderOutcome
     render: Render
-    # The earlier receipt the card and the record name: the linked one, else the anchored message's.
+    # The earlier receipt the card and the record name: the delivered claim a development changes, else the
+    # message the anchor says already reported the claim's core fact.
     anchor_intent_id: str | None = None
 
 
@@ -431,7 +434,11 @@ def reader_decision(
     Known and in-flight claims are never pushed, and a later correction of a delivered claim always is
     (`novelty_outcome`). Everything else, a real-world development of a delivered claim included, is pushed
     on what it adds: its incremental importance against the push and key cuts of the backend that answered
-    (the replay passes others). `message_intents` are the receipts behind `ReaderInput.messages`.
+    (the replay passes others). A claim the reader already has the core fact of, linked as adding to a
+    delivered claim or anchored to a pushed message, needs the key cut: a detail or a confirmation of a known
+    fact rarely deserves an interruption. A development is written against the claim it changes; anything
+    else is written as an increment only on the message the anchor names, since a link alone may join
+    different facts of one story. `message_intents` are the receipts behind `ReaderInput.messages`.
     """
 
     decided = novelty_outcome(novelty, first_available_at_ms=first_available_at_ms)
@@ -440,12 +447,15 @@ def reader_decision(
     if judgment.importance is None:
         raise ValueError("news_reader_judgment_unavailable")
     cuts = cuts or judgment.cuts
-    anchor = novelty.intent_id
-    if novelty.novelty == "unlinked" and judgment.anchor is not None:
-        index = judgment.anchor.anchor(cuts)
+    if novelty.novelty == "development":
+        anchor = novelty.intent_id
+    else:
+        index = None if judgment.anchor is None else judgment.anchor.anchor(cuts)
         anchor = None if index is None else message_intents[index]
+    held = novelty.novelty == "increment" or (novelty.novelty == "unlinked" and anchor is not None)
     value = judgment.importance.value
-    outcome: ReaderOutcome = "key" if value >= cuts.key else "push" if value >= cuts.push else "feed"
+    bar = cuts.key if held else cuts.push
+    outcome: ReaderOutcome = "key" if value >= cuts.key else "push" if value >= bar else "feed"
     return ReaderDecision(outcome, "full" if anchor is None else "increment", anchor)
 
 

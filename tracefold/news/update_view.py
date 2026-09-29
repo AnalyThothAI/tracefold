@@ -105,6 +105,7 @@ CLAIM_REASON_ZH: Final[dict[str, str]] = {
     "send_outcome_unresolved": "本事件仍有发送进行中，等待其结果",
     "send_outcome_ambiguous": "此前发送结果不明，按可能已送达处理，不重发",
     "stale_source": "来源已过时",
+    "stale_occurrence": "所述事件发生在一周以前",
     "known_to_reader": "读者已收到同一事实",
     "linked_send_in_flight": "关联命题正在发送，等待其结果",
     "correction_of_sent": "更正此前已推送的内容",

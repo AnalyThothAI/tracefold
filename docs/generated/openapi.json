@@ -1842,6 +1842,7 @@
               "send_outcome_unresolved",
               "send_outcome_ambiguous",
               "stale_source",
+              "stale_occurrence",
               "known_to_reader",
               "linked_send_in_flight",
               "correction_of_sent",

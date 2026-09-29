@@ -25,6 +25,7 @@ from tracefold.news.delivery import (
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.events.facts import FactUnit, extract_fact_units
 from tracefold.news.events.gate import GateInput, evaluate_gate, gate_lexicon_flags, grounded_assets
+from tracefold.news.events.identity import comparison_title
 from tracefold.news.events.minhash import BANDS, band_keys, minhash_signature
 from tracefold.news.events.storyline import (
     NO_STORYLINE_KEY,
@@ -292,6 +293,16 @@ def test_minhash_bands_agree_for_near_duplicates_and_differ_for_unrelated() -> N
     assert len(ka) == BANDS
     assert any(x == y for x, y in zip(ka, kb, strict=True))
     assert not any(x == y for x, y in zip(ka, kc, strict=True))
+
+
+def test_comparison_numbers_take_a_scale_only_from_a_whole_word() -> None:
+    # #742 PR-4: "25 Basis Points" read as 25 billion followed by "asis points" (8 of 2,211 recent Events).
+    assert comparison_title("PBOC cuts PSL rate by 25 Basis Points") == "pboc cuts psl rate by num_25 basis points"
+    assert comparison_title("Fed on hold for 5 Months") == "fed on hold for num_5 months"
+    assert comparison_title("A 50 bp hike") == "a num_50 bp hike"
+    assert comparison_title("$1.5bn deal, $5mn raise, 3B tokens, 10k users") == (
+        "usd_1500000000 deal usd_5000000 raise num_3000000000 tokens num_10000 users"
+    )
 
 
 # ---------------------------------------------------------------- gate

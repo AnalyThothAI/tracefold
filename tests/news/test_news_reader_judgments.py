@@ -499,10 +499,42 @@ def test_reader_decision_rows_in_order() -> None:
     # A real-world development is pushed on what it adds, as an increment on the earlier message.
     assert decide(change, cuts.push) == ("push", "increment", "ra")
     assert decide(change, cuts.push - 0.01)[0] == "feed"
-    assert decide(ReaderNovelty(novelty="increment", intent_id="rb"), cuts.key) == ("key", "increment", "rb")
+    # What the reader already has the core fact of, by a link or by the anchor, needs the key cut; it is an
+    # increment only on the message the anchor names, whichever message the link reached.
+    anchored, unanchored = {"m1": 0.1, "m2": 0.8, "none": 0.1}, {"m1": 0.1, "m2": 0.1, "none": 0.8}
+    increment = ReaderNovelty(novelty="increment", intent_id="ra", linked_intents=("ra",))
+    assert decide(increment, cuts.key, anchor=anchored) == ("key", "increment", "rb")
+    assert decide(increment, cuts.key, anchor=unanchored) == ("key", "full", None)
+    assert decide(increment, cuts.key) == ("key", "full", None)
+    assert decide(increment, cuts.key - 0.01, anchor=anchored) == ("feed", "increment", "rb")
     unlinked = ReaderNovelty(novelty="unlinked")
-    assert decide(unlinked, cuts.push, anchor={"m1": 0.1, "m2": 0.8, "none": 0.1}) == ("push", "increment", "rb")
-    assert decide(unlinked, cuts.push, anchor={"m1": 0.1, "m2": 0.1, "none": 0.8}) == ("push", "full", None)
+    assert decide(unlinked, cuts.key, anchor=anchored) == ("key", "increment", "rb")
+    assert decide(unlinked, cuts.key - 0.01, anchor=anchored) == ("feed", "increment", "rb")
+    assert decide(unlinked, cuts.push, anchor=unanchored) == ("push", "full", None)
     assert decide(unlinked, 1.0) == ("feed", "full", None)
     looser = ReaderCuts(push=0.5, key=3.9, anchor_none_below=0.9)
     assert decide(unlinked, 1.0, cuts=looser)[0] == "push"
+
+
+# The first live receipt's repeats (#742 PR-4). P005: the same PSL cut 14 s after P004, a separate Event with
+# no link, anchored to P004. P010: the UK Navy confirming the Hormuz ship fire, linked as adding to the
+# IRGC-fire push 1.7 h earlier, with an anchor that disagreed and so no "补充" either.
+P005 = (ReaderNovelty(novelty="unlinked"), {"m1": 0.83, "m2": 0.0, "none": 0.17}, "increment", "ra")
+P010 = (
+    ReaderNovelty(novelty="increment", intent_id="ra", linked_intents=("ra",)),
+    {"m1": 0.35, "m2": 0.0, "none": 0.65},
+    "full",
+    None,
+)
+
+
+@pytest.mark.parametrize("case", [P005, P010], ids=["P005-anchored", "P010-linked"])
+@pytest.mark.parametrize(("importance", "outcome"), [(2.5, "feed"), (2.59, "feed"), (2.79, "feed"), (2.8, "key")])
+def test_a_known_core_fact_is_pushed_only_at_the_key_cut(
+    case: tuple[Any, ...], importance: float, outcome: str
+) -> None:
+    novelty, anchor, render, intent = case
+    result = reader_decision(
+        novelty, _judgment(importance, anchor), first_available_at_ms=20, message_intents=("ra", "rb")
+    )
+    assert (result.outcome, result.render, result.anchor_intent_id) == (outcome, render, intent)

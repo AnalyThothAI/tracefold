@@ -130,7 +130,7 @@ docker compose exec -T workers tracefold news retry-work \
 
 只作用于状态为 `failed` 的通知工作：控制台和 `news why` 显示“通知失败”与 `last_error_code`。三类真实失败会走到这里：规划异常三次（含整个通知阶段超时）、同一未发送 intent 的卡片失败或可重试 `not_sent` 三次、预检证明未发送但不可重试。命令把该版本工作重置为 pending（尝试数归零），并复活同版本中**没有任何发送账本**的失败 intent，冻结卡片按原身份重用；错误码保留到工作完成。它不等于“忽略已发正文再发一次”：已有 `sending` / `sent` / `ambiguous` / `terminal` 账本的 intent 从不重开。
 
-以下都不是失败，不需要重试：明确的 `no_notification`（先看逐命题的 `retired`、`stale_source`、`known_to_reader` 或 `reader_feed`）；读者判断暂不可用而暂缓的命题（`reader_unavailable`，采纳 10 分钟后记为 `reader_unassessed`，不推送）；等待链接命题发送结果的命题（`linked_send_in_flight`）；等待本 Event 仍在发送中的命题（`send_outcome_unresolved`，不计尝试，发送结算或孤儿对账后自动继续）；结果不明的命题（`send_outcome_ambiguous`，按可能已送达处理，不重发）；数据库暂时无法应答（不计尝试，推迟一轮后自动再试）。`news_notification_exhausted_legacy` 是 0413 从旧代码耗尽且无原因的工作回填的错误码。
+以下都不是失败，不需要重试：明确的 `no_notification`（先看逐命题的 `retired`、`stale_source`、`stale_occurrence`、`known_to_reader` 或 `reader_feed`）；读者判断暂不可用而暂缓的命题（`reader_unavailable`，采纳 10 分钟后记为 `reader_unassessed`，不推送）；等待链接命题发送结果的命题（`linked_send_in_flight`）；等待本 Event 仍在发送中的命题（`send_outcome_unresolved`，不计尝试，发送结算或孤儿对账后自动继续）；结果不明的命题（`send_outcome_ambiguous`，按可能已送达处理，不重发）；数据库暂时无法应答（不计尝试，推迟一轮后自动再试）。`news_notification_exhausted_legacy` 是 0413 从旧代码耗尽且无原因的工作回填的错误码。
 
 | 发送结果 | 操作原则 |
 | --- | --- |

@@ -273,19 +273,25 @@ stateDiagram-v2
 | 2 | 本 Event 的发送仍在进行（`sending`） | `send_outcome_unresolved`，暂缓；等待不计尝试 |
 | 3 | 本 Event 的发送结果不明（`ambiguous`） | `send_outcome_ambiguous`，按可能已送达处理：不重发，也不阻塞其他命题 |
 | 4 | 首次可见超过 3 小时（已送内容的更正 12 小时） | `stale_source`，不通知 |
-| 5 | 新颖度 known：链接到读者已收到的命题（等价，或已送命题是更全 / 更新的版本） | `known_to_reader`，不通知 |
-| 6 | 新颖度 in_flight：链接到的命题正在发送 | `linked_send_in_flight`，暂缓 |
-| 7 | 更正已送命题（`corrects`，且本命题首次可见晚于那次送达） | `correction_of_sent`，推送，卡片注明更正此前哪条 |
-| 8 | 上币公告 | `protected_listing`，推送 |
-| 9 | 商品 / 指数的当日价格变动（`level_crossed`、数量是变动而非水平、周期为当日）≥ 5% | `large_daily_move`，推送 |
-| 10 | 其余命题：一次读者判断，按作答后端的切点 | 增量重要性 ≥ KEY_CUT 为 `reader_key`（推送并标重点）；≥ PUSH_CUT 为 `reader_push`；否则 `reader_feed` 只进信息流 |
-| 11 | 读者判断暂不可得 | `reader_unavailable` 暂缓；采纳 10 分钟后仍不可得记为 `reader_unassessed`，不推送 |
+| 5 | 命题所述事件（`occurred_at`）早于首次可见超过 7 天，如旧闻汇总、背景段落；更正和带 `speaker` 的表态不适用 | `stale_occurrence`，不通知 |
+| 6 | 新颖度 known：链接到读者已收到的命题（等价，或已送命题是更全 / 更新的版本） | `known_to_reader`，不通知 |
+| 7 | 新颖度 in_flight：链接到的命题正在发送 | `linked_send_in_flight`，暂缓 |
+| 8 | 更正已送命题（`corrects`，且本命题首次可见晚于那次送达） | `correction_of_sent`，推送，卡片注明更正此前哪条 |
+| 9 | 上币公告 | `protected_listing`，推送 |
+| 10 | 商品 / 指数的当日价格变动（`level_crossed`、数量是变动而非水平、周期为当日）≥ 5% | `large_daily_move`，推送 |
+| 11 | 其余命题：一次读者判断，按作答后端的切点 | 增量重要性 ≥ KEY_CUT 为 `reader_key`（推送并标重点）；≥ PUSH_CUT 为 `reader_push`；否则 `reader_feed` 只进信息流。读者已有核心事实的命题（链接为已送命题的 increment，或未链接但锚点指向已送消息）要 ≥ KEY_CUT 才推送 |
+| 12 | 读者判断暂不可得 | `reader_unavailable` 暂缓；采纳 10 分钟后仍不可得记为 `reader_unassessed`，不推送 |
+
+**事件时间**也由代码判断（[notification.py](../../tracefold/news/updates/notification.py) 的 `stale_occurrence`），读法保守，因为抽取会编造年份：
+- ISO 日期：引文写出了年份才用该年份，否则取离首次可见最近的年份。
+- 单独的月份（可带 early / mid- / late）：取该月最后一天，默认在过去一年内；只对事件类命题（`state_change`、`official_measure`、`other`）成立，数字类命题里的月份是统计期。
+- 带 `speaker` 的命题本身就是新表态，不判断；其余写法（如 “Sept. 10”）也不判断。
 
 **读者新颖度**是纯代码：采纳事务把每个修订 `changes` 里带 `previous_ref` 的比较写入只追加的 `news_claim_links`；通知快照在短事务里从两端读取链接（至多两跳，两跳须经过 `equivalent`），与已送 / 结果不明 / 发送中回执的 `claim_refs` 求交，得到 known / increment / development / in_flight / unlinked。同一对命题以最新一次断言为准，某个修订不再提及不算撤回；因此链接不会因后续修订的 head 不再重复而丢失。
 
 **读者判断**是一次请求两道题（[reader_judgments.py](../../tracefold/news/updates/reader_judgments.py)），共享同一份冻结 `ReaderInput`：命题字段与可读主题、变化类型、来源，以及链接到的已送消息在前、按召回补足的至多 16 条已送正文。
 
-- 锚点题（`Choice` m1…mN / none）：哪条已送消息已经报过本命题的核心事实（同一主体、动作、对象，允许本命题多出细节）。它只决定卡片是否按“补充”写、记录引用哪条，不决定推不推。
+- 锚点题（`Choice` m1…mN / none）：哪条已送消息已经报过本命题的核心事实（同一主体、动作、对象，允许本命题多出细节）。未链接的命题有锚点时，推送门槛提高到 KEY_CUT。卡片的“补充”写法也看锚点：进展（development）对所链接的已送命题写“补充”；其余命题只有锚点指向某条已送消息时才写“补充”，并引用那条消息。链接为 increment 而锚点为 none 时按完整渲染，因为一条链接可能把同一故事里的不同事实连在一起。
 - 增量重要性题（5 档 `Score`）：本命题相对已送消息新增的信息值不值得打断；没有已送消息时评价命题本身。完全重复自然落在低档。
 
 原生判断走通知决策层独用的 `llm.news_reader_judgment`（System One）；不可用或超时则同一签名一次回退到生成式 News 路由，两者切点分别测定。答案按“判断器身份 + 冻结输入摘要”写入 `news_judgment_cache`，兄弟命题变化或 CAS 失败都不重问；不可用的答案不缓存。
@@ -363,7 +369,7 @@ class Ledger store;
 
 ### 正文、回执与重试
 
-CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精确引用和最少来源身份，而非完整来源全文或整个知识文档；按“补充”或“更正”渲染的命题另带读者已收到的那条消息正文，文案只写新增部分并以“补充：”开头，或以“更正：”注明更正此前哪条。中文表达必须保留对象、动作、数量、归因与阶段；标题压缩也不能把“宣称”写成“核实”、把“宣布”写成“已经实施”。冻结卡片仍检查 refs 与形状；约束和脚本回归不证明真实模型每次都翻译正确。
+CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精确引用和最少来源身份，而非完整来源全文或整个知识文档；按“补充”或“更正”渲染的命题另带读者已收到的那条消息正文。这段正文只说明哪些内容不必重复，不提供事实、名称、术语或数字，这些一律取自命题本身。“补充”文案以“补充：”开头，只写新增部分，不复述也不点名此前那条；“更正”文案以“更正：”开头，注明更正此前哪条。中文表达必须保留对象、动作、数量、归因与阶段；标题压缩也不能把“宣称”写成“核实”、把“宣布”写成“已经实施”。冻结卡片仍检查 refs 与形状；约束和脚本回归不证明真实模型每次都翻译正确。
 
 “选中了某条 Claim”不证明卡片正文完整表达了它。后续读者判断读的是 `update` 回执的**实际发送正文**，不是来源全文、计划选择集合或某个抽象“已推送 Event”标记；发送正文与摘要必须来自可核验的冻结卡片。
 

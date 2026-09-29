@@ -14,12 +14,13 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Mapping, Sequence
+from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Final, Literal, Protocol
 
 from pydantic import Field, model_validator
 
-from .contracts import Claim, EventUpdate, Exact, Source
+from .contracts import Claim, ContentKind, EventUpdate, Exact, Source
 from .identity import digest, identity
 from .judgment import Budget, JudgmentCache
 from .reader_judgments import (
@@ -43,6 +44,9 @@ from .reader_judgments import (
 # something the reader was told is still worth it for twelve.
 SOURCE_MAX_AGE_MS: Final = 3 * 60 * 60_000
 CORRECTION_MAX_AGE_MS: Final = 12 * 60 * 60_000
+# A roundup or a background paragraph can arrive fresh and still report what happened long ago: such a claim
+# is not pushed once the day it names is more than a week before it first became visible (#742 PR-4).
+OCCURRENCE_MAX_AGE_DAYS: Final = 7
 # How long an adopted update waits for a reader judgment nobody can give before its claims are recorded as
 # unassessed. They are never pushed on a guess.
 READER_WAIT_MAX_MS: Final = 10 * 60_000
@@ -59,6 +63,8 @@ ClaimReason = Literal[
     # not notified: an earlier send of this claim has no provable outcome, so it may already be read
     "send_outcome_ambiguous",
     "stale_source",
+    # not notified: the day the claim reports is more than a week before it first became visible
+    "stale_occurrence",
     # novelty: the reader already holds this claim, or a linked claim's send is still in flight
     "known_to_reader",
     "linked_send_in_flight",
@@ -78,6 +84,7 @@ REASON_DECISIONS: Final[dict[ClaimReason, ClaimDecisionValue]] = {
     "send_outcome_unresolved": "deferred",
     "send_outcome_ambiguous": "not_notified",
     "stale_source": "not_notified",
+    "stale_occurrence": "not_notified",
     "known_to_reader": "not_notified",
     "linked_send_in_flight": "deferred",
     "correction_of_sent": "notify",
@@ -96,6 +103,24 @@ PRICE_MOVE_EXCEPTION_MARKETS: Final[frozenset[str]] = frozenset({"commodity", "i
 _PERCENT_UNITS: Final[frozenset[str]] = frozenset({"%", "pct", "percent"})
 _MOVE_WORDS: Final = re.compile(r"change|move|rise|fall|drop|gain|loss|decline|jump|plunge|surge|涨|跌|升|降", re.I)
 _SAME_DAY_WORDS: Final = re.compile(r"intraday|today|daily|session|日内|当日|今日|今天|盘中|收盘", re.I)
+# A bare month dates an event; on a figure it names the statistical period, not when anything happened.
+_OCCURRENCE_KINDS: Final[frozenset[ContentKind]] = frozenset({"state_change", "official_measure", "other"})
+_ISO_DATE: Final = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
+_MONTH: Final = re.compile(r"^(?:early |mid-|late )?([a-z]+)\.?,?\s*(\d{4})?$")
+_MONTHS: Final = (
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
+)
 
 
 NOTIFICATION_ATTEMPTS_MAX: Final = 3
@@ -364,6 +389,51 @@ def large_daily_move(claim: Claim) -> bool:
     return False
 
 
+def _occurred_on(claim: Claim, seen: date) -> date | None:
+    """The latest day the claim's `occurred_at` can name, read conservatively; None when it names none.
+
+    The extractor invents years, so an ISO date keeps its year only when a cited quote states it and otherwise
+    takes the year that puts it nearest `seen`, the day the claim first became visible. A bare month, with an
+    optional early / mid- / late, names its last day, within the past year unless a quote states its year; it
+    counts only for an event (`_OCCURRENCE_KINDS`). Anything else, "Sept. 10" included, names no day.
+    """
+
+    text = (claim.fields.occurred_at or "").strip().lower()
+    quotes = " ".join(citation.quote for citation in claim.citations)
+    if iso := _ISO_DATE.match(text):
+        days = []
+        for year in (int(iso[1]),) if iso[1] in quotes else (seen.year - 1, seen.year, seen.year + 1):
+            try:
+                days.append(date(year, int(iso[2]), int(iso[3])))
+            except ValueError:
+                continue
+        return min(days, key=lambda day: abs((day - seen).days), default=None)
+    named = _MONTH.match(text)
+    if named is None or len(named[1]) < 3 or claim.fields.content_kind not in _OCCURRENCE_KINDS:
+        return None
+    month = next((index for index, name in enumerate(_MONTHS, 1) if name.startswith(named[1])), None)
+    if month is None:
+        return None
+    year = seen.year - 1 if month > seen.month else seen.year
+    if named[2] and named[2] in quotes:
+        year = int(named[2])
+    following = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    return date.fromordinal(following.toordinal() - 1)
+
+
+def stale_occurrence(claim: Claim) -> bool:
+    """Whether the day the claim reports is more than `OCCURRENCE_MAX_AGE_DAYS` before it first became visible.
+
+    A claim with a speaker is the statement itself, a new act whatever it recounts, so it is never stale here.
+    """
+
+    if claim.fields.speaker:
+        return False
+    seen = datetime.fromtimestamp(claim.first_available_at_ms / 1000, UTC).date()
+    day = _occurred_on(claim, seen)
+    return day is not None and (seen - day).days > OCCURRENCE_MAX_AGE_DAYS
+
+
 READER_REASONS: Final[dict[str, ClaimReason]] = {
     "known": "known_to_reader",
     "in_flight": "linked_send_in_flight",
@@ -404,6 +474,8 @@ def decide(
         return "send_outcome_ambiguous", None
     if age > (CORRECTION_MAX_AGE_MS if corrective else SOURCE_MAX_AGE_MS):
         return "stale_source", None
+    if not corrective and stale_occurrence(claim):
+        return "stale_occurrence", None
     early = novelty_outcome(novelty, first_available_at_ms=claim.first_available_at_ms)
     if early is not None:
         return READER_REASONS[early.outcome], early
