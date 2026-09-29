@@ -26,9 +26,10 @@ _SOURCE_PREFIX_RE = re.compile(
 _REPLY_PREFIX_RE = re.compile(r"^(?:rt\s+)?@[A-Za-z0-9_]{1,32}\s*:\s*", re.IGNORECASE)
 _URL_RE = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 _SPACE_RE = re.compile(r"\s+")
+# A scale is a whole word: "25 basis points", "5 months" and "50 bp" are not billions or millions.
 _NUMBER_RE = re.compile(
     r"(?P<currency>[$€£¥])?\s*(?P<number>\d[\d,]*(?:\.\d+)?)\s*"
-    r"(?P<scale>trillion|billion|million|thousand|tn|bn|[tbmk])?\s*(?P<percent>%)?",
+    r"(?:(?P<scale>trillion|billion|million|thousand|tn|bn|mn|[tbmk])(?![a-z]))?\s*(?P<percent>%)?",
     re.IGNORECASE,
 )
 
