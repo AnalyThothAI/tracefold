@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
+from typing import Any
 
 import pytest
 
+from tests.support.news_update_semantic import MemoryCache
 from tracefold.news.updates.contracts import (
     ChangeKind,
     Citation,
@@ -418,7 +421,7 @@ def test_exact_repeat_after_adoption_remains_idempotent() -> None:
     )
 
 
-@pytest.mark.parametrize("support_relation", ["supports", "refutes", "reports", "not_addressed", "unresolved"])
+@pytest.mark.parametrize("support_relation", ["supports", "refutes", "reports", "unresolved"])
 def test_nonquoted_source_relation_survives_adoption_and_public_projection(support_relation: str) -> None:
     report = evidence("Issuer announces 25 MW.", 1)
     other = evidence("Operator comments on the reported capacity.", 2, publisher="operator")
@@ -442,6 +445,31 @@ def test_nonquoted_source_relation_survives_adoption_and_public_projection(suppo
     assert len(rows) == 1
     assert other.ref in {item.ref for item in rows[0].evidence}
     assert f"/{other.ref}:{support_relation}" in rows[0].text
+
+
+def test_material_that_does_not_address_an_adopted_claim_is_no_relationship_and_no_revision() -> None:
+    # #742 W6: unrelated material arriving beside an adopted claim's sources is judged `not_addressed`. It
+    # is no relationship, so it changes no content: no adoption, no notification reset, no source_update.
+    report = evidence("Issuer announces 25 MW.", 1)
+    head = adopt(report, 1, "25")
+    unrelated = evidence("A separate exchange lists a new token.", 2, publisher="exchange")
+    extraction = Extraction(
+        claims=(draft(report),),
+        relations=(relation(head.claims[0], "equivalent"),),
+        supports=(
+            SupportDraft(slot="capacity", evidence_ref=report.ref, relation="reports"),
+            SupportDraft(slot="capacity", evidence_ref=unrelated.ref, relation="not_addressed"),
+        ),
+    )
+    assert assemble_update(frozen((report, unrelated), 2, head), extraction, head, adopted_at_ms=STAMP + 20) is None
+    first = assemble_update(
+        frozen((report, unrelated), 1),
+        Extraction(claims=(draft(report),), supports=extraction.supports),
+        None,
+        adopted_at_ms=STAMP + 10,
+    )
+    assert first is not None
+    assert {row.evidence_ref for row in first.evidence_relations} == {report.ref}
 
 
 def test_new_refutation_updates_source_without_creating_a_new_catalyst() -> None:
@@ -497,17 +525,6 @@ def test_unresolved_relationship_does_not_erase_an_adopted_refutation() -> None:
         supports=(supports[0], SupportDraft(slot="capacity", evidence_ref=denial.ref, relation="unresolved")),
     )
     assert assemble_update(frozen((report, denial), 2, head), retry, head, adopted_at_ms=STAMP + 20) is None
-
-
-class MemoryCache:
-    def __init__(self) -> None:
-        self.values: dict[str, Answer] = {}
-
-    async def get(self, key: str) -> Answer | None:
-        return self.values.get(key)
-
-    async def put(self, key: str, answer: Answer) -> None:
-        self.values.setdefault(key, answer)
 
 
 class UnusedExtractor:
@@ -613,3 +630,221 @@ def test_content_that_returns_to_an_earlier_state_is_a_new_adoption() -> None:
     assert heads[2].content_sha == heads[0].content_sha
     assert len({update.content_revision for update in heads}) == 3
     assert EventUpdate.model_validate_json(heads[2].model_dump_json()) == heads[2]
+
+
+# ---------------------------------------------------------------- #742 S5 / S6: relation correctness
+
+HOUR = 3_600_000
+
+
+def _external(head: EventUpdate, ref: str, *, first_available_at_ms: int) -> PriorClaim:
+    claim = head.claims[0].model_copy(update={"ref": ref, "first_available_at_ms": first_available_at_ms})
+    return PriorClaim(event_id="external-event", content_revision="external-rev", claim=claim)
+
+
+def _with_prior(source: FrozenInput, *rows: PriorClaim) -> FrozenInput:
+    return source.model_copy(update={"prior": (*source.prior, *rows)})
+
+
+@pytest.mark.parametrize("relation_value", ["corrects", "real_world_change"])
+def test_a_restated_older_claim_cannot_correct_or_supersede_a_newer_one(relation_value: Relation) -> None:
+    # Production 2026-09-28: "SpaceX prepares to send Starship to orbit" (first seen 9 h earlier) was restated
+    # by a later revision and judged to correct "SpaceX says Starship is in orbit"; Trading refused entry.
+    original = evidence("SpaceX prepares to send Starship rocket to orbit for first time.", 1)
+    head = adopt(original, 1, "25")
+    newer = _external(head, "cl:in-orbit", first_available_at_ms=STAMP + 9 * HOUR)
+    restated = evidence("SpaceX prepares to send Starship to orbit, a wire repeats.", 2)
+    kind: ChangeKind = "correction" if relation_value == "corrects" else "parameter_change"
+    result = assemble_update(
+        _with_prior(frozen((restated,), 2, head), newer),
+        Extraction(
+            claims=(draft(restated),),
+            relations=(relation(head.claims[0], "equivalent"), relation(newer.claim, relation_value, kind)),
+            supports=(SupportDraft(slot="capacity", evidence_ref=restated.ref, relation="reports"),),
+        ),
+        head,
+        adopted_at_ms=STAMP + 10 * HOUR,
+    )
+    assert result is not None
+    assert result.retired_claim_refs == () and result.superseded_claim_refs == ()
+    assert all(change.previous_ref != newer.claim.ref for change in result.changes)
+    assert all(row.retired_claim_refs == () for row in public_updates(result, semantic_completed_at_ms=STAMP))
+
+
+def test_a_late_arriving_older_report_is_an_unresolved_comparison_not_a_correction() -> None:
+    late = Evidence.issue(
+        "Issuer announces 25 MW.",
+        Source(
+            publisher_id="wire",
+            artifact_id="late",
+            artifact_revision="1",
+            published_at_ms=STAMP,
+            first_available_at_ms=STAMP + 10 * HOUR,
+        ),
+    )
+    head = adopt(evidence("Issuer announces 50 MW.", 1), 1, "50")
+    newer = _external(head, "cl:newer", first_available_at_ms=STAMP + 2 * HOUR)
+    source = FrozenInput(event_id="late-event", revision=1, lineage_id="late", evidence=(late,), prior=(newer,))
+    result = assemble_update(
+        source,
+        Extraction(
+            claims=(draft(late),),
+            relations=(relation(newer.claim, "corrects", "correction"),),
+            supports=(SupportDraft(slot="capacity", evidence_ref=late.ref, relation="reports"),),
+        ),
+        None,
+        adopted_at_ms=STAMP + 10 * HOUR,
+    )
+    assert result is not None
+    assert [(change.kind, change.previous_ref) for change in result.changes] == [("possible_new", newer.claim.ref)]
+    assert public_updates(result, semantic_completed_at_ms=STAMP) == ()
+
+
+def test_a_conflict_annotates_a_new_claim_instead_of_swallowing_its_catalyst() -> None:
+    head = adopt(evidence("Issuer announces 25 MW.", 1), 1, "25")
+    other = _external(head, "cl:other-report", first_available_at_ms=STAMP + 1)
+    denial = evidence("Operator says capacity is only 10 MW.", 2)
+    source = FrozenInput(event_id="denial", revision=1, lineage_id="denial", evidence=(denial,), prior=(other,))
+    result = assemble_update(
+        source,
+        Extraction(
+            claims=(draft(denial, "10"),),
+            relations=(relation(other.claim, "conflicts", "conflict"),),
+            supports=(SupportDraft(slot="capacity", evidence_ref=denial.ref, relation="reports"),),
+        ),
+        None,
+        adopted_at_ms=STAMP + 50,
+    )
+    assert result is not None
+    assert sorted(change.kind for change in result.changes) == ["conflict", "new_fact"]
+    assert [row.kind for row in public_updates(result, semantic_completed_at_ms=STAMP)] == [
+        "catalyst_delta",
+        "source_update",
+    ]
+
+
+def test_an_established_conflict_is_not_published_again_by_a_later_restatement() -> None:
+    from tracefold.news.updates.contracts import EstablishedRelation
+
+    head = adopt(evidence("A wire says a drone was captured.", 1), 1, "25")
+    external = _external(head, "cl:external", first_available_at_ms=STAMP + 1)
+    later = evidence("Another wire repeats the capture.", 2)
+    extraction = Extraction(
+        claims=(draft(later),),
+        relations=(relation(head.claims[0], "equivalent"), relation(external.claim, "conflicts", "conflict")),
+        supports=(SupportDraft(slot="capacity", evidence_ref=later.ref, relation="reports"),),
+    )
+    first = assemble_update(
+        _with_prior(frozen((later,), 2, head), external), extraction, head, adopted_at_ms=STAMP + 20
+    )
+    assert first is not None and any(change.kind == "conflict" for change in first.changes)
+    again = evidence("A third wire repeats the capture.", 3)
+    established = EstablishedRelation(
+        current_ref=head.claims[0].ref, previous_ref=external.claim.ref, relation="conflicts"
+    )
+    source = _with_prior(frozen((again,), 3, first), external).model_copy(
+        update={"established_relations": (established,)}
+    )
+    repeated = assemble_update(
+        source,
+        extraction.model_copy(
+            update={
+                "claims": (draft(again),),
+                "supports": (SupportDraft(slot="capacity", evidence_ref=again.ref, relation="reports"),),
+            }
+        ),
+        first,
+        adopted_at_ms=STAMP + 30,
+    )
+    assert repeated is not None
+    assert {change.kind for change in repeated.changes} == {"evidence_change"}
+
+
+def test_a_to_b_to_a_compares_only_the_current_claim_and_keeps_a_distinct_occurrence() -> None:
+    first, head = progressed()
+    # The superseded 25 MW claim is no comparison candidate any more (#742 S5): only 50 MW is current.
+    current = tuple(
+        PriorClaim(event_id=head.event_id, content_revision=head.content_revision, claim=claim)
+        for claim in head.current_claims
+    )
+    assert [row.claim.ref for row in current] == [head.claims[-1].ref]
+    back = evidence("Issuer cuts capacity back to 25 MW.", 3)
+    source = frozen((back,), 3, head).model_copy(update={"prior": current})
+    updated = assemble_update(
+        source,
+        Extraction(
+            claims=(draft(back, "25"),),
+            relations=(relation(head.claims[-1], "real_world_change", "parameter_change"),),
+            supports=(SupportDraft(slot="capacity", evidence_ref=back.ref, relation="reports"),),
+        ),
+        head,
+        adopted_at_ms=STAMP + 300,
+    )
+    assert updated is not None
+    assert updated.claims[-1].ref not in {first.claims[0].ref, head.claims[-1].ref}
+    assert updated.superseded_claim_refs == tuple(sorted({first.claims[0].ref, head.claims[-1].ref}))
+    assert {change.kind for change in updated.changes} == {"parameter_change"}
+
+
+def test_an_unestablished_phase_is_not_a_phase_change() -> None:
+    from tracefold.news.updates.semantics import _default_change
+
+    report = evidence("Issuer announces 25 MW.", 1)
+    head = adopt(report, 1, "25")
+    prior = head.claims[0].model_copy(update={"fields": head.claims[0].fields.model_copy(update={"phase": None})})
+    current = draft(evidence("Issuer changes the site.", 2)).model_copy(
+        update={"fields": draft(report).fields.model_copy(update={"phase": "unknown"})}
+    )
+    assert _default_change(current, prior, "real_world_change") == "scope_change"
+
+
+# ---------------------------------------------------------------- #742 W3: the Nvidia buyback pushes
+
+NVIDIA = Path(__file__).resolve().parents[1] / "fixtures" / "news" / "semantic_nvidia_buyback_2026-09-28.jsonl"
+
+
+class RecordedAnswers:
+    """The production pairwise answer for every pair; supports are `reports`."""
+
+    identity = "nvidia-buyback-fixture"
+
+    def __init__(self, row: dict[str, Any]) -> None:
+        self.row = row
+        self.pairs: list[str] = []
+
+    async def judge(self, task: Task, items: tuple[Question, ...], *, context_json: str | None) -> BatchResult:
+        answers = []
+        for item in items:
+            payload = json.loads(item.payload_json)
+            if task == "relation":
+                self.pairs.append(payload["previous"]["ref"])
+                value = self.row["production_relations"][payload["current"]["slot"]][payload["previous"]["ref"]]
+            else:
+                value = "reports"
+            answers.append(Answer(item_id=item.item_id, value=value, backend=self.identity))
+        return BatchResult(answers=tuple(answers))
+
+
+@pytest.mark.parametrize("push", [3, 4, 5])
+def test_nvidia_buyback_pushes_still_link_to_the_already_pushed_claims(push: int) -> None:
+    # 2026-09-28: seven Events carried the same $150B buyback and pushed seven cards. Reader novelty (PR-2)
+    # reads the links from each later push to the claims already pushed; they must still form.
+    row = next(json.loads(line) for line in NVIDIA.open() if json.loads(line)["push"] == push)
+    source = FrozenInput(
+        event_id=row["event_id"],
+        revision=row["input_revision"],
+        lineage_id=f"nvidia-{push}",
+        evidence=tuple(Evidence.model_validate(item) for item in row["evidence"]),
+        prior=tuple(PriorClaim.model_validate(prior) for prior in row["prior"]),
+    )
+    head = None if row["head"] is None else EventUpdate.model_validate(row["head"])
+    extracted = Extraction.model_validate({"claims": row["claims"], "supports": row["supports"]})
+    backend = RecordedAnswers(row)
+    analyzer = SemanticAnalyzer(UnusedExtractor(), NewsJudgments(generated=backend, cache=MemoryCache()))
+    understood = asyncio.run(analyzer.understand(source, extracted, Budget.start(5)))
+    update = assemble_update(source, understood, head, adopted_at_ms=row["completed_at_ms"] + 1)
+    assert update is not None
+    linked = {change.previous_ref for change in update.changes if change.relation in {"adds_information", "equivalent"}}
+    assert set(row["required_links"]) <= linked
+    # Every supplied current prior is judged; no model outside the relation judge settles a pair.
+    assert sorted(backend.pairs) == sorted(prior["claim"]["ref"] for prior in row["prior"] for _ in row["claims"])

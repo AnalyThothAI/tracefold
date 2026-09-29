@@ -151,15 +151,14 @@ def notify_plan(update: EventUpdate, *, key: bool = False, reader_revision: str 
         claim_decisions=tuple(
             ClaimDecision(claim_ref=claim.ref, decision="not_notified", reason="retired")
             if claim.ref in retired
-            else ClaimDecision(claim_ref=claim.ref, decision="notify", reason="editor_key" if key else "editor_notify")
+            else ClaimDecision(claim_ref=claim.ref, decision="notify", reason="reader_key" if key else "reader_push")
             for claim in update.claims
         ),
         key=key,
         channel="news",
         reader_revision=reader_revision,
-        assessment_identity="fixture_read_v1",
-        assessment_input_digest=digest(snapshot),
-        assessment_input=snapshot,
+        reader_identity="fixture_read_v1",
+        input_digest=digest(snapshot),
     )
 
 
@@ -170,14 +169,12 @@ def silent_plan(update: EventUpdate, *, reader_revision: str = "reader-1") -> No
         reason="no_uncovered_actionable_claims",
         update_ref=update.ref,
         claim_decisions=tuple(
-            ClaimDecision(claim_ref=claim.ref, decision="not_notified", reason="editor_feed_only")
-            for claim in update.claims
+            ClaimDecision(claim_ref=claim.ref, decision="not_notified", reason="reader_feed") for claim in update.claims
         ),
         channel="news",
         reader_revision=reader_revision,
-        assessment_identity="fixture_read_v1",
-        assessment_input_digest=digest(snapshot),
-        assessment_input=snapshot,
+        reader_identity="fixture_read_v1",
+        input_digest=digest(snapshot),
     )
 
 
@@ -265,14 +262,14 @@ def _persist_decision(conn: Any, update: EventUpdate, plan: NotificationPlan, *,
     conn.execute(
         """INSERT INTO news_notification_decisions
              (decision_ref,event_id,update_ref,channel,input_digest,input_snapshot,plan,origin,created_at_ms)
-           VALUES (%s,%s,%s,'news',%s,%s::jsonb,%s::jsonb,'editorial_v1',%s)
+           VALUES (%s,%s,%s,'news',%s,%s::jsonb,%s::jsonb,'reader_v2',%s)
            ON CONFLICT DO NOTHING""",
         (
             plan.record_ref,
             update.event_id,
             update.ref,
-            plan.assessment_input_digest,
-            canonical_json(plan.assessment_input),
+            plan.input_digest,
+            canonical_json({"reader_identity": plan.reader_identity}),
             canonical_json(plan),
             now_ms,
         ),

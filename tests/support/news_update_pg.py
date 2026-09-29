@@ -11,7 +11,7 @@ from collections.abc import Callable
 from typing import Any
 
 from tests.postgres_test_utils import connect_postgres_test, seed_current_news_evidence
-from tests.support.news_attention import NotifyAll
+from tests.support.news_reader import PushAll
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.storage.event_update_store import PgJudgmentCache, PgNewsStore
 from tracefold.news.updates.contracts import (
@@ -28,7 +28,7 @@ from tracefold.news.updates.contracts import (
     SupportDraft,
 )
 from tracefold.news.updates.identity import digest, identity
-from tracefold.news.updates.judgment import Answer, BatchResult, NewsJudgments, ProviderUnavailable, Question, Task
+from tracefold.news.updates.judgment import Answer, BatchResult, ProviderUnavailable, Question, Task
 from tracefold.news.updates.notification import (
     CardCopy,
     CardLine,
@@ -229,7 +229,7 @@ class Composer:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
+    async def compose(self, claims: tuple[Any, ...], *, sources: Any, earlier: Any = None) -> CardCopy:
         self.calls += 1
         return CardCopy(
             headline_zh="机构对钢铁进口加征关税",
@@ -306,9 +306,8 @@ class Turns:
     """One notification service and the sender its turns hand the frozen card to, as the Deliverer does."""
 
     def __init__(self, pg: PgNewsStore, clock: Clock, sender: Sender, composer: Composer | None = None) -> None:
-        judgments = NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db))
         self.service = Notifications(
-            pg, NotificationPlanner(judgments, NotifyAll()), composer or Composer(), clock=clock
+            pg, NotificationPlanner(PushAll(), PgJudgmentCache(pg.db)), composer or Composer(), clock=clock
         )
         self.sender = sender
 
@@ -386,7 +385,7 @@ def notify_plan(head: EventUpdate, revision: str, *, deferred: tuple[str, ...] =
     decisions = tuple(
         ClaimDecision(claim_ref=claim.ref, decision="deferred", reason="send_outcome_unresolved")
         if claim.ref in deferred
-        else ClaimDecision(claim_ref=claim.ref, decision="notify", reason="editor_notify")
+        else ClaimDecision(claim_ref=claim.ref, decision="notify", reason="reader_push")
         for claim in head.claims
     )
     return NotificationPlan(
@@ -396,8 +395,8 @@ def notify_plan(head: EventUpdate, revision: str, *, deferred: tuple[str, ...] =
         claim_decisions=decisions,
         channel="news",
         reader_revision=revision,
-        assessment_input_digest=digest(input_snapshot),
-        assessment_input=input_snapshot,
+        reader_identity="fixture_reader",
+        input_digest=digest(input_snapshot),
     )
 
 

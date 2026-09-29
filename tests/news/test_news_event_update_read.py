@@ -120,13 +120,24 @@ def test_outcome_texts_name_the_key_card_and_the_reasons_nothing_was_sent() -> N
             "state": "done",
             "action": "no_notification",
             "claim_decisions": [
-                {"decision": "not_notified", "reason": "editor_feed_only"},
-                {"decision": "not_notified", "reason": "editor_feed_only"},
-                {"decision": "not_notified", "reason": "covered_by_sent_receipt"},
+                {"decision": "not_notified", "reason": "reader_feed"},
+                {"decision": "not_notified", "reason": "reader_feed"},
+                {"decision": "not_notified", "reason": "known_to_reader"},
             ],
         },
     )
-    assert silent.reason_zh == "仅进入信息流 ×2 · 已送达内容已覆盖"
+    assert silent.reason_zh == "新增信息不足以打断，只进信息流 ×2 · 读者已收到同一事实"
+    # editorial_v1 history keeps its own reasons, marked as the old editor's.
+    legacy = _outcome(
+        semantic=_DONE,
+        adopted=True,
+        notification={
+            "state": "done",
+            "action": "no_notification",
+            "claim_decisions": [{"decision": "not_notified", "reason": "editor_feed_only"}],
+        },
+    )
+    assert legacy.reason_zh == "仅进入信息流（旧版）"
     # A failed newer semantic revision is the current result even if an older head exists.
     failed_after_head = _outcome(
         semantic={"wanted_revision": 2, "done_revision": 1, "last_outcome": "failed"},
@@ -227,11 +238,26 @@ def test_notification_view_names_every_claim_decision_and_flags_an_undecodable_p
     assert view is not None and view["plan"] is not None
     assert view["plan"]["action_zh"] == "不通知"
     assert [(row["decision_zh"], row["reason_zh"]) for row in view["plan"]["claim_decisions"]] == [
-        ("不通知", "仅进入信息流")
+        ("不通知", "新增信息不足以打断，只进信息流")
     ]
     assert view["plan"]["claim_decisions"][0]["statement"] == head.claims[0].statement
     assert broken is not None and broken["plan"] is None
     assert broken["plan_error_code"] == "news_notification_plan_undecodable"
+    # An editorial_v1 decision is history: read-only, its named reason shown, never the model's free text.
+    legacy_plan = {
+        "action": "notify",
+        "reason": "uncovered_claims",
+        "update_ref": head.ref,
+        "reader_revision": "reader-1",
+        "claim_decisions": [
+            {"claim_ref": head.claims[0].ref, "decision": "notify", "reason": "editor_key", "reason_zh": "自由文本"}
+        ],
+    }
+    legacy = notification_view(work | {"origin": "editorial_v1", "plan": legacy_plan}, statements=statements)
+    assert legacy is not None and legacy["plan"] is not None and legacy["plan"]["origin"] == "editorial_v1"
+    assert [(row["reason"], row["reason_zh"]) for row in legacy["plan"]["claim_decisions"]] == [
+        ("editor_key", "编辑判断为重点（旧版）")
+    ]
 
 
 def test_the_representative_reader_card_is_the_latest_sent_one() -> None:
@@ -321,7 +347,7 @@ def test_the_timeline_narrates_evidence_semantics_the_plan_and_the_intent_in_clo
     ]
     assert "triage" not in {step["stage"] for step in steps}
     assert steps[4]["summary_zh"] == "新事实 · 1 条命题"
-    assert steps[5]["summary_zh"] == "通知 1 条命题 · 重点 · 有命题未被已送达内容覆盖"
+    assert steps[5]["summary_zh"] == "通知 1 条命题 · 重点 · 有命题值得通知"
     assert steps[6]["summary_zh"] == "已送达 · 1 条命题"
 
 

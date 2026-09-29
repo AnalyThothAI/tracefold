@@ -1,0 +1,653 @@
+{
+ "source": "#742: the 17 claims the 2026-09-28 rule fired on; six are same-day moves of a whole market",
+ "cases": [
+  {
+   "statement": "China's SSE Star 200 Index fell nearly 5%.",
+   "fields": {
+    "subject": "SSE Star 200 Index",
+    "action": "fell nearly 5%",
+    "object": "",
+    "mode": "observation",
+    "content_kind": "level_crossed",
+    "polarity": "negative",
+    "conditions": [],
+    "quantities": [
+     {
+      "name": "price_change_percentage",
+      "unit": "%",
+      "value": "-5",
+      "period": null
+     }
+    ],
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "SSE Star 200 Index",
+      "market_type": "index"
+     }
+    ]
+   },
+   "large_daily_move": true
+  },
+  {
+   "statement": "美债收益率今年大涨约100个基点，全球股市却涨13%。",
+   "fields": {
+    "subject": "美债收益率与全球股市",
+    "action": "上涨",
+    "object": "约100个基点；13%",
+    "mode": "observation",
+    "phase": "unknown",
+    "content_kind": "level_crossed",
+    "polarity": "affirmative",
+    "conditions": [],
+    "quantities": [
+     {
+      "name": "美债收益率涨幅",
+      "unit": "基点",
+      "value": "100",
+      "period": "今年"
+     },
+     {
+      "name": "全球股市涨幅",
+      "unit": "%",
+      "value": "13",
+      "period": "今年"
+     }
+    ],
+    "statistical_period": "今年",
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "US Treasury Bonds",
+      "market_type": "commodity"
+     },
+     {
+      "role": "primary",
+      "symbol": "Global Stock Market",
+      "market_type": "index"
+     }
+    ]
+   },
+   "large_daily_move": false
+  },
+  {
+   "statement": "GAPKI announced that Indonesia's July palm oil exports were 3.19 million metric tons, a 9.87% year-on-year decrease.",
+   "fields": {
+    "subject": "Indonesia",
+    "action": "reported July palm oil export volume and year-on-year change",
+    "object": "palm oil exports",
+    "speaker": "GAPKI",
+    "mode": "observation",
+    "content_kind": "new_quantity",
+    "polarity": "affirmative",
+    "conditions": [],
+    "quantities": [
+     {
+      "name": "export_volume",
+      "unit": "metric tons",
+      "value": "3190000",
+      "period": "July"
+     },
+     {
+      "name": "yoy_change",
+      "unit": "%",
+      "value": "-9.87",
+      "period": "July"
+     }
+    ],
+    "statistical_period": "July",
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "Indonesia Palm Oil",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": false
+  },
+  {
+   "statement": "美债收益率仍徘徊在5.2%附近。",
+   "fields": {
+    "subject": "美债",
+    "action": "收益率徘徊在",
+    "object": "5.2%附近",
+    "mode": "observation",
+    "phase": "unknown",
+    "content_kind": "level_crossed",
+    "polarity": "affirmative",
+    "conditions": [],
+    "quantities": [
+     {
+      "name": "yield",
+      "unit": "%",
+      "value": "5.2",
+      "period": null
+     }
+    ],
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "US Treasuries",
+      "market_type": "index"
+     }
+    ]
+   },
+   "large_daily_move": false
+  },
+  {
+   "statement": "Spot silver price fell about 5% to $61.15 per ounce.",
+   "fields": {
+    "subject": "spot silver",
+    "action": "fell about 5% to $61.15/oz",
+    "object": "",
+    "mode": "observation",
+    "content_kind": "level_crossed",
+    "polarity": "negative",
+    "conditions": [],
+    "quantities": [
+     {
+      "name": "price_change_percentage",
+      "unit": "%",
+      "value": "-5",
+      "period": null
+     },
+     {
+      "name": "price",
+      "unit": "USD/oz",
+      "value": "61.15",
+      "period": null
+     }
+    ],
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "XAG/USD",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": true
+  },
+  {
+   "statement": "现货白银日内大跌5%，现报61.17美元/盎司。",
+   "fields": {
+    "subject": "现货白银",
+    "action": "价格日内下跌并处于特定水平",
+    "object": "价格",
+    "mode": "observation",
+    "content_kind": "level_crossed",
+    "polarity": "affirmative",
+    "conditions": [],
+    "quantities": [
+     {
+      "name": "daily_percentage_change",
+      "unit": "%",
+      "value": "-5.00",
+      "period": "日内"
+     },
+     {
+      "name": "current_price",
+      "unit": "美元/盎司",
+      "value": "61.17",
+      "period": null
+     }
+    ],
+    "statistical_period": "日内",
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "XAG/USD",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": true
+  },
+  {
+   "statement": "上海黄金交易所白银T+D 9月28日（周一）收盘下跌5.0%报14853.0元/千克。",
+   "fields": {
+    "subject": "上海黄金交易所白银T+D",
+    "action": "价格日内下跌并处于特定水平",
+    "object": "价格",
+    "mode": "observation",
+    "content_kind": "level_crossed",
+    "polarity": "affirmative",
+    "conditions": [],
+    "quantities": [
+     {
+      "name": "daily_percentage_change",
+      "unit": "%",
+      "value": "-5.0",
+      "period": "日内"
+     },
+     {
+      "name": "closing_price",
+      "unit": "元/千克",
+      "value": "14853.0",
+      "period": null
+     }
+    ],
+    "statistical_period": "日内",
+    "occurred_at": "2026-09-28",
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "SGE_Silver_T+D",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": true
+  },
+  {
+   "statement": "重点监测煤炭企业9月中旬销售量为7486万吨，环比9月上旬增加469万吨、增长6.7%，同比增加188万吨、增长2.6%。",
+   "fields": {
+    "subject": "重点监测煤炭企业",
+    "action": "报告了9月中旬的销售量及其环比和同比变化情况。",
+    "object": "销售量数据",
+    "speaker": "中国煤炭运销协会",
+    "mode": "observation",
+    "content_kind": "new_quantity",
+    "polarity": "affirmative",
+    "conditions": [],
+    "quantities": [
+     {
+      "name": "9月中旬销售量",
+      "unit": "万吨",
+      "value": "7486",
+      "period": "2023-09中旬"
+     },
+     {
+      "name": "环比增加量",
+      "unit": "万吨",
+      "value": "469",
+      "period": null
+     },
+     {
+      "name": "环比增长率",
+      "unit": "%",
+      "value": "6.7",
+      "period": null
+     },
+     {
+      "name": "同比增加量",
+      "unit": "万吨",
+      "value": "188",
+      "period": null
+     },
+     {
+      "name": "同比增长率",
+      "unit": "%",
+      "value": "2.6",
+      "period": null
+     }
+    ],
+    "statistical_period": "2023-09中旬",
+    "occurred_at": "2023-09中旬",
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "coal",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": false
+  },
+  {
+   "statement": "截至9月20日，重点监测煤炭企业库存为1965万吨，比9月10日增加29万吨、增长1.5%，同比减少559万吨、下降22.1%。",
+   "fields": {
+    "subject": "重点监测煤炭企业",
+    "action": "报告了截至9月20日的库存水平及其环比和同比变化情况。",
+    "object": "库存数据",
+    "speaker": "中国煤炭运销协会",
+    "mode": "observation",
+    "content_kind": "new_quantity",
+    "polarity": "affirmative",
+    "conditions": [],
+    "quantities": [
+     {
+      "name": "9月20日库存",
+      "unit": "万吨",
+      "value": "1965",
+      "period": "2023-09-20"
+     },
+     {
+      "name": "环比增加量",
+      "unit": "万吨",
+      "value": "29",
+      "period": null
+     },
+     {
+      "name": "环比增长率",
+      "unit": "%",
+      "value": "1.5",
+      "period": null
+     },
+     {
+      "name": "同比减少量",
+      "unit": "万吨",
+      "value": "559",
+      "period": null
+     },
+     {
+      "name": "同比下降率",
+      "unit": "%",
+      "value": "22.1",
+      "period": null
+     }
+    ],
+    "statistical_period": "2023-09-20",
+    "occurred_at": "2023-09-20",
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "coal",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": false
+  },
+  {
+   "statement": "周一午后，纽约期银价格跌逾5%。",
+   "fields": {
+    "subject": "纽约期银",
+    "action": "价格日内下跌",
+    "object": "价格变动",
+    "mode": "observation",
+    "content_kind": "level_crossed",
+    "polarity": "affirmative",
+    "conditions": [],
+    "quantities": [
+     {
+      "name": "price_change_pct",
+      "unit": "%",
+      "value": "-5.00",
+      "period": "日内"
+     }
+    ],
+    "statistical_period": "日内",
+    "occurred_at": "2026-09-28",
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "XAG/USD",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": true
+  },
+  {
+   "statement": "US 10-year Treasury yield rose 10 basis points intraday to reach 5.27%.",
+   "fields": {
+    "subject": "US 10-year Treasury",
+    "action": "yield rose 10 basis points to 5.27%",
+    "object": "intrayield level",
+    "mode": "observation",
+    "content_kind": "level_crossed",
+    "polarity": "affirmative",
+    "conditions": [],
+    "quantities": [
+     {
+      "name": "intraday_change_bps",
+      "unit": "bps",
+      "value": "10",
+      "period": null
+     },
+     {
+      "name": "current_yield",
+      "unit": "%",
+      "value": "5.27",
+      "period": null
+     }
+    ],
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "US10Y",
+      "market_type": "index"
+     }
+    ]
+   },
+   "large_daily_move": false
+  },
+  {
+   "statement": "The UK 10-year government bond yield rose to 5.441%, its highest level since July 2007.",
+   "fields": {
+    "subject": "UK 10-year government bond yield",
+    "action": "rose to",
+    "object": "5.441%",
+    "mode": "observation",
+    "phase": "unknown",
+    "content_kind": "period_record",
+    "polarity": "affirmative",
+    "conditions": [],
+    "quantities": [
+     {
+      "name": "yield",
+      "unit": "%",
+      "value": "5.441",
+      "period": null
+     }
+    ],
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "UK 10Y Gilt",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": false
+  },
+  {
+   "statement": "US Natural Gas Futures extended losses, with prices down over 5% in volatile trade ahead of contract expiration.",
+   "fields": {
+    "subject": "US Natural Gas Futures",
+    "action": "extended losses, prices down over 5% in volatile trade",
+    "object": "price level",
+    "mode": "observation",
+    "content_kind": "level_crossed",
+    "polarity": "affirmative",
+    "conditions": [
+     "ahead of contract expiration"
+    ],
+    "quantities": [
+     {
+      "name": "price change",
+      "unit": "%",
+      "value": "-5",
+      "period": null
+     }
+    ],
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "US Natural Gas Futures",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": true
+  },
+  {
+   "statement": "截至9月27日当周，美国大豆优良率为58%，收割率为17%，落叶率为75%。",
+   "fields": {
+    "subject": "USDA",
+    "action": "公布每周作物生长报告显示数据",
+    "object": "美国大豆作物状况指标",
+    "mode": "observation",
+    "content_kind": "new_quantity",
+    "polarity": "affirmative",
+    "conditions": [
+     "截至9月27日当周"
+    ],
+    "quantities": [
+     {
+      "name": "优良率",
+      "unit": "%",
+      "value": "58",
+      "period": "截至9月27日当周"
+     },
+     {
+      "name": "收割率",
+      "unit": "%",
+      "value": "17",
+      "period": "截至9月27日当周"
+     },
+     {
+      "name": "落叶率",
+      "unit": "%",
+      "value": "75",
+      "period": "截至9月27日当周"
+     }
+    ],
+    "statistical_period": "截至9月27日当周",
+    "occurred_at": "2024-09-29T00:00:00Z",
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "US_Soybean",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": false
+  },
+  {
+   "statement": "截至9月27日当周，美国玉米优良率为57%，收割率为18%，成熟率为72%，凹损率为96%。",
+   "fields": {
+    "subject": "USDA",
+    "action": "公布每周作物生长报告显示数据",
+    "object": "美国玉米作物状况指标",
+    "mode": "observation",
+    "content_kind": "new_quantity",
+    "polarity": "affirmative",
+    "conditions": [
+     "截至9月27日当周"
+    ],
+    "quantities": [
+     {
+      "name": "优良率",
+      "unit": "%",
+      "value": "57",
+      "period": "截至9月27日当周"
+     },
+     {
+      "name": "收割率",
+      "unit": "%",
+      "value": "18",
+      "period": "截至9月27日当周"
+     },
+     {
+      "name": "成熟率",
+      "unit": "%",
+      "value": "72",
+      "period": "截至9月27日当周"
+     },
+     {
+      "name": "凹损率",
+      "unit": "%",
+      "value": "96",
+      "period": "截至9月27日当周"
+     }
+    ],
+    "statistical_period": "截至9月27日当周",
+    "occurred_at": "2024-09-29T00:00:00Z",
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "US_Corn",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": false
+  },
+  {
+   "statement": "截至9月27日当周，美国棉花收割率为17%，优良率为35%，盛铃率为70%。",
+   "fields": {
+    "subject": "USDA",
+    "action": "公布每周作物生长报告显示数据",
+    "object": "美国棉花作物状况指标",
+    "mode": "observation",
+    "content_kind": "new_quantity",
+    "polarity": "affirmative",
+    "conditions": [
+     "截至9月27日当周"
+    ],
+    "quantities": [
+     {
+      "name": "收割率",
+      "unit": "%",
+      "value": "17",
+      "period": "截至9月27日当周"
+     },
+     {
+      "name": "优良率",
+      "unit": "%",
+      "value": "35",
+      "period": "截至9月27日当周"
+     },
+     {
+      "name": "盛铃率",
+      "unit": "%",
+      "value": "70",
+      "period": "截至9月27日当周"
+     }
+    ],
+    "statistical_period": "截至9月27日当周",
+    "occurred_at": "2024-09-29T00:00:00Z",
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "US_Cotton",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": false
+  },
+  {
+   "statement": "截至9月27日当周，美国冬小麦种植率为27%，出苗率为8%。",
+   "fields": {
+    "subject": "USDA",
+    "action": "公布每周作物生长报告显示数据",
+    "object": "美国冬小麦作物状况指标",
+    "mode": "observation",
+    "content_kind": "new_quantity",
+    "polarity": "affirmative",
+    "conditions": [
+     "截至9月27日当周"
+    ],
+    "quantities": [
+     {
+      "name": "种植率",
+      "unit": "%",
+      "value": "27",
+      "period": "截至9月27日当周"
+     },
+     {
+      "name": "出苗率",
+      "unit": "%",
+      "value": "8",
+      "period": "截至9月27日当周"
+     }
+    ],
+    "statistical_period": "截至9月27日当周",
+    "occurred_at": "2024-09-29T00:00:00Z",
+    "assets": [
+     {
+      "role": "primary",
+      "symbol": "US_Wheat",
+      "market_type": "commodity"
+     }
+    ]
+   },
+   "large_daily_move": false
+  }
+ ]
+}

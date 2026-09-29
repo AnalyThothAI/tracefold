@@ -7,11 +7,11 @@ from psycopg.errors import CheckViolation
 from psycopg.types.json import Jsonb
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_attention import FeedOnly, NotifyAll
-from tests.support.news_update_pg import EVENT, TaskBackend, adopted_head, store
+from tests.support.news_reader import FeedOnly, PushAll
+from tests.support.news_update_pg import EVENT, adopted_head, store
 from tracefold.news.review.desk import DecisionFeedbackSubmission, DeskQuery, Principal, ReviewDesk, TaskRef
 from tracefold.news.storage.event_update_store import PgJudgmentCache
-from tracefold.news.updates.judgment import Budget, NewsJudgments
+from tracefold.news.updates.judgment import Budget
 from tracefold.news.updates.notification import NotificationPlanner
 from tracefold.platform.postgres.client import transaction
 
@@ -24,10 +24,7 @@ def test_new_decision_is_reviewable_without_old_verdict(selected: bool) -> None:
     head = adopted_head(pg, clock)
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
-    planner = NotificationPlanner(
-        NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db)),
-        NotifyAll() if selected else FeedOnly(),
-    )
+    planner = NotificationPlanner(PushAll() if selected else FeedOnly(), PgJudgmentCache(pg.db))
     plan = asyncio.run(planner.plan(head, snapshot.reader, Budget.start(5), now_ms=clock.now_ms))
     committed = asyncio.run(pg.atomic_record_plan(plan))
     assert committed.status == "committed"
@@ -38,16 +35,19 @@ def test_new_decision_is_reviewable_without_old_verdict(selected: bool) -> None:
         desk = ReviewDesk(conn, now_ms=clock.now_ms + 1)
         principal = Principal(subject="reviewer")
         queue = desk.open(DeskQuery(status="pending", event=EVENT), principal=principal)
-        assert queue["rubric_version"] == "news_attention_review_v1"
+        assert queue["rubric_version"] == "news_reader_review_v1"
         assert len(queue["tasks"]) == 1
         task = queue["tasks"][0]
-        assert task["reason"] == ("editor_notify" if selected else "editor_feed_only")
+        assert task["reason"] == ("reader_push" if selected else "reader_feed")
+        assert (task["origin"], task["novelty"], task["reader_backend"]) == ("reader_v2", "unlinked", "native")
+        assert task["importance"] == (2.6 if selected else 1.0)
         ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
         evidence = desk.evidence(ref, principal=principal)
-        assert evidence["evidence"]["candidate"]["claims"][0]["ref"] == head.claims[0].ref
-        assert evidence["evidence"]["candidate"]["claims"][0]["citations"][0]["quote"]
+        assert evidence["evidence"]["reader_identity"] == planner.judge.identity
+        assert evidence["agent"]["decision"]["reader"]["judgment"]["importance"]["value"] == task["importance"]
         source_only = desk.evidence(ref, principal=principal, source_only=True)
         assert "agent" not in source_only and source_only["task"]["task_id"] == task["task_id"]
+        assert source_only["evidence"][0]["ref"] == head.evidence[0].ref
         with transaction(conn):
             receipt = desk.submit(
                 ref,
@@ -77,32 +77,20 @@ def test_new_decision_is_reviewable_without_old_verdict(selected: bool) -> None:
         conn.close()
 
 
-def test_identical_decision_input_reuses_persisted_assessment() -> None:
+def test_a_repeated_plan_reuses_each_claims_persisted_reader_judgment() -> None:
     pg, _db, clock = store()
     head = adopted_head(pg, clock)
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
-
-    class CountingAssessor(NotifyAll):
-        calls = 0
-
-        async def assess(self, claims, *, sources, watch_symbols):
-            self.calls += 1
-            return await super().assess(claims, sources=sources, watch_symbols=watch_symbols)
-
-    assessor = CountingAssessor()
-    planner = NotificationPlanner(
-        NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db)), assessor
-    )
-    kwargs = {
-        "now_ms": clock.now_ms,
-        "reuse": lambda fingerprint: pg.lookup_notification_decision(EVENT, "news", fingerprint),
-    }
-    first = asyncio.run(planner.plan(head, snapshot.reader, Budget.start(5), **kwargs))
+    judge = PushAll()
+    planner = NotificationPlanner(judge, PgJudgmentCache(pg.db))
+    first = asyncio.run(planner.plan(head, snapshot.reader, Budget.start(5), now_ms=clock.now_ms))
     committed = asyncio.run(pg.atomic_record_plan(first))
-    assert committed.status == "committed" and assessor.calls == 1
-    second = asyncio.run(planner.plan(head, snapshot.reader, Budget.start(5), **kwargs))
-    assert assessor.calls == 1
+    assert committed.status == "committed" and len(judge.asked) == 1
+    # A fresh planner, as after a restart or a lost CAS: the judgment comes from news_judgment_cache.
+    again = NotificationPlanner(PushAll(), PgJudgmentCache(pg.db))
+    second = asyncio.run(again.plan(head, snapshot.reader, Budget.start(5), now_ms=clock.now_ms))
+    assert again.judge.asked == []  # type: ignore[attr-defined]
     assert second.record_ref == committed.effective_plan.record_ref
 
 
@@ -111,9 +99,7 @@ def test_decision_queue_filters_before_limit_and_uses_one_read_for_a_sparse_page
     head = adopted_head(pg, clock)
     snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
-    planner = NotificationPlanner(
-        NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db)), NotifyAll()
-    )
+    planner = NotificationPlanner(PushAll(), PgJudgmentCache(pg.db))
     plan = asyncio.run(planner.plan(head, snapshot.reader, Budget.start(5), now_ms=clock.now_ms))
     assert asyncio.run(pg.atomic_record_plan(plan)).status == "committed"
     conn = connect_postgres_test(read_only=False)
@@ -126,14 +112,14 @@ def test_decision_queue_filters_before_limit_and_uses_one_read_for_a_sparse_page
             for index in range(1, 41):
                 digest = f"pagination-{index}"
                 copied = dict(original["plan"])
-                copied["assessment_input_digest"] = digest
+                copied["input_digest"] = digest
                 if index == 40:
-                    copied["claim_decisions"][0]["reason"] = "editor_feed_only"
+                    copied["claim_decisions"][0].update(reason="reader_feed", decision="not_notified")
                 decision_ref = f"notification_decision:pagination-{index}"
                 conn.execute(
                     """INSERT INTO news_notification_decisions
                        (decision_ref,event_id,update_ref,channel,input_digest,input_snapshot,plan,origin,created_at_ms)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,'editorial_v1',%s)""",
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,'reader_v2',%s)""",
                     (
                         decision_ref,
                         EVENT,

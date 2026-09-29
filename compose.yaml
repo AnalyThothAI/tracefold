@@ -199,6 +199,7 @@ services:
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/config.yaml:/root/.tracefold/config.yaml:ro
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password:/root/.tracefold/postgres_database_password:ro
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro
+      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/news_reader_judgment_api_key:/root/.tracefold/news_reader_judgment_api_key:ro
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/cache:/root/.tracefold/cache
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/logs:/root/.tracefold/logs
     command: ["tracefold", "workers"]

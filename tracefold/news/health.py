@@ -209,6 +209,11 @@ def model_health(
         return HealthItem("bad", f"24 小时语义失败率 {_pct(share)}（{failed}/{total}）", detail or backlog)
     if share >= DEGRADED_SHARE_WARN:
         return HealthItem("warn", f"24 小时语义失败率 {_pct(share)}（{failed}/{total}）", detail or backlog)
+    # A low failure share still leaves each failed revision's material unread until new evidence, an exact
+    # reanalysis or a retry: it is raised, not folded into "normal".
+    unresolved = int(pipeline.get("semantic_failed_exhausted") or 0)
+    if unresolved:
+        return HealthItem("warn", f"{unresolved} 个事件解析失败待处理（24 小时失败 {failed}/{total}）", detail)
     summary = f"模型正常，24 小时失败 {failed}/{total}" if failed else f"模型正常，24 小时 {completed} 次理解"
     return HealthItem("ok", summary, backlog)
 

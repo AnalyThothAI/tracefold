@@ -425,6 +425,7 @@ def test_news_event_update_contract_is_exact_and_types_the_core_vocabulary() -> 
 
     from tracefold.app.http.app import create_app
     from tracefold.news.outcome import OutcomeKind
+    from tracefold.news.update_view import LegacyClaimReason
     from tracefold.news.updates.contracts import Asset, ChangeKind, ContentKind, Mode, Phase
     from tracefold.news.updates.notification import ClaimReason, PlanAction
     from tracefold.platform.config.models import Settings
@@ -479,7 +480,10 @@ def test_news_event_update_contract_is_exact_and_types_the_core_vocabulary() -> 
         get_args(Asset.model_fields["market_type"].annotation)
     )
     assert components["NewsClaimChangeData"]["properties"]["kind"]["enum"] == list(get_args(ChangeKind))
-    assert components["NewsClaimDecisionData"]["properties"]["reason"]["enum"] == list(get_args(ClaimReason))
+    assert components["NewsClaimDecisionData"]["properties"]["reason"]["enum"] == [
+        *get_args(ClaimReason),
+        *get_args(LegacyClaimReason),
+    ]
     assert components["NewsNotificationPlanData"]["properties"]["action"]["enum"] == list(get_args(PlanAction))
     assert components["NewsImplicationData"]["properties"]["origin"]["enum"] == [
         "reported_causality",

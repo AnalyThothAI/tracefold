@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 import dspy
 import pytest
 
+from tests.support.news_update_semantic import MemoryCache
 from tracefold.news.bus import Q_TRIAGE, BusMessage, PermanentError, TransientError
 from tracefold.news.pipeline.semantic import PROVIDER_OUTAGE_CAUSE, SemanticWorker
 from tracefold.news.storage.event_updates import SEMANTIC_ATTEMPTS_MAX, EventUpdateConflict, SemanticLease
@@ -316,17 +317,6 @@ def test_error_codes_are_bounded_and_never_free_text() -> None:
 # ---------------------------------------------------------------- analyzer retry policy (core)
 
 
-class MemoryCache:
-    def __init__(self) -> None:
-        self.values: dict[str, Answer] = {}
-
-    async def get(self, key: str) -> Answer | None:
-        return self.values.get(key)
-
-    async def put(self, key: str, answer: Answer) -> None:
-        self.values.setdefault(key, answer)
-
-
 class ScriptedBackend:
     """Relation answers fail until `recover()`; every source answer is `supports`."""
 
@@ -455,7 +445,10 @@ def test_a_transient_primary_failure_asks_the_declared_fallback_once(monkeypatch
 
 def test_a_route_that_fails_on_every_endpoint_is_provider_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     failures = {"primary": dspy.LMServerError("5xx"), "fallback": dspy.LMTimeoutError("slow")}
-    with _scripted(monkeypatch, failures) as asked, pytest.raises(ProviderUnavailable, match="LMTimeoutError"):
+    with (
+        _scripted(monkeypatch, failures) as asked,
+        pytest.raises(ProviderUnavailable, match="news_generation_lm_timeout_error"),
+    ):
         asyncio.run(dspy_backend._generate(object(), ("primary", "fallback")))
     assert asked == ["primary", "fallback"]
 

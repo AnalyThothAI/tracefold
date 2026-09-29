@@ -14,15 +14,20 @@ from typing import Any, Final
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import dspy  # type: ignore[import-untyped]
+from loguru import logger
 
 from tracefold.app.llm import ConfiguredLMEndpoint, StructuredOutputMode, configured_lm_endpoint
 from tracefold.app.news_updates import NewsJudgmentEndpoint, news_program_identity
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.updates.service import GENERATION_CALL_SECONDS
 from tracefold.platform.config.models import NewsModelAvailability, news_model_availability
+from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 
 # Code-owned generation ceilings per role. A native Jev route has none: it is not a chat model.
 EXTRACTION_MAX_TOKENS: Final = 4_000
+# The declared fallback answers an extraction the primary could not finish; a larger ceiling is what makes
+# its answer to a truncated one more than a second vote on the same request.
+EXTRACTION_FALLBACK_MAX_TOKENS: Final = 8_000
 JUDGMENT_MAX_TOKENS: Final = 2_000
 CARD_MAX_TOKENS: Final = 1_200
 # One provider call; the stage deadline bounds the route, fallback included.
@@ -75,10 +80,11 @@ class NewsModelRoute:
     primary: ConfiguredLMEndpoint
     fallback: ConfiguredLMEndpoint | None
     max_tokens: int
+    fallback_max_tokens: int | None = None
 
     @property
     def identity(self) -> str:
-        """Secret-free: provider, model, endpoint and request semantics of both endpoints, and the ceiling."""
+        """Secret-free: provider, model, endpoint and request semantics of both endpoints, and the ceilings."""
 
         return canonical_sha(
             {
@@ -87,15 +93,16 @@ class NewsModelRoute:
                 "primary": _endpoint_model_sha256(self.primary),
                 "fallback": None if self.fallback is None else _endpoint_model_sha256(self.fallback),
                 "max_tokens": self.max_tokens,
+                **({} if self.fallback_max_tokens is None else {"fallback_max_tokens": self.fallback_max_tokens}),
             }
         )
 
     def lms(self) -> tuple[GenerativeLM, ...]:
-        endpoints = (self.primary,) if self.fallback is None else (self.primary, self.fallback)
-        return tuple(
-            generative_lm(endpoint, max_tokens=self.max_tokens, timeout=GENERATION_TIMEOUT_SECONDS)
-            for endpoint in endpoints
-        )
+        primary = generative_lm(self.primary, max_tokens=self.max_tokens, timeout=GENERATION_TIMEOUT_SECONDS)
+        if self.fallback is None:
+            return (primary,)
+        ceiling = self.fallback_max_tokens or self.max_tokens
+        return (primary, generative_lm(self.fallback, max_tokens=ceiling, timeout=GENERATION_TIMEOUT_SECONDS))
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,12 +187,41 @@ def compose_news_models(settings: Any) -> NewsRuntimeModels | None:
         else None
     )
     return NewsRuntimeModels(
-        extraction=NewsModelRoute("extraction", extraction_primary, extraction_fallback, EXTRACTION_MAX_TOKENS),
+        extraction=NewsModelRoute(
+            "extraction",
+            extraction_primary,
+            extraction_fallback,
+            EXTRACTION_MAX_TOKENS,
+            fallback_max_tokens=EXTRACTION_FALLBACK_MAX_TOKENS,
+        ),
         judgment=NewsModelRoute("judgment", extraction_primary, extraction_fallback, JUDGMENT_MAX_TOKENS),
         card=NewsModelRoute("card", card_primary, card_fallback, CARD_MAX_TOKENS),
         news_judgment=news_judgment,
         availability=availability,
     )
+
+
+def news_reader_judgment_endpoint(settings: Any) -> NewsJudgmentEndpoint | None:
+    """`llm.news_reader_judgment` with its key read from its secret file; None when the route is unset.
+
+    `tracefold init` creates the key file empty, and an empty file is an unset key, as for the Telegram
+    token: the generative News route answers, and the log names why. A configured route whose key file
+    cannot be read otherwise raises `SecretFileError`, whose code never names the path or the content.
+    The notification decision layer is its only consumer (#742).
+    """
+
+    route = settings.llm.news_reader_judgment
+    path = settings.news_reader_judgment_api_key_file()
+    if not route.configured or path is None:
+        return None
+    try:
+        api_key = read_secure_secret_text(path)
+    except SecretFileError as exc:
+        if exc.code != "empty":
+            raise
+        logger.warning("news_reader_judgment_key_empty: generative News route answers the reader questions")
+        return None
+    return NewsJudgmentEndpoint(base_url=str(route.base_url), model=str(route.model), api_key=api_key)
 
 
 def news_runtime_manifest_sha(settings: Any, *, image_digest: str, runtime_revision: str) -> str:
@@ -264,6 +300,7 @@ def _canonical_endpoint_sha256(value: str) -> str:
 
 __all__ = [
     "CARD_MAX_TOKENS",
+    "EXTRACTION_FALLBACK_MAX_TOKENS",
     "EXTRACTION_MAX_TOKENS",
     "JUDGMENT_MAX_TOKENS",
     "GenerativeLM",

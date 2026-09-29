@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from tracefold.app.learning_runtime import NewsModelRoute, compose_news_models, news_runtime_manifest_sha
+from tracefold.app.learning_runtime import (
+    NewsModelRoute,
+    compose_news_models,
+    news_reader_judgment_endpoint,
+    news_runtime_manifest_sha,
+)
 from tracefold.app.news_updates import NewsUpdateRuntime, compose_news_updates
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
@@ -302,10 +307,16 @@ def _news_updates_or_fault(
             card_model_identity=models.card.identity,
             judgment_model_identity=models.judgment.identity,
             news_judgment=models.news_judgment,
+            news_reader_judgment=news_reader_judgment_endpoint(settings),
             source_reader=PgSourceReader(news_db),
         )
     except SHARED_RESOURCE_FAILURES:
         raise
+    except SecretFileError as exc:
+        # A configured notification route whose key file cannot be read is a configuration fact: named,
+        # never a silent fall back to the generative route.
+        capabilities.faulted(NEWS_EDITORIAL, f"news_reader_judgment_key_{exc.code}")
+        return None
     except Exception as exc:
         logger.opt(exception=exc).error("News semantic runtime assembly failed; editorial capability faulted")
         capabilities.faulted(NEWS_EDITORIAL, f"{NEWS_EDITORIAL}_assembly_failed:{type(exc).__name__}")

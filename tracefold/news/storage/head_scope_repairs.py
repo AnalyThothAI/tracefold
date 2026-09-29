@@ -50,12 +50,9 @@ def audit_head_scope(row: Mapping[str, Any]) -> dict[str, Any]:
     member_ids = {str(member["item_id"]) for member in members}
     evidence = {item.ref: item for item in head.evidence}
     views = {item.ref: reading_view(head.event_id, item, scopes) for item in head.evidence}
-    inactive = set(head.retired_claim_refs) | set(head.superseded_claim_refs)
     outside: list[dict[str, Any]] = []
     unresolved: list[dict[str, Any]] = []
-    for claim in head.claims:
-        if claim.ref in inactive:
-            continue
+    for claim in head.current_claims:
         bad: list[dict[str, Any]] = []
         good = 0
         uncertain: list[str] = []

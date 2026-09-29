@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_attention import NotifyAll
 from tests.support.news_current_delivery import seed_delivery
+from tests.support.news_reader import PushAll
 from tests.support.news_update_pg import (
     EVENT,
     STAMP,
@@ -19,7 +19,6 @@ from tests.support.news_update_pg import (
     Composer,
     Sender,
     StubAnalyzer,
-    TaskBackend,
     ThreadedDb,
     adopt_next,
     adopt_other_event,
@@ -51,7 +50,7 @@ from tracefold.news.updates.contracts import (
     SupportDraft,
 )
 from tracefold.news.updates.identity import digest, identity
-from tracefold.news.updates.judgment import Answer, NewsJudgments
+from tracefold.news.updates.judgment import Answer
 from tracefold.news.updates.notification import (
     ClaimDecision,
     FrozenCard,
@@ -122,7 +121,7 @@ def test_checkpoints_and_observations_are_insert_only() -> None:
     assert asyncio.run(pg.save_extraction("work-1", first)) == first
     assert asyncio.run(pg.save_extraction("work-1", other)) == first
     checkpoint = asyncio.run(pg.checkpoint("work-1"))
-    assert checkpoint is not None and checkpoint.extraction == first and checkpoint.understanding is None
+    assert checkpoint is not None and checkpoint.extraction == first
 
     observation = SemanticObservation(
         result_id="result-1",
@@ -223,6 +222,62 @@ def test_possible_new_is_adopted_and_marked_for_notification_without_a_public_ro
     assert [row for row in trade_rows() if row["source_fact_key"] == EVENT] == []
     work = sql("SELECT state, content_revision FROM news_notification_work WHERE event_id = %s", (EVENT,))[0]
     assert work == {"state": "pending", "content_revision": update.content_revision}
+
+
+def test_claim_links_outlive_the_revision_that_asserted_them_and_are_read_from_both_ends() -> None:
+    """#742: a later revision that no longer repeats a comparison does not lose it; both Events see the link."""
+
+    pg, _db, _clock = store()
+    seed_event()
+    seed_event("ev-other", text="Agency orders a 25% tariff on steel.", fingerprint="fp-other")
+    other = asyncio.run(adopt_other_event(pg))
+    first_source = FrozenInput(
+        event_id=EVENT, revision=1, lineage_id="lineage", evidence=(evidence(TEXT),), prior=(other,)
+    )
+    linked = Extraction(
+        claims=(draft(first_source.evidence[0]),),
+        relations=(
+            RelationDraft(slot="a", previous_ref=other.claim.ref, relation="adds_information", change_kind="new_fact"),
+        ),
+    )
+    adopted, first = asyncio.run(adopt_next(pg, None, first_source, linked))
+    assert adopted
+    rows = sql(
+        "SELECT update_ref,current_ref,previous_ref,relation,current_event_id,previous_event_id FROM news_claim_links"
+    )
+    assert rows == [
+        {
+            "update_ref": first.ref,
+            "current_ref": first.claims[0].ref,
+            "previous_ref": other.claim.ref,
+            "relation": "adds_information",
+            "current_event_id": EVENT,
+            "previous_event_id": "ev-other",
+        }
+    ]
+    correction = evidence("Correction: Agency orders a 50% tariff, not 25%.")
+    second_source = FrozenInput(
+        event_id=EVENT,
+        revision=2,
+        lineage_id="lineage",
+        evidence=(correction,),
+        prior=tuple(PriorClaim(event_id=EVENT, content_revision=first.content_revision, claim=c) for c in first.claims),
+    )
+    corrected = Extraction(
+        claims=(draft(correction, action="orders 50% tariff"),),
+        relations=(
+            RelationDraft(slot="a", previous_ref=first.claims[0].ref, relation="corrects", change_kind="correction"),
+        ),
+    )
+    adopted, second = asyncio.run(adopt_next(pg, first, second_source, corrected))
+    assert adopted and all(change.previous_ref != other.claim.ref for change in second.changes)
+    assert len(sql("SELECT 1 FROM news_claim_links")) == 2
+    own = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    theirs = asyncio.run(pg.notification_snapshot("ev-other", "news"))
+    assert own is not None and theirs is not None
+    pair = (first.claims[0].ref, other.claim.ref, "adds_information")
+    assert pair in {(link.current_ref, link.previous_ref, link.relation) for link in own.reader.links}
+    assert pair in {(link.current_ref, link.previous_ref, link.relation) for link in theirs.reader.links}
 
 
 def test_a_correction_is_a_source_update_outbox_row_in_the_app_relay_mapping() -> None:
@@ -361,7 +416,10 @@ def test_empty_extraction_records_the_task_read_and_does_not_loop_on_the_same_so
     pg, _db, clock = store()
     seed_event()
     analyzer = StubAnalyzer(lambda _source: Extraction(claims=()))
-    assert asyncio.run(run_agent(agent(pg, clock, analyzer), EVENT)) == "adopted"
+    # #742 W1: a first read without claims is not an Event version; it settles its read all the same.
+    assert asyncio.run(run_agent(agent(pg, clock, analyzer), EVENT)) == "unchanged"
+    assert asyncio.run(pg.head(EVENT)) is None
+    assert sql("SELECT count(*) AS n FROM news_notification_work WHERE event_id=%s", (EVENT,))[0]["n"] == 0
     first = sql("SELECT processed_read_refs,done_revision FROM news_semantic_work WHERE event_id=%s", (EVENT,))[0]
     assert len(first["processed_read_refs"]) == 1 and first["done_revision"] == 1
     observed = sql("SELECT read_refs FROM news_semantic_observations WHERE event_id=%s", (EVENT,))[0]
@@ -463,7 +521,7 @@ def test_a_notification_turn_sends_once_and_keeps_the_exact_receipt() -> None:
     work = sql("""SELECT w.state,d.plan AS plan FROM news_notification_work w
                       LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref""")[0]
     assert work["state"] == "done"
-    assert [row["reason"] for row in work["plan"]["claim_decisions"]] == ["editor_notify"]
+    assert [row["reason"] for row in work["plan"]["claim_decisions"]] == ["reader_push"]
     reviewed = sql("SELECT delivery_state,delivery_body FROM news_notification_review_tasks_v1")[0]
     assert reviewed == {"delivery_state": "sent", "delivery_body": card.body}
     # Done for this head: a second turn has no work and never resends.
@@ -836,14 +894,16 @@ def test_judgment_cache_keeps_the_first_answer_and_retention_purges_old_rows() -
     clock = Clock()
     cache = PgJudgmentCache(db, clock=clock)
     first = Answer(item_id="q1", value="full", backend="generated")
-    asyncio.run(cache.put("key-1", first))
-    asyncio.run(cache.put("key-1", first.model_copy(update={"value": "none"})))
-    assert asyncio.run(cache.get("key-1")) == first
-    assert asyncio.run(cache.get("missing")) is None
+    second = Answer(item_id="q2", value="none", backend="generated")
+    asyncio.run(cache.put_many({"key-1": first, "key-2": second}))
+    asyncio.run(cache.put_many({"key-1": first.model_copy(update={"value": "none"})}))
+    # One statement reads a whole question set; a missing key is simply absent.
+    assert asyncio.run(cache.get_many(("key-1", "key-2", "missing"))) == {"key-1": first, "key-2": second}
+    assert db.names.count("news_judgment_cache_get") == 1
     pg = PgNewsStore(db, clock=clock)
     clock.now_ms += 15 * 24 * 3_600_000
-    assert asyncio.run(pg.purge_semantic_caches(limit=100)) == 1
-    assert asyncio.run(cache.get("key-1")) is None
+    assert asyncio.run(pg.purge_semantic_caches(limit=100)) == 2
+    assert asyncio.run(cache.get_many(("key-1",))) == {}
 
 
 def test_frozen_input_requires_material() -> None:
@@ -867,13 +927,12 @@ def test_a_no_notification_plan_is_final_for_the_head_and_retires_an_unsent_rese
         reason="no_uncovered_actionable_claims",
         update_ref=head.ref,
         claim_decisions=tuple(
-            ClaimDecision(claim_ref=claim.ref, decision="not_notified", reason="editor_feed_only")
-            for claim in head.claims
+            ClaimDecision(claim_ref=claim.ref, decision="not_notified", reason="reader_feed") for claim in head.claims
         ),
         channel="news",
         reader_revision=snapshot.reader.revision,
-        assessment_input_digest=digest({"update": head.model_dump(mode="json"), "fixture": "silent"}),
-        assessment_input={"update": head.model_dump(mode="json"), "fixture": "silent"},
+        reader_identity="fixture_reader",
+        input_digest=digest({"update": head.model_dump(mode="json"), "fixture": "silent"}),
     )
     assert asyncio.run(pg.atomic_record_plan(silent)).status == "committed"
     assert sql("SELECT count(*) AS n FROM news_delivery_queue")[0]["n"] == 0
@@ -882,7 +941,7 @@ def test_a_no_notification_plan_is_final_for_the_head_and_retires_an_unsent_rese
         "LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref"
     )[0]
     assert work["state"] == "done" and work["reader_revision"] == snapshot.reader.revision
-    assert work["plan"]["claim_decisions"][0]["reason"] == "editor_feed_only"
+    assert work["plan"]["claim_decisions"][0]["reason"] == "reader_feed"
     assert asyncio.run(pg.notification_snapshot(EVENT, "news")) is None
 
 
@@ -1007,9 +1066,7 @@ def test_old_notification_failure_cannot_change_new_head_work(phase: str) -> Non
                 await release.wait()
                 raise RuntimeError("old card failed")
 
-        planner = NotificationPlanner(
-            NewsJudgments(generated=TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(pg.db)), NotifyAll()
-        )
+        planner = NotificationPlanner(PushAll(), PgJudgmentCache(pg.db))
         service = Notifications(
             pg,
             FailingPlanner() if phase == "planner" else planner,

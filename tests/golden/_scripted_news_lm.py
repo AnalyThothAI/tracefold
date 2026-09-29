@@ -2,9 +2,9 @@
 
 It sits below the production DSPy JSON adapter as a custom engine, exactly where a chat provider would
 answer, so the News Agent, the judgments, the notification planner and the card composer all run their
-real signatures, parsing and validation. It answers the three generative News signatures from the
-request's own inputs: one grounded claim per visible task segment, fixed narrow judgments, and Chinese
-card copy for exactly the selected claims.
+real signatures, parsing and validation. It answers the four generative News signatures from the
+request's own inputs: one grounded claim per visible task segment, fixed narrow judgments, a reader
+judgment worth a push with no earlier message, and Chinese card copy for exactly the selected claims.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ JUDGMENTS: dict[str, Any] = {
     "content_kind": "state_change",
     "relation": "adds_information",
     "support": "supports",
-    "coverage": "none",
     "next_read": "no_useful_read",
     "impact_channel": "not_applicable",
     "topic": False,
@@ -75,6 +74,17 @@ def _answer(request: Request) -> dict[str, Any]:
         task = inputs["task"].splitlines()[0].strip()
         items = _json(inputs["items"])
         return {"result": {"answers": [{"item_id": item["item_id"], "value": JUDGMENTS[task]} for item in items]}}
+    if "claim" in inputs:
+        answer: dict[str, Any] = {
+            "importance": {"probabilities": {"0": 0.0, "1": 0.0, "2": 0.0, "3": 1.0, "4": 0.0}, "confidence": 0.9}
+        }
+        if "messages" in inputs:
+            ids = [message["id"] for message in _json(inputs["messages"])]
+            answer["anchor_message"] = {
+                "probabilities": {**dict.fromkeys(ids, 0.0), "none": 1.0},
+                "confidence": 0.9,
+            }
+        return answer
     if "selected_claims_json" in inputs:
         claims = _json(inputs["selected_claims_json"])
         lines = [{"claim_ref": claim["claim_ref"], "text_zh": LINE_ZH} for claim in claims]

@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_attention import FeedOnly, NotifyAll
+from tests.support.news_reader import FeedOnly, FixedReader, PushAll
 from tests.support.news_update_pg import (
     EVENT,
     STAMP,
@@ -50,7 +50,7 @@ from tracefold.news.updates.contracts import (
     FrozenInput,
     PriorClaim,
 )
-from tracefold.news.updates.judgment import NewsJudgments, ProviderUnavailable
+from tracefold.news.updates.judgment import ProviderUnavailable
 from tracefold.news.updates.notification import CardCopy, CardLine, FrozenCard, NotificationPlanner
 from tracefold.news.updates.service import Notifications
 
@@ -156,11 +156,11 @@ class Rig:
         self.db = db or FaultDb()
         self.store = PgNewsStore(self.db, clock=self.clock)
         self.composer = composer or Composer()
-        judgments = NewsJudgments(
-            generated=backend or TaskBackend({"coverage": "full"}), cache=PgJudgmentCache(self.db)
-        )
         self.notifications = Notifications(
-            self.store, NotificationPlanner(judgments, assessor or NotifyAll()), self.composer, clock=self.clock
+            self.store,
+            NotificationPlanner(assessor or PushAll(), PgJudgmentCache(self.db)),
+            self.composer,
+            clock=self.clock,
         )
         self.provider = provider
         self.loop = DelivererLoop(
@@ -258,7 +258,7 @@ def test_a_no_notification_plan_composes_no_card_and_sends_nothing() -> None:
     assert provider.sent == [] and _ledger() == [] and _queue() == []
     work = _work()
     assert work["state"] == "done"
-    assert [row["reason"] for row in work["plan"]["claim_decisions"]] == ["editor_feed_only"]
+    assert [row["reason"] for row in work["plan"]["claim_decisions"]] == ["reader_feed"]
 
 
 def test_a_failed_plan_spends_one_bounded_attempt_and_the_third_fails_the_work_visibly() -> None:
@@ -276,8 +276,8 @@ def test_a_failed_plan_spends_one_bounded_attempt_and_the_third_fails_the_work_v
     head = _adopt(clock, StubAnalyzer(market_report))
     provider = Provider()
 
-    class BrokenEditor(NotifyAll):
-        async def assess(self, claims, *, sources, watch_symbols):
+    class BrokenEditor(PushAll):
+        async def judge(self, reader, budget):
             raise RuntimeError("editor_bug")
 
     rig = Rig(provider, clock=clock, assessor=BrokenEditor())
@@ -315,7 +315,7 @@ class FlakyComposer(Composer):
         super().__init__()
         self.failures = failures
 
-    async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
+    async def compose(self, claims: tuple[Any, ...], *, sources: Any, earlier: Any = None) -> CardCopy:
         if self.failures:
             self.calls += 1
             self.failures -= 1
@@ -361,7 +361,7 @@ def test_a_head_that_changes_before_the_send_retires_the_unsent_reservation() ->
     class AdoptingComposer(Composer):
         """While the card model writes copy, the Event gets a newer adopted head."""
 
-        async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
+        async def compose(self, claims: tuple[Any, ...], *, sources: Any, earlier: Any = None) -> CardCopy:
             if self.calls == 0:
                 source = FrozenInput(
                     event_id=EVENT,
@@ -597,7 +597,7 @@ class _GatedSettlement(FaultDb):
 class _DistinctComposer(Composer):
     """Copy per story; the copper card is composed first, so it is the one in the provider."""
 
-    async def compose(self, claims: tuple[Any, ...], *, sources: Any) -> CardCopy:
+    async def compose(self, claims: tuple[Any, ...], *, sources: Any, earlier: Any = None) -> CardCopy:
         self.calls += 1
         copper = any("copper" in claim.statement.lower() for claim in claims)
         if not copper:
@@ -609,6 +609,14 @@ class _DistinctComposer(Composer):
                 for claim in claims
             ),
         )
+
+
+class _RepeatAware(FixedReader):
+    """Worth a push alone; once a related message is supplied, what the claim adds is not."""
+
+    async def judge(self, reader: Any, budget: Any) -> Any:
+        self.value = 1.0 if reader.messages else 2.6
+        return await super().judge(reader, budget)
 
 
 @pytest.mark.parametrize("related", [False, True])
@@ -638,7 +646,7 @@ def test_only_a_related_receipt_settled_meanwhile_invalidates_a_ready_card(relat
 
     provider = Provider()
     db = _GatedSettlement()
-    rig = Rig(provider, clock=clock, db=db, composer=_DistinctComposer())
+    rig = Rig(provider, clock=clock, db=db, composer=_DistinctComposer(), assessor=_RepeatAware())
 
     async def run() -> None:
         task = asyncio.create_task(rig.loop.advance())
@@ -673,7 +681,7 @@ def test_only_a_related_receipt_settled_meanwhile_invalidates_a_ready_card(relat
     assert rig.advance() == 1
     tariff = works()[EVENT]
     assert tariff["state"] == "done" and len(provider.sent) == 1
-    assert [row["reason"] for row in tariff["plan"]["claim_decisions"]] == ["covered_by_sent_receipt"]
+    assert [row["reason"] for row in tariff["plan"]["claim_decisions"]] == ["reader_feed"]
     assert {row["intent_id"] for row in tariff["plan"]["compared_receipts"]} == {
         row["intent_id"] for row in _ledger() if row["event_id"] == "event-second"
     }
@@ -732,8 +740,7 @@ def test_the_stage_breakdown_from_adoption_to_the_provider_is_read_back_with_sql
                (d.plan #>> '{timings,due_at_ms}')::bigint AS due_at_ms,
                (d.plan #>> '{timings,started_at_ms}')::bigint AS started_at_ms,
                (d.plan #>> '{timings,snapshot_ms}')::bigint AS snapshot_ms,
-               (d.plan #>> '{timings,coverage_ms}')::bigint AS coverage_ms,
-               (d.plan #>> '{timings,assessment_ms}')::bigint AS assessment_ms,
+               (d.plan #>> '{timings,judgment_ms}')::bigint AS judgment_ms,
                (d.plan #>> '{timings,planned_at_ms}')::bigint AS planned_at_ms,
                d.created_at_ms AS decided_at_ms,
                jsonb_array_length(d.plan -> 'compared_receipts') AS compared,
@@ -752,5 +759,5 @@ def test_the_stage_breakdown_from_adoption_to_the_provider_is_read_back_with_sql
     assert row["adopted_at_ms"] <= row["due_at_ms"] <= row["started_at_ms"] <= row["planned_at_ms"]
     assert row["planned_at_ms"] <= row["decided_at_ms"] <= row["card_started_at_ms"] <= row["card_finished_at_ms"]
     assert row["card_finished_at_ms"] <= row["ready_at_ms"] <= row["attempted_at_ms"] <= row["settled_at_ms"]
-    assert min(row["snapshot_ms"], row["coverage_ms"], row["assessment_ms"], row["send_slot_wait_ms"]) >= 0
+    assert min(row["snapshot_ms"], row["judgment_ms"], row["send_slot_wait_ms"]) >= 0
     assert row["compared"] == 0

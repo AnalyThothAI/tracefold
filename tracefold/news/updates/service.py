@@ -117,10 +117,9 @@ class NewsAgent:
         if extracted is None:
             extracted = await self.analyzer.extract(source, budget)
             extracted = await self.store.save_extraction(work_id, extracted)
-        understood = None if saved is None else saved.understanding
-        if understood is None:
-            understood = await self.analyzer.understand(source, extracted, budget, final_attempt=final_attempt)
-            understood = await self.store.save_understanding(work_id, understood)
+        # Understanding is derived again on every attempt against the priors supplied now; each answer it
+        # needs is cached by content, so a retry asks only what changed or failed.
+        understood = await self.analyzer.understand(source, extracted, budget, final_attempt=final_attempt)
 
         completed_at_ms = self.clock()
         # Persisted checkpoints/cache retain successful work if these retries are exhausted.
@@ -132,11 +131,11 @@ class NewsAgent:
                 await self.store.save_observation(observation)
                 await self.store.finish_semantic_work(work_id, lease=lease, reason="newer_head_already_adopted")
                 return "newer_head"
-            head_refs = set() if head is None else {claim.ref for claim in head.claims}
+            head_refs = set() if head is None else {claim.ref for claim in head.current_claims}
             prior_refs = {row.claim.ref for row in source.prior}
             if head is not None and head_refs - prior_refs:
                 priors = {row.claim.ref: row for row in source.prior}
-                for claim in head.claims:
+                for claim in head.current_claims:
                     priors[claim.ref] = PriorClaim(
                         event_id=head.event_id, content_revision=head.content_revision, claim=claim
                     )
@@ -310,15 +309,7 @@ class Notifications:
             # The stage deadline surfaces here as TimeoutError, so an expired plan is recorded like any
             # other failed one instead of leaving its work due again at once.
             async with asyncio.timeout(budget.remaining()):
-                plan = await self.planner.plan(
-                    snapshot.update,
-                    snapshot.reader,
-                    budget,
-                    now_ms=self.clock(),
-                    reuse=lambda fingerprint: self.store.lookup_notification_decision(
-                        snapshot.update.event_id, channel, fingerprint
-                    ),
-                )
+                plan = await self.planner.plan(snapshot.update, snapshot.reader, budget, now_ms=self.clock())
             timings = plan.timings or PlanTimings()
             plan = plan.model_copy(
                 update={
@@ -453,11 +444,13 @@ class Notifications:
 
         plan = lease.plan
         selected = tuple(claim for claim in update.claims if claim.ref in plan.selected_claim_refs)
+        # An increment or a correction is written against the earlier message the reader already has.
+        earlier = {claim.ref: context for claim in selected if (context := plan.earlier(claim.ref)) is not None}
         async with asyncio.timeout(budget.remaining()):
             cited = {citation.evidence_ref for claim in selected for citation in claim.citations}
             sources = {item.ref: item.source for item in update.evidence if item.ref in cited}
             input_digest = identity(
-                "news_card_copy_input", self.composer.identity, card_copy_material(selected, sources)
+                "news_card_copy_input", self.composer.identity, card_copy_material(selected, sources, earlier)
             )
             copy = await self.store.lookup_card_copy(input_digest)
             logger.info(
@@ -468,7 +461,7 @@ class Notifications:
                 copy is not None,
             )
             if copy is None:
-                copy = await self.composer.compose(selected, sources=sources)
+                copy = await self.composer.compose(selected, sources=sources, earlier=earlier)
         frozen = freeze_card(plan, update, copy)
         return await self.store.save_card(lease, frozen, copy=copy, input_digest=input_digest)
 

@@ -16,8 +16,8 @@ from ..artifact_identity import canonical_json, canonical_sha
 
 REVIEW_QUEUE_MAX = 100
 REVIEW_BODY_TEXT_MAX = 20_000
-DECISION_REVIEW_VERSION: Final = "news_attention_review_v1"
-DECISION_READER_CONTRACT_VERSION: Final = "reader_attention_v1"
+DECISION_REVIEW_VERSION: Final = "news_reader_review_v1"
+DECISION_READER_CONTRACT_VERSION: Final = "reader_decision_v2"
 
 
 class Principal(BaseModel):
@@ -113,17 +113,9 @@ def _decision_task_public(row: Mapping[str, Any], accepted: Mapping[str, Any] | 
     plan = dict(row["plan"])
     claim = dict(row["claim"])
     decision = dict(row["claim_decision"])
-    stratum = (
-        "attention_unavailable"
-        if plan.get("assessment_status") == "unavailable"
-        else "feed_only"
-        if decision.get("reason") == "editor_feed_only"
-        else "key"
-        if decision.get("reason") == "editor_key"
-        else "notify"
-        if decision.get("decision") == "notify"
-        else "not_notified"
-    )
+    stratum = _stratum(plan, decision)
+    reader: Mapping[str, Any] = decision.get("reader") or {}
+    judgment: Mapping[str, Any] = reader.get("judgment") or {}
     return {
         "task_id": ref.task_id,
         "task_version": ref.task_version,
@@ -136,9 +128,10 @@ def _decision_task_public(row: Mapping[str, Any], accepted: Mapping[str, Any] | 
         "headline": claim.get("statement") or "",
         "final_decision": decision.get("decision"),
         "reason": decision.get("reason"),
-        "reason_zh": decision.get("reason_zh"),
-        "assessment_status": plan.get("assessment_status"),
-        "assessment_error_code": plan.get("assessment_error_code"),
+        "origin": row.get("origin"),
+        "novelty": reader.get("novelty"),
+        "importance": (judgment.get("importance") or {}).get("value"),
+        "reader_backend": judgment.get("backend"),
         "reader_receipt": {
             "state": row.get("delivery_state") or row.get("queue_state"),
             "body": row.get("delivery_body"),
@@ -146,18 +139,41 @@ def _decision_task_public(row: Mapping[str, Any], accepted: Mapping[str, Any] | 
             "settled_at_ms": row.get("settled_at_ms"),
             "error_code": row.get("delivery_error_code"),
         },
-        "selection": {"stratum": stratum, "selection_version": "news_attention_selection_v1"},
+        "selection": {"stratum": stratum, "selection_version": "news_reader_selection_v1"},
         "review_status": "accepted" if accepted is not None else "pending",
         "accepted_review": None if accepted is None else dict(accepted),
     }
 
 
+# One stratum per claim for sampling reviews: the reader_v2 reasons, and the editor's for editorial_v1 history.
+_STRATA: Final[dict[str, str]] = {
+    "reader_unavailable": "reader_unavailable",
+    "reader_unassessed": "reader_unavailable",
+    "reader_feed": "feed_only",
+    "reader_key": "key",
+    "known_to_reader": "known",
+    "attention_unavailable_default_notify": "reader_unavailable",
+    "editor_feed_only": "feed_only",
+    "editor_key": "key",
+}
+
+
+def _stratum(plan: Mapping[str, Any], decision: Mapping[str, Any]) -> str:
+    reason = str(decision.get("reason") or "")
+    if reason in _STRATA:
+        return _STRATA[reason]
+    return "notify" if decision.get("decision") == "notify" else "not_notified"
+
+
 _DECISION_STRATUM_SQL = """CASE
-    WHEN task.plan->>'assessment_status'='unavailable' THEN 'attention_unavailable'
-    WHEN task.claim_decision->>'reason'='editor_feed_only' THEN 'feed_only'
-    WHEN task.claim_decision->>'reason'='editor_key' THEN 'key'
+    WHEN task.claim_decision->>'reason' IN ('reader_unavailable','reader_unassessed',
+                                            'attention_unavailable_default_notify') THEN 'reader_unavailable'
+    WHEN task.claim_decision->>'reason' IN ('reader_feed','editor_feed_only') THEN 'feed_only'
+    WHEN task.claim_decision->>'reason' IN ('reader_key','editor_key') THEN 'key'
+    WHEN task.claim_decision->>'reason'='known_to_reader' THEN 'known'
     WHEN task.claim_decision->>'decision'='notify' THEN 'notify'
     ELSE 'not_notified' END"""
+_REVIEWED_ORIGINS_SQL = "task.origin IN ('editorial_v1','reader_v2')"
 
 
 def _decision_queue_statement(
@@ -171,13 +187,13 @@ def _decision_queue_statement(
     stratum: str = "",
     limit: int = REVIEW_QUEUE_MAX,
 ) -> ReviewReadStatement:
-    filters = ["task.origin='editorial_v1'", "task.created_at_ms >= %s", "task.created_at_ms < %s"]
+    filters = [_REVIEWED_ORIGINS_SQL, "task.created_at_ms >= %s", "task.created_at_ms < %s"]
     params: list[Any] = [lower_ms, upper_ms]
     if event:
         filters.append("task.event_id=%s")
         params.append(event)
     if cohort:
-        filters.append("task.plan->>'assessment_identity'=%s")
+        filters.append("COALESCE(task.plan->>'reader_identity',task.plan->>'assessment_identity')=%s")
         params.append(cohort)
     if cursor is not None:
         filters.append("(task.created_at_ms,task.decision_ref,task.claim_ref)<(%s,%s,%s)")
@@ -220,15 +236,20 @@ def _decision_coverage_statement(*, lower_ms: int, upper_ms: int) -> ReviewReadS
         name="news_review_decision_coverage",
         sql="""SELECT count(*) AS claims,
                       count(*) FILTER (WHERE task.claim_decision->>'decision'='notify') AS selected,
-                      count(*) FILTER (WHERE task.claim_decision->>'reason'='editor_feed_only') AS feed_only,
-                      count(*) FILTER (WHERE task.plan->>'assessment_status'='unavailable') AS attention_unavailable,
+                      count(*) FILTER (
+                        WHERE task.claim_decision->>'reason' IN ('reader_feed','editor_feed_only')) AS feed_only,
+                      count(*) FILTER (
+                        WHERE task.claim_decision->>'reason' IN ('reader_unavailable','reader_unassessed',
+                                                                 'attention_unavailable_default_notify')
+                      ) AS reader_unavailable,
                       count(*) FILTER (WHERE task.delivery_state='sent') AS sent,
                       count(*) FILTER (WHERE EXISTS (
                         SELECT 1 FROM news_notification_feedback f
                          WHERE f.decision_ref=task.decision_ref AND f.claim_ref=task.claim_ref
                       )) AS reviewed
                  FROM news_notification_review_tasks_v1 task
-                WHERE task.origin='editorial_v1' AND task.created_at_ms >= %s AND task.created_at_ms < %s""",
+                WHERE task.origin IN ('editorial_v1','reader_v2')
+                  AND task.created_at_ms >= %s AND task.created_at_ms < %s""",
         params=(lower_ms, upper_ms),
     )
 
@@ -237,7 +258,7 @@ def _decision_evidence_statement(decision_ref: str, claim_ref: str) -> ReviewRea
     return ReviewReadStatement(
         name="news_review_decision_evidence",
         sql="""SELECT * FROM news_notification_review_tasks_v1
-                WHERE decision_ref=%s AND claim_ref=%s AND origin='editorial_v1'""",
+                WHERE decision_ref=%s AND claim_ref=%s AND origin IN ('editorial_v1','reader_v2')""",
         params=(decision_ref, claim_ref),
     )
 
@@ -271,7 +292,7 @@ class ReviewDesk:
                 "schema": "tracefold.news.review_decision_source_only.v1",
                 "task": task.model_dump(mode="json"),
                 "claim": row["claim"],
-                "evidence": snapshot.get("update", {}).get("evidence", []),
+                "evidence": (row.get("update_document") or {}).get("evidence", []),
             }
             return {**payload, "projection_sha256": canonical_sha(payload)}
         accepted = self._decision_feedback(decision_ref, claim_ref)
@@ -398,7 +419,7 @@ class ReviewDesk:
         row = self._conn.execute(statement.sql, statement.params).fetchone()
         counts = {
             name: int(row[name])
-            for name in ("claims", "selected", "feed_only", "attention_unavailable", "sent", "reviewed")
+            for name in ("claims", "selected", "feed_only", "reader_unavailable", "sent", "reviewed")
         }
         return {
             "view": "coverage",

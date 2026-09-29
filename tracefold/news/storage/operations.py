@@ -205,31 +205,26 @@ class OperationsStorage:
                VALUES (%s,%s,1,%s,12)""",
             (current_event_id, update.content_revision, update.ref),
         )
-        decision_input = {"update": update.model_dump(mode="json"), "reader_receipts": [], "fixture": "restore_drill"}
+        decision_input = {"reader_identity": "restore_drill_v1", "compared_receipts": [], "fixture": "restore_drill"}
         plan = NotificationPlan(
             action="notify",
             reason="uncovered_claims",
             update_ref=update.ref,
-            claim_decisions=(
-                ClaimDecision(claim_ref=claim_ref, decision="notify", reason="attention_unavailable_default_notify"),
-            ),
+            claim_decisions=(ClaimDecision(claim_ref=claim_ref, decision="notify", reason="protected_listing"),),
             channel="news",
             reader_revision="restore-reader:12",
-            assessment_status="unavailable",
-            assessment_error_code="restore_drill_no_model",
-            assessment_identity="restore_drill_v1",
-            assessment_input_digest=digest(decision_input),
-            assessment_input=decision_input,
+            reader_identity="restore_drill_v1",
+            input_digest=digest(decision_input),
         )
         self.conn.execute(
             """INSERT INTO news_notification_decisions
                  (decision_ref,event_id,update_ref,channel,input_digest,input_snapshot,plan,origin,created_at_ms)
-               VALUES (%s,%s,%s,'news',%s,%s::jsonb,%s::jsonb,'editorial_v1',12)""",
+               VALUES (%s,%s,%s,'news',%s,%s::jsonb,%s::jsonb,'reader_v2',12)""",
             (
                 plan.record_ref,
                 current_event_id,
                 update.ref,
-                plan.assessment_input_digest,
+                plan.input_digest,
                 _dumps(decision_input),
                 plan.model_dump_json(),
             ),

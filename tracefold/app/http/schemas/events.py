@@ -5,8 +5,10 @@ from typing import Any, Literal
 from pydantic import Field
 
 from tracefold.news import EventKind, SourceAuthority
+from tracefold.news.update_view import LegacyClaimReason
 from tracefold.news.updates.contracts import ChangeKind, ContentKind, Mode, Phase, Relation
 from tracefold.news.updates.notification import ClaimDecisionValue, ClaimReason, PlanAction, PlanReason
+from tracefold.news.updates.reader_judgments import Novelty, ReaderBackend, Render
 
 from .common import ExactApiSchema
 from .news_common import (
@@ -340,21 +342,31 @@ class NewsClaimDecisionData(ExactApiSchema):
     statement: str | None = None
     decision: ClaimDecisionValue
     decision_zh: str = ""
-    reason: ClaimReason
+    # `reader_v2` reasons, or the named reasons of an `editorial_v1` decision shown as history.
+    reason: Literal[ClaimReason, LegacyClaimReason]
     reason_zh: str = ""
+    # Reader rows only: what the reader already held, how the card is written, the incremental importance
+    # (0..4) and its distribution, and which backend answered.
+    novelty: Novelty | None = None
+    novelty_zh: str = ""
+    render: Render | None = None
+    earlier_intent_id: str | None = None
+    importance: float | None = None
+    importance_probabilities: list[float] | None = None
+    reader_backend: ReaderBackend | None = None
 
 
 class NewsNotificationPlanData(ExactApiSchema):
+    origin: Literal["reader_v2", "editorial_v1"]
     action: PlanAction
     action_zh: str = ""
-    reason: PlanReason
+    reason: Literal[PlanReason, "send_outcome_unresolved"]
     reason_zh: str = ""
     key: bool = False
     update_ref: str
     reader_revision: str
     decision_ref: str | None = None
-    assessment_status: Literal["available", "unavailable", "skipped"] = "skipped"
-    assessment_error_code: str | None = None
+    reader_identity: str | None = None
     claim_decisions: list[NewsClaimDecisionData] = Field(default_factory=list)
 
 

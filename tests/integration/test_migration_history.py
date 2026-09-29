@@ -52,7 +52,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260929_0413"
+HEAD = "20260929_0416"
 PRE_CUT = "20260928_0410"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
@@ -260,6 +260,8 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260929_0415",
+        "20260929_0413",
         "20260928_0412",
         "20260928_0411",
         PRE_CUT,
@@ -448,6 +450,62 @@ def test_notification_terminal_cut_fails_overdue_exhausted_work_and_drops_the_pl
         conn.close()
 
 
+def test_claim_links_are_backfilled_from_every_stored_update_and_reader_decisions_are_accepted() -> None:
+    """#742 0416: every stored change that compares a claim with an earlier one becomes a claim link."""
+
+    from tests.support.news_event_updates import first_update, persist_update, raised_update
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260929_0415")
+    conn = connect_postgres_test(read_only=False)
+    first = first_update("ev-links")
+    raised = raised_update(first)
+    try:
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO news_items (item_id,source_id,source_item_key,title,raw_first_line,description,"
+                "canonical_url,reporting_origin,published_at_ms,observed_at_ms,provider_metadata,provenance,"
+                "first_ingest_mode,trace_id,created_at_ms,updated_at_ms,source_artifact_id,evidence_text,"
+                "evidence_text_sha256) VALUES ('it-links','opennews','it-links','t','t','','https://x.test','R',"
+                "100,100,'{}'::jsonb,'[]'::jsonb,'live','trace',100,100,'it-links','t',repeat('b',64))"
+            )
+            conn.execute(
+                "INSERT INTO news_events (event_id,leader_item_id,dedupe_family,comparison_fingerprint,"
+                "comparison_title,leader_title,opened_at_ms,last_member_at_ms,expires_at_ms,admission,"
+                "ingest_mode,trace_id,created_at_ms,updated_at_ms,focus_fact_id,focus_fact_text,"
+                "focus_fact_context,focus_fact_method,focus_span_start,focus_span_end,event_kind) "
+                "VALUES ('ev-links','it-links','general','fp','t','t',100,100,200,'candidate','live','trace',"
+                "100,100,'fact','t','','whole_item',0,1,'news')"
+            )
+            persist_update(conn, first)
+            persist_update(conn, raised)
+        command.upgrade(config, HEAD)
+        rows = conn.execute(
+            "SELECT update_ref,current_ref,previous_ref,relation,current_event_id,previous_event_id,asserted_at_ms "
+            "FROM news_claim_links ORDER BY current_ref"
+        ).fetchall()
+        change = raised.changes[0]
+        assert [tuple(row.values()) for row in rows] == [
+            (
+                raised.ref,
+                change.current_ref,
+                change.previous_ref,
+                "real_world_change",
+                "ev-links",
+                "ev-links",
+                raised.adopted_at_ms,
+            )
+        ]
+        definition = conn.execute(
+            "SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint "
+            "WHERE conname='news_notification_decisions_origin_check'"
+        ).fetchone()
+        assert "reader_v2" in definition["definition"]
+    finally:
+        conn.close()
+
+
 def test_migration_tree_resolves_outside_the_repository() -> None:
     origin = Path.cwd()
     with tempfile.TemporaryDirectory(prefix="tracefold-alembic-cwd-") as elsewhere:
@@ -630,9 +688,17 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="news_notification_work_terminal_forward_only"):
+    with pytest.raises(RuntimeError, match="news_reader_decisions_forward_only"):
         command.downgrade(config, "base")
     assert _stamped_revision() == HEAD
+    command.stamp(config, "20260929_0415")
+    with pytest.raises(RuntimeError, match="news_semantic_failed_reads_forward_only_restore_verified_backup"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260929_0415"
+    command.stamp(config, "20260929_0413")
+    with pytest.raises(RuntimeError, match="news_notification_work_terminal_forward_only"):
+        command.downgrade(config, "base")
+    assert _stamped_revision() == "20260929_0413"
     command.stamp(config, "20260928_0412")
     with pytest.raises(RuntimeError, match="news_notification_settlement_forward_only_restore_verified_backup"):
         command.downgrade(config, "base")

@@ -14,7 +14,7 @@ from psycopg.errors import RaiseException
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_current_delivery import seed_delivery
 from tests.support.news_event_updates import first_update, persist_update
-from tests.support.news_update_pg import Clock, StubAnalyzer, ThreadedDb, run_agent
+from tests.support.news_update_pg import Clock, StubAnalyzer, ThreadedDb, draft, run_agent
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
 from tracefold.news.pipeline.admission import admit_frame, admit_item
@@ -843,7 +843,10 @@ def test_fourteen_fact_events_keep_the_last_task_and_adopt_independently(conn) -
             return await super().extract(source, budget)
 
     store = PgNewsStore(ThreadedDb(), clock=Clock(stamp + 60_000))
-    analyzer = OneFailure(lambda _source: Extraction(claims=()))
+    # Each task asserts its own numbered fact; a first read without claims would not be adopted (#742 W1).
+    analyzer = OneFailure(
+        lambda source: Extraction(claims=(draft(source.evidence[0], quote=source.extraction_scopes[0].fact_text),))
+    )
     for event_id in event_ids:
         worker = NewsAgent(store, analyzer, program_identity="fourteen-task-test", clock=Clock(stamp + 60_000))
         if event_id == event_ids[6]:

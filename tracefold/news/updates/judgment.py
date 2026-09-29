@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from collections.abc import Coroutine, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Final, Literal, Protocol
+from typing import Any, Final, Literal, Protocol
 
 from .contracts import Exact
 from .identity import identity
@@ -17,7 +18,6 @@ Task = Literal[
     "content_kind",
     "relation",
     "support",
-    "coverage",
     "next_read",
 ]
 QUESTION_VERSION: Final = "news_questions_v3"
@@ -32,7 +32,6 @@ TASK_QUESTIONS: Final[dict[Task, str]] = {
     "content_kind": "Which kind of new content does this claim state?",
     "relation": "How does the current claim relate to the previous claim?",
     "support": "How does this material relate to this exact claim?",
-    "coverage": "How much of this claim does the actually delivered text cover?",
     "next_read": "Would reading this supplied target resolve the stated gap?",
 }
 
@@ -128,19 +127,6 @@ OPTIONS: Final[dict[Task, tuple[tuple[str, str], ...]]] = {
         ("not_addressed", "This material does not address this proposition."),
         ("unresolved", "The support relationship is not established."),
     ),
-    "coverage": (
-        (
-            "full",
-            "The actual delivered text contains the whole selected proposition, including its quantities, "
-            "period, negation and conditions.",
-        ),
-        ("partial", "The actual delivered text covers only part of the selected proposition."),
-        (
-            "none",
-            "The actual delivered text does not cover this proposition. Topic/story similarity is not coverage.",
-        ),
-        ("unresolved", "Coverage cannot be established from this text."),
-    ),
     "next_read": (
         ("read", "Reading this supplied existing target may resolve the stated important gap."),
         ("no_useful_read", "No useful additional read is supported by the supplied gap/target."),
@@ -155,6 +141,9 @@ NATIVE_OPERATION_SECONDS: Final = 2.0
 DEFAULT_BATCH_SIZE: Final = 8
 MAX_BATCH_SIZE: Final = 32
 MAX_QUESTIONS_PER_REQUEST: Final = 64
+# Independent batches of one question set run at most this many at a time. The generated backend shares one
+# local endpoint with every other semantic and notification turn, so the bound stays small.
+PARALLEL_BATCHES: Final = 3
 
 
 class Question(Exact):
@@ -237,16 +226,19 @@ class JudgmentBackend(Protocol):
 
 
 class JudgmentCache(Protocol):
-    async def get(self, key: str) -> Answer | None: ...
+    """Answers by cache key. Each call is one statement: one read for a question set, one write per batch."""
 
-    async def put(self, key: str, answer: Answer) -> None: ...
+    async def get_many(self, keys: tuple[str, ...]) -> dict[str, Answer]: ...
+
+    async def put_many(self, answers: Mapping[str, Answer]) -> None: ...
 
 
 class NewsJudgments:
     """One backend selection, bounded independent batches, and one local fallback.
 
     A persistent cache is supplied by the existing News store. Successful batches
-    survive worker retry and are never sent to a second model for voting.
+    survive worker retry and are never sent to a second model for voting. A batch
+    whose response cannot be used leaves only its own items unavailable.
     """
 
     def __init__(
@@ -257,16 +249,20 @@ class NewsJudgments:
         native: JudgmentBackend | None = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
         native_operation_seconds: float = NATIVE_OPERATION_SECONDS,
+        parallel_batches: int = PARALLEL_BATCHES,
     ) -> None:
         if not 1 <= batch_size <= MAX_BATCH_SIZE:
             raise ValueError("news_judgment_batch_size_invalid")
         if native_operation_seconds <= 0:
             raise ValueError("news_native_operation_seconds_invalid")
+        if parallel_batches < 1:
+            raise ValueError("news_judgment_parallel_batches_invalid")
         self.generated = generated
         self.native = native
         self.cache = cache
         self.batch_size = batch_size
         self.native_operation_seconds = native_operation_seconds
+        self.parallel_batches = parallel_batches
         native_identity = None if native is None else native.identity
         self.identity = identity("backend", QUESTION_VERSION, generated.identity, native_identity, batch_size)
 
@@ -319,28 +315,49 @@ class NewsJudgments:
     ) -> tuple[Answer, ...]:
         if len({item.item_id for item in items}) != len(items):
             raise ContractFault("news_question_duplicate_identity")
-        answers: dict[str, Answer] = {}
-        missing: list[Question] = []
-        for item in items:
-            budget.remaining()
-            cached = await self.cache.get(self._key(task, item, context_json, reask=reask))
-            if cached is None:
-                missing.append(item)
-            else:
-                answers[item.item_id] = cached
-        for batch in self.batches(task, tuple(missing)):
+        if not items:
+            return ()
+        keys = {item.item_id: self._key(task, item, context_json, reask=reask) for item in items}
+        budget.remaining()
+        cached = await self.cache.get_many(tuple(keys.values()))
+        answers = {item.item_id: cached[keys[item.item_id]] for item in items if keys[item.item_id] in cached}
+        missing = tuple(item for item in items if item.item_id not in answers)
+        slots = asyncio.Semaphore(self.parallel_batches)
+
+        async def ask(batch: tuple[Question, ...]) -> BatchResult:
+            async with slots:
+                result = await self._batch(task, batch, budget, context_json, reask=reask)
+            fresh = {keys[answer.item_id]: answer for answer in result.answers if answer.status == "available"}
+            if fresh:
+                await self.cache.put_many(fresh)
+            return result
+
+        for result in await _all(ask(batch) for batch in self.batches(task, missing)):
+            answers.update((answer.item_id, answer) for answer in result.answers)
+        return tuple(answers[item.item_id] for item in items)
+
+    async def _batch(
+        self,
+        task: Task,
+        batch: tuple[Question, ...],
+        budget: Budget,
+        context_json: str | None,
+        *,
+        reask: bool,
+    ) -> BatchResult:
+        """One batch's answers. A response that cannot answer its own items leaves them unavailable.
+
+        The stage deadline, cancellation and configuration faults still end the whole question set.
+        """
+
+        try:
             if reask or self.native is None:
                 result = await self._generated(task, batch, budget, context_json)
             else:
                 result = await self._native(self.native, task, batch, budget, context_json)
-            self._validate(task, batch, result)
-            questions = {item.item_id: item for item in batch}
-            for answer in result.answers:
-                answers[answer.item_id] = answer
-                if answer.status == "available":
-                    key = self._key(task, questions[answer.item_id], context_json, reask=reask)
-                    await self.cache.put(key, answer)
-        return tuple(answers[item.item_id] for item in items)
+            return self._validate(task, batch, result)
+        except ContractFault as exc:
+            return _unavailable(batch, backend=self.generated.identity, code=str(exc))
 
     async def _native(
         self,
@@ -373,28 +390,57 @@ class NewsJudgments:
             async with asyncio.timeout(budget.remaining()):
                 return await self.generated.judge(task, batch, context_json=context_json)
         except ProviderUnavailable as exc:
-            return BatchResult(
-                answers=tuple(
-                    Answer(
-                        item_id=item.item_id,
-                        value=None,
-                        status="unavailable",
-                        backend=self.generated.identity,
-                        error_code=str(exc),
-                    )
-                    for item in batch
-                )
-            )
+            return _unavailable(batch, backend=self.generated.identity, code=str(exc))
 
     @staticmethod
-    def _validate(task: Task, items: tuple[Question, ...], result: BatchResult) -> None:
+    def _validate(task: Task, items: tuple[Question, ...], result: BatchResult) -> BatchResult:
+        """Every item answered once. An option label is compared after case and separator normalization;
+        a label that names no option leaves only that item unavailable, never the batch or the revision."""
+
         answered = [answer.item_id for answer in result.answers]
         if len(answered) != len(items) or set(answered) != {item.item_id for item in items}:
             raise ContractFault("news_judgment_missing_or_duplicate_answer")
         choices = {value for value, _ in OPTIONS.get(task, ())}
+        answers = []
         for answer in result.answers:
             if answer.status == "unavailable":
                 if answer.value is not None:
                     raise ContractFault("news_unavailable_answer_has_value")
-            elif answer.value not in choices:
-                raise ContractFault("news_judgment_option_invalid")
+                answers.append(answer)
+                continue
+            value = _option_label(answer.value)
+            if value in choices:
+                answers.append(answer.model_copy(update={"value": value}))
+            else:
+                answers.append(
+                    answer.model_copy(
+                        update={"value": None, "status": "unavailable", "error_code": "news_judgment_option_invalid"}
+                    )
+                )
+        return BatchResult(answers=tuple(answers))
+
+
+def _option_label(value: object) -> str:
+    return "_".join(str(value).strip().casefold().replace("-", " ").split())
+
+
+def _unavailable(batch: tuple[Question, ...], *, backend: str, code: str) -> BatchResult:
+    return BatchResult(
+        answers=tuple(
+            Answer(item_id=item.item_id, value=None, status="unavailable", backend=backend, error_code=code)
+            for item in batch
+        )
+    )
+
+
+async def _all(calls: Iterable[Coroutine[Any, Any, BatchResult]]) -> list[BatchResult]:
+    """Run the batches together; the first stage-level fault cancels the rest and is raised as itself."""
+
+    tasks = [asyncio.ensure_future(call) for call in calls]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise

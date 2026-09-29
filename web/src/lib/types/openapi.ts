@@ -904,16 +904,33 @@ export interface components {
              * @default
              */
             decision_zh: string;
+            /** Earlier Intent Id */
+            earlier_intent_id?: string | null;
+            /** Importance */
+            importance?: number | null;
+            /** Importance Probabilities */
+            importance_probabilities?: number[] | null;
+            /** Novelty */
+            novelty?: ("known" | "increment" | "development" | "in_flight" | "unlinked") | null;
+            /**
+             * Novelty Zh
+             * @default
+             */
+            novelty_zh: string;
+            /** Reader Backend */
+            reader_backend?: ("native" | "generated") | null;
             /**
              * Reason
              * @enum {string}
              */
-            reason: "editor_notify" | "editor_key" | "editor_feed_only" | "attention_unavailable_default_notify" | "protected_listing" | "large_daily_move" | "retired" | "stale_source" | "covered_by_sent_receipt" | "send_outcome_ambiguous" | "send_outcome_unresolved";
+            reason: "retired" | "send_outcome_unresolved" | "send_outcome_ambiguous" | "stale_source" | "known_to_reader" | "linked_send_in_flight" | "correction_of_sent" | "protected_listing" | "large_daily_move" | "reader_key" | "reader_push" | "reader_feed" | "reader_unavailable" | "reader_unassessed" | "editor_notify" | "editor_key" | "editor_feed_only" | "attention_unavailable_default_notify" | "covered_by_sent_receipt";
             /**
              * Reason Zh
              * @default
              */
             reason_zh: string;
+            /** Render */
+            render?: ("full" | "increment" | "correction") | null;
             /** Statement */
             statement?: string | null;
         };
@@ -2062,14 +2079,6 @@ export interface components {
              * @default
              */
             action_zh: string;
-            /** Assessment Error Code */
-            assessment_error_code?: string | null;
-            /**
-             * Assessment Status
-             * @default skipped
-             * @enum {string}
-             */
-            assessment_status: "available" | "unavailable" | "skipped";
             /** Claim Decisions */
             claim_decisions?: components["schemas"]["NewsClaimDecisionData"][];
             /** Decision Ref */
@@ -2079,13 +2088,20 @@ export interface components {
              * @default false
              */
             key: boolean;
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "reader_v2" | "editorial_v1";
+            /** Reader Identity */
+            reader_identity?: string | null;
             /** Reader Revision */
             reader_revision: string;
             /**
              * Reason
              * @enum {string}
              */
-            reason: "uncovered_claims" | "send_outcome_unresolved" | "no_uncovered_actionable_claims";
+            reason: "uncovered_claims" | "awaiting" | "no_uncovered_actionable_claims" | "send_outcome_unresolved";
             /**
              * Reason Zh
              * @default
@@ -2245,6 +2261,10 @@ export interface components {
             news_judgment_configured: boolean;
             /** News Program Identity */
             news_program_identity?: string | null;
+            /** Reader Judgment Backend */
+            reader_judgment_backend?: ("native" | "generated") | null;
+            /** Reader Judgment Model */
+            reader_judgment_model?: string | null;
             /**
              * Reviewed Decision Should Push 24H
              * @default 0

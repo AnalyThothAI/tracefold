@@ -75,6 +75,18 @@ ERROR_CODE_ZH: Final[dict[str, str]] = {
     "news_semantic_program_identity_mismatch": "语义程序身份校验失败",
     "news_program_route_deadline": "语义程序超时",
     "news_program_output_truncated": "语义程序输出被截断",
+    "news_generation_output_truncated": "模型输出被截断",
+    "news_generation_output_empty": "模型输出为空",
+    "news_generation_output_schema_invalid": "模型输出格式无效",
+    "news_citation_not_in_frozen_source": "引文不在来源中",
+    "news_citation_not_in_visible_source": "引文超出本事件的阅读范围",
+    "news_claim_schema_invalid": "命题结构无效",
+    "news_relation_unavailable": "关系判断暂不可得",
+    "news_support_unavailable": "来源支撑判断暂不可得",
+    "news_event_input_missing": "事件缺少可读来源",
+    "news_reanalysis_read_scope_changed": "重读范围已变化",
+    "news_semantic_attempts_exhausted_after_lease": "语义处理中断且尝试已耗尽",
+    "news_provider_unavailable:TimeoutError": "语义处理超时",
 }
 
 INCIDENT_CAUSE_ZH: Final[dict[str, str]] = {
@@ -171,10 +183,12 @@ def event_outcome(
         done = int(semantic.get("done_revision") or 0)
         if wanted > done:
             if semantic_state(semantic) == "failed":
+                code = str(semantic.get("last_error_code") or "")
+                named = error_code_zh(code)
                 return _outcome(
                     "semantic_failed",
-                    "语义处理失败",
-                    error_code_zh(semantic.get("last_error_code")) or "语义处理失败，等待指定版本重试",
+                    "解析失败",
+                    (f"{named}（{code}）" if named != code else code) if code else "解析失败，等待新材料或指定版本重试",
                 )
             return _outcome("queued_semantic", "理解中", "等待语义处理新的材料版本")
     if not adopted:

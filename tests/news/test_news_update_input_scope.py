@@ -383,3 +383,107 @@ def test_explicit_predecessor_survives_external_budget_and_own_claim_is_not_dupl
         preferred_refs={old.claims[0].ref},
     )
     assert len(result) == 8 and old.claims[0].ref not in {p.claim.ref for p in result}
+
+
+# ---------------------------------------------------------------- #742 U3 / W6 / S3 / S5
+
+
+def test_a_revised_headline_is_the_same_whole_item_fact() -> None:
+    # U3: the headline "25 bps" revised to "50 bps" forked a second Event keyed on the new title.
+    before = extract_fact_units(item_id="record", raw_text="Fed cuts 25 bps", fallback_title="Fed cuts 25 bps")
+    after = extract_fact_units(item_id="record", raw_text="Fed cuts 50 bps", fallback_title="Fed cuts 50 bps")
+    other = extract_fact_units(item_id="other", raw_text="Fed cuts 25 bps", fallback_title="Fed cuts 25 bps")
+    assert before[0].fact_id == after[0].fact_id != other[0].fact_id
+    assert after[0].text == "Fed cuts 50 bps"
+
+
+def test_input_identity_ignores_related_claims_but_not_the_events_own() -> None:
+    data = input_material()
+    base = frozen_input("event", data)
+    related = make_head("related", ["Exchange suspends NEAR withdrawals again."])
+    data["related_heads"] = [related.model_dump(mode="json")]
+    with_related = frozen_input("event", data)
+    assert with_related.prior and with_related.input_sha == base.input_sha
+    # Related claims are comparison candidates only; extraction never reads them.
+    assert extraction_input(with_related)["prior"] == []
+    own = make_head("event", ["Exchange suspends $NEAR withdrawals."])
+    data["head"] = own.model_dump(mode="json")
+    assert frozen_input("event", data).input_sha != base.input_sha
+
+
+def test_only_current_own_claims_are_compared_and_quarantined_reads_are_not_resent() -> None:
+    from tracefold.news.updates.contracts import PriorClaim, RelationDraft
+
+    data = input_material()
+    own = make_head("event", ["Old reading."])
+    correction = material("Correction: the new reading.", revision=5)
+    fixed = draft(correction).model_copy(
+        update={"fields": draft(correction).fields.model_copy(update={"subject": "Correction"})}
+    )
+    retired = assemble_update(
+        FrozenInput(
+            event_id="event",
+            revision=2,
+            lineage_id="event-2",
+            evidence=(correction,),
+            prior=tuple(
+                PriorClaim(event_id="event", content_revision=own.content_revision, claim=c) for c in own.claims
+            ),
+        ),
+        Extraction(
+            claims=(fixed,),
+            relations=(
+                RelationDraft(slot="a", previous_ref=own.claims[0].ref, relation="corrects", change_kind="correction"),
+            ),
+        ),
+        own,
+        adopted_at_ms=300,
+    )
+    assert retired is not None and retired.retired_claim_refs == (own.claims[0].ref,)
+    data["head"] = retired.model_dump(mode="json")
+    source = frozen_input("event", data)
+    assert [row.claim.ref for row in source.own_prior] == [retired.claims[-1].ref]
+    failed = [view.read_ref for view in reading_views(source)][:1]
+    data["work"] = {"wanted_revision": 2, "lineage_id": "l2", "processed_read_refs": [], "failed_read_refs": failed}
+    assert [item.ref for item in frozen_input("event", data).evidence] == [source.evidence[1].ref]
+
+
+def test_a_strategy_resend_changes_the_snapshot_but_is_no_semantic_material() -> None:
+    from tracefold.news.storage.events import prepare_evidence_snapshot
+
+    card = {"event_id": "event", "leader_item_id": "item", "grounded_assets": ["BTC"], "provider_metadata": {}}
+    member = {
+        "item_id": "item",
+        "fact_id": "fact",
+        "fact_text": "Exchange suspends withdrawals.",
+        "joined_at_ms": 1,
+        "match_kind": "leader",
+        "jaccard_estimate": None,
+        "reporting_origin": "wire",
+        "canonical_url": None,
+        "provider_metadata": {"strategies": [{"id": "1018"}]},
+        "provenance": ["1018"],
+    }
+    first = prepare_evidence_snapshot(
+        {"card": card, "members": [member], "latest": None}, event_id="event", now_ms=1, focus_fact=None
+    )
+    assert first["semantic_changed"]
+    latest = {
+        "evidence_version": 1,
+        "evidence_sha256": first["evidence_sha256"],
+        "snapshot": json.loads(first["snapshot_json"]),
+    }
+    resent = {
+        **member,
+        "provider_metadata": {"strategies": [{"id": "1018"}, {"id": "2000"}]},
+        "provenance": ["1018", "2000"],
+    }
+    again = prepare_evidence_snapshot(
+        {"card": card, "members": [resent], "latest": latest}, event_id="event", now_ms=2, focus_fact=None
+    )
+    assert again["evidence_sha256"] != first["evidence_sha256"] and not again["semantic_changed"]
+    revised = {**member, "evidence_revisions": ["rev-1"]}
+    body = prepare_evidence_snapshot(
+        {"card": card, "members": [revised], "latest": latest}, event_id="event", now_ms=3, focus_fact=None
+    )
+    assert body["semantic_changed"]

@@ -46,7 +46,7 @@ class Backend:
 
     def __init__(
         self,
-        value: str | bool = "none",
+        value: str | bool = "not_addressed",
         *,
         identity: str = "test-backend",
         fail_batch: int | None = None,
@@ -83,7 +83,7 @@ def test_failed_native_batch_does_not_rejudge_successful_batch_or_truncate_tail(
         native = Backend(fail_batch=2, identity="native")
         generated = Backend(identity="generated")
         judgments = NewsJudgments(generated=generated, native=native, cache=MemoryCache(), batch_size=3)
-        answers = await judgments.judge("coverage", questions(8), Budget.start(10))
+        answers = await judgments.judge("support", questions(8), Budget.start(10))
         assert len(answers) == 8
         assert len(native.calls) == 3
         assert [call[1] for call in generated.calls] == [("3", "4", "5")]
@@ -96,7 +96,7 @@ def test_cancelled_native_batch_never_falls_back() -> None:
         generated = Backend(identity="generated")
         judgments = NewsJudgments(generated=generated, native=Backend(cancel=True), cache=MemoryCache())
         with pytest.raises(asyncio.CancelledError):
-            await judgments.judge("coverage", questions(1), Budget.start(5))
+            await judgments.judge("support", questions(1), Budget.start(5))
         assert generated.calls == []
 
     asyncio.run(run())
@@ -115,7 +115,7 @@ def test_each_native_batch_has_its_own_operation_timeout() -> None:
             batch_size=1,
             native_operation_seconds=0.1,
         )
-        answers = await judgments.judge("coverage", questions(5), Budget.start(5))
+        answers = await judgments.judge("support", questions(5), Budget.start(5))
         assert {answer.backend for answer in answers} == {"native"}
         assert len(native.calls) == 5
         assert generated.calls == []
@@ -134,7 +134,7 @@ def test_a_slow_native_batch_falls_back_alone() -> None:
             batch_size=2,
             native_operation_seconds=0.05,
         )
-        answers = await judgments.judge("coverage", questions(6), Budget.start(5))
+        answers = await judgments.judge("support", questions(6), Budget.start(5))
         assert [answer.backend for answer in answers] == [
             "native",
             "native",
@@ -160,10 +160,10 @@ def test_native_operation_timeout_never_extends_the_shared_stage_deadline() -> N
             native_operation_seconds=5.0,
         )
         with pytest.raises(TimeoutError):
-            await judgments.judge("coverage", questions(3), Budget.start(0.15))
-        # The second batch was cut at the stage deadline, not at its own 5 s limit, and an expired
-        # stage has no generated fallback.
-        assert len(native.calls) == 2
+            await judgments.judge("support", questions(3), Budget.start(0.15))
+        # The batches run together; the slow one was cut at the stage deadline, not at its own 5 s limit,
+        # and an expired stage has no generated fallback.
+        assert len(native.calls) == 3
         assert generated.calls == []
 
     asyncio.run(run())
@@ -197,7 +197,7 @@ def test_unavailable_generated_answer_is_explicit_and_not_cached() -> None:
         generated = Backend(identity="generated", fail_batch=1)
         cache = MemoryCache()
         judgments = NewsJudgments(generated=generated, cache=cache)
-        answers = await judgments.judge("coverage", questions(2), Budget.start(5))
+        answers = await judgments.judge("support", questions(2), Budget.start(5))
         assert {answer.status for answer in answers} == {"unavailable"}
         assert all(answer.value is None for answer in answers)
         assert cache.values == {}
@@ -313,17 +313,20 @@ def test_native_server_error_falls_back_to_generated_for_that_batch_only() -> No
             requests += 1
             if requests == 1:
                 return httpx2.Response(529, json={"error": {"message": "overloaded"}})
-            return _response({"answer_0": _choice("coverage", "none")})
+            return _response({"answer_0": _choice("support", "not_addressed")})
 
         connection = _connection(respond)
-        generated = Backend("partial", identity="generated")
+        generated = Backend("reports", identity="generated")
         try:
             native = NativeJudgments(lambda: connection.bind(timeout_seconds=2.0), model_identity="jev-test")
             judgments = NewsJudgments(generated=generated, native=native, cache=MemoryCache(), batch_size=1)
-            answers = await judgments.judge("coverage", questions(2), Budget.start(5))
+            answers = await judgments.judge("support", questions(2), Budget.start(5))
         finally:
             await connection.aclose()
-        assert [(row.value, row.backend) for row in answers] == [("partial", "generated"), ("none", native.identity)]
+        assert [(row.value, row.backend) for row in answers] == [
+            ("reports", "generated"),
+            ("not_addressed", native.identity),
+        ]
         assert requests == 2
 
     asyncio.run(run())
@@ -340,7 +343,7 @@ def test_native_authentication_error_is_never_hidden_by_fallback() -> None:
             native = NativeJudgments(lambda: connection.bind(timeout_seconds=2.0), model_identity="jev-test")
             judgments = NewsJudgments(generated=generated, native=native, cache=MemoryCache())
             with pytest.raises(ConfigurationFault):
-                await judgments.judge("coverage", questions(1), Budget.start(5))
+                await judgments.judge("support", questions(1), Budget.start(5))
         finally:
             await connection.aclose()
         assert generated.calls == []
@@ -446,3 +449,76 @@ def test_unknown_mode_clarification_does_not_rejudge_other_fused_fields():
         assert {call[0] for call in native.calls} == {"support"}
 
     asyncio.run(run())
+
+
+# ------------------------------------------------------------------ #742 W7 / S8: batches and labels
+
+
+class Scripted:
+    """Answers per batch number: a value, an exception, or a malformed batch; records concurrency."""
+
+    identity = "scripted"
+
+    def __init__(self, script: dict[int, Any], default: str = "unrelated") -> None:
+        self.script = script
+        self.default = default
+        self.calls = 0
+        self.active = 0
+        self.peak = 0
+
+    async def judge(self, task: Task, items: tuple[Question, ...], *, context_json: str | None) -> BatchResult:
+        self.calls += 1
+        number = self.calls
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        try:
+            await asyncio.sleep(0.02)
+            outcome = self.script.get(number, self.default)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            if outcome == "missing":
+                return BatchResult(answers=())
+            return BatchResult(answers=tuple(Answer(item_id=i.item_id, value=outcome, backend="s") for i in items))
+        finally:
+            self.active -= 1
+
+
+def test_batches_run_bounded_in_parallel_and_one_failed_batch_leaves_only_its_items_unavailable() -> None:
+    async def run() -> None:
+        backend = Scripted({2: "missing"})
+        cache = MemoryCache()
+        judgments = NewsJudgments(generated=backend, cache=cache, batch_size=2, parallel_batches=2)
+        answers = await judgments.judge("relation", questions(8), Budget.start(5))
+        assert backend.peak == 2
+        unavailable = [answer.item_id for answer in answers if answer.status == "unavailable"]
+        assert len(unavailable) == 2
+        assert {answer.error_code for answer in answers if answer.status == "unavailable"} == {
+            "news_judgment_missing_or_duplicate_answer"
+        }
+        # One read for the whole question set, one write per answered batch; the failed batch caches nothing.
+        assert len(cache.reads) == 1 and len(cache.writes) == 3
+        assert set(cache.values) and all(answer.value == "unrelated" for answer in cache.values.values())
+        again = await judgments.judge("relation", questions(8), Budget.start(5))
+        assert backend.calls == 5  # only the failed batch is asked again
+        assert all(answer.status == "available" for answer in again)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(("label", "value"), [("Unrelated", "unrelated"), (" real-world change ", "real_world_change")])
+def test_an_option_label_is_read_after_case_and_separator_normalization(label: str, value: str) -> None:
+    answers = asyncio.run(
+        NewsJudgments(generated=Backend(label), cache=MemoryCache()).judge("relation", questions(1), Budget.start(5))
+    )
+    assert (answers[0].status, answers[0].value) == ("available", value)
+
+
+def test_an_unknown_option_leaves_only_that_item_unresolved_and_is_not_cached() -> None:
+    cache = MemoryCache()
+    answers = asyncio.run(
+        NewsJudgments(generated=Backend("maybe"), cache=cache).judge("relation", questions(2), Budget.start(5))
+    )
+    assert {(row.status, row.value, row.error_code) for row in answers} == {
+        ("unavailable", None, "news_judgment_option_invalid")
+    }
+    assert cache.values == {}

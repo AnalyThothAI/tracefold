@@ -59,9 +59,9 @@
 
 另有 `GET /healthz`、`GET /readyz`、`GET /metrics`。探针归属所在角色；不同进程的就绪语义不能互换。请求 envelope、错误响应、查询上下界和字段空值定义请直接查 OpenAPI。
 
-`/api/news/status` 将可领取的 `semantic_pending`、等待调度的 `semantic_deferred`、租约中的 `semantic_in_progress` 与终结的 `semantic_failed_exhausted` 分开。已耗尽 revision 不属于可运行 pending；计数不是推送次数或模型调用次数。
+`/api/news/status` 将可领取的 `semantic_pending`、等待调度的 `semantic_deferred`、租约中的 `semantic_in_progress` 与终结的 `semantic_failed_exhausted` 分开。`semantic_failed_exhausted` 计入当前仍失败的 revision，不论失败前实际用了几次尝试；失败 revision 不属于可运行 pending；计数不是推送次数或模型调用次数。
 
-Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed`；`failed` 是通知工作的持久终态，带 `last_error_code`，对应结果 `outcome.kind = notification_failed`（归入“被拦截”），只有 `news retry-work --kind notification` 按精确 content revision 重开。逐命题原因 `send_outcome_ambiguous` 表示此前发送结果不明、按可能已送达处理且不重发；`send_outcome_unresolved` 只表示本 Event 仍有发送进行中。
+Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed`；`failed` 是通知工作的持久终态，带 `last_error_code`，对应结果 `outcome.kind = notification_failed`（归入“被拦截”），只有 `news retry-work --kind notification` 按精确 content revision 重开。逐命题原因 `send_outcome_ambiguous` 表示此前发送结果不明、按可能已送达处理且不重发；`send_outcome_unresolved` 只表示本 Event 仍有发送进行中。`processing.notification.plan.origin` 为 `reader_v2` 时，逐命题行另带 `novelty`（known / increment / development / in_flight / unlinked）、`render`（full / increment / correction）、`importance` 与分布、`reader_backend`；`editorial_v1` 历史只给出旧原因。
 
 ### 认证与浏览器行为
 
@@ -100,7 +100,8 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 | `content_revision` | 已采用知识版本，不等于模型调用次数或推送次数 |
 | `claim_ref` / evidence ref | 命题、引文与更正目标的稳定引用，不用裸标题代替 |
 | notification intent | 针对读者与精确内容的稳定发送意图 |
-| notification decision | 不可变的编辑输入、逐命题选择、模型状态与结果；工作和意图引用其身份 |
+| notification decision | 不可变的 `reader_v2` 决定：逐命题原因、读者新颖度、锚点与增量重要性分布、作答后端和冻结输入摘要；工作和意图引用其身份；`editorial_v1` 历史只读 |
+| claim link | 采纳时从 `changes` 写入的命题比较（`news_claim_links`），只追加，按两端 ref 双向读取 |
 | card copy input digest | 所选命题的完整表达材料和文案器身份；仅相同实际输入复用中文文案 |
 | 冻结正文 / 实际发送账本 | 谁可能收到什么、结果是否已明确 |
 
@@ -145,7 +146,7 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 
 `news replay` 在本地重放 provider hits 的准入 / Gate，不调用模型或 broker；它也不代表完整 EventUpdate→通知→交易回放。实际参数和默认值见[生成 CLI 帮助](generated/cli-help.md)，不要把命令名称扩展为未实现能力。
 
-未知配置 key 按 Settings 拒绝。密钥放在配置允许的位置 / 文件，不能通过 `llm.request.extra_body` 注入 transport-owned 字段或秘密。业务配置只有 `TRACEFOLD_HOME/config.yaml`，默认 `~/.tracefold/config.yaml`；Compose 可读取 `.env` 持久化项目、路径和端口，但 Settings 不把它作为业务字段回退。
+未知配置 key 按 Settings 拒绝。`llm.news_reader_judgment` 是通知决策层独用的 System One 路由，密钥只能以 `api_key_file` 引用配置目录下的私有文件（固定为初始化创建、只挂载给 Workers 的 `news_reader_judgment_api_key`；空文件等于未配置），`config` 与 `/api/news/status` 只报告是否配置、模型和作答后端。密钥放在配置允许的位置 / 文件，不能通过 `llm.request.extra_body` 注入 transport-owned 字段或秘密。业务配置只有 `TRACEFOLD_HOME/config.yaml`，默认 `~/.tracefold/config.yaml`；Compose 可读取 `.env` 持久化项目、路径和端口，但 Settings 不把它作为业务字段回退。
 
 <a id="section-时间缺失与版本规则"></a>
 ## 07 · 时间、缺失与版本规则

@@ -21,7 +21,6 @@ from .notification import CardCopy, FrozenCard, NotificationPlan, ReaderSnapshot
 class SemanticCheckpoint(Exact):
     work_id: str
     extraction: Extraction | None = None
-    understanding: Extraction | None = None
 
 
 class SemanticObservation(Exact):
@@ -124,8 +123,6 @@ class NewsStore(Protocol):
         """Insert-only work stage; return the first stored winner on a race."""
         ...
 
-    async def save_understanding(self, work_id: str, understood: Extraction) -> Extraction: ...
-
     async def save_observation(self, observation: SemanticObservation) -> SemanticObservation:
         """Insert-only result_id; return the stored winner, including its original
         completion clock, on replay. Content mismatches are errors. This write is
@@ -173,9 +170,10 @@ class NewsStore(Protocol):
         """Persist or reuse an immutable decision, check head/reader versions, reserve an intent.
 
         The decision is written before the reader check, so a plan that loses the
-        race keeps its judgments for the next turn to reuse; an identical plan is
-        the same decision row. Every claim_decisions row is persisted with its
-        reason, so the Console can show why a claim was or was not notified. A
+        race is on record; its reader judgments are already in the judgment cache for
+        the next turn to reuse. An identical plan is the same decision row. Every
+        claim_decisions row is persisted with its reason, novelty and judgment, so
+        the Console can show why a claim was or was not notified. A
         no_notification plan completes the matching pending marker. An unresolved
         plan (only a send of this Event still in flight makes one) waits without
         spending an attempt. A notify result gets one stable intent/queue row
@@ -185,10 +183,6 @@ class NewsStore(Protocol):
         returns a recorded result without a lease.
         """
         ...
-
-    async def lookup_notification_decision(
-        self, event_id: str, channel: str, input_digest: str
-    ) -> NotificationPlan | None: ...
 
     async def lookup_card_copy(self, input_digest: str) -> CardCopy | None: ...
 

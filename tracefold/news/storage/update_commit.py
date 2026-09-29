@@ -6,12 +6,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final, Protocol, cast
 
-from ..updates.contracts import EventUpdate
+from ..updates.contracts import NOTIFICATION_CHANGES, EventUpdate
 from ..updates.notification import NEWS_CHANNEL
 from .sql_values import _dumps
 from .trade_projection import TradeProjectionStorage
 
 # The public kind of a PublicUpdate in the News outbox. A catalyst delta keeps the existing kind.
+# The relations a notification reader can act on; `unrelated` and `unresolved` are not links.
+CLAIM_LINK_RELATIONS: frozenset[str | None] = frozenset(
+    {"equivalent", "adds_information", "real_world_change", "corrects", "conflicts"}
+)
 PUBLIC_TRADE_KINDS: Final[dict[str, str]] = {"catalyst_delta": "catalyst", "source_update": "source_update"}
 _EVENT_LOCK_NAMESPACE = 0x4E455755  # All head, plan and send-permission writers use this lock.
 
@@ -51,13 +55,20 @@ def commit_update(
     source: SemanticSource | ScopeProofSource,
     public_rows: Sequence[tuple[str, Mapping[str, Any]]],
     now_ms: int,
+    prior_events: Mapping[str, str] | None = None,
 ) -> bool:
-    """Write the source, immutable update, head, public outbox and work in one transaction.
+    """Write the source, immutable update, its claim links, head, public outbox and work in one transaction.
+
+    Every change that compares a claim with an earlier one is kept as a claim link, so a later revision that
+    no longer repeats the comparison cannot lose it (#742). `prior_events` names the Event of each prior
+    claim the semantic input supplied.
 
     The caller has already taken the Event lock and checked its source under that lock.
-    A pure scope retraction only retargets work still owed -- pending, or failed and waiting for an
-    operator retry -- to the new head; it does not create work, reopen a failed one or replenish the
-    budget of any responsibility.
+    Only an update with a notification change (new content, a real change, a correction or a
+    conflict) opens or resets notification work. Any other update -- a restatement, a new source
+    for an adopted claim, a pure scope retraction -- only retargets work still owed (pending, or
+    failed and waiting for an operator retry) to the new head; it does not create work, reopen a
+    failed one or replenish the budget of any responsibility.
     """
 
     conn = owner.conn
@@ -105,6 +116,26 @@ def commit_update(
     ).fetchone()
     if inserted is None:
         raise ValueError("news_event_update_revision_exists")
+    own = {claim.ref for claim in update.claims}
+    for change in update.changes:
+        if change.previous_ref is None or change.previous_ref == change.current_ref:
+            continue
+        if change.relation not in CLAIM_LINK_RELATIONS:
+            continue
+        conn.execute(
+            """INSERT INTO news_claim_links
+                 (update_ref,current_ref,previous_ref,relation,current_event_id,previous_event_id,asserted_at_ms)
+               VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+            (
+                update.ref,
+                change.current_ref,
+                change.previous_ref,
+                change.relation,
+                event_id,
+                event_id if change.previous_ref in own else (prior_events or {}).get(change.previous_ref),
+                update.adopted_at_ms,
+            ),
+        )
     conn.execute(
         """INSERT INTO news_event_update_heads
              (event_id,content_revision,input_revision,update_ref,adopted_at_ms)
@@ -125,10 +156,7 @@ def commit_update(
             source_recorded_at_ms=int(payload["semantic_completed_at_ms"]),
         ):
             raise ValueError("news_public_update_conflict")
-    pure_retraction = isinstance(source, ScopeProofSource) and all(
-        change.kind == "scope_retraction" for change in update.changes
-    )
-    if pure_retraction:
+    if not any(change.kind in NOTIFICATION_CHANGES for change in update.changes):
         conn.execute(
             """UPDATE news_notification_work
                   SET content_revision=%s,decision_ref=NULL,reader_revision=NULL,

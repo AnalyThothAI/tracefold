@@ -112,6 +112,7 @@ make logs
 ├── postgres_password
 ├── postgres_database_password
 ├── telegram_bot_token
+├── news_reader_judgment_api_key
 ├── binance_usdm_api_key
 ├── binance_usdm_api_secret
 ├── archive/
@@ -142,6 +143,7 @@ make help
 | 编辑型模型 | `llm.api_key`、`llm.base_url`、`llm.news_triage_model` | 完整一组；字段名保留历史拼写，但当前调用 EventUpdate Agent |
 | 中文卡片路由 | `llm.news_reader_card` 及对应 fallback | 可选独立完整 endpoint；未配置时按实际装配复用默认生成能力 |
 | News 有界原生判断 | `llm.news_judgment` | 可选完整 `api_key / base_url / model`，不从 Trading 路由推断 |
+| News 通知决策原生判断 | `llm.news_reader_judgment` | 可选完整 `api_key_file / base_url / model`：`api_key_file: news_reader_judgment_api_key`（初始化建好的空 `0600` 文件，Compose 只读挂载给 Workers；换别的文件名不会被挂载），key 写进该文件，不接受内联 `api_key`。只回答锚点与增量重要性两题，不从 `news_judgment` 或 Trading 路由推断；未配置或 key 文件为空时由生成式 News 路由按其自己的切点回答（Workers 日志 `news_reader_judgment_key_empty`），文件不可读则 editorial 能力以 `news_reader_judgment_key_*` 故障 |
 | 新闻 / 市场推送 | `news.push` | 默认关闭；Feishu / Telegram 各需自身有效目的地与凭据 |
 | News 通知准备上限 | `news.push.notification_prepare_limit` | 默认 2，可设 1–8；限制实际在途准备，不改变同进程唯一发送时隙 |
 | 钱包净买入 | `news.chain_tape` | 默认关闭；名单、RPC、规则与后续价格能力分开诊断 |

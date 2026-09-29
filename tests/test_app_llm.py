@@ -292,8 +292,14 @@ def test_extraction_and_judgment_share_the_triage_route_and_cards_use_the_reader
     assert models.card.fallback is models.extraction.fallback
     extraction = models.extraction.lms()
     assert [lm.model for lm in extraction] == ["openai/triage-model", "openai/fb-model"]
-    assert all(lm.kwargs["max_tokens"] == learning_runtime.EXTRACTION_MAX_TOKENS for lm in extraction)
+    # #742 S2: the fallback answers a truncated extraction with a larger ceiling, so it is a different request.
+    assert [lm.kwargs["max_tokens"] for lm in extraction] == [
+        learning_runtime.EXTRACTION_MAX_TOKENS,
+        learning_runtime.EXTRACTION_FALLBACK_MAX_TOKENS,
+    ]
+    assert learning_runtime.EXTRACTION_FALLBACK_MAX_TOKENS > learning_runtime.EXTRACTION_MAX_TOKENS
     assert all(lm.num_retries == 0 and lm.cache is False for lm in extraction)
+    assert [lm.kwargs["max_tokens"] for lm in models.judgment.lms()] == [learning_runtime.JUDGMENT_MAX_TOKENS] * 2
     assert [lm.kwargs["max_tokens"] for lm in models.card.lms()] == [learning_runtime.CARD_MAX_TOKENS] * 2
     assert models.news_judgment is None
     assert models.status()["judgment_backend"] == "generated"
@@ -404,3 +410,41 @@ def test_a_dedicated_reader_fallback_is_its_own_secret_free_route() -> None:
     rendered = repr((models.card.identity, models.extraction.identity, models.status()))
     for secret in ("event-fallback.test", "reader-fallback.test", "event-fallback-key", "reader-fallback-key"):
         assert secret not in rendered
+
+
+def test_the_reader_judgment_route_reads_its_key_file_and_nothing_else(tmp_path: Any) -> None:
+    from tracefold.app.news_updates import compose_reader_judge
+    from tracefold.platform.config.secret_file import SecretFileError
+
+    jev = {"api_key": "jev-key", "base_url": "https://openrouter.ai/api", "model": "jev-1.13"}
+    unset = _news_settings(news_judgment=jev, trading_semantics=jev)
+    assert learning_runtime.news_reader_judgment_endpoint(unset) is None
+
+    settings = _news_settings(
+        news_reader_judgment={
+            "api_key_file": "news_reader_judgment_api_key",
+            "base_url": "https://api.typesafe.ai",
+            "model": "jev-1.13",
+        }
+    )
+    settings.set_config_dir(tmp_path)
+    with pytest.raises(SecretFileError, match="missing"):
+        learning_runtime.news_reader_judgment_endpoint(settings)
+    # `tracefold init` leaves the file empty: an unset key, answered by the generative route (as Telegram).
+    key = tmp_path / "news_reader_judgment_api_key"
+    key.touch(mode=0o600)
+    assert learning_runtime.news_reader_judgment_endpoint(settings) is None
+    key.write_text("reader-secret\n")
+    key.chmod(0o600)
+    endpoint = learning_runtime.news_reader_judgment_endpoint(settings)
+    assert endpoint is not None and endpoint.api_key == "reader-secret"
+    assert "reader-secret" not in repr(endpoint) and "reader-secret" not in endpoint.identity
+
+    generative, none = compose_reader_judge(generated_lm_factory=lambda: (), generated_model_identity="g")
+    native, connection = compose_reader_judge(
+        generated_lm_factory=lambda: (), generated_model_identity="g", reader_judgment=endpoint
+    )
+    assert none is None and generative.native_identity is None
+    assert connection is not None and native.native_identity is not None
+    assert native.identity != generative.identity
+    asyncio.run(connection.aclose())

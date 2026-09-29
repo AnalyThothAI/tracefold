@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from ..bus import DeferError, TransientError
@@ -27,11 +27,13 @@ from ..updates.ports import (
     SemanticObservation,
     SendOutcome,
 )
+from ..updates.reader_judgments import ClaimLink, LinkedReceipt
 from ..updates.service import clock_ms
 from .event_updates import (
     INTENT_LEASE_MS,
     EventUpdateConflict,
     SemanticLease,
+    delivered_text,
     frozen_input,
     item_evidence,
     read_target_item_id,
@@ -91,26 +93,17 @@ class PgNewsStore:
         if not documents:
             return None
         extraction = documents.get("extraction")
-        understanding = documents.get("understanding")
         return SemanticCheckpoint(
-            work_id=work_id,
-            extraction=None if extraction is None else Extraction.model_validate(extraction),
-            understanding=None if understanding is None else Extraction.model_validate(understanding),
+            work_id=work_id, extraction=None if extraction is None else Extraction.model_validate(extraction)
         )
 
     async def save_extraction(self, work_id: str, extracted: Extraction) -> Extraction:
-        return await self._save_stage(work_id, "extraction", extracted)
-
-    async def save_understanding(self, work_id: str, understood: Extraction) -> Extraction:
-        return await self._save_stage(work_id, "understanding", understood)
-
-    async def _save_stage(self, work_id: str, stage: str, value: Extraction) -> Extraction:
-        document = value.model_dump_json()
+        document = extracted.model_dump_json()
         now_ms = self.clock()
         stored = await self.db.tx(
             "news_update_save_checkpoint",
             lambda repos: repos.news.insert_semantic_checkpoint(
-                work_id=work_id, stage=stage, document_json=document, now_ms=now_ms
+                work_id=work_id, stage="extraction", document_json=document, now_ms=now_ms
             ),
         )
         return Extraction.model_validate(stored)
@@ -238,6 +231,25 @@ class PgNewsStore:
             invalidated_claim_refs=tuple(material["invalidated"]),
             watch_symbols=self.watch_symbols,
             protected_listing_claim_refs=listing_refs,
+            links=tuple(
+                ClaimLink(
+                    current_ref=str(row["current_ref"]),
+                    previous_ref=str(row["previous_ref"]),
+                    relation=row["relation"],
+                    asserted_at_ms=int(row["asserted_at_ms"]),
+                )
+                for row in material["links"]
+            ),
+            link_receipts=tuple(
+                LinkedReceipt(
+                    intent_id=str(row["intent_id"]),
+                    state=row["state"],
+                    claim_refs=tuple(str(ref) for ref in row["claim_refs"] or ()),
+                    settled_at_ms=None if row["settled_at_ms"] is None else int(row["settled_at_ms"]),
+                )
+                for row in material["link_receipts"]
+            ),
+            linked=tuple(text for row in material["link_receipts"] if (text := delivered_text(row)) is not None),
         )
         return NotificationSnapshot(
             update=update,
@@ -245,17 +257,6 @@ class PgNewsStore:
             work_updated_at_ms=material["work_updated_at_ms"],
             work_due_at_ms=material["work_due_at_ms"],
         )
-
-    async def lookup_notification_decision(
-        self, event_id: str, channel: str, input_digest: str
-    ) -> NotificationPlan | None:
-        document = await self.db.read(
-            "news_update_decision_lookup",
-            lambda repos: repos.news.lookup_notification_decision(
-                event_id=event_id, channel=channel, input_digest=input_digest
-            ),
-        )
-        return None if document is None else NotificationPlan.model_validate(document)
 
     async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
         token = self.lease_token()
@@ -574,16 +575,20 @@ class PgJudgmentCache:
         self.db = db
         self.clock = clock
 
-    async def get(self, key: str) -> Answer | None:
-        answer = await self.db.read("news_judgment_cache_get", lambda repos: repos.news.judgment_cache_answer(key))
-        return None if answer is None else Answer.model_validate(answer)
+    async def get_many(self, keys: tuple[str, ...]) -> dict[str, Answer]:
+        if not keys:
+            return {}
+        rows = await self.db.read("news_judgment_cache_get", lambda repos: repos.news.judgment_cache_answers(keys))
+        return {key: Answer.model_validate(answer) for key, answer in rows.items()}
 
-    async def put(self, key: str, answer: Answer) -> None:
-        answer_json = answer.model_dump_json()
+    async def put_many(self, answers: Mapping[str, Answer]) -> None:
+        if not answers:
+            return
+        documents = {key: answer.model_dump_json() for key, answer in answers.items()}
         now_ms = self.clock()
         await self.db.tx(
             "news_judgment_cache_put",
-            lambda repos: repos.news.put_judgment_cache_answer(cache_key=key, answer_json=answer_json, now_ms=now_ms),
+            lambda repos: repos.news.put_judgment_cache_answers(answers=documents, now_ms=now_ms),
         )
 
 

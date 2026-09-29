@@ -287,7 +287,7 @@ class FeedStorage:
             if on_update_path or intents
             else None
         )
-        reader_card = reader_delivery(deliveries)
+        reader_card = reader_delivery(deliveries, None if head is None else str(head["content_revision"]))
         outcome, timeline = event_timeline(
             event=event,
             members=member_rows,

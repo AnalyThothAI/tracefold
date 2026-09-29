@@ -23,7 +23,7 @@ BAND_CANDIDATES_SQL = """
             )
             SELECT e.event_id, e.comparison_title, e.leader_title, e.opened_at_ms, e.grounded_assets
               FROM news_events e JOIN hits ON hits.event_id = e.event_id
-             WHERE e.event_kind = %s
+             WHERE e.event_kind = %s AND e.admission = ANY(%s)
                AND (
                  SELECT s.provenance = 'observed'
                     AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
@@ -34,6 +34,18 @@ BAND_CANDIDATES_SQL = """
              ORDER BY e.opened_at_ms ASC
              LIMIT 25
 """
+
+
+def joinable_admissions(ingest_mode: str) -> list[str]:
+    """The admissions of Events a new frame may join by exact text or near match.
+
+    A live frame joins only an admitted Event: a recovery Event produces no semantic work, reader card or
+    catalyst, so absorbing a live report into it would silence that report. A recovered frame is history
+    and never wakes semantics, so it may join either.
+    """
+
+    admitted = sorted(ADMITTED_ADMISSIONS)
+    return admitted if ingest_mode == "live" else [*admitted, "recovery"]
 
 
 def prepare_evidence_snapshot(
@@ -157,8 +169,29 @@ def prepare_evidence_snapshot(
         "evidence_version": 1 if previous_version is None else previous_version + 1,
         "focus_fact_id": str(focus["fact_id"]),
         "evidence_sha256": evidence_sha,
+        "semantic_changed": not previous or semantic_material(previous) != semantic_material(snapshot),
         "snapshot_json": serialized,
         "now_ms": int(now_ms),
+    }
+
+
+def semantic_material(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """What a semantic turn reads from an evidence snapshot.
+
+    The task scope, the members' records, facts and body revisions, and the grounded assets. A strategy or
+    provenance merged into a member, a score or a queue priority is recorded in the snapshot but is not new
+    material: a snapshot that changes only these needs no semantic work.
+    """
+
+    card = snapshot.get("card") or {}
+    return {
+        "focus_fact": snapshot.get("focus_fact"),
+        "leader_item_id": card.get("leader_item_id"),
+        "grounded_assets": card.get("grounded_assets"),
+        "members": [
+            {key: member.get(key) for key in ("item_id", "fact_id", "fact_text", "evidence_revisions")}
+            for member in snapshot.get("members") or ()
+        ],
     }
 
 
@@ -517,12 +550,13 @@ class EventStorage:
         event_kind: EventKind,
         fingerprint: str,
         now_ms: int,
+        ingest_mode: str,
     ) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
             SELECT e.event_id, e.opened_at_ms, e.expires_at_ms, e.admission, e.published_at_ms
               FROM news_events e
-             WHERE e.dedupe_family = %s AND e.event_kind = %s
+             WHERE e.dedupe_family = %s AND e.event_kind = %s AND e.admission = ANY(%s)
                AND e.comparison_fingerprint = %s AND e.expires_at_ms > %s
                AND (
                  SELECT s.provenance = 'observed'
@@ -533,7 +567,7 @@ class EventStorage:
                )
              ORDER BY opened_at_ms ASC LIMIT 1
             """,
-            (dedupe_family, event_kind, fingerprint, int(now_ms)),
+            (dedupe_family, event_kind, joinable_admissions(ingest_mode), fingerprint, int(now_ms)),
         ).fetchone()
         return dict(row) if row else None
 
@@ -544,6 +578,7 @@ class EventStorage:
         event_kind: EventKind,
         band_keys: Sequence[str],
         now_ms: int,
+        ingest_mode: str,
     ) -> list[dict[str, Any]]:
         pairs = [(index, key) for index, key in enumerate(band_keys)]
         if not pairs:
@@ -556,6 +591,7 @@ class EventStorage:
                 dedupe_family,
                 int(now_ms),
                 event_kind,
+                joinable_admissions(ingest_mode),
             ),
         ).fetchall()
         return [dict(r) for r in rows]
