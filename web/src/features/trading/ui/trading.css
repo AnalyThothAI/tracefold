@@ -1346,3 +1346,47 @@
     overflow-wrap: anywhere;
   }
 }
+
+.trading-scoreboard {
+  display: grid;
+  gap: 1rem;
+}
+.trading-scoreboard-funnel {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.trading-scoreboard-funnel > div {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.trading-scoreboard-funnel strong {
+  font-size: var(--font-size-metric);
+  font-variant-numeric: tabular-nums;
+}
+.trading-scoreboard-table-wrap {
+  overflow-x: auto;
+}
+.trading-scoreboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+.trading-scoreboard-table th,
+.trading-scoreboard-table td {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.trading-case-filter {
+  display: block;
+  margin-bottom: 0.75rem;
+}
+@media (max-width: 800px) {
+  .trading-scoreboard-funnel {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}

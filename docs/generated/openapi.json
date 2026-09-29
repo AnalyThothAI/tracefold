@@ -599,52 +599,6 @@
         "title": "ApiEnvelope[StatusData]",
         "type": "object"
       },
-      "ApiEnvelope_TradingAnalysisReplayData_": {
-        "additionalProperties": false,
-        "properties": {
-          "data": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingAnalysisReplayData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "error": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Error"
-          },
-          "field": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Field"
-          },
-          "ok": {
-            "title": "Ok",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "ok"
-        ],
-        "title": "ApiEnvelope[TradingAnalysisReplayData]",
-        "type": "object"
-      },
       "ApiEnvelope_TradingCasesData_": {
         "additionalProperties": false,
         "properties": {
@@ -735,6 +689,52 @@
           "ok"
         ],
         "title": "ApiEnvelope[TradingExecutionsData]",
+        "type": "object"
+      },
+      "ApiEnvelope_TradingScoreboardData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingScoreboardData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[TradingScoreboardData]",
         "type": "object"
       },
       "ApiEnvelope_TradingStatusData_": {
@@ -8199,151 +8199,36 @@
         "title": "StatusRuntimeData",
         "type": "object"
       },
-      "TradingAdmissionCountData": {
-        "additionalProperties": false,
-        "description": "How many frames admission answered this way in the window.\n\nA count, not a row: #589 PR-2 deleted a `decisions[]` that published one object per frame with its\nwhole evidence blob, 400 of them on every 15 s poll, and nothing rendered them. This is the\ndistribution the desk's funnel draws its top from -- at most a dozen `(status, reason)` pairs\nwhatever the window holds -- and no frame identity, evidence or Case link travels with it.\n`reason` is nullable because the ledger's own column is.",
-        "properties": {
-          "count": {
-            "minimum": 0.0,
-            "title": "Count",
-            "type": "integer"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "count"
-        ],
-        "title": "TradingAdmissionCountData",
-        "type": "object"
-      },
-      "TradingAnalysisAttemptData": {
+      "TradingAssessmentData": {
         "additionalProperties": false,
         "properties": {
-          "analysis_status": {
-            "title": "Analysis Status",
-            "type": "string"
-          },
-          "assessment_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Assessment Ref"
-          },
-          "brief_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Brief Ref"
-          },
           "case_id": {
             "title": "Case Id",
             "type": "string"
           },
-          "claim_attempt": {
-            "title": "Claim Attempt",
-            "type": "integer"
-          },
-          "cost_microusd": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cost Microusd"
-          },
-          "cost_unknown_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cost Unknown Reason"
-          },
-          "cost_upper_estimate_microusd": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cost Upper Estimate Microusd"
+          "drivers": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Drivers",
+            "type": "array"
           },
           "ended_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Ended At Ms"
+            "title": "Ended At Ms",
+            "type": "integer"
           },
-          "error_code": {
+          "forecast": {
             "anyOf": [
               {
-                "type": "string"
+                "additionalProperties": true,
+                "type": "object"
               },
               {
                 "type": "null"
               }
             ],
-            "title": "Error Code"
-          },
-          "evidence_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Evidence Ref"
-          },
-          "final_manifest_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Final Manifest Ref"
+            "title": "Forecast"
           },
           "input_tokens": {
             "anyOf": [
@@ -8356,21 +8241,12 @@
             ],
             "title": "Input Tokens"
           },
-          "known_cost_microusd": {
-            "default": 0,
-            "title": "Known Cost Microusd",
-            "type": "integer"
-          },
-          "model_name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Model Name"
+          "notes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notes",
+            "type": "array"
           },
           "output_tokens": {
             "anyOf": [
@@ -8383,214 +8259,17 @@
             ],
             "title": "Output Tokens"
           },
-          "physical_call_count": {
-            "title": "Physical Call Count",
-            "type": "integer"
+          "program_sha": {
+            "title": "Program Sha",
+            "type": "string"
           },
-          "physical_calls": {
-            "items": {
-              "$ref": "#/components/schemas/TradingPhysicalModelCallData"
-            },
-            "title": "Physical Calls",
-            "type": "array"
-          },
-          "prompt_sha": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Prompt Sha"
-          },
-          "provider_status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Provider Status"
-          },
-          "settled": {
-            "title": "Settled",
-            "type": "boolean"
+          "route": {
+            "title": "Route",
+            "type": "string"
           },
           "started_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Started At Ms"
-          },
-          "termination_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Termination Reason"
-          },
-          "unknown_cost_calls": {
-            "default": 0,
-            "title": "Unknown Cost Calls",
+            "title": "Started At Ms",
             "type": "integer"
-          },
-          "validation_errors": {
-            "items": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "title": "Validation Errors",
-            "type": "array"
-          }
-        },
-        "required": [
-          "case_id",
-          "claim_attempt",
-          "analysis_status",
-          "physical_call_count",
-          "settled"
-        ],
-        "title": "TradingAnalysisAttemptData",
-        "type": "object"
-      },
-      "TradingAnalysisDecisionData": {
-        "additionalProperties": false,
-        "properties": {
-          "action": {
-            "title": "Action",
-            "type": "string"
-          },
-          "assessment_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Assessment Ref"
-          },
-          "decided_at_ms": {
-            "title": "Decided At Ms",
-            "type": "integer"
-          },
-          "decision": {
-            "additionalProperties": true,
-            "title": "Decision",
-            "type": "object"
-          },
-          "decision_id": {
-            "title": "Decision Id",
-            "type": "string"
-          },
-          "policy_id": {
-            "title": "Policy Id",
-            "type": "string"
-          },
-          "policy_version": {
-            "title": "Policy Version",
-            "type": "string"
-          },
-          "publish_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Publish Reason"
-          },
-          "publish_status": {
-            "title": "Publish Status",
-            "type": "string"
-          },
-          "valid_until_ms": {
-            "title": "Valid Until Ms",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "decision_id",
-          "policy_id",
-          "policy_version",
-          "action",
-          "decision",
-          "publish_status",
-          "decided_at_ms",
-          "valid_until_ms"
-        ],
-        "title": "TradingAnalysisDecisionData",
-        "type": "object"
-      },
-      "TradingAnalysisOutcomeData": {
-        "additionalProperties": false,
-        "properties": {
-          "available_at_ms": {
-            "title": "Available At Ms",
-            "type": "integer"
-          },
-          "axis": {
-            "title": "Axis",
-            "type": "string"
-          },
-          "horizon_seconds": {
-            "title": "Horizon Seconds",
-            "type": "integer"
-          },
-          "label_version": {
-            "title": "Label Version",
-            "type": "string"
-          },
-          "labeled_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Labeled At Ms"
-          },
-          "path_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Path Ref"
-          },
-          "return_bps": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Return Bps"
           },
           "status": {
             "title": "Status",
@@ -8598,192 +8277,28 @@
           }
         },
         "required": [
-          "axis",
-          "horizon_seconds",
-          "label_version",
+          "case_id",
+          "program_sha",
+          "route",
           "status",
-          "available_at_ms"
+          "started_at_ms",
+          "ended_at_ms"
         ],
-        "title": "TradingAnalysisOutcomeData",
-        "type": "object"
-      },
-      "TradingAnalysisReplayData": {
-        "additionalProperties": false,
-        "properties": {
-          "assessment": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Assessment"
-          },
-          "attempts": {
-            "items": {
-              "$ref": "#/components/schemas/TradingAnalysisAttemptData"
-            },
-            "title": "Attempts",
-            "type": "array"
-          },
-          "case_id": {
-            "title": "Case Id",
-            "type": "string"
-          },
-          "decision": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingAnalysisDecisionData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "evidence": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Evidence"
-          },
-          "final_manifest": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Final Manifest"
-          },
-          "selected_attempt": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Selected Attempt"
-          },
-          "source_fact": {
-            "anyOf": [
-              {
-                "additionalProperties": true,
-                "type": "object"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Fact"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "tool_observations": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "title": "Tool Observations",
-            "type": "array"
-          }
-        },
-        "required": [
-          "case_id",
-          "status"
-        ],
-        "title": "TradingAnalysisReplayData",
+        "title": "TradingAssessmentData",
         "type": "object"
       },
       "TradingCaseData": {
         "additionalProperties": false,
-        "description": "One frozen Case, as the drawer behind `?case=<id>` renders it.\n\nThe four measured OI numbers here were a second copy of what `policy_checks` already carries with\nthe threshold each was measured against, `policy_version` a second copy of `policy_id`, and\n`policy_decision` a required Literal over a nullable column -- exactly the shape that turned a\nstored `NULL` into a 500 on a read route (#532, #537 PR-5). `policy_config` was the same duplicate\none level up: the frozen dictionary it published is where `policy_checks[].threshold` comes from,\nso every number that was actually tested is already on the row beside what it was measured against,\nand `policy_config_digest` still identifies the whole set (#604 T3). `state` and `policy_reason`\nare the terminal answer; `base_symbol` is the identity the drawer titles itself with.",
         "properties": {
-          "analysis_action": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Analysis Action"
-          },
-          "analysis_attempts": {
+          "assessments": {
             "items": {
-              "$ref": "#/components/schemas/TradingAnalysisAttemptData"
+              "$ref": "#/components/schemas/TradingAssessmentData"
             },
-            "title": "Analysis Attempts",
+            "title": "Assessments",
             "type": "array"
           },
-          "analysis_decision": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingAnalysisDecisionData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "analysis_outcomes": {
-            "items": {
-              "$ref": "#/components/schemas/TradingAnalysisOutcomeData"
-            },
-            "title": "Analysis Outcomes",
-            "type": "array"
-          },
-          "analysis_publish_status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Analysis Publish Status"
-          },
-          "analysis_side": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Analysis Side"
-          },
-          "analysis_status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Analysis Status"
-          },
-          "base_symbol": {
-            "title": "Base Symbol",
+          "asset_id": {
+            "title": "Asset Id",
             "type": "string"
           },
           "case_id": {
@@ -8805,7 +8320,7 @@
             ],
             "title": "Decided At Ms"
           },
-          "entry_scope_id": {
+          "failure_code": {
             "anyOf": [
               {
                 "type": "string"
@@ -8814,9 +8329,9 @@
                 "type": "null"
               }
             ],
-            "title": "Entry Scope Id"
+            "title": "Failure Code"
           },
-          "event_id": {
+          "geometry_version": {
             "anyOf": [
               {
                 "type": "string"
@@ -8825,169 +8340,27 @@
                 "type": "null"
               }
             ],
-            "title": "Event Id"
+            "title": "Geometry Version"
           },
-          "evidence_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Evidence Ref"
-          },
-          "latest_case_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latest Case Id"
-          },
-          "manifest_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Manifest Version"
-          },
-          "mapping_semantics_digest": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mapping Semantics Digest"
-          },
-          "mark_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mark Price"
-          },
-          "market_key": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Market Key"
-          },
-          "observed_at_ms": {
-            "title": "Observed At Ms",
-            "type": "integer"
-          },
-          "policy_checks": {
-            "items": {
-              "$ref": "#/components/schemas/TradingPolicyCheckData"
-            },
-            "title": "Policy Checks",
-            "type": "array"
-          },
-          "policy_config_digest": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Policy Config Digest"
-          },
-          "policy_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Policy Id"
-          },
-          "policy_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Policy Reason"
-          },
-          "pre_move_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pre Move Bps"
-          },
-          "recheck_seq": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Recheck Seq"
-          },
-          "review_mode": {
-            "default": "none",
-            "enum": [
-              "none",
-              "event_wait",
-              "research_note"
-            ],
-            "title": "Review Mode",
+          "native_symbol": {
+            "title": "Native Symbol",
             "type": "string"
           },
-          "root_chain": {
+          "paper_legs": {
             "items": {
-              "$ref": "#/components/schemas/TradingRootChainCaseData"
+              "$ref": "#/components/schemas/TradingPaperLegData"
             },
-            "title": "Root Chain",
+            "title": "Paper Legs",
             "type": "array"
           },
-          "root_expires_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Root Expires At Ms"
+          "policy_actions": {
+            "items": {
+              "$ref": "#/components/schemas/TradingPolicyActionData"
+            },
+            "title": "Policy Actions",
+            "type": "array"
           },
-          "run_kind": {
+          "raw_snapshot_ref": {
             "anyOf": [
               {
                 "type": "string"
@@ -8996,35 +8369,27 @@
                 "type": "null"
               }
             ],
-            "title": "Run Kind"
-          },
-          "source_item_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Source Item Id"
+            "title": "Raw Snapshot Ref"
           },
           "state": {
+            "enum": [
+              "pending",
+              "running",
+              "complete",
+              "failed"
+            ],
             "title": "State",
             "type": "string"
           },
-          "target_asset_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+          "trigger_kind": {
+            "enum": [
+              "oi",
+              "catalyst"
             ],
-            "title": "Target Asset Id"
+            "title": "Trigger Kind",
+            "type": "string"
           },
-          "target_selection": {
+          "view": {
             "anyOf": [
               {
                 "additionalProperties": true,
@@ -9034,9 +8399,9 @@
                 "type": "null"
               }
             ],
-            "title": "Target Selection"
+            "title": "View"
           },
-          "trigger_id": {
+          "view_sha256": {
             "anyOf": [
               {
                 "type": "string"
@@ -9045,52 +8410,23 @@
                 "type": "null"
               }
             ],
-            "title": "Trigger Id"
-          },
-          "trigger_kind": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Trigger Kind"
-          },
-          "watch_observation": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingWatchObservationData"
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "title": "View Sha256"
           }
         },
         "required": [
           "case_id",
-          "base_symbol",
-          "state",
-          "observed_at_ms",
-          "created_at_ms"
+          "trigger_kind",
+          "asset_id",
+          "native_symbol",
+          "created_at_ms",
+          "state"
         ],
         "title": "TradingCaseData",
         "type": "object"
       },
       "TradingCasesData": {
         "additionalProperties": false,
-        "description": "The Case behind `?case_id=<id>`, plus the three durable 24 h distributions.\n\nThere is no `next_cursor` and no cursor parameter: the desk opens one Case at a time from\n`?case=<id>` and renders one 24 h count card, and no reader ever asked for a second page (#537 PR-5).\n`cases` is that one Case or nothing at all: without `case_id` it is empty, because the unconditional\n100-row page this route used to send on every poll was rendered by nothing and could not reach the\n`NO_TRADE` Cases an operator most wants to open (#604 T3). `complete` still says the answer was not\ntruncated, which for a primary-key read it never is.",
         "properties": {
-          "admission_counts_24h": {
-            "items": {
-              "$ref": "#/components/schemas/TradingAdmissionCountData"
-            },
-            "maxItems": 64,
-            "title": "Admission Counts 24H",
-            "type": "array"
-          },
           "cases": {
             "items": {
               "$ref": "#/components/schemas/TradingCaseData"
@@ -9102,82 +8438,16 @@
             "title": "Complete",
             "type": "boolean"
           },
-          "decision_counts_24h": {
-            "items": {
-              "$ref": "#/components/schemas/TradingDecisionCountData"
-            },
-            "title": "Decision Counts 24H",
-            "type": "array"
-          },
-          "next_cursor": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Next Cursor"
-          },
-          "state_counts_24h": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "State Counts 24H",
-            "type": "object"
-          },
           "total": {
-            "default": 0,
             "title": "Total",
             "type": "integer"
-          },
-          "window_from_ms": {
-            "default": 0,
-            "title": "Window From Ms",
-            "type": "integer"
-          },
-          "window_hours": {
-            "title": "Window Hours",
-            "type": "integer"
-          },
-          "window_to_ms": {
-            "default": 0,
-            "title": "Window To Ms",
-            "type": "integer"
           }
         },
         "required": [
-          "complete",
-          "window_hours"
+          "total",
+          "complete"
         ],
         "title": "TradingCasesData",
-        "type": "object"
-      },
-      "TradingDecisionCountData": {
-        "additionalProperties": false,
-        "description": "Agent outcome and publication status for Cases created in the 24 h window.",
-        "properties": {
-          "action": {
-            "title": "Action",
-            "type": "string"
-          },
-          "count": {
-            "minimum": 0.0,
-            "title": "Count",
-            "type": "integer"
-          },
-          "publish_status": {
-            "title": "Publish Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "action",
-          "publish_status",
-          "count"
-        ],
-        "title": "TradingDecisionCountData",
         "type": "object"
       },
       "TradingDecisionRuntimeData": {
@@ -9198,6 +8468,17 @@
               }
             ],
             "title": "Config Digest"
+          },
+          "fault_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fault Code"
           },
           "heartbeat_at_ms": {
             "anyOf": [
@@ -9232,6 +8513,17 @@
             ],
             "title": "Model Name"
           },
+          "program_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Program Sha"
+          },
           "publish_signals": {
             "title": "Publish Signals",
             "type": "boolean"
@@ -9241,6 +8533,7 @@
               "disabled",
               "unavailable",
               "model_unconfigured",
+              "faulted",
               "running"
             ],
             "title": "State",
@@ -9747,29 +9040,88 @@
         "title": "TradingExecutionsData",
         "type": "object"
       },
-      "TradingPhysicalModelCallData": {
+      "TradingPaperLegData": {
         "additionalProperties": false,
         "properties": {
-          "call_index": {
-            "title": "Call Index",
+          "anchor_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor At Ms"
+          },
+          "anchor_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor Price"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "cost_bps": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Bps"
+          },
+          "exit_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit At Ms"
+          },
+          "exit_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exit Price"
+          },
+          "geometry_version": {
+            "title": "Geometry Version",
+            "type": "string"
+          },
+          "gross_bps": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gross Bps"
+          },
+          "labeled_at_ms": {
+            "title": "Labeled At Ms",
             "type": "integer"
           },
-          "claim_attempt": {
-            "title": "Claim Attempt",
-            "type": "integer"
-          },
-          "cost_microusd": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Cost Microusd"
-          },
-          "cost_unknown_reason": {
+          "net_r": {
             "anyOf": [
               {
                 "type": "string"
@@ -9778,9 +9130,25 @@
                 "type": "null"
               }
             ],
-            "title": "Cost Unknown Reason"
+            "title": "Net R"
           },
-          "endpoint": {
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "tp",
+                  "sl",
+                  "timeout"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "reason": {
             "anyOf": [
               {
                 "type": "string"
@@ -9789,161 +9157,60 @@
                 "type": "null"
               }
             ],
-            "title": "Endpoint"
+            "title": "Reason"
           },
-          "finished_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
+          "side": {
+            "enum": [
+              "long",
+              "short"
             ],
-            "title": "Finished At Ms"
-          },
-          "input_tokens": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Input Tokens"
-          },
-          "output_tokens": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Output Tokens"
-          },
-          "phase": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Phase"
-          },
-          "remaining_deadline_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Remaining Deadline Ms"
-          },
-          "request_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Request Ref"
-          },
-          "requested_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Requested Model"
-          },
-          "reserved_cost_microusd": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reserved Cost Microusd"
-          },
-          "response_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Response Ref"
-          },
-          "served_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Served Model"
-          },
-          "started_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Started At Ms"
+            "title": "Side",
+            "type": "string"
           },
           "status": {
+            "enum": [
+              "complete",
+              "missing"
+            ],
             "title": "Status",
             "type": "string"
-          },
-          "timeout_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Timeout Ms"
           }
         },
         "required": [
-          "claim_attempt",
-          "call_index",
-          "status"
+          "case_id",
+          "side",
+          "geometry_version",
+          "status",
+          "labeled_at_ms"
         ],
-        "title": "TradingPhysicalModelCallData",
+        "title": "TradingPaperLegData",
         "type": "object"
       },
-      "TradingPolicyCheckData": {
+      "TradingPolicyActionData": {
         "additionalProperties": false,
         "properties": {
-          "check": {
-            "title": "Check",
+          "action": {
+            "enum": [
+              "long",
+              "short",
+              "abstain"
+            ],
+            "title": "Action",
             "type": "string"
           },
-          "measured": {
+          "calibrator_version": {
+            "title": "Calibrator Version",
+            "type": "string"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "decided_at_ms": {
+            "title": "Decided At Ms",
+            "type": "integer"
+          },
+          "expected_r": {
             "anyOf": [
               {
                 "type": "string"
@@ -9952,28 +9219,52 @@
                 "type": "null"
               }
             ],
-            "title": "Measured"
+            "title": "Expected R"
           },
-          "operator": {
-            "title": "Operator",
+          "policy_id": {
+            "title": "Policy Id",
             "type": "string"
           },
-          "passed": {
-            "title": "Passed",
-            "type": "boolean"
-          },
-          "threshold": {
-            "title": "Threshold",
+          "policy_version": {
+            "title": "Policy Version",
             "type": "string"
+          },
+          "program_sha": {
+            "title": "Program Sha",
+            "type": "string"
+          },
+          "publish_status": {
+            "title": "Publish Status",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "signal_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Signal Id"
           }
         },
         "required": [
-          "check",
-          "operator",
-          "threshold",
-          "passed"
+          "case_id",
+          "program_sha",
+          "policy_id",
+          "policy_version",
+          "calibrator_version",
+          "action",
+          "reason",
+          "publish_status",
+          "decided_at_ms"
         ],
-        "title": "TradingPolicyCheckData",
+        "title": "TradingPolicyActionData",
         "type": "object"
       },
       "TradingRealizedTotalsData": {
@@ -10094,105 +9385,266 @@
         "title": "TradingRealizedTotalsData",
         "type": "object"
       },
-      "TradingRootChainCaseData": {
+      "TradingReliabilityBinData": {
         "additionalProperties": false,
         "properties": {
-          "action": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Action"
-          },
-          "analysis_status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Analysis Status"
-          },
-          "case_id": {
-            "title": "Case Id",
-            "type": "string"
-          },
-          "created_at_ms": {
-            "title": "Created At Ms",
+          "bin": {
+            "title": "Bin",
             "type": "integer"
           },
-          "decided_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Decided At Ms"
+          "count": {
+            "title": "Count",
+            "type": "integer"
           },
-          "publish_status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Publish Status"
-          },
-          "recheck_seq": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Recheck Seq"
-          },
-          "run_kind": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Run Kind"
-          },
-          "side": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Side"
-          },
-          "state": {
-            "title": "State",
+          "observed_tp_rate": {
+            "title": "Observed Tp Rate",
             "type": "string"
           }
         },
         "required": [
-          "case_id",
-          "state",
-          "created_at_ms"
+          "bin",
+          "count",
+          "observed_tp_rate"
         ],
-        "title": "TradingRootChainCaseData",
+        "title": "TradingReliabilityBinData",
+        "type": "object"
+      },
+      "TradingScoreboardData": {
+        "additionalProperties": false,
+        "properties": {
+          "funnel": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Funnel",
+            "type": "object"
+          },
+          "programs": {
+            "items": {
+              "$ref": "#/components/schemas/TradingScoreboardProgramData"
+            },
+            "title": "Programs",
+            "type": "array"
+          },
+          "window": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Window",
+            "type": "object"
+          }
+        },
+        "required": [
+          "window",
+          "funnel",
+          "programs"
+        ],
+        "title": "TradingScoreboardData",
+        "type": "object"
+      },
+      "TradingScoreboardForecastData": {
+        "additionalProperties": false,
+        "properties": {
+          "brier_skill_score": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brier Skill Score"
+          },
+          "legs": {
+            "title": "Legs",
+            "type": "integer"
+          },
+          "log_loss": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Log Loss"
+          },
+          "multiclass_brier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Multiclass Brier"
+          },
+          "reliability": {
+            "items": {
+              "$ref": "#/components/schemas/TradingReliabilityBinData"
+            },
+            "title": "Reliability",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "insufficient_data"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "legs",
+          "status"
+        ],
+        "title": "TradingScoreboardForecastData",
+        "type": "object"
+      },
+      "TradingScoreboardPolicyData": {
+        "additionalProperties": false,
+        "properties": {
+          "actions": {
+            "title": "Actions",
+            "type": "integer"
+          },
+          "average_r": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average R"
+          },
+          "cases": {
+            "title": "Cases",
+            "type": "integer"
+          },
+          "ci_high": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ci High"
+          },
+          "ci_low": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ci Low"
+          },
+          "coverage": {
+            "title": "Coverage",
+            "type": "string"
+          },
+          "policy_id": {
+            "title": "Policy Id",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "scored": {
+            "title": "Scored",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "insufficient_data"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "win_rate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Win Rate"
+          }
+        },
+        "required": [
+          "policy_id",
+          "policy_version",
+          "cases",
+          "actions",
+          "scored",
+          "coverage",
+          "status"
+        ],
+        "title": "TradingScoreboardPolicyData",
+        "type": "object"
+      },
+      "TradingScoreboardProgramData": {
+        "additionalProperties": false,
+        "properties": {
+          "assessments": {
+            "title": "Assessments",
+            "type": "integer"
+          },
+          "execution_deviation": {
+            "additionalProperties": true,
+            "title": "Execution Deviation",
+            "type": "object"
+          },
+          "failures": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Failures",
+            "type": "object"
+          },
+          "forecast": {
+            "$ref": "#/components/schemas/TradingScoreboardForecastData"
+          },
+          "policies": {
+            "items": {
+              "$ref": "#/components/schemas/TradingScoreboardPolicyData"
+            },
+            "title": "Policies",
+            "type": "array"
+          },
+          "program_sha": {
+            "title": "Program Sha",
+            "type": "string"
+          },
+          "route": {
+            "title": "Route",
+            "type": "string"
+          }
+        },
+        "required": [
+          "program_sha",
+          "route",
+          "assessments",
+          "failures",
+          "policies",
+          "forecast",
+          "execution_deviation"
+        ],
+        "title": "TradingScoreboardProgramData",
         "type": "object"
       },
       "TradingSignedAccountData": {
@@ -10507,122 +9959,6 @@
           "execution"
         ],
         "title": "TradingStatusData",
-        "type": "object"
-      },
-      "TradingWatchObservationData": {
-        "additionalProperties": false,
-        "properties": {
-          "child_case_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Child Case Id"
-          },
-          "condition": {
-            "additionalProperties": true,
-            "title": "Condition",
-            "type": "object"
-          },
-          "created_at_ms": {
-            "title": "Created At Ms",
-            "type": "integer"
-          },
-          "expires_at_ms": {
-            "title": "Expires At Ms",
-            "type": "integer"
-          },
-          "last_observation_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Observation Ref"
-          },
-          "last_observation_status": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Observation Status"
-          },
-          "last_observed_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Observed At Ms"
-          },
-          "last_observed_value": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Last Observed Value"
-          },
-          "next_check_at_ms": {
-            "title": "Next Check At Ms",
-            "type": "integer"
-          },
-          "parent_case_id": {
-            "title": "Parent Case Id",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "trigger_id": {
-            "title": "Trigger Id",
-            "type": "string"
-          },
-          "trigger_side": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Trigger Side"
-          },
-          "updated_at_ms": {
-            "title": "Updated At Ms",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "parent_case_id",
-          "trigger_id",
-          "condition",
-          "status",
-          "next_check_at_ms",
-          "expires_at_ms",
-          "created_at_ms",
-          "updated_at_ms"
-        ],
-        "title": "TradingWatchObservationData",
         "type": "object"
       },
       "ValidationError": {
@@ -11620,7 +10956,6 @@
     },
     "/api/trading/cases": {
       "get": {
-        "description": "Frozen decisions by identity or a scope-bound keyset list; distributions remain independent.",
         "operationId": "get_trading_cases_api_trading_cases_get",
         "parameters": [
           {
@@ -11629,65 +10964,8 @@
             "required": false,
             "schema": {
               "default": "",
-              "maxLength": 256,
-              "title": "Case Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "view",
-            "required": false,
-            "schema": {
-              "default": "summary",
-              "enum": [
-                "summary",
-                "list"
-              ],
-              "title": "View",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "state",
-            "required": false,
-            "schema": {
-              "default": "",
-              "enum": [
-                "",
-                "PENDING",
-                "RUNNING",
-                "DONE",
-                "FAILED",
-                "EXCLUDED",
-                "NO_TRADE",
-                "SIGNAL_EMITTED",
-                "BLOCKED"
-              ],
-              "title": "State",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "asset",
-            "required": false,
-            "schema": {
-              "default": "",
               "maxLength": 64,
-              "title": "Asset",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "reason",
-            "required": false,
-            "schema": {
-              "default": "",
-              "maxLength": 128,
-              "title": "Reason",
+              "title": "Case Id",
               "type": "string"
             }
           },
@@ -11697,20 +10975,19 @@
             "required": false,
             "schema": {
               "default": "",
-              "maxLength": 64,
-              "pattern": "^([0-9a-f]{64})?$",
+              "maxLength": 256,
               "title": "Source Item Id",
               "type": "string"
             }
           },
           {
             "in": "query",
-            "name": "cursor",
+            "name": "state",
             "required": false,
             "schema": {
               "default": "",
-              "maxLength": 512,
-              "title": "Cursor",
+              "maxLength": 16,
+              "title": "State",
               "type": "string"
             }
           },
@@ -11755,69 +11032,8 @@
         ]
       }
     },
-    "/api/trading/cases/{case_id}/replay": {
-      "get": {
-        "description": "Read recorded input and answer only; replay never invokes a model.",
-        "operationId": "get_trading_case_replay_api_trading_cases__case_id__replay_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "case_id",
-            "required": true,
-            "schema": {
-              "title": "Case Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "attempt",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "minimum": 1,
-                  "type": "integer"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Attempt"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_TradingAnalysisReplayData_"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Trading Case Replay",
-        "tags": [
-          "api"
-        ]
-      }
-    },
     "/api/trading/executions": {
       "get": {
-        "description": "One retained row per entry identity with its audited venue outcome.",
         "operationId": "get_trading_executions_api_trading_executions_get",
         "parameters": [
           {
@@ -11826,7 +11042,7 @@
             "required": false,
             "schema": {
               "default": "",
-              "maxLength": 256,
+              "maxLength": 64,
               "title": "Case Id",
               "type": "string"
             }
@@ -11855,6 +11071,84 @@
           }
         },
         "summary": "Get Trading Executions",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/trading/scoreboard": {
+      "get": {
+        "operationId": "get_trading_scoreboard_api_trading_scoreboard_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "since_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Since Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "until_ms",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Until Ms"
+            }
+          },
+          {
+            "in": "query",
+            "name": "program",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 64,
+              "title": "Program",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_TradingScoreboardData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Trading Scoreboard",
         "tags": [
           "api"
         ]

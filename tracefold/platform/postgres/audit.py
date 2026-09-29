@@ -134,15 +134,12 @@ NEWS_TABLES = (
 # News heading would make the News schema audit pass for the wrong reason.
 TRADING_TABLES = (
     "trading_analysis_runtime",
-    "trading_candidate_gate_decisions",
     "trading_cases",
     "trading_triggers",
     "trading_trigger_conflicts",
-    "trading_case_decisions",
-    "trading_case_outcomes",
-    "trading_case_attempts",
-    "trading_model_calls",
-    "trading_watch_observations",
+    "trading_assessments",
+    "trading_policy_actions",
+    "trading_paper_legs",
     "trading_signals",
     "trading_dispositions",
     "trading_plans",

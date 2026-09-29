@@ -97,7 +97,7 @@ export function OiEvidence({ observation: o }: { observation: NewsMarketObservat
         <Link
           className="news-oi-strategy-link"
           to={withResearchReturn(
-            `/trading?tab=decisions&source_item_id=${encodeURIComponent(o.item_id)}`,
+            `/trading?tab=cases&source_item_id=${encodeURIComponent(o.item_id)}`,
             researchFrom,
           )}
         >

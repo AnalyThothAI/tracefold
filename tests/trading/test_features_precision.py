@@ -1,6 +1,6 @@
 """Small signed rates and unavailable frames retain distinct frozen facts."""
 
-from tracefold.trading.engine.features import extract_features, freeze_features
+from tracefold.trading.engine.features import extract_features
 from tracefold.trading.engine.marketdata import MarketDataResult
 
 
@@ -37,18 +37,3 @@ def test_signed_half_basis_point_and_real_zero_survive_feature_freeze() -> None:
         assert features["funding_rate_bps"] == target
         assert features["premium_bps"] == target
         assert features["source_oi_change_bps"] == 0
-        frozen = freeze_features(
-            snapshot_ref="a" * 64,
-            knowledge_cutoff_ms=1_000,
-            data_environment="live",
-            source_first_visible_at_ms=600,
-            source_fact=source,
-            results=results,
-            features=features,
-        )
-        by_id = {item.feature_id: item for item in frozen.values}
-        assert by_id["funding_rate_bps"].status == "ok"
-        assert by_id["funding_rate_bps"].value == features["funding_rate_bps"]
-        assert by_id["binance_open_interest_quantity"].status == "missing"
-        assert by_id["binance_open_interest_quantity"].value is None
-        assert by_id["source_oi_change_bps"].value == "0"

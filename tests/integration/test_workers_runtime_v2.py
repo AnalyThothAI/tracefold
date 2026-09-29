@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import queue
+import secrets
 import signal
 import socket
 import subprocess
@@ -870,9 +871,18 @@ def test_production_graceful_deadline_terminates_a_never_returning_future() -> N
 
 
 def _free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-        listener.bind(("127.0.0.1", 0))
-        return int(listener.getsockname()[1])
+    # The child opens PostgreSQL connections before Uvicorn binds its probe. An OS-selected
+    # ephemeral port can become one of those outgoing connections in between, so use a
+    # checked listener port below the Linux ephemeral range instead.
+    for _ in range(128):
+        port = 20_000 + secrets.randbelow(10_000)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            try:
+                listener.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise RuntimeError("workers_test_probe_port_unavailable")
 
 
 def _start_workers_process(

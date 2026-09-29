@@ -15,21 +15,22 @@ TRADING = SRC / "trading"
 NEWS = SRC / "news"
 
 SIGNAL_PATH = (
-    "trading/engine/brief.py",
-    "trading/engine/contracts.py",
+    "trading/engine/case_view.py",
     "trading/engine/features.py",
+    "trading/engine/forecast.py",
     "trading/engine/marketdata.py",
-    "trading/engine/outcomes.py",
-    "trading/engine/plans.py",
-    "trading/engine/policy.py",
+    "trading/engine/paper.py",
+    "trading/engine/scoreboard.py",
     "trading/engine/target.py",
     "trading/storage/analysis.py",
     "app/trading_analysis.py",
-    "app/trading_analyst.py",
+    "app/trading_assessor.py",
+    "app/trading_case_prepare.py",
+    "app/trading_intake.py",
+    "app/trading_replay.py",
     "trading/storage/root.py",
     "trading/storage/history.py",
-    "trading/storage/gate.py",
-    "trading/storage/queries.py",
+    "trading/storage/scoreboard.py",
 )
 EXECUTION_PATH = {
     "trading/executor/core.py",
@@ -200,8 +201,8 @@ def test_news_and_trading_never_import_each_other() -> None:
 
 
 def test_relative_imports_resolve_to_full_module_paths() -> None:
-    modules = _imports(TRADING / "engine/plans.py")
-    assert "tracefold.trading.engine.contracts" in modules
+    modules = _imports(TRADING / "engine/case_view.py")
+    assert "tracefold.trading.engine.forecast" in modules
 
 
 def test_trading_sql_reads_and_writes_only_trading_tables() -> None:
@@ -315,8 +316,8 @@ def test_research_left_the_service_package_without_a_forwarder() -> None:
 def test_analysis_composition_owns_market_adapter_and_model_runner() -> None:
     modules = _imports(SRC / "app/cli/commands/analysis.py")
     assert "tracefold.integrations.marketdata.binance" in modules
-    assert "tracefold.app.trading_analyst" in modules
-    assert not any("dspy" in module.lower() for module in _imports(TRADING / "engine/policy.py"))
+    assert "tracefold.app.trading_assessor" in modules
+    assert not any("dspy" in module.lower() for module in _imports(TRADING / "engine/forecast.py"))
 
 
 def test_package_root_has_no_implicit_exports() -> None:

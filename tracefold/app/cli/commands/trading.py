@@ -1,13 +1,8 @@
-"""``tracefold trading`` read projections and one bounded operator-intent ingress.
-
-Every read here calls the same repository statement the console route for it called, so an operator
-reading the CLI and an operator reading the desk cannot be told two different things about the same
-instant. `gate` is the whole reader of the admission ledger since #589 PR-2 deleted the two `GET
-/api/trading/gate*` routes: #553 PR-1 had already removed their only browser caller.
-"""
+"""``tracefold trading`` reads one Trading ledger and records bounded operator intent."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -15,6 +10,7 @@ import socket
 import time
 from datetime import UTC, datetime
 from http.client import HTTPConnection
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -22,6 +18,7 @@ from tracefold.app.analysis_status import analysis_status_projection
 from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.app.operator_control import persist_operator_intent
 from tracefold.app.repository_session import repositories
+from tracefold.app.trading_replay import replay
 from tracefold.platform.config.loader import load_settings
 from tracefold.trading.operator_control import (
     OperatorCommandError,
@@ -37,6 +34,16 @@ def _now_ms() -> int:
     return int(datetime.now(tz=UTC).timestamp() * 1000)
 
 
+def _window_clock(value: str) -> int:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("trading_window_invalid") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return int(parsed.timestamp() * 1_000)
+
+
 def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     command = str(getattr(args, "trading_command", "") or "")
@@ -45,6 +52,19 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
         return _issue_operator_intent(args, settings=settings)
     if command == "diagnose":
         return _diagnose(args, settings=settings)
+    if command == "replay":
+        try:
+            result = asyncio.run(
+                replay(
+                    settings,
+                    program_file=Path(args.program),
+                    since_ms=_window_clock(args.since),
+                    until_ms=_window_clock(args.until),
+                )
+            )
+        except (ValueError, OSError) as exc:
+            return 2, {"ok": False, "error": str(exc)}
+        return 0, {"ok": True, "data": result}
     with repositories(settings) as repos:
         trading = repos.trading
         if command == "status":
@@ -78,12 +98,19 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
             state = getattr(args, "state", None)
             return 0, {
                 "ok": True,
-                "data": trading.console_cases(
+                "data": trading.analysis_cases(
                     since_ms=now_ms - _WINDOW_MS,
-                    states=(state,) if state else (),
+                    state=state,
                     limit=int(getattr(args, "limit", 20) or 20),
                 ),
             }
+        if command == "scoreboard":
+            try:
+                since_ms, until_ms = _window_clock(args.since), _window_clock(args.until)
+                result = trading.scoreboard(since_ms=since_ms, until_ms=until_ms, program_sha=args.program)
+            except ValueError as exc:
+                return 2, {"ok": False, "error": str(exc)}
+            return 0, {"ok": True, "data": result}
         if command == "signals":
             return 0, {
                 "ok": True,
@@ -97,23 +124,6 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 "ok": True,
                 "data": trading.fill_ledger(
                     since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
-                    limit=int(getattr(args, "limit", 20) or 20),
-                ),
-            }
-        if command == "gate":
-            # The admission ledger's two reads, exactly as the deleted `GET /api/trading/gate` and
-            # `GET /api/trading/gate/{event_id}` asked for them. One source key answers "why did this
-            # frame produce no case"; no source key answers it for a whole window, newest frame first
-            # (#589 PR-2).
-            source_key = getattr(args, "source_key", None)
-            if source_key:
-                row = trading.gate_decision_for_source_key(source_key=str(source_key))
-                return 0, {"ok": True, "data": [] if row is None else [row]}
-            since_ms = getattr(args, "since_ms", None)
-            return 0, {
-                "ok": True,
-                "data": trading.gate_decisions_since(
-                    since_ms=int(since_ms) if since_ms else now_ms - _WINDOW_MS,
                     limit=int(getattr(args, "limit", 20) or 20),
                 ),
             }

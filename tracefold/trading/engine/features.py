@@ -6,9 +6,8 @@ import hashlib
 import json
 from decimal import Decimal, InvalidOperation
 from itertools import pairwise
-from typing import Any, Literal, cast
+from typing import Any
 
-from .contracts import FeatureValue, FrozenEvidence
 from .marketdata import MarketDataResult
 
 PROFILE_VERSION = "evidence_profile_v4"
@@ -262,83 +261,3 @@ def extract_features(
         "btc_return_60m_bps": _change_bps(bars("market_bars", 61), 60),
         "data_status": {name: result.status for name, result in results.items()},
     }
-
-
-def freeze_features(
-    *,
-    snapshot_ref: str,
-    knowledge_cutoff_ms: int,
-    data_environment: str,
-    source_first_visible_at_ms: int,
-    source_fact: dict[str, Any],
-    results: dict[str, MarketDataResult],
-    features: dict[str, Any],
-) -> FrozenEvidence:
-    def frame_name(feature_id: str) -> str | None:
-        if feature_id.startswith("source_"):
-            return None
-        if feature_id.startswith("perp_"):
-            return "perp_bars"
-        if feature_id.startswith("spot_"):
-            return "spot_bars"
-        if feature_id.startswith("btc_"):
-            return "market_bars"
-        if feature_id == "binance_open_interest_quantity":
-            return "open_interest"
-        if feature_id in ("funding_rate_bps", "premium_bps"):
-            return "funding_basis"
-        raise ValueError("feature_source_unknown")
-
-    values: list[FeatureValue] = []
-    for feature_id, raw in features.items():
-        if feature_id in ("profile_version", "source_kind", "source_venue", "data_status"):
-            continue
-        frame = frame_name(feature_id)
-        event_at: int | None
-        received_at: int | None
-        if frame is None:
-            event_at = source_recorded_at_ms(source_fact)
-            received_at = source_first_visible_at_ms
-            source_ok = isinstance(event_at, int) and isinstance(received_at, int)
-        else:
-            result = results[frame]
-            event_at = result.event_end_ms
-            received_at = result.received_at_ms
-            source_ok = result.status in ("ok", "partial")
-        available = (
-            raw is not None
-            and source_ok
-            and isinstance(event_at, int)
-            and isinstance(received_at, int)
-            and event_at <= knowledge_cutoff_ms
-            and received_at <= knowledge_cutoff_ms
-        )
-        unit = (
-            "bps"
-            if feature_id.endswith("_bps")
-            else "USD"
-            if feature_id.endswith("_usd")
-            else "native_contract_quantity"
-            if feature_id.endswith("_quantity")
-            else "text"
-        )
-        values.append(
-            FeatureValue(
-                feature_id=feature_id,
-                value=str(raw) if available else None,
-                unit=unit,
-                status="ok" if available else "missing",
-                source_ref=snapshot_ref,
-                event_at_ms=event_at if isinstance(event_at, int) else None,
-                received_at_ms=received_at if isinstance(received_at, int) else None,
-                feature_version=PROFILE_VERSION,
-            )
-        )
-    if data_environment not in ("live", "demo", "testnet"):
-        raise ValueError("evidence_environment_invalid")
-    return FrozenEvidence(
-        snapshot_ref=snapshot_ref,
-        knowledge_cutoff_ms=knowledge_cutoff_ms,
-        data_environment=cast(Literal["live", "demo", "testnet"], data_environment),
-        values=tuple(values),
-    )

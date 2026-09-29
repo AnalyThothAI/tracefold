@@ -1,160 +1,41 @@
-"""Research filters and source links cross the real PostgreSQL-to-HTTP seam (#621)."""
+"""Real PostgreSQL to current read-only Trading HTTP seam."""
 
 from __future__ import annotations
 
-import json
 import time
-from decimal import Decimal
+from argparse import Namespace
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
 
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
+from tracefold.app.cli.commands import trading as trading_cli
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import Settings
-from tracefold.trading.executor.core import SignalV4
-from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
-def test_filtered_decisions_page_past_the_old_limit_and_link_by_saved_identity(tmp_path) -> None:
-    now = int(time.time() * 1000)
-    source = "a" * 64
-    old_at = now - 3 * 86_400_000
-    conn = connect_postgres_test(read_only=False)
-    try:
-        with conn.transaction():
-            for index in range(126):
-                stamp = old_at if index == 125 else now - 1000
-                manifest = {"contexts": {"oi": {"source_item_id": source if index == 125 else "b" * 64}}}
-                conn.execute(
-                    """INSERT INTO trading_cases (
-                       case_id, underlying_key, trigger_kind, primary_source_key, manifest, manifest_sha256,
-                       state, policy_decision, policy_reason, observed_at_ms,
-                       created_at_ms, decided_at_ms, updated_at_ms
-                    ) VALUES (%s, 'crypto:BTC', 'oi', %s, %s::jsonb, %s,
-                              'NO_TRADE', 'no_trade', 'test_floor', %s, %s, %s, %s)""",
-                    (
-                        f"research-{index:03}",
-                        f"research-source-{index}",
-                        json.dumps(manifest),
-                        "c" * 64,
-                        stamp,
-                        stamp,
-                        stamp,
-                        stamp,
-                    ),
-                )
-            conn.execute(
-                "UPDATE trading_cases SET state='SIGNAL_EMITTED', policy_decision='long' WHERE case_id='research-125'"
-            )
-            TradingRepository(conn).append_signal(
-                SignalV4(
-                    seq=1,
-                    signal_id="d" * 64,
-                    decision_id="e" * 64,
-                    case_id="research-125",
-                    account_slot="binance_usdm_primary",
-                    entry_scope_id="f" * 64,
-                    asset_id="crypto:BTC",
-                    native_symbol="BTCUSDT",
-                    mapping_semantics_digest="a" * 64,
-                    side="long",
-                    reference_price=Decimal("100"),
-                    max_drift_bps=200,
-                    stop_bps=100,
-                    tp_bps=200,
-                    max_hold_s=14_400,
-                    policy_id="research",
-                    policy_version="v1",
-                    geometry_version="v1",
-                    decided_at_ns=old_at * 1_000_000,
-                    expires_at_ns=(old_at + 60_000) * 1_000_000,
-                )
-            )
-            TradingRepository(conn).record_disposition(
-                kind="signal",
-                input_id="d" * 64,
-                account_slot="binance_usdm_primary",
-                disposition="expired",
-                reason="expired",
-                now_ns=(old_at + 60_000) * 1_000_000,
-            )
-    finally:
-        conn.close()
-    settings = Settings(ws_token="research-test-token", storage=postgres_settings_storage())
-    settings.set_config_dir(tmp_path / "app-home")
-    with TestClient(create_app(settings=settings)) as client:
-        auth = {"Authorization": "Bearer research-test-token"}
-        params = {"view": "list", "state": "NO_TRADE", "asset": "BTC", "reason": "test_floor", "limit": 25}
-        seen: list[str] = []
-        while True:
-            response = client.get("/api/trading/cases", headers=auth, params=params)
-            assert response.status_code == 200, response.text
-            data = response.json()["data"]
-            assert data["total"] == 125
-            seen.extend(row["case_id"] for row in data["cases"])
-            if not data["next_cursor"]:
-                break
-            params["cursor"] = data["next_cursor"]
-            wrong = client.get("/api/trading/cases", headers=auth, params={**params, "asset": "ETH"})
-            assert wrong.status_code == 400
-        assert seen == [f"research-{i:03}" for i in range(124, -1, -1)]
-        linked = client.get("/api/trading/cases", headers=auth, params={"source_item_id": source}).json()["data"]
-        assert [row["case_id"] for row in linked["cases"]] == ["research-125"]
-        assert linked["cases"][0]["source_item_id"] == source
-        assert linked["window_from_ms"] == 0
-        unmatched = client.get("/api/trading/cases", headers=auth, params={"source_item_id": "e" * 64})
-        assert unmatched.json()["data"]["cases"] == []
-        executions = client.get("/api/trading/executions", headers=auth, params={"case_id": "research-125"})
-        assert executions.status_code == 200, executions.text
-        assert [row["entry_id"] for row in executions.json()["data"]["executions"]] == ["d" * 64]
-        assert client.get("/api/trading/executions", headers=auth).json()["data"]["executions"] == []
-
-
-def test_analysis_case_list_exposes_action_publication_and_source_identity(tmp_path) -> None:
-    """The #683 trigger payload owns the OI Item link; a shadow TRADE is not a published Signal."""
-
-    now = int(time.time() * 1000)
-    source_item_id = "f" * 64
-    trigger_id = "a" * 64
-    case_id = "research-agent-shadow"
+def test_selected_case_and_scoreboard_use_the_migrated_ledger(tmp_path, monkeypatch) -> None:
+    now = int(time.time() * 1_000)
+    case_id = "a" * 64
+    trigger_id = "b" * 64
     conn = connect_postgres_test(read_only=False)
     try:
         with conn.transaction():
             conn.execute(
-                """INSERT INTO trading_triggers
-                   (trigger_id,kind,source_fact_key,source_revision,payload_sha256,payload,
-                    target_selection,first_visible_at_ms,source_observed_at_ms,root_expires_at_ms,created_at_ms)
-                   VALUES (%s,'oi',%s,'revision-1',%s,%s::jsonb,'{}'::jsonb,%s,%s,%s,%s)""",
-                (
-                    trigger_id,
-                    "oi:research-shadow",
-                    "b" * 64,
-                    json.dumps({"evidence_ref": source_item_id}),
-                    now,
-                    now,
-                    now + 60_000,
-                    now,
-                ),
+                "INSERT INTO trading_triggers (trigger_id,kind,source_fact_key,source_revision,payload_sha256,"
+                "payload,first_visible_at_ms,source_observed_at_ms,selected_asset_id,target_selection,"
+                "exclusion_reason,created_at_ms) VALUES (%s,'oi','api-source','v1',%s,%s::jsonb,%s,%s,"
+                "'crypto:SOL','{}'::jsonb,NULL,%s)",
+                (trigger_id, "c" * 64, '{"evidence_ref":"api-source-item"}', now, now, now),
             )
             conn.execute(
-                """INSERT INTO trading_cases
-                   (case_id,underlying_key,trigger_kind,primary_source_key,manifest,manifest_sha256,
-                    state,policy_decision,policy_reason,observed_at_ms,created_at_ms,decided_at_ms,
-                    updated_at_ms,trigger_id,analysis_status)
-                   VALUES (%s,'crypto:BTC','oi','oi:research-shadow','{}'::jsonb,%s,
-                           'DONE','short','analysis_complete',%s,%s,%s,%s,%s,'done')""",
-                (case_id, "c" * 64, now, now, now, now, trigger_id),
-            )
-            conn.execute(
-                """INSERT INTO trading_case_decisions
-                   (case_id,decision_id,policy_id,policy_version,input_ref,action,decision,
-                    publish_status,decided_at_ms,valid_until_ms)
-                   VALUES (%s,%s,'trade_assessment','v4','research-evidence','TRADE',
-                           '{"side":"short","decision_version":"trade_decision_v4"}'::jsonb,'unpublished',%s,%s)""",
-                (case_id, "d" * 64, now, now + 60_000),
+                "INSERT INTO trading_cases (case_id,trigger_id,trigger_kind,asset_id,native_symbol,"
+                "mapping_digest,created_at_ms,root_expires_at_ms,state,updated_at_ms) "
+                "VALUES (%s,%s,'oi','crypto:SOL','SOLUSDT',%s,%s,%s,'pending',%s)",
+                (case_id, trigger_id, "d" * 64, now, now + 600_000, now),
             )
     finally:
         conn.close()
@@ -163,17 +44,36 @@ def test_analysis_case_list_exposes_action_publication_and_source_identity(tmp_p
     settings.set_config_dir(tmp_path / "app-home")
     with TestClient(create_app(settings=settings)) as client:
         auth = {"Authorization": "Bearer research-test-token"}
-        listed = client.get("/api/trading/cases", headers=auth, params={"view": "list", "state": "DONE"})
-        assert listed.status_code == 200, listed.text
-        data = listed.json()["data"]
-        assert {"action": "TRADE", "publish_status": "unpublished", "count": 1} in data["decision_counts_24h"]
-        row = next(row for row in data["cases"] if row["case_id"] == case_id)
-        assert (row["analysis_action"], row["analysis_publish_status"], row["analysis_side"]) == (
-            "TRADE",
-            "unpublished",
-            "short",
+        listing = client.get("/api/trading/cases", headers=auth)
+        assert listing.status_code == 200, listing.text
+        assert [row["case_id"] for row in listing.json()["data"]["cases"]] == [case_id]
+        detail = client.get("/api/trading/cases", headers=auth, params={"case_id": case_id})
+        assert detail.status_code == 200
+        assert detail.json()["data"]["cases"][0]["asset_id"] == "crypto:SOL"
+        since_ms, until_ms = now - 60_000, now + 60_000
+        board = client.get("/api/trading/scoreboard", headers=auth, params={"since_ms": since_ms, "until_ms": until_ms})
+        assert board.status_code == 200
+        assert board.json()["data"]["funnel"]["triggers"] == 1
+        assert board.json()["data"]["funnel"]["selected"] == 1
+        monkeypatch.setattr(trading_cli, "load_settings", lambda **_kwargs: settings)
+        code, cli_result = trading_cli.handle_trading(
+            Namespace(
+                trading_command="scoreboard",
+                since=datetime.fromtimestamp(since_ms / 1_000, tz=UTC).isoformat(),
+                until=datetime.fromtimestamp(until_ms / 1_000, tz=UTC).isoformat(),
+                program=None,
+            )
         )
-        assert row["source_item_id"] == source_item_id
-        linked = client.get("/api/trading/cases", headers=auth, params={"source_item_id": source_item_id})
-        assert linked.status_code == 200, linked.text
+        assert code == 0
+        assert cli_result["data"] == board.json()["data"]
+        linked = client.get("/api/trading/cases", headers=auth, params={"source_item_id": "api-source-item"})
         assert [row["case_id"] for row in linked.json()["data"]["cases"]] == [case_id]
+        unrelated = client.get("/api/trading/cases", headers=auth, params={"source_item_id": "other-item"})
+        assert unrelated.json()["data"]["cases"] == []
+        assert (
+            client.get(
+                "/api/trading/cases", headers=auth, params={"case_id": case_id, "source_item_id": "api-source-item"}
+            ).status_code
+            == 400
+        )
+        assert client.get("/api/trading/cases").status_code == 401

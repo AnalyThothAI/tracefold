@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import replace
@@ -15,6 +16,8 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame, admit_market_item, prepare_wallet_observation, wallet_item_id
 from tracefold.news.wallet_contracts import WalletEvent, WalletOutcome
+from tracefold.platform.market_identity import AssetId, InstrumentRef
+from tracefold.trading.engine.target import TargetSelection
 
 
 def seed_research(dsn: str) -> None:
@@ -83,11 +86,30 @@ def seed_research(dsn: str) -> None:
                     status="comparable",
                 )
             )
-            conn.execute(
-                """INSERT INTO trading_cases (
-                case_id, underlying_key, trigger_kind, primary_source_key, manifest, manifest_sha256,
-                state, policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms, updated_at_ms
-                ) VALUES ('browser-research-case', 'crypto:BTC', 'oi', 'browser-research-source', %s::jsonb, %s,
-                          'NO_TRADE', 'no_trade', 'smart_money_ratio_below_or_equal_floor', %s, %s, %s, %s)""",
-                (json.dumps({"contexts": {"oi": {"source_item_id": admitted.item_id}}}), "f" * 64, now, now, now, now),
+            asset = AssetId("crypto", "BTC")
+            instrument = InstrumentRef(
+                venue="binance.usdm",
+                environment="live",
+                product="perpetual",
+                native_symbol="BTCUSDT",
+                asset_id=asset,
+                quote_asset="USDT",
+                settlement_asset="USDT",
+                units_per_contract=Decimal(1),
+                price_unit="native_quote",
+                quantity_unit="native_base",
+            )
+            payload = {"kind": "oi", "evidence_ref": admitted.item_id}
+            payload_sha = hashlib.sha256(
+                json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            repos.trading.accept_trigger(
+                kind="oi",
+                source_fact_key=f"browser-research-{admitted.item_id}",
+                source_revision="v1",
+                payload_sha256=payload_sha,
+                payload=payload,
+                selection=TargetSelection("selected", asset, instrument, (asset.key,), "browser-seed"),
+                now_ms=now,
+                root_ttl_ms=600_000,
             )

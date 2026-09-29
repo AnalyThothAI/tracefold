@@ -31,7 +31,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20260929_0417`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20260929_0418`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序
@@ -47,15 +47,15 @@ config:
 ---
 flowchart TD
     accTitle: 协调数据库升级
-    accDescr: 先确认版本、备份与账户，再协调写进程和校验配置。迁移成功后恢复匹配应用，独立决定 Runtime 恢复；失败时保持写进程停止。
+    accDescr: 先确认版本、备份与账户，再协调写进程和校验配置。迁移成功后恢复匹配应用，核实 Executor 恢复；失败时保持写进程停止。
     Inspect["核实源、镜像、数据库与账户"] --> Backup["保存配套身份和可验证备份"]
-    Backup --> Writers["协调受影响写进程<br/>含独立 Runtime"]
+    Backup --> Writers["协调受影响写进程<br/>含 Analysis 与 Executor"]
     Writers --> Config["校验配置与确切删除字段"]
     Config --> Migrate["通过受支持入口执行迁移"]
     Migrate --> Success{"迁移成功退出"}
     Success -->|"是"| Start["启动匹配应用并验证进度"]
     Success -->|"否"| Diagnose["保持写进程停止<br/>诊断具体 revision"]
-    Start --> Runtime["显式决定 Runtime 恢复"]
+    Start --> Runtime["核实 Executor 恢复"]
 
     classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
     classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
@@ -68,11 +68,11 @@ class Runtime execution;
 
 *操作视图 · “迁移成功”指实际退出结果；停止 Runtime 不是账户平仓回执。*
 
-使用管理该实例的检出目录及统一 Make 工作流，核对项目、配置目录与端口；隔离开发实例不共享生产写进程。`make up` 等迁移结束后启动 Serve、Workers 和 Analysis；不自动重启独立账户所有者。运行中 Runtime 与待迁移 schema 不匹配时，不以环境标志绕过检查。
+使用管理该实例的检出目录及统一 Make 工作流，核对项目、配置目录与端口；隔离开发实例不共享生产写进程。`make up` 等迁移结束后启动 Serve、Workers 和 Analysis；同时管理匹配镜像的 Executor。运行中 Runtime 与待迁移 schema 不匹配时，不以环境标志绕过检查。
 
-停 Runtime 不等于账户平仓。维护前先知道交易所实际持仓、保护与订单归属，必要操作按[执行 runbook](OPERATIONS.md#trading-operations)执行并核实结果，再协调写进程。
+停 Executor 不等于账户平仓。维护前先知道交易所实际持仓、保护与订单归属，必要操作按[执行 runbook](OPERATIONS.md#trading-operations)执行并核实结果，再协调写进程。
 
-普通 `init` 保留配置；`init --force` 不是迁移工具。严格设置报出旧字段时，仅删除其确切 YAML 路径，保留其他 operator 选择。
+普通 `init` 保留配置；`init --force` 不是迁移工具。0418 切换前的配置需移除已退役的 `llm.trading_semantics`、`trading.analysis.max_model_input_bytes`、`trading.analysis.model_input_price_ceiling_usd_per_million` 和 `trading.analysis.model_output_price_ceiling_usd_per_million`，并显式配置 `trading.analysis.program.path` / `sha256` 与 `trading.analysis.model_name`。保留当前 News 的 `llm.news_judgment` 与 `llm.news_reader_judgment` 路由。严格设置若仍报其他旧字段，仅处理报出的确切 YAML 路径，保留其他 operator 选择。
 
 <a id="section-eventupdate-的-0404--0405--0407-切换"></a>
 ## 03 · EventUpdate 的 0404 / 0405 / 0407 切换
@@ -89,12 +89,13 @@ class Runtime execution;
 | `20260928_0412` | 通知队列保存已证明未发送结果、发送账本保存最终结果的精确结算身份；移除与从零开始的真实失败计数冲突的旧约束 | [0412](../tracefold/platform/postgres/alembic/versions/20260928_0412_news_notification_settlement.py) |
 | `20260929_0413` | 通知工作增加终态 `failed` 与 `last_error_code`；删除 0407 起恒为空的 `plan` 列；迁移时已过期且 `attempts=3` 的 pending 工作改为 `failed`（`news_notification_exhausted_legacy`），未到期的仍由新代码再规划一次 | [0413](../tracefold/platform/postgres/alembic/versions/20260929_0413_news_notification_work_terminal.py) |
 | `20260929_0415` | 语义工作增加失败阅读隔离 `failed_read_refs` 与本次尝试所读范围 `attempt_read_refs`：失败修订（含 Janitor 结算的崩溃最终尝试）只隔离该次尝试实际送入的材料，不再随后续修订重复送入，精确重分析仍可读取；只加列，无回填 | [0415](../tracefold/platform/postgres/alembic/versions/20260929_0415_news_semantic_failed_reads.py) |
-| `20260929_0416` | 新增只追加的 `news_claim_links`（采纳时从 `changes` 写入命题链接，按两端 ref 双向可查，并从全部历史 `news_event_updates` 回填）；通知决定增加 `reader_v2` 来源，审阅队列与反馈守卫接受 `editorial_v1` 与 `reader_v2` | [0414](../tracefold/platform/postgres/alembic/versions/20260929_0416_news_reader_decisions.py) |
+| `20260929_0416` | 新增只追加的 `news_claim_links` 并从历史 EventUpdate 回填；通知决定支持 `reader_v2` | [0416](../tracefold/platform/postgres/alembic/versions/20260929_0416_news_reader_decisions.py) |
 | `20260929_0417` | DEMO 执行账本硬切：Signal v4、disposition、Plan、订单与原生成交；删除 Nautilus 执行表 | [0417](../tracefold/platform/postgres/alembic/versions/20260929_0417_trading_execution_hard_cut.py) |
+| `20260929_0418` | LIVE Analysis 硬切：仅选中 Trigger 建 Case，冻结预测、六策略和双腿纸面账本；删除旧 Gate、WATCH 与逐调用表 | [0418](../tracefold/platform/postgres/alembic/versions/20260929_0418_trading_analysis_hard_cut.py) |
 
 这些切换是前向迁移，不通过旧卡片 / verdict 伪造新 Claim。0407 曾将旧 pending `first` / `followup` 意图结算；0411 将它们连同旧发送行删除。当前 intent 只接受 `update`，发送账本保留决策引用。EventUpdate 的不可变版本与已发送的当前通知保留。
 
-`20260927_0406` 为 [执行硬切 Signal 退休原因](../tracefold/platform/postgres/alembic/versions/20260927_0406_execution_hard_cut_retirement.py) 增加约束取值；它自身不清理账户数据。数据切换步骤见 [#719 运行说明](OPERATIONS.md#746-执行侧硬切)。
+`20260927_0406` 为 [执行硬切 Signal 退休原因](../tracefold/platform/postgres/alembic/versions/20260927_0406_execution_hard_cut_retirement.py) 增加约束取值；它自身不清理账户数据。数据切换步骤见 [Trading 运维](OPERATIONS.md#trading-operations)。
 
 ### 配套检查
 

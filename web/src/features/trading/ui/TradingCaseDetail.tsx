@@ -1,142 +1,78 @@
-import { researchReturnPath, withResearchReturn } from "@shared/routing/researchContext";
 import { Card } from "@shared/ui/Card";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 import type { TradingCase } from "../api/tradingQueries";
-import { caseChecks, caseVerdict } from "../model/tradingCases";
-import { bpsPercent, caseClock, policyLabel } from "../model/tradingLabels";
+import { caseClock } from "../model/tradingLabels";
 
-import { TradingAnalysisDetail } from "./TradingAnalysisDetail";
-
-/**
- * One Case in full: its terminal answer, and every condition the policy executed to reach it.
- *
- * Every threshold on screen is the Case's own. That is the whole point of the panel — a console holding
- * only today's configuration cannot explain a Case frozen a week ago, and the version that tried printed
- * conflicts on rows that had passed.
- *
- * It lived on `/news/alpha` until #460, which removed that page. The row list above it was a second view
- * of `GET /api/trading/cases`; this was not, and deleting it would have made the frozen per-check
- * evidence a database query rather than something an operator can read. #537 PR-5 deleted that row list
- * too: this opens on demand from `?case=<id>`, which is the link every surface that names a Case already
- * publishes, rather than being one card in a list of every Case in the window.
- *
- * Two cards, not three. The third listed the frozen policy configuration, which was the same set of numbers
- * the evidence table's 阈值 column already prints beside the condition each one was measured against —
- * #604 T3 removed the field from the contract for that reason. `policy_config_digest` stays in the card
- * hint: the identity of the configuration is release evidence, its restated values were not.
- */
-export function TradingCaseDetail({ item, token }: { item: TradingCase; token: string }) {
-  const [params] = useSearchParams();
-  const researchFrom = researchReturnPath(params.get("research_from"));
-  if (item.trigger_id)
-    return <TradingAnalysisDetail key={item.case_id} item={item} token={token} />;
-  const checks = caseChecks(item);
+export function TradingCaseDetail({ item }: { item: TradingCase }) {
   return (
-    <section aria-label={`案例 ${item.base_symbol}`} className="trading-case-detail">
+    <section aria-label={`案例 ${item.asset_id}`} className="trading-case-detail">
       <Card
         flush
-        hint={`${policyLabel(item.policy_id)} · ${(item.policy_config_digest ?? "").slice(0, 12) || "—"}`}
-        title={`${item.base_symbol} · ${caseVerdict(item)}`}
+        title={`${item.asset_id} · ${item.state}`}
+        hint={`${item.trigger_kind} · ${caseClock(item.decided_at_ms)}`}
       >
         <dl className="trading-case-facts">
-          <div className="trading-case-fact">
-            <dt>案例</dt>
+          <div>
+            <dt>Case</dt>
             <dd>
               <code>{item.case_id}</code>
             </dd>
           </div>
-          <div className="trading-case-fact">
-            <dt>触发来源</dt>
+          <div>
+            <dt>冻结输入</dt>
             <dd>
-              {item.source_item_id ? (
-                <Link
-                  to={withResearchReturn(
-                    `/news/market/${encodeURIComponent(item.source_item_id)}`,
-                    researchFrom,
-                  )}
-                >
-                  查看原始 OI 观察
-                </Link>
-              ) : (
-                "来源身份未记录"
-              )}
+              <code>{item.view_sha256 ?? "尚未冻结"}</code>
             </dd>
           </div>
-          <div className="trading-case-fact">
-            <dt>冻结时刻</dt>
-            <dd>{caseClock(item.observed_at_ms)}</dd>
+          <div>
+            <dt>几何</dt>
+            <dd>{item.geometry_version ?? "待计算"}</dd>
           </div>
-          <div className="trading-case-fact">
-            <dt>判定时刻</dt>
-            <dd>{caseClock(item.decided_at_ms)}</dd>
-          </div>
-          <div className="trading-case-fact">
-            <dt>市场</dt>
-            <dd>{item.market_key ?? "—"}</dd>
-          </div>
-          <div className="trading-case-fact">
-            <dt>冻结标记价</dt>
-            <dd>{item.mark_price ?? "—"}</dd>
-          </div>
-          <div className="trading-case-fact">
-            <dt>前置涨跌</dt>
-            <dd>{bpsPercent(item.pre_move_bps)}</dd>
-          </div>
-          <div className="trading-case-fact">
-            <dt>入场信号</dt>
-            <dd>
-              {item.state === "SIGNAL_EMITTED" ? (
-                <Link
-                  to={withResearchReturn(
-                    `/trading?tab=executions&execution_case=${item.case_id}`,
-                    researchFrom,
-                  )}
-                >
-                  已发出 · 查看关联执行记录
-                </Link>
-              ) : (
-                "未发出"
-              )}
-            </dd>
+          <div>
+            <dt>失败原因</dt>
+            <dd>{item.failure_code ?? "—"}</dd>
           </div>
         </dl>
+        <Link to={`/trading?tab=executions&execution_case=${item.case_id}`}>查看关联执行</Link>
       </Card>
-
-      <Card
-        flush
-        hint="这张表的阈值来自案例本身，不是当前配置"
-        title={`冻结判定证据 · ${item.manifest_version ?? "—"}`}
-      >
-        {checks.length ? (
-          <div className="trading-case-checks">
-            <div aria-hidden className="trading-case-check">
-              <span>条件</span>
-              <span>比较</span>
-              <span>阈值</span>
-              <span>实测</span>
-              <span>结果</span>
+      <Card flush title="两侧预测" hint="程序版本与模型路由随评估保存">
+        {item.assessments?.length ? (
+          item.assessments.map((assessment) => (
+            <div key={assessment.program_sha}>
+              <p>
+                <code>{assessment.program_sha.slice(0, 12)}</code> · {assessment.route} ·{" "}
+                {assessment.status}
+              </p>
+              {assessment.forecast ? (
+                <pre>{JSON.stringify(assessment.forecast, null, 2)}</pre>
+              ) : null}
             </div>
-            {checks.map((check, index) => (
-              <div
-                className="trading-case-check"
-                data-passed={check.passed}
-                key={`${check.check}-${index}`}
-              >
-                <span>{check.check}</span>
-                <span>{check.operator}</span>
-                <span>{check.threshold_label}</span>
-                <span>{check.measured_label}</span>
-                <span>{check.passed ? "通过" : "未通过"}</span>
-              </div>
-            ))}
-          </div>
+          ))
         ) : (
-          <p className="trading-case-facts">
-            这个案例在冻结逐条证据之前写入（#331 之前）。它的终局与规则仍然是{" "}
-            <code>{item.policy_reason ?? "—"}</code>。
-          </p>
+          <p>暂无评估结果。</p>
         )}
+      </Card>
+      <Card flush title="同场 Policy 动作" hint="只有配置中的 live policy 可能发布 Signal">
+        <ul>
+          {item.policy_actions?.map((action) => (
+            <li key={`${action.program_sha}:${action.policy_id}`}>
+              {action.policy_id}: {action.action} · {action.reason} · {action.publish_status}
+            </li>
+          ))}
+        </ul>
+      </Card>
+      <Card flush title="LIVE 纸面两腿" hint="决策后首根 1m 收盘锚定，止损同根优先">
+        <ul>
+          {item.paper_legs?.map((leg) => (
+            <li key={`${leg.side}:${leg.geometry_version}`}>
+              {leg.side}:{" "}
+              {leg.status === "complete"
+                ? `${leg.outcome} · ${leg.net_r}R`
+                : `missing · ${leg.reason}`}
+            </li>
+          ))}
+        </ul>
       </Card>
     </section>
   );

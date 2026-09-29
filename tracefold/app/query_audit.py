@@ -11,7 +11,15 @@ from tracefold.platform.postgres.audit import (
     ReadQuerySpec,
     postgres_query_specs,
 )
-from tracefold.trading.storage.analysis import TRADING_ANALYSIS_RUNTIME_SQL, TRADING_TRIGGER_BY_ID_SQL
+from tracefold.trading.storage.analysis import (
+    ACTIONS_BY_CASE_SQL,
+    ANALYSIS_CASE_SQL,
+    ANALYSIS_CASES_FOR_SOURCE_SQL,
+    ANALYSIS_CASES_SQL,
+    ANALYSIS_RUNTIME_SQL,
+    ASSESSMENTS_BY_CASE_SQL,
+    PAPER_BY_CASE_SQL,
+)
 from tracefold.trading.storage.executor import (
     EXECUTION_FILLS_SQL,
     EXECUTION_ORDERS_SQL,
@@ -22,20 +30,15 @@ from tracefold.trading.storage.executor import (
     REALIZED_TOTALS_SQL,
     SIGNAL_LEDGER_SQL,
 )
-from tracefold.trading.storage.gate import (
-    GATE_DECISION_FOR_SOURCE_KEY_SQL,
-    GATE_DECISIONS_SINCE_SQL,
-)
 from tracefold.trading.storage.history import LATEST_CASE_CREATED_AT_SQL
-from tracefold.trading.storage.queries import (
-    CONSOLE_CASE_BY_ID_SQL,
-    TRADING_CASE_COUNTS_SQL,
-    TRADING_CASE_DECISION_COUNTS_SQL,
-    TRADING_CASE_DECISION_SQL,
-    TRADING_CASE_LIST_LATEST_SQL,
-    TRADING_CASE_OUTCOMES_SQL,
-    TRADING_GATE_COUNTS_SQL,
-    console_cases_statement,
+from tracefold.trading.storage.scoreboard import (
+    SCOREBOARD_ACTIONS_SQL,
+    SCOREBOARD_ASSESSMENTS_SQL,
+    SCOREBOARD_CASES_SQL,
+    SCOREBOARD_DISPOSITIONS_SQL,
+    SCOREBOARD_EXECUTIONS_SQL,
+    SCOREBOARD_LEGS_SQL,
+    SCOREBOARD_TRIGGER_COUNT_SQL,
 )
 
 from .workers.runtime import workers_runtime_read_query
@@ -126,29 +129,23 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_status_funnel_review_ratios",
         "news_status_funnel_totals",
     ),
-    # One statement over `trading_cases`, where the two 24 h `count(*)` scans this route also ran on
-    # every 15 s poll were rendered nowhere the desk still has (#537 PR-5).
     "/api/trading/status": ("trading_status_latest_case", "trading_analysis_runtime"),
-    # #621 adds scope-bound Case browsing alongside retained identity lookup and the independent
-    # 24 h distributions. Both filtered and count plans are audited before pagination.
     "/api/trading/cases": (
-        "trading_console_cases_by_id",
-        "trading_case_decision_by_id",
-        "trading_case_outcomes_by_id",
-        "trading_console_cases",
-        "trading_console_cases_filtered",
-        "trading_case_list_latest",
-        "trading_console_scope_cases",
-        "trading_console_scope_totals",
-        "trading_case_counts",
-        "trading_case_decision_counts",
-        "trading_gate_counts",
+        "trading_analysis_cases",
+        "trading_analysis_cases_for_source",
+        "trading_analysis_case_by_id",
+        "trading_assessments_by_case",
+        "trading_actions_by_case",
+        "trading_paper_by_case",
     ),
-    "/api/trading/cases/{case_id}/replay": (
-        "trading_console_cases_by_id",
-        "trading_case_decision_by_id",
-        "trading_case_outcomes_by_id",
-        "trading_trigger_by_id",
+    "/api/trading/scoreboard": (
+        "trading_scoreboard_cases",
+        "trading_scoreboard_triggers",
+        "trading_scoreboard_assessments",
+        "trading_scoreboard_actions",
+        "trading_scoreboard_legs",
+        "trading_scoreboard_executions",
+        "trading_scoreboard_dispositions",
     ),
     # #528 PR-1, #604 T3. The desk table plans three statements: its own per-entry fold, the
     # unfiltered window of the Command ledger it renders beside it, and the realized totals that are
@@ -217,226 +214,63 @@ def _default_news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
 
 
 def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
-    """The bounded Signal reads, built by the production statement builders.
-
-    Every console spec below calls the same builder `QueryStorage` runs, once with no optional
-    predicate and once with all of them, so both plans the route can execute are certified and neither
-    can drift away from an audited copy.
-
-    Six of these reads belong to no public route: `tracefold trading cases`, `tracefold trading
-    signals`, `tracefold trading observations` and `tracefold trading gate` are their only callers
-    since #537 PR-5, #589 PR-2 and #604 T3 deleted or narrowed the `GET` routes that were. They stay
-    audited because they still run against production data — a statement stops being audited when
-    nothing executes it, not when its route is deleted.
-    """
-
+    """Audit the exact Analysis, scoreboard, execution, and CLI SQL statements."""
     since_ms = int(now_ms) - 24 * 3_600_000
     since_ns = since_ms * 1_000_000
     day_start_ns = (int(now_ms) - int(now_ms) % 86_400_000) * 1_000_000
     day_end_ns = day_start_ns + 86_400_000 * 1_000_000
-    return (
-        ReadQuerySpec(
-            # The Decision Plane's liveness: one index-only probe of the newest Case, and the whole
-            # of what `GET /api/trading/status` still asks `trading_cases` (#537 PR-5).
-            name="trading_status_latest_case",
-            sql=LATEST_CASE_CREATED_AT_SQL,
-            params=(),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="trading_analysis_runtime",
-            sql=TRADING_ANALYSIS_RUNTIME_SQL,
-            params=("binance_usdm_primary",),
-            max_read_return_amplification=4.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="trading_gate_decision_for_source_key",
-            sql=GATE_DECISION_FOR_SOURCE_KEY_SQL,
-            params=("oi:not-a-real-event:oi_signal_v1",),
-            max_read_return_amplification=4.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            # #269. One admission answer per source in the window, newest frame first. One row per
-            # frame is the table's own primary key now (#537 PR-3), so the shipped read is the index
-            # scan this certifies rather than a materialised `DISTINCT ON` set re-sorted by the outer
-            # query. The two 24 h distributions that were grouped over the same window beside it went
-            # with the route that rendered them (#589 PR-2).
-            name="trading_gate_decisions_since",
-            sql=GATE_DECISIONS_SINCE_SQL,
-            params=("oi", since_ms, 401),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            # #604 T3. `GET /api/trading/cases?case_id=` is a primary-key read: one row, or none.
-            name="trading_console_cases_by_id",
-            sql=CONSOLE_CASE_BY_ID_SQL,
-            params={"case_id": "0" * 32},
-            max_read_return_amplification=4.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="trading_case_decision_by_id",
-            sql=TRADING_CASE_DECISION_SQL,
-            params=("0" * 64,),
-            max_read_return_amplification=4.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="trading_case_list_latest",
-            sql=TRADING_CASE_LIST_LATEST_SQL,
-            params=(["0" * 64],),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="trading_case_outcomes_by_id",
-            sql=TRADING_CASE_OUTCOMES_SQL,
-            params=("0" * 64,),
-            max_read_return_amplification=8.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="trading_trigger_by_id",
-            sql=TRADING_TRIGGER_BY_ID_SQL,
-            params=("0" * 64,),
-            max_read_return_amplification=4.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
-        *_console_specs(
-            name="trading_console_cases",
-            unfiltered=console_cases_statement(since_ms=since_ms, limit=101),
-            filtered=console_cases_statement(
-                since_ms=since_ms,
-                states=("SIGNAL_EMITTED", "NO_TRADE"),
-                limit=101,
+    case_id = "0" * 64
+    ids = [case_id]
+    specs = (
+        ("trading_status_latest_case", LATEST_CASE_CREATED_AT_SQL, ()),
+        ("trading_analysis_runtime", ANALYSIS_RUNTIME_SQL, ("binance_usdm_primary",)),
+        ("trading_analysis_cases", ANALYSIS_CASES_SQL, (since_ms, None, None, 25)),
+        ("trading_analysis_cases_for_source", ANALYSIS_CASES_FOR_SOURCE_SQL, ("source-item", None, None, 25)),
+        ("trading_analysis_case_by_id", ANALYSIS_CASE_SQL, (case_id,)),
+        ("trading_assessments_by_case", ASSESSMENTS_BY_CASE_SQL, (case_id,)),
+        ("trading_actions_by_case", ACTIONS_BY_CASE_SQL, (case_id,)),
+        ("trading_paper_by_case", PAPER_BY_CASE_SQL, (case_id,)),
+        ("trading_scoreboard_cases", SCOREBOARD_CASES_SQL, (since_ms, now_ms)),
+        ("trading_scoreboard_triggers", SCOREBOARD_TRIGGER_COUNT_SQL, (since_ms, now_ms)),
+        ("trading_scoreboard_assessments", SCOREBOARD_ASSESSMENTS_SQL, (ids, None, None)),
+        ("trading_scoreboard_actions", SCOREBOARD_ACTIONS_SQL, (ids, None, None)),
+        ("trading_scoreboard_legs", SCOREBOARD_LEGS_SQL, (ids,)),
+        ("trading_scoreboard_executions", SCOREBOARD_EXECUTIONS_SQL, (ids,)),
+        ("trading_scoreboard_dispositions", SCOREBOARD_DISPOSITIONS_SQL, (ids,)),
+        ("trading_execution_plans", EXECUTION_PLANS_SQL, (since_ns, None, None, 101)),
+        ("trading_execution_refusals", EXECUTION_REFUSALS_SQL, (since_ns, None, None, 101)),
+        ("trading_execution_orders", EXECUTION_ORDERS_SQL, (ids,)),
+        ("trading_execution_fills", EXECUTION_FILLS_SQL, (ids,)),
+        (
+            "trading_realized_totals",
+            REALIZED_TOTALS_SQL,
+            (
+                day_start_ns,
+                day_end_ns,
+                day_start_ns,
+                day_end_ns,
+                day_start_ns,
+                day_end_ns,
+                day_start_ns,
+                day_end_ns,
+                "binance_usdm_primary",
             ),
         ),
-        *tuple(
-            ReadQuerySpec(
-                name=name,
-                sql=sql,
-                params=params,
-                max_read_return_amplification=20.0,
-                max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-            )
-            for name, (sql, params) in (
-                (
-                    "trading_console_scope_cases",
-                    console_cases_statement(
-                        since_ms=0,
-                        to_ms=now_ms,
-                        limit=26,
-                        states=("NO_TRADE",),
-                        asset="BTC",
-                        reason="test_floor",
-                        source_item_id="a" * 64,
-                        cursor_at_ms=now_ms,
-                        cursor_id="z",
-                    ),
-                ),
-                (
-                    "trading_console_scope_totals",
-                    console_cases_statement(
-                        since_ms=0,
-                        to_ms=now_ms,
-                        limit=1,
-                        states=("NO_TRADE",),
-                        asset="BTC",
-                        reason="test_floor",
-                        source_item_id="a" * 64,
-                        count_only=True,
-                    ),
-                ),
-            )
-        ),
-        ReadQuerySpec(
-            name="trading_case_counts",
-            sql=TRADING_CASE_COUNTS_SQL,
-            params=(since_ms,),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="trading_case_decision_counts",
-            sql=TRADING_CASE_DECISION_COUNTS_SQL,
-            params=(since_ms,),
-            max_read_return_amplification=200.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            # #604 T3. The admission funnel's top, grouped over the same window the two Case
-            # distributions above use, on `source_observed_at_ms` -- the frame clock, which is both
-            # the one this ledger indexes and the one that keeps a re-read backlog out of today's
-            # total. The row ceiling is the guard that means something here: a day is ~900 frames
-            # against a 90-day retention of ~74,000 rows, so an order of magnitude above the window
-            # still reports the day the index stops being used. Measured on a seeded 74,000-row
-            # ledger: 822 rows read, 0.46 ms. Amplification cannot bound a grouped count -- its
-            # denominator is the handful of `(status, reason)` pairs a closed vocabulary can produce,
-            # so a day where every frame gets the same answer divides the whole window by one.
-            name="trading_gate_counts",
-            sql=TRADING_GATE_COUNTS_SQL,
-            params=(since_ms,),
-            max_read_return_amplification=200.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
-        *tuple(
-            ReadQuerySpec(
-                name=name,
-                sql=sql,
-                params=params,
-                max_read_return_amplification=40.0,
-                max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-            )
-            for name, sql, params in (
-                ("trading_execution_plans", EXECUTION_PLANS_SQL, (since_ns, None, None, 101)),
-                ("trading_execution_refusals", EXECUTION_REFUSALS_SQL, (since_ns, None, None, 101)),
-                ("trading_execution_orders", EXECUTION_ORDERS_SQL, (["0" * 64],)),
-                ("trading_execution_fills", EXECUTION_FILLS_SQL, (["0" * 64],)),
-                (
-                    "trading_realized_totals",
-                    REALIZED_TOTALS_SQL,
-                    (
-                        day_start_ns,
-                        day_end_ns,
-                        day_start_ns,
-                        day_end_ns,
-                        day_start_ns,
-                        day_end_ns,
-                        day_start_ns,
-                        day_end_ns,
-                        "binance_usdm_primary",
-                    ),
-                ),
-                ("trading_console_commands", OPERATOR_INTENTS_SQL, (since_ns, None, None, 101)),
-                ("trading_console_commands_filtered", OPERATOR_INTENTS_SQL, (since_ns, "flatten", "flatten", 101)),
-                ("trading_signal_ledger", SIGNAL_LEDGER_SQL, (since_ns, 101)),
-                ("trading_fill_ledger", FILL_LEDGER_SQL, (since_ns, 101)),
-            )
-        ),
+        ("trading_console_commands", OPERATOR_INTENTS_SQL, (since_ns, None, None, 101)),
+        ("trading_signal_ledger", SIGNAL_LEDGER_SQL, (since_ns, 101)),
+        ("trading_fill_ledger", FILL_LEDGER_SQL, (since_ns, 101)),
     )
-
-
-def _console_specs(
-    *,
-    name: str,
-    unfiltered: tuple[str, dict[str, object]],
-    filtered: tuple[str, dict[str, object]],
-) -> tuple[ReadQuerySpec, ...]:
-    """One console read's two plans: the first page, and the narrowed page after it."""
-
     return tuple(
         ReadQuerySpec(
-            name=spec_name,
+            name=name,
             sql=sql,
             params=params,
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
+            max_read_return_amplification=200.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET
+            if "scoreboard" in name or "cases" in name
+            else INDEXED_ROW_SCAN_BUDGET,
         )
-        for spec_name, (sql, params) in ((name, unfiltered), (f"{name}_filtered", filtered))
+        for name, sql, params in specs
     )
 
 

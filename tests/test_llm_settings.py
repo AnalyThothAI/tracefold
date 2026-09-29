@@ -185,14 +185,12 @@ def test_news_judgment_is_all_or_none_and_validates_its_url() -> None:
     assert LlmConfig().news_judgment.configured is False
 
 
-def test_news_judgment_is_reported_and_never_inferred_from_trading_semantics() -> None:
+def test_news_judgment_is_reported_and_retired_trading_semantics_is_rejected() -> None:
     route = {"api_key": "k", "base_url": "https://openrouter.ai/api", "model": "jev-1.13"}
     news = LlmConfig(api_key="k", base_url="https://api.deepseek.com/v1", news_triage_model="m", news_judgment=route)
-    trading = LlmConfig(
-        api_key="k", base_url="https://api.deepseek.com/v1", news_triage_model="m", trading_semantics=route
-    )
     assert _availability(news).news_judgment_model == "jev-1.13"
-    assert _availability(trading).news_judgment_model is None
+    with pytest.raises(ValidationError, match="trading_semantics"):
+        LlmConfig.model_validate({"trading_semantics": route})
 
 
 @pytest.mark.parametrize(
@@ -232,7 +230,9 @@ def test_news_reader_judgment_takes_its_key_from_a_file_only_and_is_all_or_none(
     assert LlmConfig().news_reader_judgment.configured is False
 
 
-def test_news_reader_judgment_is_never_inferred_from_the_other_system_one_routes() -> None:
+def test_news_reader_judgment_is_never_inferred_from_news_judgment() -> None:
     route = {"api_key": "k", "base_url": "https://openrouter.ai/api", "model": "jev-1.13"}
-    llm = LlmConfig(news_judgment=route, trading_semantics=route)
+    llm = LlmConfig(news_judgment=route)
     assert llm.news_reader_judgment.configured is False
+    with pytest.raises(ValidationError, match="trading_semantics"):
+        LlmConfig.model_validate({"trading_semantics": route})

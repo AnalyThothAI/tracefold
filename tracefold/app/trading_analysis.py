@@ -1,4 +1,4 @@
-"""Analysis harness: reliable relay, frozen evidence and one bounded Agent call."""
+"""LIVE Case intake, one frozen forecast, six policies, and cold paired labels."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
@@ -17,627 +17,31 @@ from typing import Any, cast
 
 import httpx
 
-from tracefold.app.analysis_files import AnalysisFiles
-from tracefold.app.system_one import SystemOneConnection
-from tracefold.app.trading_analyst import AnalystCallReceipt, PhysicalModelCall, TradeAnalyst
-from tracefold.app.trading_prepared import PreparedAnalysis
-from tracefold.app.trading_tools import CaseToolContext
-from tracefold.news.updates.contracts import PublicUpdate
-from tracefold.platform.market_identity import (
-    AssetId,
-    AssetRegistry,
-    InstrumentRef,
-    UniversePolicy,
-    VerifiedAlias,
+from tracefold.app.trading_assessor import TradingAssessor
+from tracefold.app.trading_case_prepare import CasePreparer, prune_snapshots
+from tracefold.app.trading_intake import (
+    _assets,
+    _configured_universe,
+    _select_from_connection,
+    catalyst_assets,
+    public_update,
 )
-from tracefold.trading.engine.brief import AnalystBrief, build_brief, canonical_json
-from tracefold.trading.engine.contracts import FrozenEvidence
-from tracefold.trading.engine.features import (
-    CATALYST_SOURCE_KIND,
-    PROFILE_VERSION,
-    WINDOW_VERSION,
-    catalyst_text_values,
-    extract_features,
-    freeze_features,
-    price_plan_window,
-    source_recorded_at_ms,
-    window_ref,
-)
-from tracefold.trading.engine.marketdata import (
-    Dataset,
-    MarketDataPort,
-    MarketDataRequest,
-    MarketDataResult,
-    analysis_market_request,
-)
-from tracefold.trading.engine.outcomes import price_path_label
-from tracefold.trading.engine.plans import (
-    ENTRY_WINDOW_MS,
-    EntryPlan,
-    build_entry_plans,
-    compile_proposal,
-    directed_cross,
-)
-from tracefold.trading.engine.policy import InvalidAssessment, decision_identity
-from tracefold.trading.engine.target import SourceAsset, TargetSelection, TriggerKind, select_target
+from tracefold.trading.engine.case_view import CaseView, case_view_from_record
+from tracefold.trading.engine.forecast import POLICY_VERSION, PolicyConfig, all_policy_decisions
+from tracefold.trading.engine.marketdata import MarketDataPort, analysis_market_request
+from tracefold.trading.engine.paper import BAR_MS, GEOMETRY_VERSION, Bar, LegGeometry, PaperLeg, both_legs
 from tracefold.trading.executor.core import SignalV4
 
-_BAR_MS = 60_000
 _LOG = logging.getLogger(__name__)
-_FILE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-files")
-
-
-async def _file_io(fn: Callable[..., Any], *args: Any) -> Any:
-    """Keep archive I/O off the event loop in one process-wide bounded pool."""
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_FILE_EXECUTOR, fn, *args)
+_PAPER_BUFFER_MS = 120_000
 
 
 def _clock_ms() -> int:
     return int(time.time() * 1000)
 
 
-class FrozenEvidenceError(ValueError):
-    def __init__(self, reason: str, evidence_ref: str) -> None:
-        super().__init__(reason)
-        self.evidence_ref = evidence_ref
-
-
-def _build_brief_evidence(
-    *,
-    source_fact: dict[str, Any],
-    case: dict[str, Any],
-    evidence_ref: str,
-    knowledge_cutoff: int,
-    results: dict[str, MarketDataResult],
-    requests: dict[str, MarketDataRequest],
-    price_window_ref: str,
-    price_rows: tuple[dict[str, Any], ...],
-    typed_evidence: FrozenEvidence,
-    environment: str,
-    native: str,
-) -> dict[str, dict[str, Any]]:
-    """Project one frozen snapshot into the brief's citable, cutoff-bound catalog."""
-
-    if source_fact.get("kind") == "oi":
-        source_units = {
-            "oi_change_bps": "bps",
-            "oi_value_usd": "USD",
-            "measurement_definition": "text",
-            "measurement_window_ms": "ms",
-        }
-        source_values: dict[str, Any] = {
-            key: source_fact[key] for key in source_units if source_fact.get(key) is not None and source_fact[key] != ""
-        }
-    else:
-        # Only a News catalyst delta's structured projection is citable source text.
-        source_values = catalyst_text_values(source_fact)
-        source_units = {key: "text" for key in source_values}
-    brief_evidence: dict[str, dict[str, Any]] = {
-        "source": {
-            "status": "ok" if source_values else "missing",
-            "source_ref": evidence_ref,
-            "values": source_values,
-            "unit_definition": {key: source_units[key] for key in source_values},
-            "event_at_ms": source_recorded_at_ms(source_fact),
-            "received_at_ms": int(case.get("created_at_ms", knowledge_cutoff)),
-            "knowledge_cutoff_ms": knowledge_cutoff,
-        }
-    }
-    value_fields: dict[str, tuple[str, ...]] = {
-        "perp_bars": ("close", "high", "low", "quote_volume"),
-        "spot_bars": ("close", "high", "low", "quote_volume"),
-        "market_bars": ("close", "high", "low", "quote_volume"),
-        "open_interest": ("open_interest_quantity",),
-        "open_interest_history": ("sum_open_interest_quantity", "sum_open_interest_value"),
-        "funding_basis": ("mark_price", "index_price", "last_funding_rate"),
-        "instrument_rules": (
-            "trading_status",
-            "contract_type",
-            "price_tick_size",
-            "market_min_quantity",
-            "market_max_quantity",
-            "market_step_size",
-            "minimum_notional",
-        ),
-    }
-    brief_evidence.update(
-        {
-            f"market:{name}": {
-                "status": result.status,
-                "source_ref": evidence_ref,
-                "dataset": name,
-                "source": result.source_identity,
-                "environment": requests[name].environment,
-                "native_symbol": requests[name].native_symbol,
-                "values": {
-                    key: result.payload[-1][key]
-                    for key in value_fields[name]
-                    if result.payload and result.payload[-1].get(key) is not None
-                },
-                "unit_definition": result.unit_definition,
-                "event_at_ms": result.event_end_ms,
-                "event_end_ms": result.event_end_ms,
-                "received_at_ms": result.received_at_ms,
-                "knowledge_cutoff_ms": knowledge_cutoff,
-                "missing_reasons": result.missing_reasons,
-            }
-            for name, result in results.items()
-        }
-    )
-    brief_evidence[price_window_ref] = {
-        "status": "ok",
-        "source_ref": evidence_ref,
-        "projection_version": WINDOW_VERSION,
-        "dataset": "perp_bars",
-        "window_identity": price_window_ref,
-        "source": results["perp_bars"].source_identity,
-        "environment": environment,
-        "native_symbol": native,
-        "window_start_ms": int(price_rows[0]["event_at_ms"]),
-        "window_end_ms": int(price_rows[-1]["event_at_ms"]),
-        "row_count": len(price_rows),
-        "values": {"close": price_rows[-1]["close"]},
-        "unit_definition": results["perp_bars"].unit_definition,
-        "event_at_ms": int(price_rows[-1]["event_at_ms"]),
-        "received_at_ms": results["perp_bars"].received_at_ms,
-        "knowledge_cutoff_ms": knowledge_cutoff,
-    }
-    brief_evidence.update(
-        {
-            f"feature:{value.feature_id}": {
-                "status": value.status,
-                "source_ref": value.source_ref,
-                "environment": "live" if value.feature_id.startswith("spot_") else environment,
-                "values": {"value": value.value} if value.status == "ok" else {},
-                "unit_definition": value.unit,
-                "event_at_ms": value.event_at_ms,
-                "received_at_ms": value.received_at_ms,
-                "knowledge_cutoff_ms": knowledge_cutoff,
-                "feature_version": value.feature_version,
-            }
-            for value in typed_evidence.values
-        }
-    )
-    return brief_evidence
-
-
-class FrameReader:
-    """Trading owns coverage, features and frozen snapshots; the port fetches raw data."""
-
-    def __init__(self, market_data: MarketDataPort, files: AnalysisFiles) -> None:
-        self.market_data = market_data
-        self.files = files
-
-    async def prepare(
-        self,
-        *,
-        case: dict[str, Any],
-        source_fact: dict[str, Any],
-        source_first_visible_at_ms: int,
-        source_history: tuple[dict[str, Any], ...] = (),
-        source_history_at: Callable[[int], Awaitable[tuple[dict[str, Any], ...]]] | None = None,
-        source_revision: str | None = None,
-        source_amendments_at: Callable[[int], Awaitable[tuple[dict[str, Any], ...]]] | None = None,
-    ) -> PreparedAnalysis:
-        selection = dict(case["target_selection"])
-        instrument = selection.get("instrument")
-        if selection.get("reason") != "selected" or not isinstance(instrument, dict):
-            raise ValueError("analysis_target_not_selected")
-        native = str(instrument["native_symbol"])
-        now = _clock_ms()
-        end = now // _BAR_MS * _BAR_MS
-        deadline = time.monotonic() + 5.0
-        environment = "live"
-
-        def request(dataset: Dataset) -> MarketDataRequest:
-            return analysis_market_request(
-                dataset=dataset,
-                native_symbol=native,
-                end_ms=end if dataset in ("perp_bars", "spot_bars", "market_bars") else None,
-                window_minutes=(
-                    240 if dataset == "perp_bars" else 60 if dataset in ("spot_bars", "market_bars") else None
-                ),
-                deadline_at_monotonic=deadline,
-            )
-
-        requests = {
-            "perp_bars": request("perp_bars"),
-            "spot_bars": request("spot_bars"),
-            "open_interest": request("open_interest"),
-            "funding_basis": request("funding_basis"),
-            "instrument_rules": request("instrument_rules"),
-            "market_bars": request("market_bars"),
-        }
-        answers = await asyncio.gather(
-            *(self.market_data.fetch(item) for item in requests.values()),
-            return_exceptions=True,
-        )
-        results: dict[str, MarketDataResult] = {}
-        for (name, item), answer in zip(requests.items(), answers, strict=True):
-            if isinstance(answer, asyncio.CancelledError):
-                raise answer
-            if isinstance(answer, BaseException):
-                result = MarketDataResult(
-                    status="error",
-                    payload=(),
-                    schema_version="binance_market_v1",
-                    source_version="binance_public_v1",
-                    unit_definition=item.unit_definition,
-                    source_identity=item.source_identity,
-                    event_start_ms=None,
-                    event_end_ms=None,
-                    received_at_ms=None,
-                    missing_reasons=(type(answer).__name__,),
-                    request_receipts=(),
-                )
-            else:
-                result = answer
-            results[name] = result
-        knowledge_cutoff = _clock_ms()
-        snapshot = {
-            "snapshot_version": "evidence_snapshot_v2",
-            "profile_version": PROFILE_VERSION,
-            "case_id": case["case_id"],
-            "knowledge_cutoff_ms": knowledge_cutoff,
-            "data_environment": environment,
-            "source_fact": source_fact,
-            "source_first_visible_at_ms": source_first_visible_at_ms,
-            "same_asset_source_history": source_history,
-            "market": {
-                name: {
-                    "status": result.status,
-                    "payload": result.payload,
-                    "source_identity": result.source_identity,
-                    "source_version": result.source_version,
-                    "unit_definition": result.unit_definition,
-                    "event_start_ms": result.event_start_ms,
-                    "event_end_ms": result.event_end_ms,
-                    "received_at_ms": result.received_at_ms,
-                    "missing_reasons": result.missing_reasons,
-                    "request_receipts": result.request_receipts,
-                    "request_start_ms": requests[name].start_ms,
-                    "request_end_ms": requests[name].end_ms,
-                    "environment": requests[name].environment,
-                    "product": requests[name].product,
-                    "native_symbol": requests[name].native_symbol,
-                }
-                for name, result in results.items()
-            },
-        }
-        failure_evidence_ref = await _file_io(self.files.write, snapshot)
-        source_amendments: tuple[dict[str, Any], ...] = ()
-        try:
-            if source_history_at is not None:
-                try:
-                    source_history = await source_history_at(knowledge_cutoff)
-                except Exception as exc:
-                    raise FrozenEvidenceError(f"source_history_{type(exc).__name__}", failure_evidence_ref) from exc
-                snapshot["same_asset_source_history"] = source_history
-                failure_evidence_ref = await _file_io(self.files.write, snapshot)
-            if source_amendments_at is not None:
-                # Corrections and evidence changes News recorded against this source's own claims.
-                # They inform the analysis; the last entry check alone refuses a retired claim.
-                try:
-                    source_amendments = await source_amendments_at(knowledge_cutoff)
-                except Exception as exc:
-                    raise FrozenEvidenceError(f"source_amendments_{type(exc).__name__}", failure_evidence_ref) from exc
-                snapshot["source_amendments"] = source_amendments
-                failure_evidence_ref = await _file_io(self.files.write, snapshot)
-            if any(
-                result.received_at_ms is not None and result.received_at_ms > knowledge_cutoff
-                for result in results.values()
-            ):
-                raise ValueError("market_data_received_after_cutoff")
-            if any(
-                result.source_identity != requests[name].source_identity
-                or result.unit_definition != requests[name].unit_definition
-                for name, result in results.items()
-            ):
-                raise ValueError("market_response_identity_mismatch")
-            price_rows = price_plan_window(
-                results["perp_bars"],
-                end_ms=end,
-                cutoff_ms=knowledge_cutoff,
-                source_identity=requests["perp_bars"].source_identity,
-                unit_definition=requests["perp_bars"].unit_definition,
-            )
-            if not price_rows:
-                raise ValueError("required_perp_price_unavailable")
-            rules = results["instrument_rules"]
-            if rules.status != "ok" or not rules.payload or rules.payload[0].get("native_symbol") != native:
-                raise ValueError("executable_contract_unavailable")
-            last_bar = price_rows[-1]
-            reference_price = Decimal(str(last_bar["close"]))
-            reference_at_ms = int(last_bar["event_at_ms"])
-            if not reference_price.is_finite() or reference_price <= 0 or now - reference_at_ms > 120_000:
-                raise ValueError("entry_reference_price_stale")
-            features = extract_features(
-                results,
-                source_fact,
-                expected_ends={name: end for name in ("perp_bars", "spot_bars", "market_bars")},
-                cutoff_ms=knowledge_cutoff,
-            )
-            trigger_context = dict(case.get("manifest") or {}) if case.get("run_kind") == "conditional" else None
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise FrozenEvidenceError(str(exc), failure_evidence_ref) from exc
-        snapshot["features"] = features
-        price_window_ref = window_ref(
-            dataset="perp_bars",
-            source=results["perp_bars"].source_identity,
-            unit=results["perp_bars"].unit_definition,
-            environment=environment,
-            symbol=native,
-            rows=price_rows,
-        )
-        plans = build_entry_plans(
-            asset_id=str(selection["asset_id"]),
-            instrument_semantics_digest=str(instrument["mapping_semantics_digest"]),
-            source_revision=source_revision
-            or str((case.get("manifest") or {}).get("source_payload_sha") or case["trigger_id"]),
-            source_fact=source_fact,
-            source_first_visible_at_ms=source_first_visible_at_ms,
-            root_expires_at_ms=int(case["root_expires_at_ms"]),
-            perp_rows=price_rows,
-            parent_condition=None if trigger_context is None else trigger_context.get("watch_condition"),
-            price_ref=price_window_ref,
-        )
-        snapshot["plan_menu"] = [plan.model_dump(mode="json") for plan in plans]
-        snapshot["entry_reference"] = {"price": str(reference_price), "closed_at_ms": reference_at_ms}
-        if trigger_context is not None:
-            snapshot["trigger_context"] = trigger_context
-        evidence_ref = await _file_io(self.files.write, snapshot)
-        typed_evidence = freeze_features(
-            snapshot_ref=evidence_ref,
-            knowledge_cutoff_ms=knowledge_cutoff,
-            data_environment=environment,
-            source_first_visible_at_ms=source_first_visible_at_ms,
-            source_fact=source_fact,
-            results=results,
-            features=features,
-        )
-        brief_evidence = _build_brief_evidence(
-            source_fact=source_fact,
-            case=case,
-            evidence_ref=evidence_ref,
-            knowledge_cutoff=knowledge_cutoff,
-            results=results,
-            requests=requests,
-            price_window_ref=price_window_ref,
-            price_rows=price_rows,
-            typed_evidence=typed_evidence,
-            environment=environment,
-            native=native,
-        )
-        brief = build_brief(
-            target_asset_id=str(selection["asset_id"]),
-            instrument_semantics_digest=str(instrument["mapping_semantics_digest"]),
-            source_fact=source_fact,
-            source_history=source_history,
-            evidence=brief_evidence,
-            plans=plans,
-            trigger_context=trigger_context,
-            source_amendments=source_amendments,
-        )
-        brief_ref = await _file_io(self.files.write, {"brief_json": brief.text})
-        return PreparedAnalysis(
-            evidence_ref,
-            brief_ref,
-            brief,
-            reference_price,
-            reference_at_ms,
-            plans,
-            source_history,
-            source_amendments,
-        )
-
-
-def _assessment_document(
-    *,
-    case: dict[str, Any],
-    receipt: AnalystCallReceipt,
-    brief_ref: str | None,
-    request_ref: str | None,
-    response_ref: str | None,
-    status: str,
-    validation_errors: tuple[dict[str, str], ...],
-    call_rows: list[dict[str, Any]],
-    tool_context: CaseToolContext | None,
-    final_manifest_ref: str | None,
-) -> dict[str, Any]:
-    """Freeze the attempt's record payload after all external archive writes settle."""
-    return {
-        "case_id": case["case_id"],
-        "claim_token": case["claim_token"],
-        "claim_attempt": case["claim_attempt"],
-        "brief_ref": brief_ref,
-        "brief_sha": receipt.brief_sha,
-        "menu_sha": receipt.menu_sha,
-        "prompt_sha": receipt.prompt_sha,
-        "model": receipt.model,
-        "profile_version": PROFILE_VERSION,
-        "started_at_ms": receipt.started_at_ms,
-        "ended_at_ms": receipt.ended_at_ms,
-        "provider_status": receipt.status,
-        "validation_status": status,
-        "input_tokens": receipt.input_tokens,
-        "output_tokens": receipt.output_tokens,
-        "cost_microusd": receipt.cost_microusd,
-        "request_ref": request_ref,
-        "response_ref": response_ref,
-        "assessment": None if receipt.assessment is None else receipt.assessment.model_dump(mode="json"),
-        "error_code": receipt.error_code,
-        "validation_errors": validation_errors,
-        "physical_calls": call_rows,
-        "termination_reason": receipt.termination_reason,
-        "tool_refs": () if tool_context is None else tuple(tool_context.tool_refs),
-        "final_manifest_ref": final_manifest_ref,
-    }
-
-
-_MAX_SOURCE_ASSETS = 8
-
-
-def _assets(payload: dict[str, Any]) -> tuple[SourceAsset, ...]:
-    raw_assets = payload.get("assets")
-    if not isinstance(raw_assets, list):
-        raise ValueError("trade_event_assets_invalid")
-    if len(raw_assets) > _MAX_SOURCE_ASSETS:
-        raise ValueError("trade_event_assets_oversized")
-    return tuple(SourceAsset(str(item["symbol"]), str(item["market_type"]), str(item["role"])) for item in raw_assets)
-
-
-def public_update(event: dict[str, Any]) -> PublicUpdate:
-    """Map one News outbox row to its exact public contract."""
-
-    payload = event["payload"]
-    update = PublicUpdate.model_validate(payload)
-    expected = "source_update" if event["kind"] == "source_update" else CATALYST_SOURCE_KIND
-    if (
-        update.kind != expected
-        or update.event_id != event["source_fact_key"]
-        or update.content_revision != event["source_revision"]
-    ):
-        raise ValueError("trade_event_public_identity_mismatch")
-    return update
-
-
-def catalyst_assets(update: PublicUpdate) -> tuple[SourceAsset, ...]:
-    """The union of primary assets over the claims this delta changed.
-
-    A mentioned asset never becomes a target; several eligible primaries stay ambiguous
-    in target selection rather than fanning out one Case per claim.
-    """
-
-    assets = sorted(
-        {
-            (asset.symbol, asset.market_type)
-            for claim in update.claims
-            for asset in claim.fields.assets
-            if asset.role == "primary"
-        }
-    )
-    if len(assets) > _MAX_SOURCE_ASSETS:
-        raise ValueError("trade_event_assets_oversized")
-    return tuple(SourceAsset(symbol, market_type, "primary") for symbol, market_type in assets)
-
-
-def _registry_from_rows(
-    rows: list[dict[str, Any]],
-    *,
-    environment: str,
-    universe: UniversePolicy,
-    verified_routes: list[Any],
-) -> AssetRegistry:
-    instruments: list[InstrumentRef] = []
-    verified = {route.native_symbol: route for route in verified_routes}
-    aliases = []
-    for row in rows:
-        if "venue" in row and (row["venue"] != "binance.perp" or row["instrument_class"] != "crypto"):
-            continue
-        if row.get("trading_status", "TRADING") != "TRADING" or row.get("contract_type", "PERPETUAL") != "PERPETUAL":
-            continue
-        native = str(row.get("native_symbol", row.get("venue_symbol", "")))
-        base = str(row.get("base_asset", row.get("base_symbol", "")))
-        quote = str(row["quote_asset"])
-        if quote != "USDT" or row.get("settlement_asset", quote) != "USDT":
-            continue
-        reviewed = verified.get(native)
-        if reviewed is None and (not base or base[0].isdigit() or native != base + quote):
-            # A multiplier or a nonstandard native spelling needs reviewed
-            # asset and unit semantics before any executable target exists.
-            continue
-        try:
-            asset_id = (
-                AssetId("crypto", reviewed.asset_id.split(":", 1)[1])
-                if reviewed is not None
-                else AssetId("crypto", base)
-            )
-        except ValueError:
-            continue
-        instruments.append(
-            InstrumentRef(
-                venue="binance.usdm",
-                environment=environment,
-                product="perpetual",
-                native_symbol=native,
-                asset_id=asset_id,
-                quote_asset=quote,
-                settlement_asset=quote,
-                units_per_contract=reviewed.units_per_contract if reviewed is not None else Decimal(1),
-                price_unit="native_quote",
-                quantity_unit="native_base",
-            )
-        )
-        if reviewed is not None:
-            aliases.append(
-                VerifiedAlias(
-                    "crypto",
-                    reviewed.source_symbol,
-                    asset_id,
-                    reviewed.units_per_contract,
-                    reviewed.evidence_ref,
-                    native,
-                )
-            )
-    snapshot = str(max((int(row.get("received_at_ms", row.get("observed_at_ms", 0))) for row in rows), default=0))
-    return AssetRegistry(
-        snapshot_ref=f"binance_connection_catalogue:{environment}:{snapshot}",
-        instruments=tuple(instruments),
-        aliases=tuple(aliases),
-        known_assets=universe.excluded_asset_ids,
-    )
-
-
-async def _select_from_connection(
-    market_data: MarketDataPort,
-    kind: TriggerKind,
-    assets: tuple[SourceAsset, ...],
-    *,
-    environment: str,
-    universe: UniversePolicy,
-    verified_routes: list[Any],
-) -> TargetSelection:
-    symbols = {asset.symbol for asset in assets if asset.role == "primary"}
-    for route in verified_routes:
-        if route.source_symbol in symbols:
-            symbols.add(route.native_symbol[:-4])
-    native_symbols: set[str] = set()
-    for symbol in sorted(symbols):
-        native_symbols.add(symbol if symbol.endswith("USDT") else symbol + "USDT")
-    native_symbols.update(route.native_symbol for route in verified_routes if route.source_symbol in symbols)
-    deadline = time.monotonic() + 5.0
-    requests = tuple(
-        MarketDataRequest(
-            dataset="instrument_rules",
-            native_symbol=native,
-            venue="binance.usdm",
-            environment=environment,
-            product="perpetual",
-            source_identity="binance_public_v1",
-            unit_definition="binance_usdm_contract_rules_v1",
-            start_ms=None,
-            end_ms=None,
-            interval_ms=None,
-            max_age_ms=3_600_000,
-            deadline_at_monotonic=deadline,
-        )
-        for native in sorted(native_symbols)
-    )
-    results = await asyncio.gather(*(market_data.fetch(request) for request in requests))
-    if any(result.status in ("error", "stale") for result in results):
-        raise TimeoutError("connection_catalogue_unavailable")
-    rows = [dict(result.payload[0]) for result in results if result.status == "ok" and result.payload]
-    registry = _registry_from_rows(rows, environment=environment, universe=universe, verified_routes=verified_routes)
-    return select_target(kind=kind, assets=assets, registry=registry, universe=universe)
-
-
-def _configured_universe(settings: Any) -> UniversePolicy:
-    exclusions = []
-    for value in settings.trading.analysis.excluded_asset_ids:
-        category, symbol = value.split(":", 1)
-        exclusions.append(AssetId(category, symbol))
-    return UniversePolicy(version="universe_v1", excluded_asset_ids=frozenset(exclusions))
+def _sha(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
 class AnalysisRunner:
@@ -646,37 +50,28 @@ class AnalysisRunner:
         *,
         settings: Any,
         market_data: MarketDataPort,
-        analyst: TradeAnalyst | None,
-        files_root: Path,
-        max_active_cases: int = 8,
-        semantics: SystemOneConnection | None = None,
+        assessor: TradingAssessor | None,
+        program_sha: str,
+        raw_root: Path,
+        fault_code: str | None = None,
     ) -> None:
         self.settings = settings
-        self.files = AnalysisFiles(files_root)
-        self.reader = FrameReader(market_data, self.files)
-        self.analyst = analyst
-        self.semantics = semantics
-        self._max_active_cases = max_active_cases
-        self._root_ttl_ms = settings.trading.analysis.root_ttl_seconds * 1000
-        self._lease_ms = (settings.trading.analysis.model_timeout_seconds + 20) * 1000
+        self.market_data = market_data
+        self._db_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-db")
+        self.preparer = CasePreparer(market_data, raw_root, self._db_pool)
+        self.assessor = assessor
+        self.program_sha = program_sha
+        self.fault_code = fault_code
         self._universe = _configured_universe(settings)
-        execution = settings.trading.execution
-        self._runtime_id = execution.account_slot
-        self._config_digest = hashlib.sha256(
-            json.dumps(
-                {
-                    "analysis": settings.trading.analysis.model_dump(mode="json"),
-                    "account_slot": execution.account_slot,
-                    "binance_connection": execution.binance.model_dump(mode="json"),
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
+        self._lease_ms = (settings.trading.analysis.model_timeout_seconds + 30) * 1_000
+        self._config_digest = _sha(
+            {
+                "analysis": settings.trading.analysis.model_dump(mode="json"),
+                "account_slot": settings.trading.execution.account_slot,
+            }
+        )
         self._active: set[asyncio.Task[bool]] = set()
         self._label_task: asyncio.Task[int] | None = None
-        self._watch_task: asyncio.Task[int] | None = None
-        self._db_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-db")
 
     def _db(self, fn: Any, *, transaction: bool = False) -> Any:
         from tracefold.app.repository_session import repositories
@@ -688,553 +83,88 @@ class AnalysisRunner:
             return fn(repos)
 
     async def _db_async(self, fn: Any, *, transaction: bool = False) -> Any:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            self._db_executor,
-            partial(self._db, fn, transaction=transaction),
-        )
-
-    async def _restore_prepared(self, case: dict[str, Any], prior: dict[str, Any]) -> PreparedAnalysis:
-        """Reuse the first complete frozen input after a claim is interrupted."""
-        evidence_ref = str(prior["evidence_ref"])
-        brief_ref = str(prior["brief_ref"])
-        snapshot = await _file_io(self.files.read, evidence_ref)
-        brief_artifact = await _file_io(self.files.read, brief_ref)
-        brief_text = brief_artifact["brief_json"]
-        brief_payload = json.loads(brief_text)
-        if (
-            snapshot.get("snapshot_version") != "evidence_snapshot_v2"
-            or brief_payload.get("brief_version") != "trade_brief_v5"
-        ):
-            raise ValueError("frozen_analysis_version_invalid")
-        menu = snapshot.get("plan_menu")
-        if (
-            snapshot["case_id"] != case["case_id"]
-            or not isinstance(menu, list)
-            or brief_payload.get("plan_menu") != menu
-            or brief_payload["target_asset_id"] != case["target_asset_id"]
-            or brief_payload["instrument_semantics_digest"] != case["mapping_semantics_digest"]
-            or brief_payload.get("plan_menu_sha") != hashlib.sha256(canonical_json(menu).encode()).hexdigest()
-        ):
-            raise ValueError("frozen_analysis_snapshot_mismatch")
-        plans = tuple(EntryPlan.model_validate_json(canonical_json(item)) for item in menu)
-        reference = snapshot["entry_reference"]
-        return PreparedAnalysis(
-            evidence_ref=evidence_ref,
-            brief_ref=brief_ref,
-            brief=AnalystBrief(
-                text=brief_text,
-                sha=hashlib.sha256(brief_text.encode()).hexdigest(),
-                plan_menu_sha=brief_payload["plan_menu_sha"],
-                evidence_catalog=brief_payload["evidence"],
-            ),
-            reference_price=Decimal(str(reference["price"])),
-            reference_at_ms=int(reference["closed_at_ms"]),
-            plans=plans,
-            source_history=tuple(snapshot.get("same_asset_source_history") or ()),
-            source_amendments=tuple(snapshot.get("source_amendments") or ()),
+        return await asyncio.get_running_loop().run_in_executor(
+            self._db_pool, partial(self._db, fn, transaction=transaction)
         )
 
     async def relay_once(self, *, batch_size: int = 64) -> int:
-        """Relay unacknowledged News public facts; the row kind is dispatched before target selection.
-
-        A source update is recorded as a Trading amendment and never reaches target
-        selection or trigger acceptance. A commit before the acknowledgement is
-        intentionally replayable: every receipt is idempotent on the public identity.
-        """
-
         events = await self._db_async(lambda repos: repos.news.unacknowledged_trade_events(limit=batch_size))
-        environment = "live"
         for event in events:
             try:
-                disposition = await self._receive_trade_event(event, environment=environment)
-            except TimeoutError:
-                continue
-            except (KeyError, TypeError, ValueError):
-                reason = "trade_event_payload_invalid"
-            else:
-                if disposition == "source_conflict":
-                    # Trading keeps the first receipt; the different payload is recorded, not applied.
-                    _LOG.warning(
-                        "trade_event_source_conflict",
-                        extra={"kind": event["kind"], "source_fact_key": event["source_fact_key"]},
+                if event["kind"] == "source_update":
+                    update = public_update(event)
+                    disposition = await self._db_async(
+                        lambda repos, update=update, event=event: repos.trading.receive_source_update(
+                            update_id=update.update_id,
+                            source_fact_key=event["source_fact_key"],
+                            content_revision=event["source_revision"],
+                            affected_claim_refs=update.affected_claim_refs,
+                            retired_claim_refs=update.retired_claim_refs,
+                            payload=event["payload"],
+                            payload_sha256=event["payload_sha256"],
+                            now_ms=_clock_ms(),
+                        ),
+                        transaction=True,
                     )
+                else:
+                    kind = event["kind"]
+                    if kind not in ("oi", "catalyst"):
+                        raise ValueError("trade_event_kind_invalid")
+                    assets = (
+                        catalyst_assets(public_update(event)) if kind == "catalyst" else _assets(dict(event["payload"]))
+                    )
+                    selection = await _select_from_connection(
+                        self.market_data,
+                        kind,
+                        assets,
+                        environment="live",
+                        universe=self._universe,
+                        verified_routes=self.settings.trading.analysis.verified_routes,
+                    )
+                    _, _, disposition = await self._db_async(
+                        lambda repos, kind=kind, event=event, selection=selection: repos.trading.accept_trigger(
+                            kind=kind,
+                            source_fact_key=event["source_fact_key"],
+                            source_revision=event["source_revision"],
+                            payload_sha256=event["payload_sha256"],
+                            payload=event["payload"],
+                            selection=selection,
+                            now_ms=_clock_ms(),
+                            root_ttl_ms=self.settings.trading.analysis.root_ttl_seconds * 1_000,
+                        ),
+                        transaction=True,
+                    )
+                if disposition == "source_conflict":
+                    _LOG.warning("trade_event_source_conflict", extra={"source_fact_key": event["source_fact_key"]})
                 await self._db_async(
                     lambda repos, event=event: repos.news.acknowledge_trade_event(
                         event_id=event["event_id"], payload_sha256=event["payload_sha256"], now_ms=_clock_ms()
                     ),
                     transaction=True,
                 )
+            except TimeoutError:
                 continue
-            await self._db_async(
-                lambda repos, event=event, reason=reason: repos.news.reject_trade_event(
-                    event_id=event["event_id"], payload_sha256=event["payload_sha256"], reason=reason
-                ),
-                transaction=True,
-            )
-        return len(events)
-
-    async def _receive_trade_event(self, event: dict[str, Any], *, environment: str) -> str:
-        kind = event["kind"]
-        if kind == "source_update":
-            amendment = public_update(event)
-            return cast(
-                str,
+            except (KeyError, TypeError, ValueError):
                 await self._db_async(
-                    lambda repos: repos.trading.receive_source_update(
-                        update_id=amendment.update_id,
-                        source_fact_key=event["source_fact_key"],
-                        content_revision=event["source_revision"],
-                        affected_claim_refs=amendment.affected_claim_refs,
-                        retired_claim_refs=amendment.retired_claim_refs,
-                        payload=event["payload"],
+                    lambda repos, event=event: repos.news.reject_trade_event(
+                        event_id=event["event_id"],
                         payload_sha256=event["payload_sha256"],
-                        now_ms=_clock_ms(),
+                        reason="trade_event_payload_invalid",
                     ),
                     transaction=True,
-                ),
-            )
-        if kind == "catalyst":
-            assets = catalyst_assets(public_update(event))
-        elif kind == "oi":
-            assets = _assets(dict(event["payload"]))
-        else:
-            raise ValueError("trade_event_kind_invalid")
-        selection = await _select_from_connection(
-            self.reader.market_data,
-            kind,
-            assets,
-            environment=environment,
-            universe=self._universe,
-            verified_routes=self.settings.trading.analysis.verified_routes,
-        )
-        _, _, disposition = await self._db_async(
-            lambda repos: repos.trading.accept_trigger(
-                kind=kind,
-                source_fact_key=event["source_fact_key"],
-                source_revision=event["source_revision"],
-                payload_sha256=event["payload_sha256"],
-                payload=event["payload"],
-                selection=selection,
-                now_ms=_clock_ms(),
-                root_ttl_ms=self._root_ttl_ms,
-            ),
-            transaction=True,
-        )
-        return str(disposition)
-
-    async def _claim(self) -> dict[str, Any] | None:
-        return cast(
-            dict[str, Any] | None,
-            await self._db_async(
-                lambda repos: repos.trading.claim_analysis_case(now_ms=_clock_ms(), lease_ms=self._lease_ms),
-                transaction=True,
-            ),
-        )
-
-    async def analyze_one(self, case: dict[str, Any] | None = None) -> bool:
-        case = case if case is not None else await self._claim()
-        if case is None:
-            return False
-        status = "unavailable"
-        evidence_ref = None
-        assessment_ref = None
-        brief_ref = None
-        receipt = None
-        tool_context: CaseToolContext | None = None
-        decision = None
-        prepared_signal: SignalV4 | None = None
-        publish_block_reason: str | None = None
-        analysis_error_code: str | None = None
-        validation_errors: tuple[dict[str, str], ...] = ()
-        try:
-            source = await self._db_async(lambda repos: repos.trading.analysis_trigger(case["trigger_id"]))
-            if source is None:
-                raise ValueError("analysis_trigger_missing")
-
-            async def source_history_at(
-                cutoff_ms: int,
-                *,
-                topic: str | None = None,
-                lookback_minutes: int | None = None,
-                include_probe: bool = False,
-            ) -> tuple[dict[str, Any], ...]:
-                return tuple(
-                    await self._db_async(
-                        lambda repos: repos.trading.recent_asset_source_context(
-                            asset_id=str(case["target_asset_id"]),
-                            known_at_ms=cutoff_ms,
-                            exclude_trigger_id=str(case["trigger_id"]),
-                            topic=topic,
-                            lookback_minutes=lookback_minutes,
-                            include_probe=include_probe,
-                        ),
-                    )
                 )
-
-            async def source_amendments_at(cutoff_ms: int) -> tuple[dict[str, Any], ...]:
-                return tuple(
-                    await self._db_async(
-                        lambda repos: repos.trading.source_amendments(
-                            trigger_id=str(case["trigger_id"]), known_at_ms=cutoff_ms
-                        ),
-                    )
-                )
-
-            prior = await self._db_async(
-                lambda repos: repos.trading.prior_analysis_snapshot(
-                    case_id=case["case_id"], before_claim_attempt=int(case["claim_attempt"])
-                )
-            )
-            prepared = (
-                await self._restore_prepared(case, prior)
-                if prior is not None
-                else await self.reader.prepare(
-                    case=case,
-                    source_fact=source["payload"],
-                    source_first_visible_at_ms=int(source["first_visible_at_ms"]),
-                    source_revision=str(source["source_revision"]),
-                    source_history_at=source_history_at,
-                    source_amendments_at=source_amendments_at,
-                )
-            )
-            evidence_ref = prepared.evidence_ref
-            brief_ref = prepared.brief_ref
-            snapshot_recorded = await self._db_async(
-                lambda repos: repos.trading.record_analysis_snapshot(
-                    case_id=case["case_id"],
-                    claim_attempt=int(case["claim_attempt"]),
-                    claim_token=case["claim_token"],
-                    evidence_ref=evidence_ref,
-                    brief_ref=brief_ref,
-                    now_ms=_clock_ms(),
-                ),
-                transaction=True,
-            )
-            if not snapshot_recorded:
-                raise TimeoutError("analysis_snapshot_fence_expired")
-            if self.analyst is None:
-                status = "policy_unconfigured"
-            else:
-
-                async def tool_authorized() -> bool:
-                    return bool(
-                        await self._db_async(
-                            lambda repos: repos.trading.analysis_tool_authorized(
-                                case_id=case["case_id"],
-                                claim_attempt=int(case["claim_attempt"]),
-                                claim_token=case["claim_token"],
-                                now_ms=_clock_ms(),
-                            )
-                        )
-                    )
-
-                tool_context = CaseToolContext(
-                    case=case,
-                    source=source,
-                    source_first_visible_at_ms=int(source["first_visible_at_ms"]),
-                    prepared=prepared,
-                    market_data=self.reader.market_data,
-                    files=self.files,
-                    file_io=_file_io,
-                    authorize=tool_authorized,
-                    source_history_at=source_history_at,
-                    semantics=self.semantics,
-                )
-
-                async def before_call(
-                    call_index: int,
-                    request_payload: dict[str, Any] | None,
-                    timeout_ms: int,
-                    remaining_ms: int,
-                    cost_bound: int | None,
-                ) -> None:
-                    request_ref = await _file_io(self.files.write, request_payload)
-                    allowed = await self._db_async(
-                        lambda repos: repos.trading.record_model_call_start(
-                            case_id=case["case_id"],
-                            claim_attempt=int(case["claim_attempt"]),
-                            claim_token=case["claim_token"],
-                            call_index=call_index,
-                            request_ref=request_ref,
-                            now_ms=_clock_ms(),
-                            timeout_ms=timeout_ms,
-                            reserved_cost_microusd=cost_bound,
-                            phase=str((request_payload or {}).get("phase") or "react"),
-                            endpoint=(request_payload or {}).get("endpoint"),
-                            requested_model=(request_payload or {}).get("requested_model")
-                            or (((request_payload or {}).get("request") or {}).get("model")),
-                        ),
-                        transaction=True,
-                    )
-                    if not allowed:
-                        raise TimeoutError("model_case_fence_expired")
-
-                async def after_call(call_index: int, call: PhysicalModelCall) -> None:
-                    response_ref = (
-                        await _file_io(self.files.write, call.response_payload)
-                        if call.response_payload is not None
-                        else None
-                    )
-                    recorded = await self._db_async(
-                        lambda repos: repos.trading.record_model_call_finish(
-                            case_id=case["case_id"],
-                            claim_attempt=int(case["claim_attempt"]),
-                            claim_token=case["claim_token"],
-                            call_index=call_index,
-                            response_ref=response_ref,
-                            finished_at_ms=call.finished_at_ms or _clock_ms(),
-                            status=call.status,
-                            input_tokens=call.input_tokens,
-                            output_tokens=call.output_tokens,
-                            cost_microusd=call.cost_microusd,
-                            served_model=call.served_model,
-                        ),
-                        transaction=True,
-                    )
-                    if not recorded:
-                        raise TimeoutError("model_call_finish_fence_expired")
-
-                if isinstance(self.analyst, TradeAnalyst):
-
-                    def compile_candidate(proposal: Any) -> Any:
-                        return compile_proposal(
-                            proposal=proposal,
-                            plans=tuple(tool_context.plans.values()),
-                            evidence_catalog=tool_context.evidence_catalog,
-                            judgment_refs=frozenset(tool_context.judgment_refs),
-                            now_ms=_clock_ms(),
-                        )
-
-                    def correction_catalog() -> dict[str, Any]:
-                        return {
-                            "plans": [
-                                {
-                                    "plan_id": plan.plan_id,
-                                    "kind": plan.kind,
-                                    "side": plan.side,
-                                    "reference_price": str(plan.reference_price),
-                                    "reference_at_ms": plan.reference_at_ms,
-                                    "expires_at_ms": plan.expires_at_ms,
-                                    "required_evidence_refs": plan.required_evidence_refs,
-                                    "exit_plan": plan.exit_plan.model_dump(mode="json"),
-                                }
-                                for plan in tool_context.plans.values()
-                            ],
-                            "evidence": tool_context.correction_facts(),
-                            "judgment_refs": sorted(tool_context.judgment_refs),
-                        }
-
-                    receipt = await self.analyst.assess(
-                        prepared.brief,
-                        deadline_at_ms=min(
-                            int(case["lease_until_ms"]),
-                            int(case["work_deadline_at_ms"]),
-                            int(case["root_expires_at_ms"]),
-                        ),
-                        before_call=before_call,
-                        after_call=after_call,
-                        tools_factory=tool_context.tools,
-                        fatal_error=tool_context.fatal_error,
-                        compile_candidate=compile_candidate,
-                        correction_catalog=correction_catalog,
-                    )
-                else:
-                    receipt = await self.analyst.assess(prepared.brief)
-                if receipt.assessment is None:
-                    status = receipt.error_code or "model_unavailable"
-                else:
-                    compiled = compile_proposal(
-                        proposal=receipt.assessment,
-                        plans=tuple(tool_context.plans.values()),
-                        evidence_catalog=tool_context.evidence_catalog,
-                        judgment_refs=frozenset(tool_context.judgment_refs),
-                        now_ms=_clock_ms(),
-                    )
-                    decision = compiled.model_dump(mode="json")
-                    status = "analyzed"
-                    if compiled.action == "TRADE" and self.settings.trading.analysis.publish_signals:
-                        try:
-                            selected = tool_context.plans[decision["selected_plan_id"]]
-                            publish_block_reason = await self._publication_reason(case)
-                            if publish_block_reason is None:
-                                prepared_signal = self._prepare_signal(case, selected, decision)
-                        except ValueError as exc:
-                            # The analysis remains valid, but an invalid or expired
-                            # execution envelope must be visible as a publication refusal.
-                            publish_block_reason = str(exc)
-        except FrozenEvidenceError as exc:
-            status = "evidence_unavailable"
-            analysis_error_code = str(exc)
-            evidence_ref = exc.evidence_ref
-        except InvalidAssessment as exc:
-            status = "invalid_assessment"
-            analysis_error_code = str(exc)
-            validation_errors = ({"field": "assessment", "type": str(exc)},)
-        except (ValueError, TimeoutError) as exc:
-            status = "evidence_unavailable"
-            analysis_error_code = str(exc)
-        except Exception as exc:
-            # A claimed Case still needs a discoverable attempt if an unexpected
-            # preparation or model adapter failure occurs. Avoid exception text:
-            # providers may include source content or credentials in it.
-            status = "analysis_error"
-            analysis_error_code = type(exc).__name__
-        physical_calls: tuple[PhysicalModelCall, ...] = ()
-        call_rows: list[dict[str, Any]] = []
-        final_manifest_ref: str | None = None
-        if receipt is not None:
-            request_ref = (
-                await _file_io(self.files.write, receipt.request_payload)
-                if receipt.request_payload is not None
-                else None
-            )
-            response_ref = (
-                await _file_io(self.files.write, receipt.response_payload)
-                if receipt.response_payload is not None
-                else None
-            )
-            physical_calls = receipt.physical_calls or (
-                (
-                    PhysicalModelCall(
-                        receipt.request_payload,
-                        receipt.response_payload,
-                        receipt.input_tokens,
-                        receipt.output_tokens,
-                        receipt.cost_microusd,
-                        "provider_cost_unavailable" if receipt.cost_microusd is None else None,
-                    ),
-                )
-                if receipt.response_payload is not None
-                else ()
-            )
-            call_rows = [
-                {
-                    "request_ref": (
-                        await _file_io(self.files.write, call.request_payload)
-                        if call.request_payload is not None
-                        else None
-                    ),
-                    "response_ref": (
-                        await _file_io(self.files.write, call.response_payload)
-                        if call.response_payload is not None
-                        else None
-                    ),
-                    "input_tokens": call.input_tokens,
-                    "output_tokens": call.output_tokens,
-                    "cost_microusd": call.cost_microusd,
-                    "cost_unknown_reason": call.cost_unknown_reason,
-                    "status": call.status,
-                    "finished_at_ms": call.finished_at_ms,
-                    "error_type": call.error_type,
-                    "phase": call.phase,
-                    "endpoint": call.endpoint,
-                    "requested_model": call.requested_model,
-                    "served_model": call.served_model,
-                }
-                for call in physical_calls
-            ]
-            validation_errors = receipt.validation_errors + validation_errors
-            if tool_context is not None:
-                final_manifest_ref = await _file_io(
-                    self.files.write,
-                    {
-                        "manifest_version": "trading_final_input_v2",
-                        "case_id": case["case_id"],
-                        "claim_attempt": case["claim_attempt"],
-                        "seed_evidence_ref": evidence_ref,
-                        "seed_brief_ref": brief_ref,
-                        "tool_refs": tuple(tool_context.tool_refs),
-                        "evidence_refs": tuple(sorted(tool_context.evidence_catalog)),
-                        "evidence_catalog": tool_context.evidence_catalog,
-                        "context_artifacts": tool_context.context_artifacts,
-                        "market_artifacts": tool_context.market_artifacts,
-                        "plan_ids": tuple(tool_context.plans),
-                        "plans": [plan.model_dump(mode="json") for plan in tool_context.plans.values()],
-                        "judgment_refs": tuple(sorted(tool_context.judgment_refs)),
-                    },
-                )
-            assessment_ref = await _file_io(
-                self.files.write,
-                _assessment_document(
-                    case=case,
-                    receipt=receipt,
-                    brief_ref=brief_ref,
-                    request_ref=request_ref,
-                    response_ref=response_ref,
-                    status=status,
-                    validation_errors=validation_errors,
-                    call_rows=call_rows,
-                    tool_context=tool_context,
-                    final_manifest_ref=final_manifest_ref,
-                ),
-            )
-        await self._db_async(
-            lambda repos: repos.trading.record_analysis_attempt(
-                case_id=case["case_id"],
-                claim_attempt=int(case["claim_attempt"]),
-                claim_token=case["claim_token"],
-                brief_ref=brief_ref,
-                evidence_ref=evidence_ref,
-                assessment_ref=assessment_ref,
-                model_name=None if receipt is None else receipt.model,
-                prompt_sha=None if receipt is None else receipt.prompt_sha,
-                started_at_ms=None if receipt is None else receipt.started_at_ms,
-                ended_at_ms=_clock_ms(),
-                provider_status=None if receipt is None else receipt.status,
-                analysis_status=status,
-                error_code=analysis_error_code or (None if receipt is None else receipt.error_code),
-                validation_errors=validation_errors,
-                input_tokens=None if receipt is None else receipt.input_tokens,
-                output_tokens=None if receipt is None else receipt.output_tokens,
-                cost_microusd=None if receipt is None else receipt.cost_microusd,
-                calls=tuple(call_rows),
-                known_cost_microusd=0 if receipt is None else receipt.known_cost_microusd,
-                unknown_cost_calls=0 if receipt is None else receipt.unknown_cost_calls,
-                cost_upper_estimate_microusd=None if receipt is None else receipt.cost_upper_estimate_microusd,
-                final_manifest_ref=final_manifest_ref,
-                termination_reason=None if receipt is None else receipt.termination_reason,
-            ),
-            transaction=True,
-        )
-        settled_at_ms = _clock_ms()
-        settled = await self._db_async(
-            lambda repos: repos.trading.finish_analysis_case(
-                case_id=case["case_id"],
-                claim_token=case["claim_token"],
-                now_ms=settled_at_ms,
-                analysis_status=status,
-                evidence_ref=evidence_ref,
-                decision=decision,
-                assessment_ref=assessment_ref,
-                prepared_signal=prepared_signal,
-                publish_block_reason=publish_block_reason,
-            ),
-            transaction=True,
-        )
-        if not settled:
-            await self._db_async(
-                lambda repos: repos.trading.mark_analysis_attempt_unsettled(
-                    case_id=case["case_id"],
-                    claim_attempt=int(case["claim_attempt"]),
-                    claim_token=case["claim_token"],
-                ),
-                transaction=True,
-            )
-        return True
+        return len(events)
 
     async def _publication_reason(self, case: dict[str, Any]) -> str | None:
-        """Execution availability is checked separately from LIVE analysis evidence."""
-
         execution = self.settings.trading.execution
+        if not self.settings.trading.analysis.publish_signals:
+            return "publish_disabled"
         if not execution.enabled or execution.binance.environment != "DEMO":
             return "runtime_unavailable"
-        state = await self._db_async(lambda repos: repos.trading.executor_state(execution.account_slot))
-        if state is None or _clock_ms() * 1_000_000 - state["heartbeat_at_ns"] > 5_000_000_000:
+        state = await self._db_async(lambda repos: repos.trading.state(execution.account_slot))
+        if state is None or _clock_ms() * 1_000_000 - int(state["heartbeat_at_ns"]) > 5_000_000_000:
             return "runtime_unavailable"
-        instrument = case["target_selection"]["instrument"]
-        symbol = str(instrument["native_symbol"])
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
             try:
                 response = await client.get("https://demo-fapi.binance.com/fapi/v1/exchangeInfo")
                 response.raise_for_status()
@@ -1242,8 +172,8 @@ class AnalysisRunner:
             except (httpx.HTTPError, KeyError, ValueError):
                 return "runtime_unavailable"
         if not any(
-            row.get("symbol") == symbol
-            and row.get("baseAsset") == str(case["target_asset_id"]).split(":", 1)[-1]
+            row.get("symbol") == case["native_symbol"]
+            and row.get("baseAsset") == str(case["asset_id"]).split(":", 1)[-1]
             and row.get("quoteAsset") == "USDT"
             and row.get("contractType") == "PERPETUAL"
             and row.get("status") == "TRADING"
@@ -1252,399 +182,310 @@ class AnalysisRunner:
             return "execution_venue_unlisted"
         return None
 
-    async def _read_executable_quote(self, case: dict[str, Any]) -> dict[str, Any]:
-        instrument = case["target_selection"]["instrument"]
-        identity = {
-            "native_symbol": str(instrument["native_symbol"]),
-            "mapping_semantics_digest": str(instrument["mapping_semantics_digest"]),
-            "units_per_contract": str(instrument["units_per_contract"]),
-        }
-        request = MarketDataRequest(
-            dataset="book_ticker",
-            native_symbol=str(instrument["native_symbol"]),
-            venue="binance.usdm",
-            environment="live",
-            product="perpetual",
-            source_identity="binance_public_v1",
-            unit_definition="bid_ask_quote_and_base_size_v2",
-            start_ms=None,
-            end_ms=None,
-            interval_ms=None,
-            max_age_ms=5_000,
-            deadline_at_monotonic=time.monotonic() + 5.0,
-        )
-        try:
-            result = await self.reader.market_data.fetch(request)
-            return {
-                **identity,
-                "status": result.status,
-                "payload": result.payload,
-                "environment": "live",
-                "source_identity": result.source_identity,
-                "unit_definition": result.unit_definition,
-                "request_receipts": result.request_receipts,
-                "missing_reasons": result.missing_reasons,
-            }
-        except (TimeoutError, ValueError, OSError) as exc:
-            return {**identity, "status": "error", "payload": (), "missing_reasons": (type(exc).__name__,)}
-
-    def _prepare_signal(
-        self,
-        case: dict[str, Any],
-        selected: EntryPlan,
-        decision: dict[str, Any],
-    ) -> SignalV4:
-        plan = decision.get("exit_plan")
-        if not isinstance(plan, dict) or decision.get("side") not in ("long", "short"):
-            raise ValueError("analysis_trade_plan_invalid")
-        instrument = case["target_selection"]["instrument"]
-        native = str(instrument["native_symbol"])
-        if not native.endswith("USDT") or len(native) <= 4:
-            raise ValueError("analysis_native_market_unsupported")
-        now_ns = _clock_ms() * 1_000_000
-        expiry_ns = now_ns + 300_000_000_000
-        decision_id = decision_identity(str(case["case_id"]), decision)
-        signal_id = hashlib.sha256(
-            f"{case['case_id']}:{decision_id}:signal_v4".encode(),
-        ).hexdigest()
+    def _signal(self, case: dict[str, Any], view: CaseView, action: str, now_ms: int) -> SignalV4:
+        policy_id = self.settings.trading.analysis.active_policy
+        decision_id = _sha((case["case_id"], self.program_sha, policy_id, POLICY_VERSION))
         return SignalV4(
             seq=1,
-            signal_id=signal_id,
-            case_id=str(case["case_id"]),
+            signal_id=_sha((decision_id, "signal_v4")),
             decision_id=decision_id,
+            case_id=str(case["case_id"]),
             account_slot=self.settings.trading.execution.account_slot,
-            entry_scope_id=str(case["entry_scope_id"]),
-            asset_id=str(case["target_asset_id"]),
-            native_symbol=native,
-            mapping_semantics_digest=str(case["mapping_semantics_digest"]),
-            side=decision["side"],
-            reference_price=selected.reference_price,
-            max_drift_bps=200,
-            stop_bps=int(plan["stop_distance_bps"]),
-            tp_bps=int(plan["take_profit_bps"]),
-            max_hold_s=int(plan["max_holding_seconds"]),
-            policy_id="trade_assessment",
-            policy_version="v4",
-            geometry_version="analysis_dynamic_v1",
-            decided_at_ns=now_ns,
-            expires_at_ns=expiry_ns,
+            entry_scope_id=_sha((case["trigger_id"], case["asset_id"])),
+            asset_id=str(case["asset_id"]),
+            native_symbol=str(case["native_symbol"]),
+            mapping_semantics_digest=str(case["mapping_digest"]),
+            side=cast(Any, action),
+            reference_price=Decimal(str(case["reference_price"])),
+            max_drift_bps=50,
+            stop_bps=view.geometry.stop_bps,
+            tp_bps=view.geometry.tp_bps,
+            max_hold_s=view.geometry.max_hold_ms // 1_000,
+            policy_id=policy_id,
+            policy_version=POLICY_VERSION,
+            geometry_version=view.geometry.version,
+            decided_at_ns=now_ms * 1_000_000,
+            expires_at_ns=(now_ms + 300_000) * 1_000_000,
         )
 
-    def _completed(self, task: asyncio.Task[bool]) -> None:
-        self._active.discard(task)
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            _LOG.exception("analysis_case_failed")
-
-    async def label_once(self, *, limit: int = 4, label_version: str | None = None) -> int:
-        """Fill due opportunity paths without holding a database transaction over I/O."""
-        due = await self._db_async(
-            lambda repos: repos.trading.due_analysis_outcomes(
-                now_ms=_clock_ms(), limit=limit, label_version=label_version
-            ),
-        )
-        for row in due:
-            now = _clock_ms()
-            selection = row["target_selection"] or {}
-            instrument = selection.get("instrument") if isinstance(selection, dict) else None
-            anchor = (
-                int(row["source_observed_at_ms"])
-                if row["axis"] == "source"
-                else int(row["decided_at_ms"]) + 60_000
-                if row["decided_at_ms"] is not None
-                else None
+    async def analyze_one(self, case: dict[str, Any] | None = None) -> bool:
+        if case is None:
+            case = await self._db_async(
+                lambda repos: repos.trading.claim_case(now_ms=_clock_ms(), lease_ms=self._lease_ms),
+                transaction=True,
             )
-            path: dict[str, Any]
-            if not isinstance(instrument, dict) or anchor is None:
-                path = {"status": "missing", "reason": "outcome_identity_or_anchor_missing"}
+        if case is None:
+            return False
+        case_id = str(case["case_id"])
+        token = str(case["claim_token"])
+        frozen_view = case.get("view") is not None
+        try:
+            if case.get("view") is not None:
+                view = case_view_from_record(dict(case["view"]))
+                reference_price = Decimal(str(case["reference_price"]))
             else:
-                end_at = anchor + int(row["horizon_seconds"]) * 1_000
-                request = MarketDataRequest(
-                    dataset="perp_bars",
-                    native_symbol=str(instrument["native_symbol"]),
-                    venue="binance.usdm",
-                    environment="live",
-                    product="perpetual",
-                    source_identity="binance_public_v1",
-                    unit_definition="native_quote_v1",
-                    start_ms=anchor // _BAR_MS * _BAR_MS,
-                    end_ms=(end_at // _BAR_MS + 2) * _BAR_MS,
-                    interval_ms=_BAR_MS,
-                    max_age_ms=None,
-                    deadline_at_monotonic=time.monotonic() + 10.0,
+                source = await self._db_async(lambda repos: repos.trading.case_trigger(case_id))
+                if source is None:
+                    raise ValueError("analysis_trigger_missing")
+                baselines = await self._db_async(
+                    lambda repos: repos.trading.pit_base_rates(
+                        trigger_kind=case["trigger_kind"], known_at_ms=_clock_ms()
+                    )
                 )
-                try:
-                    result = await self.reader.market_data.fetch(request)
-                    path = price_path_label(
-                        result.payload,
-                        anchor_ms=anchor,
-                        horizon_seconds=int(row["horizon_seconds"]),
-                        market_status=result.status,
+                recent_context = await self._db_async(
+                    lambda repos: repos.trading.recent_asset_context(
+                        asset_id=case["asset_id"],
+                        known_at_ms=_clock_ms(),
+                        exclude_trigger_id=case["trigger_id"],
                     )
-                    path.update(
-                        {
-                            "source_identity": result.source_identity,
-                            "source_version": result.source_version,
-                            "unit_definition": result.unit_definition,
-                            "received_at_ms": result.received_at_ms,
-                            "market_status": result.status,
-                            "request_receipts": result.request_receipts,
-                            "missing_reasons": result.missing_reasons,
-                        }
-                    )
-                except (TimeoutError, ValueError, OSError) as exc:
-                    path = {"status": "missing", "reason": type(exc).__name__}
-            # A temporarily incomplete provider response remains pending. At
-            # 48 h past the horizon the label is explicitly missing.
-            expired = now >= int(row["available_at_ms"]) + 48 * 3_600_000
-            if path["status"] != "ok" and not expired:
-                await self._db_async(
-                    lambda repos, row=row, now=now: repos.trading.retry_analysis_outcome(
-                        case_id=row["case_id"],
-                        axis=row["axis"],
-                        horizon_seconds=row["horizon_seconds"],
-                        label_version=row["label_version"],
-                        next_attempt_at_ms=now + 300_000,
+                )
+                prepared = await self.preparer.prepare(
+                    case=case,
+                    source_fact=dict(source["payload"]),
+                    base_rates=baselines,
+                    recent_context=tuple(recent_context),
+                )
+                view = prepared.view
+                reference_price = prepared.reference_price
+                frozen = await self._db_async(
+                    lambda repos: repos.trading.freeze_case(
+                        case_id=case_id,
+                        claim_token=token,
+                        now_ms=_clock_ms(),
+                        view=asdict(view),
+                        raw_snapshot_ref=prepared.raw_snapshot_ref,
+                        geometry_version=view.geometry.version,
+                        stop_bps=view.geometry.stop_bps,
+                        tp_bps=view.geometry.tp_bps,
+                        half_spread_bps=view.half_spread_bps,
+                        reference_price=reference_price,
                     ),
                     transaction=True,
                 )
-                continue
-            path.update(
-                {
-                    "case_id": row["case_id"],
-                    "axis": row["axis"],
-                    "horizon_seconds": row["horizon_seconds"],
-                    "label_version": row["label_version"],
-                    "labeled_at_ms": now,
-                }
+                if not frozen:
+                    return True
+                frozen_view = True
+            started = _clock_ms()
+            result = None if self.assessor is None else await self.assessor.assess(view)
+            ended = _clock_ms()
+            forecast = None if result is None else result.forecast
+            status = (
+                "provider"
+                if result is None
+                else "ok"
+                if result.status == "complete"
+                else result.error_code or "provider"
             )
-            ref = await _file_io(self.files.write, path)
-            await self._db_async(
-                lambda repos, row=row, path=path, ref=ref, now=now: repos.trading.settle_analysis_outcome(
-                    case_id=row["case_id"],
-                    axis=row["axis"],
-                    horizon_seconds=row["horizon_seconds"],
-                    label_version=row["label_version"],
-                    status=path["status"],
-                    return_bps=path.get("return_bps"),
-                    path_ref=ref,
-                    now_ms=now,
-                ),
-                transaction=True,
+            decisions = all_policy_decisions(
+                view.features,
+                forecast,
+                PolicyConfig(view.geometry.stop_bps, view.geometry.tp_bps, view.half_spread_bps),
             )
-        return len(due)
+            live_action = next(
+                item for item in decisions if item.policy_id == self.settings.trading.analysis.active_policy
+            )
+            publication = "abstained" if live_action.action == "abstain" else await self._publication_reason(case)
+            now_ms = _clock_ms()
 
-    def _label_completed(self, task: asyncio.Task[int]) -> None:
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            _LOG.exception("analysis_outcome_label_failed")
-
-    async def watch_once(self, *, limit: int = 8) -> int:
-        """Observe closed bars; only a committed match may create a child Case."""
-        rows = await self._db_async(lambda repos: repos.trading.due_watch_observations(now_ms=_clock_ms(), limit=limit))
-        for row in rows:
-            now = _clock_ms()
-            condition = row["condition"]
-            last_at = row["last_observed_at_ms"]
-            observed_at: int | None = last_at
-            observed_value: str | None = None
-            previous_close: str | None = None
-            trigger_side: str | None = None
-            observed_path: list[tuple[int, str]] = []
-            observation_status = "not_met"
-            market_snapshot: dict[str, Any] = {"status": "not_requested"}
-            selection = row["target_selection"] or {}
-            instrument = selection.get("instrument") if isinstance(selection, dict) else None
-            if not isinstance(instrument, dict):
-                observation_status = "data_missing"
-            else:
-                start_at = int(last_at or condition["frozen_at_ms"])
-                end_at = min(now, int(row["expires_at_ms"])) // _BAR_MS * _BAR_MS
-                if end_at > start_at:
-                    request = MarketDataRequest(
-                        dataset="perp_bars",
-                        native_symbol=str(instrument["native_symbol"]),
-                        venue="binance.usdm",
-                        environment="live",
-                        product="perpetual",
-                        source_identity="binance_public_v1",
-                        unit_definition="quote_per_base_and_volume_v1",
-                        start_ms=start_at // _BAR_MS * _BAR_MS,
-                        end_ms=end_at,
-                        interval_ms=_BAR_MS,
-                        max_age_ms=None,
-                        deadline_at_monotonic=time.monotonic() + 5.0,
-                    )
-                    try:
-                        result = await self.reader.market_data.fetch(request)
-                        market_snapshot = {
-                            "status": result.status,
-                            "payload": result.payload,
-                            "source_identity": result.source_identity,
-                            "source_version": result.source_version,
-                            "unit_definition": result.unit_definition,
-                            "request_receipts": result.request_receipts,
-                            "missing_reasons": result.missing_reasons,
-                        }
-                        if result.status not in ("ok", "partial"):
-                            observation_status = "data_missing"
-                        else:
-                            next_at = start_at + _BAR_MS
-                            previous = Decimal(
-                                str(
-                                    row["last_observed_value"]
-                                    if row["last_observed_value"] is not None
-                                    else condition["previous_close"]
-                                )
+            def settle(repos: Any) -> bool:
+                if not repos.trading.claim_is_current(case_id=case_id, claim_token=token, now_ms=now_ms):
+                    return False
+                repos.trading.record_assessment(
+                    case_id=case_id,
+                    program_sha=self.program_sha,
+                    route=self.settings.trading.analysis.model_name or "",
+                    status=status,
+                    forecast=forecast,
+                    notes=() if result is None else result.notes,
+                    usage={} if result is None else result.usage,
+                    started_at_ms=started,
+                    ended_at_ms=ended,
+                )
+                repos.trading.record_policy_actions(
+                    case_id=case_id,
+                    program_sha=self.program_sha,
+                    decisions=decisions,
+                    now_ms=now_ms,
+                )
+                if live_action.action != "abstain":
+                    signal_id = None
+                    publish_status = publication
+                    if publication is None:
+                        publish_status = repos.trading.publication_source_status(case_id=case_id, now_ms=now_ms)
+                        if publish_status is None and now_ms >= int(case["root_expires_at_ms"]):
+                            publish_status = "signal_expired"
+                        if publish_status is None:
+                            state = repos.trading.state(self.settings.trading.execution.account_slot)
+                            if state is None or now_ms * 1_000_000 - int(state["heartbeat_at_ns"]) > 5_000_000_000:
+                                publish_status = "runtime_unavailable"
+                        if publish_status is None:
+                            signal = self._signal(
+                                {**case, "reference_price": reference_price}, view, live_action.action, now_ms
                             )
-                            for bar in sorted(result.payload, key=lambda item: int(item["event_at_ms"])):
-                                stamp = int(bar["event_at_ms"])
-                                if stamp < next_at or stamp > now:
-                                    continue
-                                if stamp != next_at:
-                                    observation_status = "data_missing"
-                                    break
-                                value = Decimal(str(bar["close"]))
-                                observed_at, observed_value = stamp, str(value)
-                                observed_path.append((stamp, str(value)))
-                                previous_close = str(previous)
-                                side = (
-                                    condition["side"]
-                                    if directed_cross(
-                                        side=condition["side"],
-                                        previous=previous,
-                                        current=value,
-                                        level=Decimal(str(condition["level"])),
-                                    )
-                                    else None
-                                )
-                                if side is not None:
-                                    trigger_side = side
-                                    observation_status = (
-                                        "satisfied"
-                                        if now < min(int(row["expires_at_ms"]), stamp + ENTRY_WINDOW_MS)
-                                        else "missed"
-                                    )
-                                    break
-                                previous, next_at = value, stamp + _BAR_MS
-                            if (
-                                observed_at == last_at
-                                and observation_status == "not_met"
-                                and result.status == "partial"
-                            ):
-                                observation_status = "data_missing"
-                    except (TimeoutError, ValueError, OSError) as exc:
-                        observation_status = "data_missing"
-                        market_snapshot = {"status": "error", "error_type": type(exc).__name__}
-
-            if observation_status == "not_met" and not observed_path:
-                if now < int(row["expires_at_ms"]):
-                    continue
-                observation_status = "expired"
-            observation_ref = await _file_io(
-                self.files.write,
-                {
-                    "parent_case_id": row["parent_case_id"],
-                    "condition": condition,
-                    "checked_at_ms": now,
-                    "observation_status": observation_status,
-                    "observed_at_ms": observed_at,
-                    "observed_value": observed_value,
-                    "previous_close": previous_close,
-                    "trigger_side": trigger_side,
-                    "observed_path": observed_path,
-                    "market": market_snapshot,
-                },
-            )
-
-            def advance(
-                repos: Any,
-                parent_case_id: str = str(row["parent_case_id"]),
-                checked_at_ms: int = now,
-                check_status: str = observation_status,
-                checked_bar_at_ms: int | None = observed_at,
-                checked_value: str | None = observed_value,
-                checked_previous_close: str | None = previous_close,
-                checked_side: str | None = trigger_side,
-                checked_path: tuple[tuple[int, str], ...] = tuple(observed_path),
-                checked_ref: str = observation_ref,
-            ) -> bool:
+                            repos.trading.append_signal(signal)
+                            signal_id = signal.signal_id
+                            publish_status = "published"
+                    repos.trading.set_publication(
+                        case_id=case_id,
+                        program_sha=self.program_sha,
+                        policy_id=live_action.policy_id,
+                        policy_version=POLICY_VERSION,
+                        publish_status=publish_status,
+                        signal_id=signal_id,
+                    )
                 return bool(
-                    repos.trading.advance_watch_observation(
-                        parent_case_id=parent_case_id,
-                        now_ms=checked_at_ms,
-                        observation_status=check_status,
-                        observed_at_ms=checked_bar_at_ms,
-                        observed_value=checked_value,
-                        previous_close=checked_previous_close,
-                        trigger_side=checked_side,
-                        observed_path=checked_path,
-                        observation_ref=checked_ref,
+                    repos.trading.finish_case(
+                        case_id=case_id,
+                        claim_token=token,
+                        status="complete",
+                        failure_code=None,
+                        now_ms=now_ms,
                     )
                 )
 
-            await self._db_async(advance, transaction=True)
+            await self._db_async(settle, transaction=True)
+        except Exception as exc:
+            _LOG.exception("analysis_case_failed", extra={"case_id": case_id})
+            code = "data_missing" if isinstance(exc, (ValueError, KeyError)) else "provider"
+
+            def fail(repos: Any) -> None:
+                now_ms = _clock_ms()
+                if not repos.trading.claim_is_current(case_id=case_id, claim_token=token, now_ms=now_ms):
+                    return
+                if not frozen_view:
+                    legs = (
+                        PaperLeg(
+                            "long", "missing", None, "case_preparation_failed", None, None, None, None, None, None, None
+                        ),
+                        PaperLeg(
+                            "short",
+                            "missing",
+                            None,
+                            "case_preparation_failed",
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        ),
+                    )
+                    repos.trading.record_paper_legs(
+                        case_id=case_id, legs=legs, geometry_version=GEOMETRY_VERSION, now_ms=now_ms
+                    )
+                repos.trading.finish_case(
+                    case_id=case_id,
+                    claim_token=token,
+                    status="failed",
+                    failure_code=code,
+                    now_ms=now_ms,
+                )
+
+            await self._db_async(
+                fail,
+                transaction=True,
+            )
+        return True
+
+    async def label_once(self, *, limit: int = 4) -> int:
+        now_ms = _clock_ms()
+        rows = await self._db_async(
+            lambda repos: repos.trading.label_candidates(now_ms=now_ms, buffer_ms=_PAPER_BUFFER_MS, limit=limit)
+        )
+        for case in rows:
+            decided = int(case["decided_at_ms"])
+            end = (decided // BAR_MS + 1) * BAR_MS + 14_400_000
+            request = analysis_market_request(
+                dataset="perp_bars",
+                native_symbol=str(case["native_symbol"]),
+                end_ms=end,
+                window_minutes=242,
+                deadline_at_monotonic=time.monotonic() + 8,
+            )
+            try:
+                answer = await self.market_data.fetch(request)
+                if answer.status not in ("ok", "partial") or answer.source_identity != "binance_public_v1":
+                    raise ValueError("paper_market_data_missing")
+                bars = tuple(
+                    Bar(
+                        int(row["event_at_ms"]),
+                        Decimal(str(row["high"])),
+                        Decimal(str(row["low"])),
+                        Decimal(str(row["close"])),
+                    )
+                    for row in answer.payload
+                    if int(row["event_at_ms"]) <= end
+                )
+            except (ValueError, KeyError, TypeError):
+                bars = ()
+            legs = both_legs(
+                decided_at_ms=decided,
+                bars=bars,
+                leg_geometry=LegGeometry(int(case["stop_bps"]), int(case["tp_bps"])),
+                half_spread_bps=Decimal(str(case["half_spread_bps"])),
+            )
+            await self._db_async(
+                lambda repos, case=case, legs=legs: repos.trading.record_paper_legs(
+                    case_id=case["case_id"],
+                    legs=legs,
+                    geometry_version=case["geometry_version"],
+                    now_ms=_clock_ms(),
+                ),
+                transaction=True,
+            )
         return len(rows)
 
-    def _watch_completed(self, task: asyncio.Task[int]) -> None:
+    async def run(self, stop: asyncio.Event) -> None:
+        next_heartbeat = 0
+        next_prune = 0
         try:
-            task.result()
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            _LOG.exception("analysis_watch_observation_failed")
-
-    async def run(self, stop_event: asyncio.Event) -> None:
-        """Relay keeps draining while model calls occupy separate bounded tasks."""
-
-        next_heartbeat_at_ms = 0
-        try:
-            while not stop_event.is_set():
+            while not stop.is_set():
                 try:
                     now_ms = _clock_ms()
-                    if now_ms >= next_heartbeat_at_ms:
+                    if now_ms >= next_prune:
+                        await asyncio.get_running_loop().run_in_executor(
+                            self._db_pool, partial(prune_snapshots, self.preparer.raw_root, now_s=now_ms / 1_000)
+                        )
+                        next_prune = now_ms + 86_400_000
+                    if now_ms >= next_heartbeat:
                         await self._db_async(
                             lambda repos, now_ms=now_ms: repos.trading.heartbeat_analysis_runtime(
-                                runtime_id=self._runtime_id,
+                                runtime_id=self.settings.trading.execution.account_slot,
                                 now_ms=now_ms,
                                 active_policy=self.settings.trading.analysis.active_policy,
-                                model_name=getattr(self.analyst, "model", None),
-                                model_configured=self.analyst is not None,
+                                program_sha=self.program_sha,
+                                model_name=self.settings.trading.analysis.model_name,
+                                model_configured=self.assessor is not None,
                                 publish_signals=self.settings.trading.analysis.publish_signals,
                                 config_digest=self._config_digest,
+                                fault_code=self.fault_code,
                             ),
                             transaction=True,
                         )
-                        next_heartbeat_at_ms = now_ms + 5_000
+                        next_heartbeat = now_ms + 5_000
                     await self.relay_once()
-                    while len(self._active) < self._max_active_cases:
-                        case = await self._claim()
+                    while len(self._active) < self.settings.trading.analysis.max_active_cases:
+                        case = await self._db_async(
+                            lambda repos: repos.trading.claim_case(now_ms=_clock_ms(), lease_ms=self._lease_ms),
+                            transaction=True,
+                        )
                         if case is None:
                             break
                         task = asyncio.create_task(self.analyze_one(case))
                         self._active.add(task)
-                        task.add_done_callback(self._completed)
+                        task.add_done_callback(self._active.discard)
                     if self._label_task is None or self._label_task.done():
+                        if self._label_task is not None:
+                            self._label_task.result()
                         self._label_task = asyncio.create_task(self.label_once())
-                        self._label_task.add_done_callback(self._label_completed)
-                    if self._watch_task is None or self._watch_task.done():
-                        self._watch_task = asyncio.create_task(self.watch_once())
-                        self._watch_task.add_done_callback(self._watch_completed)
                 except Exception:
                     _LOG.exception("analysis_runner_cycle_failed")
                 with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(stop_event.wait(), timeout=1.0)
+                    await asyncio.wait_for(stop.wait(), timeout=1)
         finally:
             if self._active:
                 await asyncio.gather(*self._active, return_exceptions=True)
             if self._label_task is not None:
                 await asyncio.gather(self._label_task, return_exceptions=True)
-            if self._watch_task is not None:
-                await asyncio.gather(self._watch_task, return_exceptions=True)
-            self._db_executor.shutdown(wait=True)
+            self._db_pool.shutdown(wait=True)

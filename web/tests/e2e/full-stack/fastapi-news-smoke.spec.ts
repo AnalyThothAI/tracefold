@@ -196,11 +196,9 @@ test("research reads a persisted net-buy episode and links OI to its frozen deci
   await expect(oi).toContainText("5 分钟");
   await oi.getByRole("button", { expanded: false }).click();
   await page.getByRole("link", { name: "查看这条观察的策略判定" }).click();
-  await expect(page.getByRole("heading", { name: "这条观察关联的策略判定" })).toBeVisible();
+  await expect(page.getByText("按这条 OI 观察筛选")).toBeVisible();
   const decision = page.locator(".trading-case-list-row");
   await expect(decision).toHaveCount(1);
   await decision.click();
-  await expect(page.getByRole("dialog", { name: "策略判定依据" })).toContainText(
-    "browser-research-case",
-  );
+  await expect(page.getByRole("dialog", { name: "冻结 Case" })).toContainText("crypto:BTC");
 });

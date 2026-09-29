@@ -1,43 +1,20 @@
-"""Read-only trading monitoring; operator commands have no HTTP ingress (#624).
-
-Three reads. `GET /api/trading/signals` and the two `GET /api/trading/execution/*`
-projections were three more public shapes over ledgers the desk already reads folded: the Signal list
-is `executions[]` with its venue outcome attached, the raw observation stream is what that fold reads,
-and the Command list was the console control ledger. Nothing in the browser called any of the three, and
-`tracefold trading signals | observations | commands` reads the same repository directly (#537 PR-5).
-
-`GET /api/trading/gate` and `GET /api/trading/gate/{event_id}` left on the same terms (#589 PR-2).
-#553 PR-1 removed the OI frame table that joined each admission row to its Event, and with it the
-only browser reader either route ever had; what remained was a public HTTP shape over the admission
-ledger with no caller. `tracefold trading gate [--source-key KEY] [--since-ms N]` reads the same two
-repository statements directly, and the runbook in Operations reads the row in SQL.
-
-The admission ledger comes back here as a distribution rather than as rows (#604 T3): `cases`
-publishes `admission_counts_24h`, a `count(*)` per `(status, reason)` pair over the same window its
-two Case distributions use. That is the funnel's top -- how many frames the lane looked at and what
-admission answered -- and it is not the per-frame `decisions[]` #589 PR-2 deleted; no frame identity,
-evidence blob or Case link travels with a count.
-"""
+"""Read-only Trading runtime, LIVE Case, scoreboard, and DEMO execution facts."""
 
 from __future__ import annotations
 
 import re
 import time
-from pathlib import Path
-from typing import Annotated, Any, Final, Literal
+from typing import Annotated, Any, Final
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
-from tracefold.app.analysis_files import AnalysisFiles
 from tracefold.app.analysis_status import analysis_status_projection
 from tracefold.app.execution_status import execution_readiness_projection
-from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.trading.stages import execution_stage
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
-from ..read_cursor import decode_read_cursor, encode_read_cursor
 from ..responses import _etagged, _validated_json
 from ..schemas import common as api_schemas
 from ..schemas import trading as trading_schemas
@@ -45,45 +22,60 @@ from ..schemas import trading as trading_schemas
 router = APIRouter()
 _StatusEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingStatusData]
 _CasesEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingCasesData]
+_ScoreboardEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingScoreboardData]
 _ExecutionsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingExecutionsData]
-_ReplayEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingAnalysisReplayData]
-
 _WINDOW_MS: Final = 24 * 3_600_000
 _DAY_MS: Final = 86_400_000
 _ROW_LIMIT: Final = 100
-_OI_METRIC_VERSION: Final = OI_METRIC_VERSION
-# The identity shape every Case the lane has ever written has (`uuid4().hex`), widened to the bounded
-# identity alphabet the rest of the Trading ledgers use so a Case frozen under an older naming still
-# opens. It is a primary key, so anything outside it cannot name a row and is refused rather than read.
-_CASE_ID: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._-]{0,127}$")
+_CASE_ID: Final = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _case_id(value: str) -> str | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    if _CASE_ID.fullmatch(raw) is None:
+        raise ApiBadRequest("trading_cases_case_id_invalid", field="case_id")
+    return raw
+
+
+def _case(row: dict[str, Any]) -> dict[str, Any]:
+    fields = trading_schemas.TradingCaseData.model_fields
+    return {key: _decimal_strings(value) for key, value in row.items() if key in fields}
+
+
+def _decimal_strings(value: Any) -> Any:
+    from decimal import Decimal
+
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, list):
+        return [_decimal_strings(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _decimal_strings(item) for key, item in value.items()}
+    return value
 
 
 @router.get("/trading/status", response_model=_StatusEnvelope)
 def get_trading_status(request: Request) -> Response:
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
-    now_ms = int(time.time() * 1000)
+    now_ms = int(time.time() * 1_000)
     with runtime.repositories() as repos:
-        last_case_at_ms = repos.trading.latest_case_created_at_ms()
         execution = runtime.settings.trading.execution
         analysis_runtime = repos.trading.analysis_runtime(execution.account_slot)
-        execution_state = repos.trading.state(execution.account_slot)
-        execution_control = repos.trading.control(execution.account_slot)
-    execution_status = execution_readiness_projection(
-        execution, execution_state, execution_control, now_ns=time.time_ns()
-    )
+        last_case_at_ms = repos.trading.latest_case_created_at_ms()
+        state = repos.trading.state(execution.account_slot)
+        control = repos.trading.control(execution.account_slot)
     response = _validated_json(
         _StatusEnvelope,
         {
             "ok": True,
             "data": {
                 "decision": analysis_status_projection(
-                    runtime.settings,
-                    analysis_runtime,
-                    now_ms=now_ms,
-                    last_case_at_ms=last_case_at_ms,
+                    runtime.settings, analysis_runtime, now_ms=now_ms, last_case_at_ms=last_case_at_ms
                 ),
-                "execution": execution_status,
+                "execution": execution_readiness_projection(execution, state, control, now_ns=time.time_ns()),
             },
         },
     )
@@ -94,98 +86,67 @@ def get_trading_status(request: Request) -> Response:
 @router.get("/trading/cases", response_model=_CasesEnvelope)
 def get_trading_cases(
     request: Request,
-    case_id: Annotated[str, Query(max_length=256)] = "",
-    view: Literal["summary", "list"] = "summary",
-    state: Literal[
-        "", "PENDING", "RUNNING", "DONE", "FAILED", "EXCLUDED", "NO_TRADE", "SIGNAL_EMITTED", "BLOCKED"
-    ] = "",
-    asset: Annotated[str, Query(max_length=64)] = "",
-    reason: Annotated[str, Query(max_length=128)] = "",
-    source_item_id: Annotated[str, Query(max_length=64, pattern=r"^([0-9a-f]{64})?$")] = "",
-    cursor: Annotated[str, Query(max_length=512)] = "",
+    case_id: Annotated[str, Query(max_length=64)] = "",
+    source_item_id: Annotated[str, Query(max_length=256)] = "",
+    state: Annotated[str, Query(max_length=16)] = "",
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
 ) -> Response:
-    """Frozen decisions by identity or a scope-bound keyset list; distributions remain independent."""
-    _validate_query_params(
-        request, supported={"case_id", "token", "view", "state", "asset", "reason", "source_item_id", "cursor", "limit"}
-    )
+    _validate_query_params(request, supported={"token", "case_id", "source_item_id", "state", "limit"})
     identity = _case_id(case_id)
-    if identity and (state or asset or reason or source_item_id or cursor):
-        raise ApiBadRequest("trading_cases_scope_invalid", field="case_id")
-    scope = [state, asset.strip().upper(), reason, source_item_id, view]
-    position = decode_read_cursor(cursor, scope, error="trading_cases_cursor_invalid")
+    if identity and source_item_id:
+        raise ApiBadRequest("trading_cases_identity_ambiguous", field="case_id")
+    if state and state not in ("pending", "running", "complete", "failed"):
+        raise ApiBadRequest("trading_cases_state_invalid", field="state")
     runtime = _authenticated_runtime(request)
-    now_ms = int(time.time() * 1000)
-    window_to = position[0] if position else now_ms
-    since_ms = 0 if source_item_id else window_to - _WINDOW_MS
-    filters = dict(
-        states=(state,) if state else (),
-        to_ms=window_to,
-        asset=asset.strip().upper() or None,
-        reason=reason or None,
-        source_item_id=source_item_id or None,
-    )
     with runtime.repositories() as repos:
         if identity:
-            row = repos.trading.console_case(case_id=identity)
-            rows = [] if row is None else [row]
-            total = len(rows)
-        elif view == "list" or source_item_id:
-            rows = repos.trading.console_cases(
-                since_ms=since_ms,
-                limit=limit + 1,
-                cursor_at_ms=position[2] if position else None,
-                cursor_id=position[3] if position else "",
-                **filters,
-            )
-            total = repos.trading.console_case_total(since_ms=since_ms, **filters)
+            item = repos.trading.analysis_case(identity)
+            rows = [] if item is None else [item]
         else:
-            rows, total = [], 0
-        states = repos.trading.case_counts(since_ms=now_ms - _WINDOW_MS)
-        decisions = repos.trading.case_decision_counts(since_ms=now_ms - _WINDOW_MS)
-        admissions = repos.trading.gate_counts(since_ms=now_ms - _WINDOW_MS)
-    next_cursor = None
-    if len(rows) > limit:
-        last = rows[limit - 1]
-        next_cursor = encode_read_cursor(
-            scope, to_ms=window_to, value=0, at_ms=last["case_created_at_ms"], identity=last["case_id"]
-        )
+            rows = repos.trading.analysis_cases(
+                since_ms=int(time.time() * 1_000) - _WINDOW_MS,
+                limit=limit,
+                state=state or None,
+                source_item_id=source_item_id or None,
+            )
     return _etagged(
-        {
-            "cases": [_case(row) for row in rows[:limit]],
-            "total": total,
-            "next_cursor": next_cursor,
-            "window_from_ms": since_ms,
-            "window_to_ms": window_to,
-            "state_counts_24h": states,
-            "decision_counts_24h": decisions,
-            "admission_counts_24h": admissions,
-            "complete": next_cursor is None,
-            "window_hours": _WINDOW_MS // 3_600_000,
-        },
-        request,
-        envelope=_CasesEnvelope,
+        {"cases": [_case(row) for row in rows], "total": len(rows), "complete": True}, request, envelope=_CasesEnvelope
     )
+
+
+@router.get("/trading/scoreboard", response_model=_ScoreboardEnvelope)
+def get_trading_scoreboard(
+    request: Request,
+    since_ms: Annotated[int | None, Query(ge=0)] = None,
+    until_ms: Annotated[int | None, Query(ge=1)] = None,
+    program: Annotated[str, Query(max_length=64)] = "",
+) -> Response:
+    _validate_query_params(request, supported={"token", "since_ms", "until_ms", "program"})
+    runtime = _authenticated_runtime(request)
+    until = int(time.time() * 1_000) if until_ms is None else until_ms
+    since = until - 7 * _DAY_MS if since_ms is None else since_ms
+    if since >= until or until - since > 90 * _DAY_MS:
+        raise ApiBadRequest("trading_scoreboard_window_invalid", field="since_ms")
+    if program and _CASE_ID.fullmatch(program) is None:
+        raise ApiBadRequest("trading_scoreboard_program_invalid", field="program")
+    with runtime.repositories() as repos:
+        result = repos.trading.scoreboard(since_ms=since, until_ms=until, program_sha=program or None)
+    return _etagged(result, request, envelope=_ScoreboardEnvelope)
 
 
 @router.get("/trading/executions", response_model=_ExecutionsEnvelope)
-def get_trading_executions(request: Request, case_id: Annotated[str, Query(max_length=256)] = "") -> Response:
-    """One retained row per entry identity with its audited venue outcome."""
-
+def get_trading_executions(request: Request, case_id: Annotated[str, Query(max_length=64)] = "") -> Response:
     _validate_query_params(request, supported={"token", "case_id"})
     runtime = _authenticated_runtime(request)
     identity = _case_id(case_id)
-    now_ms = int(time.time() * 1000)
+    now_ms = int(time.time() * 1_000)
     now_ns = now_ms * 1_000_000
-    since_ns = (now_ms - _WINDOW_MS) * 1_000_000
     with runtime.repositories() as repos:
         rows = repos.trading.console_executions(
-            since_ns=0 if identity else since_ns, limit=_ROW_LIMIT + 1, case_id=identity
+            since_ns=0 if identity else (now_ms - _WINDOW_MS) * 1_000_000,
+            limit=_ROW_LIMIT + 1,
+            case_id=identity,
         )
-        # Midnight UTC of the instant this request was served, and the next one. One clock, floored
-        # once, so "today" is the same day for the sums and the counts; bounded on both sides because
-        # `occurred_at_ns` is the venue's clock and a venue running ahead of this host would otherwise
-        # file tomorrow's close under today and leave it there.
         day_start_ns = (now_ms - now_ms % _DAY_MS) * 1_000_000
         totals = repos.trading.console_realized_totals(
             account_slot=runtime.settings.trading.execution.account_slot,
@@ -201,158 +162,6 @@ def get_trading_executions(request: Request, case_id: Annotated[str, Query(max_l
         request,
         envelope=_ExecutionsEnvelope,
     )
-
-
-@router.get("/trading/cases/{case_id}/replay", response_model=_ReplayEnvelope)
-def get_trading_case_replay(
-    request: Request,
-    case_id: str,
-    attempt: Annotated[int | None, Query(ge=1)] = None,
-) -> Response:
-    """Read recorded input and answer only; replay never invokes a model."""
-    _validate_query_params(request, supported={"token", "attempt"})
-    identity = _case_id(case_id)
-    if identity is None:
-        raise ApiBadRequest("trading_cases_case_id_invalid", field="case_id")
-    runtime = _authenticated_runtime(request)
-    with runtime.repositories() as repos:
-        row = repos.trading.console_case(case_id=identity)
-        source = (
-            repos.trading.analysis_trigger(str(row["trigger_id"]))
-            if row is not None and row.get("trigger_id")
-            else None
-        )
-    if row is None:
-        result: dict[str, Any] = {"case_id": identity, "status": "case_missing"}
-    else:
-        decision = row.get("analysis_decision")
-        attempts = row.get("analysis_attempts") or []
-        latest_attempt = (
-            next((item for item in attempts if item["claim_attempt"] == attempt), None)
-            if attempt is not None
-            else attempts[0]
-            if attempts
-            else None
-        )
-        files = AnalysisFiles(Path(runtime.settings.app_home) / "archive" / "trading-analysis")
-        evidence = None
-        assessment = None
-        final_manifest = None
-        tool_observations: list[dict[str, Any]] = []
-        status = "attempt_missing" if attempt is not None and latest_attempt is None else "ok"
-        for key, ref in (
-            (
-                "evidence",
-                (latest_attempt or {}).get("evidence_ref") or (row.get("evidence_ref") if attempt is None else None),
-            ),
-            (
-                "assessment",
-                (latest_attempt or {}).get("assessment_ref")
-                or (decision.get("assessment_ref") if decision and attempt is None else None),
-            ),
-            ("final_manifest", (latest_attempt or {}).get("final_manifest_ref")),
-        ):
-            if not ref:
-                continue
-            try:
-                value = files.read(str(ref))
-            except (OSError, ValueError):
-                status = "archive_missing"
-                continue
-            if key == "evidence":
-                evidence = value
-            elif key == "assessment":
-                assessment = value
-            else:
-                final_manifest = value
-        if isinstance(final_manifest, dict):
-            for ref in final_manifest.get("tool_refs", ())[:32]:
-                try:
-                    tool_observations.append(files.read(str(ref)))
-                except (OSError, ValueError):
-                    status = "archive_missing"
-        result = {
-            "case_id": identity,
-            "status": status,
-            "selected_attempt": None if latest_attempt is None else latest_attempt["claim_attempt"],
-            "source_fact": source["payload"] if source else None,
-            "evidence": evidence,
-            "assessment": assessment,
-            "final_manifest": final_manifest,
-            "tool_observations": tool_observations,
-            "decision": decision,
-            "attempts": attempts,
-        }
-    return _etagged(result, request, envelope=_ReplayEnvelope)
-
-
-def _case(row: dict[str, Any]) -> dict[str, Any]:
-    manifest_value = row.get("manifest")
-    manifest: dict[str, Any] = manifest_value if isinstance(manifest_value, dict) else {}
-    contexts_value = manifest.get("contexts")
-    contexts: dict[str, Any] = contexts_value if isinstance(contexts_value, dict) else {}
-    oi_value = contexts.get("oi")
-    oi = oi_value if isinstance(oi_value, dict) else {}
-    market_value = contexts.get("market")
-    market: dict[str, Any] = market_value if isinstance(market_value, dict) else {}
-    decision = row.get("analysis_decision")
-    outcomes = row.get("analysis_outcomes") or []
-    watch = row.get("watch_observation")
-    if watch is not None:
-        review_mode = "event_wait"
-    elif decision is not None and decision.get("action") == "WATCH":
-        review_mode = "research_note"
-    else:
-        review_mode = "none"
-    return {
-        "case_id": str(row["case_id"]),
-        "latest_case_id": _string_or_none(row.get("latest_case_id")),
-        "event_id": _oi_event_id(row.get("primary_source_key")),
-        "source_item_id": _string_or_none(row.get("source_item_id") or oi.get("source_item_id")),
-        "base_symbol": _base_symbol(row.get("underlying_key")),
-        "trigger_kind": _string_or_none(row.get("trigger_kind")),
-        "market_key": manifest.get("market_key"),
-        "manifest_version": manifest.get("manifest_version"),
-        # From the manifest, which is what the lane compares a Case against before it decides one.
-        # Three columns beside it said the same thing and nothing read them (#537 PR-3).
-        "policy_id": _string_or_none(manifest.get("policy_id")),
-        "policy_config_digest": _string_or_none(manifest.get("policy_config_digest")),
-        "policy_checks": _policy_checks(row.get("policy_checks")),
-        "state": str(row["state"]),
-        "policy_reason": row.get("policy_reason"),
-        "mark_price": _string_or_none(market.get("mark_price")),
-        "pre_move_bps": _int_or_none(market.get("pre_move_bps")),
-        "observed_at_ms": int(row["observed_at_ms"]),
-        "created_at_ms": int(row["case_created_at_ms"]),
-        "decided_at_ms": _int_or_none(row.get("decided_at_ms")),
-        "trigger_id": _string_or_none(row.get("trigger_id")),
-        "run_kind": _string_or_none(row.get("run_kind")),
-        "recheck_seq": _int_or_none(row.get("recheck_seq")),
-        "root_expires_at_ms": _int_or_none(row.get("root_expires_at_ms")),
-        "target_asset_id": _string_or_none(row.get("target_asset_id")),
-        "target_selection": row.get("target_selection"),
-        "entry_scope_id": _string_or_none(row.get("entry_scope_id")),
-        "mapping_semantics_digest": _string_or_none(row.get("mapping_semantics_digest")),
-        "analysis_status": _string_or_none(row.get("analysis_status")),
-        "analysis_action": _string_or_none(row.get("analysis_action") or (decision or {}).get("action")),
-        "analysis_publish_status": _string_or_none(
-            row.get("analysis_publish_status") or (decision or {}).get("publish_status")
-        ),
-        "analysis_side": _string_or_none(
-            row.get("analysis_side") or ((decision or {}).get("decision") or {}).get("side")
-        ),
-        "evidence_ref": _string_or_none(row.get("evidence_ref")),
-        "analysis_decision": decision,
-        "analysis_outcomes": [{**item, "return_bps": _string_or_none(item.get("return_bps"))} for item in outcomes],
-        "analysis_attempts": row.get("analysis_attempts") or [],
-        "watch_observation": (
-            {**watch, "last_observed_value": _string_or_none(watch.get("last_observed_value"))}
-            if watch is not None
-            else None
-        ),
-        "root_chain": row.get("root_chain") or [],
-        "review_mode": review_mode,
-    }
 
 
 def _execution(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
@@ -430,46 +239,6 @@ def _totals(row: dict[str, Any]) -> dict[str, Any]:
             )
         },
     }
-
-
-def _case_id(value: str) -> str | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    if _CASE_ID.fullmatch(raw) is None:
-        raise ApiBadRequest("trading_cases_case_id_invalid", field="case_id")
-    return raw
-
-
-def _base_symbol(underlying_key: object) -> str:
-    return str(underlying_key or "").split(":", 1)[-1]
-
-
-def _oi_event_id(primary_source_key: object) -> str | None:
-    raw = str(primary_source_key or "")
-    prefix = "oi:"
-    suffix = f":{_OI_METRIC_VERSION}"
-    if not raw.startswith(prefix) or not raw.endswith(suffix):
-        return None
-    event_id = raw[len(prefix) : -len(suffix)]
-    return event_id if event_id and raw == f"oi:{event_id}:{_OI_METRIC_VERSION}" else None
-
-
-def _policy_checks(value: Any) -> list[dict[str, Any]]:
-    checks = value.get("checks") if isinstance(value, dict) else None
-    if not isinstance(checks, list):
-        return []
-    return [
-        {
-            "check": str(item.get("check") or ""),
-            "operator": str(item.get("operator") or ""),
-            "threshold": str(item.get("threshold") or ""),
-            "measured": None if item.get("measured") is None else str(item.get("measured")),
-            "passed": bool(item.get("passed")),
-        }
-        for item in checks
-        if isinstance(item, dict)
-    ]
 
 
 def _int_or_none(value: Any) -> int | None:
