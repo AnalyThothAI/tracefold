@@ -76,6 +76,41 @@ def test_bad_probability_sum_is_named_schema_failure() -> None:
     assert program.calls == 1
 
 
+def test_waiting_for_model_slot_does_not_consume_provider_timeout() -> None:
+    response = {
+        "drivers": [],
+        "long": {"p_tp": "0.6", "p_sl": "0.2", "p_timeout": "0.2"},
+        "short": {"p_tp": "0.2", "p_sl": "0.6", "p_timeout": "0.2"},
+    }
+
+    class QueuedProgram(_RecordedProgram):
+        def __init__(self) -> None:
+            super().__init__(response)
+            self.started = asyncio.Event()
+
+        async def acall(self, **kwargs: Any) -> Any:
+            self.calls += 1
+            if self.calls == 1:
+                self.started.set()
+                await asyncio.Event().wait()
+            await asyncio.sleep(0.15)
+            return dspy.Prediction(assessment=self.response)
+
+    async def run() -> tuple[Any, Any, int]:
+        program = QueuedProgram()
+        assessor = TradingAssessor(program=program, lm=object(), timeout_s=0.25, concurrent=1)  # type: ignore[arg-type]
+        first = asyncio.create_task(assessor.assess(_view()))
+        await program.started.wait()
+        second = asyncio.create_task(assessor.assess(_view()))
+        first_result, second_result = await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
+        return first_result, second_result, program.calls
+
+    first, second, calls = asyncio.run(run())
+    assert first.status == "failed" and first.error_code == "timeout"
+    assert second.status == "complete" and second.forecast is not None
+    assert calls == 2
+
+
 def test_program_artifact_is_hash_pinned_and_contains_no_lm_endpoint() -> None:
     path = Path(__file__).parents[2] / "tracefold/trading/programs/forecast_v1.json"
     sha = hashlib.sha256(path.read_bytes()).hexdigest()

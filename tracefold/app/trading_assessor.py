@@ -113,8 +113,9 @@ class TradingAssessor:
         self._slots = asyncio.Semaphore(concurrent)
 
     async def assess(self, view: CaseView) -> AssessmentResult:
-        deadline = time.monotonic() + self.timeout_s
         async with self._slots:
+            # Provider time starts when a call has a slot, not while its Case waits in the queue.
+            deadline = time.monotonic() + self.timeout_s
             for attempt in range(2):
                 try:
                     with dspy.context(adapter=dspy.JSONAdapter(), track_usage=True):
