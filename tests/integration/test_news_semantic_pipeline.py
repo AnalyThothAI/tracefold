@@ -8,6 +8,7 @@ item revisions, semantic work, observations, adopted heads and the public outbox
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 
@@ -16,6 +17,7 @@ from tests.support.news_update_admission import TITLE, RecordingBus, add_member_
 from tests.support.news_update_pg import (
     EVENT,
     STAMP,
+    TEXT,
     Clock,
     StubAnalyzer,
     ThreadedDb,
@@ -464,3 +466,255 @@ def test_the_janitor_re_wakes_stale_pending_work_and_drops_expired_judgment_answ
     # A freshly woken revision is not woken again inside the stale window.
     asyncio.run(janitor.repair_semantic_wakes())
     assert len(bus.wakes()) == 1
+
+
+# ------------------------------------------------------------------ #742 admission (U1, U3, W6)
+
+
+def test_a_live_report_is_not_absorbed_by_a_recovery_event() -> None:
+    bus = RecordingBus()
+    deduper = DeduperConsumer(bus=bus, db=ThreadedDb(), watchlist_symbols=frozenset({"BTC"}))
+    text = f"{TITLE} effective October 1"
+    asyncio.run(deduper.handle(raw(7501, text, stamp=STAMP, ingest_mode="recovery")))
+    recovered = event_of(7501)
+    assert bus.wakes() == []
+    asyncio.run(deduper.handle(raw(7502, text, stamp=STAMP + 1_000)))
+    live = event_of(7502)
+    assert live != recovered
+    assert work(live)["wanted_revision"] == 1 and bus.wakes() == [f"event:{live}:1"]
+    # A later recovered copy may still join the recovery Event as history.
+    asyncio.run(deduper.handle(raw(7503, text, stamp=STAMP + 2_000, ingest_mode="recovery")))
+    assert event_of(7503) in {recovered, live}
+
+
+def test_a_revised_headline_of_one_record_stays_one_event() -> None:
+    bus = RecordingBus()
+    deduper = DeduperConsumer(bus=bus, db=ThreadedDb(), watchlist_symbols=frozenset({"BTC"}))
+    asyncio.run(deduper.handle(raw(7601, "Fed cuts rates by 25 bps in surprise move", stamp=STAMP)))
+    event_id = event_of(7601)
+    asyncio.run(deduper.handle(raw(7601, "Fed cuts rates by 50 bps in surprise move", stamp=STAMP + 10_000)))
+    assert event_of(7601) == event_id
+    assert sql("SELECT count(*) AS n FROM news_events")[0]["n"] == 1
+    assert work(event_id)["wanted_revision"] == 2
+
+
+def test_the_same_record_resent_under_another_strategy_is_no_semantic_work() -> None:
+    bus = RecordingBus()
+    deduper = DeduperConsumer(bus=bus, db=ThreadedDb(), watchlist_symbols=frozenset({"BTC"}))
+    asyncio.run(deduper.handle(raw(7701, TITLE, stamp=STAMP)))
+    event_id = event_of(7701)
+    asyncio.run(deduper.handle(raw(7701, TITLE, stamp=STAMP + 5_000, strategy_id="1030")))
+    strategies = sql("SELECT provider_metadata FROM news_items WHERE source_item_key = '7701'")[0]
+    assert {str(row["id"]) for row in strategies["provider_metadata"]["strategies"]} == {"1018", "1030"}
+    assert work(event_id)["wanted_revision"] == 1
+    assert bus.wakes() == [f"event:{event_id}:1"]
+
+
+# ------------------------------------------------------------------ #742 failure isolation (S3, U2)
+
+
+class PoisonExtractor:
+    """Every claim quotes text its source does not contain unless the source is the new member."""
+
+    identity = "poison-extractor-test"
+
+    def __init__(self) -> None:
+        self.seen: list[tuple[str, ...]] = []
+
+    async def extract(self, source: FrozenInput) -> Extraction:
+        self.seen.append(tuple(item.text for item in source.evidence))
+        claims = tuple(
+            DraftClaim(
+                slot=f"s{index}",
+                statement=item.text,
+                fields=ClaimFields(subject="Agency", action="orders tariff", mode="decision", phase="ordered"),
+                citations=(
+                    Citation(
+                        evidence_ref=item.ref,
+                        quote=item.text if "exemption" in item.text else "text the source never said",
+                    ),
+                ),
+            )
+            for index, item in enumerate(source.evidence)
+        )
+        return Extraction(claims=claims)
+
+
+def _worker(db: ThreadedDb, store: PgNewsStore, analyzer: SemanticAnalyzer, clock: Clock) -> SemanticWorker:
+    return SemanticWorker(
+        bus=RecordingBus(),
+        db=db,
+        store=store,
+        agent=NewsAgent(store, analyzer, program_identity="program-test", clock=clock),
+        concurrency=1,
+        circuit_failures=10,
+        circuit_open_seconds=60.0,
+        program_identity="program-test",
+        clock=clock,
+    )
+
+
+def _wake(event_id: str) -> BusMessage:
+    return BusMessage("event", f"event:{event_id}:1", "event.general.normal", {"event_id": event_id}, "t", STAMP)
+
+
+def test_failed_material_is_quarantined_and_a_later_member_is_still_adopted() -> None:
+    clock = Clock(STAMP + 60_000)
+    db = ThreadedDb()
+    store = PgNewsStore(db, clock=clock)
+    extractor = PoisonExtractor()
+    analyzer = SemanticAnalyzer(extractor, NewsJudgments(generated=RelationBackend(), cache=PgJudgmentCache(db)))
+    worker = _worker(db, store, analyzer, clock)
+    seed_event()
+    asyncio.run(worker.handle(_wake(EVENT)))
+    failed = work(EVENT)
+    # The contract fault failed on its first attempt, which is what the row now says.
+    assert (failed["last_outcome"], failed["last_error_code"], failed["attempts"]) == (
+        "failed",
+        "news_citation_not_in_frozen_source",
+        1,
+    )
+    assert len(failed["failed_read_refs"]) == 1 and asyncio.run(store.head(EVENT)) is None
+
+    add_member_evidence(EVENT, "it-member", "Agency adds a pharmaceutical exemption.", now_ms=clock.now_ms)
+    asyncio.run(worker.handle(_wake(EVENT)))
+    assert extractor.seen[-1] == ("Agency adds a pharmaceutical exemption.",)
+    head = asyncio.run(store.head(EVENT))
+    assert head is not None and [claim.statement for claim in head.claims] == [
+        "Agency adds a pharmaceutical exemption."
+    ]
+    row = work(EVENT)
+    assert (row["done_revision"], row["last_outcome"]) == (2, "adopted")
+    assert row["failed_read_refs"] == failed["failed_read_refs"]
+
+    # The quarantined read is listed and can be reanalysed by exact revision.
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            news = repositories_for_connection(conn).news
+            listing = news.reanalysis_scope_list(event_id=EVENT, now_ms=clock.now_ms)
+            assert [scope["failed"] for scope in listing["scopes"]] == [True, False]
+    finally:
+        conn.close()
+
+
+def test_a_failed_revision_can_be_reanalysed_by_its_exact_revision() -> None:
+    clock = Clock(STAMP + 60_000)
+    db = ThreadedDb()
+    store = PgNewsStore(db, clock=clock)
+    analyzer = SemanticAnalyzer(
+        PoisonExtractor(), NewsJudgments(generated=RelationBackend(), cache=PgJudgmentCache(db))
+    )
+    seed_event()
+    asyncio.run(_worker(db, store, analyzer, clock).handle(_wake(EVENT)))
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            news = repositories_for_connection(conn).news
+            listing = news.reanalysis_scope_list(event_id=EVENT, now_ms=clock.now_ms)
+            assert listing["failed"] and listing["last_error_code"] == "news_citation_not_in_frozen_source"
+            revision = news.request_reanalysis(
+                event_id=EVENT,
+                expected_wanted_revision=1,
+                expected_head_revision=None,
+                read_ref=listing["scopes"][0]["read_ref"],
+                reason="operator checked the quote",
+                now_ms=clock.now_ms,
+            )
+    finally:
+        conn.close()
+    assert revision == 2
+    source = asyncio.run(store.input_for(EVENT))
+    assert [item.text for item in source.evidence] == [TEXT]
+
+
+def test_an_input_that_cannot_be_built_fails_only_its_own_work() -> None:
+    clock = Clock(STAMP + 60_000)
+    db = ThreadedDb()
+    store = PgNewsStore(db, clock=clock)
+    analyzer = SemanticAnalyzer(
+        LeaderExtractor(), NewsJudgments(generated=RelationBackend(), cache=PgJudgmentCache(db))
+    )
+    worker = _worker(db, store, analyzer, clock)
+    seed_event("ev-broken", text="Agency orders a 10% tariff on copper.", fingerprint="fp-broken")
+    seed_event()
+    # A reanalysis of a read that no longer exists cannot form a frozen input.
+    sql("UPDATE news_semantic_work SET reanalysis_read_ref = 'news_read:gone' WHERE event_id = 'ev-broken'")
+    asyncio.run(worker.handle(_wake("ev-broken")))  # the consumer does not raise
+    broken = work("ev-broken")
+    assert (broken["last_outcome"], broken["last_error_code"], broken["lease_token"]) == (
+        "failed",
+        "news_reanalysis_read_scope_changed",
+        None,
+    )
+    assert asyncio.run(store.pending_semantic_events(10)) == (EVENT,)
+    asyncio.run(worker.handle(_wake(EVENT)))
+    assert work(EVENT)["last_outcome"] == "adopted"
+
+
+# ------------------------------------------------------------------ #742 W1: notification obligations
+
+
+def _notification_work() -> dict[str, Any]:
+    return sql("SELECT state, attempts, content_revision FROM news_notification_work WHERE event_id = %s", (EVENT,))[0]
+
+
+def test_only_substantive_changes_open_notification_work_while_unfinished_work_follows_the_head() -> None:
+    clock = Clock(STAMP + 60_000)
+    store = PgNewsStore(ThreadedDb(), clock=clock)
+    seed_event()
+    assert asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock), EVENT)) == (
+        "adopted"
+    )
+    first = asyncio.run(store.head(EVENT))
+    assert first is not None
+    sql("UPDATE news_notification_work SET attempts = 1 WHERE event_id = %s", (EVENT,))
+
+    def restate(source: FrozenInput) -> Extraction:
+        return Extraction(
+            claims=(draft(source.evidence[0]),),
+            relations=(RelationDraft(slot="a", previous_ref=first.claims[0].ref, relation="equivalent"),),
+            supports=(SupportDraft(slot="a", evidence_ref=source.evidence[0].ref, relation="supports"),),
+        )
+
+    # A new source for the adopted claim: the unfinished work moves to the new head, keeping its budget.
+    add_member_evidence(EVENT, "it-copy", "Agency confirms the same tariff order.", now_ms=clock.now_ms)
+    assert asyncio.run(
+        run_agent(NewsAgent(store, StubAnalyzer(restate), program_identity="p", clock=clock), EVENT)
+    ) == ("adopted")
+    second = asyncio.run(store.head(EVENT))
+    assert second is not None and {change.kind for change in second.changes} == {"evidence_change"}
+    assert _notification_work() == {"state": "pending", "attempts": 1, "content_revision": second.content_revision}
+
+    # A new fact reopens it with a fresh budget.
+    add_member_evidence(EVENT, "it-new", "Agency adds a pharmaceutical exemption.", now_ms=clock.now_ms)
+    analyzer = StubAnalyzer(lambda source: Extraction(claims=(draft(source.evidence[0], action="adds exemption"),)))
+    assert asyncio.run(run_agent(NewsAgent(store, analyzer, program_identity="p", clock=clock), EVENT)) == "adopted"
+    latest = asyncio.run(store.head(EVENT))
+    assert latest is not None
+    assert _notification_work() == {"state": "pending", "attempts": 0, "content_revision": latest.content_revision}
+
+
+def test_reader_facing_claims_are_marked_for_comparison_and_not_extraction() -> None:
+    from tests.support.news_update_pg import Sender, adopt_other_event, notifications
+
+    clock = Clock(STAMP + 60_000)
+    store = PgNewsStore(ThreadedDb(), clock=clock)
+    seed_event("ev-other", text="Agency orders a 25% tariff on steel.", fingerprint="fp-other")
+    related = asyncio.run(adopt_other_event(store))
+    sql("UPDATE news_items SET provider_params_available_at_ms=%s WHERE item_id='it-ev-other'", (STAMP,))
+    # The related Event's notification was decided without a card: its claim is no reader-facing prior.
+    sql("DELETE FROM news_notification_work WHERE event_id = 'ev-other'")
+    seed_event()
+    assert asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock), EVENT)) == (
+        "adopted"
+    )
+    add_member_evidence(EVENT, "it-member", "Agency adds a pharmaceutical exemption.", now_ms=clock.now_ms)
+    undecided = asyncio.run(store.input_for(EVENT))
+    facing = {row.claim.ref: row.reader_facing for row in undecided.prior}
+    # This Event's notification is still undecided, so its claim may yet reach a reader.
+    assert facing[related.claim.ref] is False and [v for r, v in facing.items() if r != related.claim.ref] == [True]
+    assert asyncio.run(notifications(store, clock, Sender()).process(EVENT, "news")) == "sent"
+    sent = asyncio.run(store.input_for(EVENT))
+    assert {row.claim.ref: row.reader_facing for row in sent.prior} == facing
+    assert sent.input_sha == undecided.input_sha

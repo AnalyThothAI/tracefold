@@ -16,17 +16,21 @@ from tests.support.news_update_pg import (
     ThreadedDb,
     adopt_next,
     adopt_other_event,
+    evidence,
     notify_plan,
     run_agent,
     save_card,
     seed_event,
     sql,
 )
+from tests.support.news_update_semantic import prior_of
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.storage.event_update_store import PgNewsStore
 from tracefold.news.storage.event_updates import SemanticLeaseLost
 from tracefold.news.updates.contracts import Extraction, FrozenInput, PriorClaim, RelationDraft
+from tracefold.news.updates.judgment import ProviderUnavailable
 from tracefold.news.updates.notification import freeze_card
+from tracefold.news.updates.projection import reading_views
 from tracefold.news.updates.service import NewsAgent
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -47,7 +51,13 @@ def test_old_last_attempt_cannot_spend_or_delay_new_revision(outcome):
         asyncio.run(pg.defer_semantic_event(old, reason="old_timeout", retry_after_ms=999_000))
     new = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
     assert new is not None and new.wanted_revision == 2 and new.attempts == 1
-    assert len(old.source.evidence) == 1 and len(new.source.evidence) == 2
+    assert len(old.source.evidence) == 1
+    if outcome == "fail":
+        # #742 S3: the failed revision's material is quarantined; the new member is read on its own.
+        assert [item.text for item in new.source.evidence] == ["Agency adds a new exemption."]
+        assert work(EVENT)["failed_read_refs"] == [view.read_ref for view in reading_views(old.source)]
+    else:
+        assert len(new.source.evidence) == 2
 
 
 def test_new_evidence_does_not_starve_valid_old_adoption():
@@ -164,19 +174,23 @@ def test_cross_event_correction_invalidates_frozen_unsent_card():
     assert sql("SELECT count(*) AS n FROM news_deliveries WHERE kind='update'")[0]["n"] == 0
 
 
-def test_retry_checkpoint_cannot_reuse_extraction_for_changed_prior_context():
-    from tracefold.news.updates.judgment import ProviderUnavailable
+class FailsFirstUnderstanding(StubAnalyzer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.understood: list[tuple[str, ...]] = []
 
-    class FailsOnce(StubAnalyzer):
-        async def understand(self, source, extracted, budget, **kwargs):
-            if not source.prior:
-                raise ProviderUnavailable("retry")
-            return extracted
+    async def understand(self, source, extracted, budget, **kwargs):
+        self.understood.append(tuple(row.claim.ref for row in source.prior))
+        if len(self.understood) == 1:
+            raise ProviderUnavailable("retry")
+        return extracted
 
+
+def test_retry_re_extracts_when_a_new_related_event_adds_a_read_target():
     seed_event()
     clock = Clock(STAMP + 60_000)
     pg = PgNewsStore(ThreadedDb(), clock=clock)
-    analyzer = FailsOnce()
+    analyzer = FailsFirstUnderstanding()
     agent = NewsAgent(pg, analyzer, program_identity="p", clock=clock)
     old = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
     assert old is not None and not old.source.prior
@@ -189,8 +203,49 @@ def test_retry_checkpoint_cannot_reuse_extraction_for_changed_prior_context():
     sql("UPDATE news_items SET provider_params_available_at_ms=%s WHERE item_id='it-ev-other'", (STAMP,))
     clock.now_ms += 60_000
     new = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
-    assert new is not None and new.source.prior
+    assert new is not None and new.source.prior and new.source.read_targets != old.source.read_targets
     assert old.source.evidence == new.source.evidence
     assert old.source.revision == new.source.revision
     assert asyncio.run(agent.process(new)) == "adopted"
+    # A new read target is extraction input, so this input is new.
     assert analyzer.extract_calls == 2
+
+
+def test_retry_reuses_the_extraction_when_only_a_related_head_changes():
+    # #742 W6: related Events' claims are comparison candidates, not extraction input. One of them adopting
+    # again between two attempts changes the comparisons, not the stored extraction.
+    seed_event("ev-other", text="Agency orders a 25% tariff on steel.", fingerprint="fp-other")
+    clock = Clock(STAMP + 60_000)
+    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    related = asyncio.run(adopt_other_event(pg))
+    sql("UPDATE news_items SET provider_params_available_at_ms=%s WHERE item_id='it-ev-other'", (STAMP,))
+    seed_event()
+    analyzer = FailsFirstUnderstanding()
+    agent = NewsAgent(pg, analyzer, program_identity="p", clock=clock)
+    old = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
+    assert old is not None and [row.claim.ref for row in old.source.prior] == [related.claim.ref]
+    with pytest.raises(ProviderUnavailable):
+        asyncio.run(agent.process(old))
+    asyncio.run(pg.defer_semantic_event(old, reason="retry"))
+
+    head = asyncio.run(pg.head("ev-other"))
+    later = evidence("Agency raises the steel tariff to 50%.", revision="3", publisher="other")
+    source = FrozenInput(
+        event_id="ev-other", revision=2, lineage_id="lineage-o2", evidence=(later,), prior=prior_of(head)
+    )
+    extraction = Extraction(
+        claims=(_draft(later, rate="50"),),
+        relations=(
+            RelationDraft(
+                slot="a", previous_ref=related.claim.ref, relation="real_world_change", change_kind="parameter_change"
+            ),
+        ),
+    )
+    assert asyncio.run(adopt_next(pg, head, source, extraction, work_id="work-other-2"))[0]
+    clock.now_ms += 60_000
+    new = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
+    assert new is not None and new.source.input_sha == old.source.input_sha
+    assert new.source.prior != old.source.prior
+    assert asyncio.run(agent.process(new)) == "adopted"
+    assert analyzer.extract_calls == 1
+    assert analyzer.understood[-1] == tuple(row.claim.ref for row in new.source.prior)

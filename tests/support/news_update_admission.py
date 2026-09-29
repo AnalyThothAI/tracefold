@@ -39,6 +39,7 @@ def raw(
     link: str | None = None,
     source: str = "Reuters",
     ingest_mode: str = "live",
+    strategy_id: str = "1018",
 ) -> BusMessage:
     params = {
         "id": record,
@@ -48,14 +49,14 @@ def raw(
         "engineType": "news",
         "ts": stamp,
         "coins": [{"symbol": "BTC", "grade": "A"}],
-        "strategy": {"id": 1018, "name": "News Score > 70", "engine_type": "news", "source_type": "news"},
+        "strategy": {"id": int(strategy_id), "name": "News Score > 70", "engine_type": "news", "source_type": "news"},
         "aiRating": {"score": 90},
     }
     return BusMessage(
         kind="raw",
         message_id=f"raw:{record}:{stamp}",
-        routing_key=RK_RAW_LIVE.format(strategy_id="1018"),
-        payload={"params": params, "strategy_id": "1018", "ingest_mode": ingest_mode, "observed_at_ms": stamp},
+        routing_key=RK_RAW_LIVE.format(strategy_id=strategy_id),
+        payload={"params": params, "strategy_id": strategy_id, "ingest_mode": ingest_mode, "observed_at_ms": stamp},
         trace_id=f"trace-{record}",
         occurred_at_ms=stamp,
     )

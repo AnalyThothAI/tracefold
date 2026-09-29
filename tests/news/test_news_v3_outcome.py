@@ -426,3 +426,25 @@ def test_closed_pending_recovery_keeps_news_status_degraded() -> None:
         "summary_zh": "历史补抄待恢复 2 个事故窗口",
         "detail_zh": "最早事故 20 分钟前 · opennews_history_rate_limited",
     }
+
+
+def test_a_failed_semantic_revision_is_a_named_parse_failure_and_keeps_the_model_amber() -> None:
+    # #742 S4: the console names the failure with its code; a low failure share still raises it.
+    from tracefold.news.outcome import event_outcome
+
+    outcome = event_outcome(
+        admission="candidate",
+        delivery=None,
+        semantic={
+            "wanted_revision": 2,
+            "done_revision": 1,
+            "last_outcome": "failed",
+            "last_error_code": "news_generation_output_truncated",
+        },
+    )
+    assert (outcome.kind, outcome.text_zh) == ("semantic_failed", "解析失败")
+    assert outcome.reason_zh == "模型输出被截断（news_generation_output_truncated）"
+    pipeline = {**_status_inputs()["pipeline"], "semantic_failed_24h": 1, "semantic_failed_exhausted": 1}
+    status = status_health(**_status_inputs(pipeline=pipeline))  # type: ignore[arg-type]
+    assert status["health"]["model"]["level"] == "warn"
+    assert "1 个事件解析失败待处理" in status["health"]["model"]["summary_zh"]

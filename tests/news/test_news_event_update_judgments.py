@@ -161,9 +161,9 @@ def test_native_operation_timeout_never_extends_the_shared_stage_deadline() -> N
         )
         with pytest.raises(TimeoutError):
             await judgments.judge("coverage", questions(3), Budget.start(0.15))
-        # The second batch was cut at the stage deadline, not at its own 5 s limit, and an expired
-        # stage has no generated fallback.
-        assert len(native.calls) == 2
+        # The batches run together; the slow one was cut at the stage deadline, not at its own 5 s limit,
+        # and an expired stage has no generated fallback.
+        assert len(native.calls) == 3
         assert generated.calls == []
 
     asyncio.run(run())
@@ -446,3 +446,222 @@ def test_unknown_mode_clarification_does_not_rejudge_other_fused_fields():
         assert {call[0] for call in native.calls} == {"support"}
 
     asyncio.run(run())
+
+
+# ------------------------------------------------------------------ #742 W7 / S8: batches and labels
+
+
+class Scripted:
+    """Answers per batch number: a value, an exception, or a malformed batch; records concurrency."""
+
+    identity = "scripted"
+
+    def __init__(self, script: dict[int, Any], default: str = "unrelated") -> None:
+        self.script = script
+        self.default = default
+        self.calls = 0
+        self.active = 0
+        self.peak = 0
+
+    async def judge(self, task: Task, items: tuple[Question, ...], *, context_json: str | None) -> BatchResult:
+        self.calls += 1
+        number = self.calls
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        try:
+            await asyncio.sleep(0.02)
+            outcome = self.script.get(number, self.default)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            if outcome == "missing":
+                return BatchResult(answers=())
+            return BatchResult(answers=tuple(Answer(item_id=i.item_id, value=outcome, backend="s") for i in items))
+        finally:
+            self.active -= 1
+
+
+def test_batches_run_bounded_in_parallel_and_one_failed_batch_leaves_only_its_items_unavailable() -> None:
+    async def run() -> None:
+        backend = Scripted({2: "missing"})
+        cache = MemoryCache()
+        judgments = NewsJudgments(generated=backend, cache=cache, batch_size=2, parallel_batches=2)
+        answers = await judgments.judge("relation", questions(8), Budget.start(5))
+        assert backend.peak == 2
+        unavailable = [answer.item_id for answer in answers if answer.status == "unavailable"]
+        assert len(unavailable) == 2
+        assert {answer.error_code for answer in answers if answer.status == "unavailable"} == {
+            "news_judgment_missing_or_duplicate_answer"
+        }
+        # One read for the whole question set, one write per answered batch; the failed batch caches nothing.
+        assert len(cache.reads) == 1 and len(cache.writes) == 3
+        assert set(cache.values) and all(answer.value == "unrelated" for answer in cache.values.values())
+        again = await judgments.judge("relation", questions(8), Budget.start(5))
+        assert backend.calls == 5  # only the failed batch is asked again
+        assert all(answer.status == "available" for answer in again)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(("label", "value"), [("Unrelated", "unrelated"), (" real-world change ", "real_world_change")])
+def test_an_option_label_is_read_after_case_and_separator_normalization(label: str, value: str) -> None:
+    answers = asyncio.run(
+        NewsJudgments(generated=Backend(label), cache=MemoryCache()).judge("relation", questions(1), Budget.start(5))
+    )
+    assert (answers[0].status, answers[0].value) == ("available", value)
+
+
+def test_an_unknown_option_leaves_only_that_item_unresolved_and_is_not_cached() -> None:
+    cache = MemoryCache()
+    answers = asyncio.run(
+        NewsJudgments(generated=Backend("maybe"), cache=cache).judge("relation", questions(2), Budget.start(5))
+    )
+    assert {(row.status, row.value, row.error_code) for row in answers} == {
+        ("unavailable", None, "news_judgment_option_invalid")
+    }
+    assert cache.values == {}
+
+
+# ------------------------------------------------------------------ #742 W3: triage before pairwise judgment
+
+
+def _triage_input(prior_count: int) -> tuple[FrozenInput, Extraction]:
+    from tracefold.news.updates.contracts import Claim, PriorClaim
+
+    source, extracted = _source_and_claims(1)
+    priors = tuple(
+        PriorClaim(
+            event_id=f"related-{index}",
+            content_revision=f"rev-{index}",
+            claim=Claim(
+                ref=f"cl:prior-{index}",
+                statement=f"Prior claim {index}.",
+                fields=ClaimFields(subject="Agency", action=f"earlier action {index}"),
+                citations=(Citation(evidence_ref="ev:old", quote=f"Prior claim {index}."),),
+                first_available_at_ms=STAMP - 1,
+            ),
+        )
+        for index in range(1, prior_count + 1)
+    )
+    return source.model_copy(update={"prior": priors}), extracted
+
+
+class Triage:
+    """A triage answer (value and optional probabilities) and a relation answer for every judged pair."""
+
+    identity = "triage-test"
+
+    def __init__(self, choice: str, probabilities: dict[str, float] | None = None) -> None:
+        self.choice = choice
+        self.probabilities = probabilities
+        self.pairs: list[str] = []
+        self.contexts: list[str | None] = []
+
+    async def judge(self, task: Task, items: tuple[Question, ...], *, context_json: str | None) -> BatchResult:
+        if task == "relation_triage":
+            self.contexts.append(context_json)
+            value, probabilities = self.choice, self.probabilities
+        elif task == "relation":
+            self.pairs.extend(json.loads(item.payload_json)["previous"]["ref"] for item in items)
+            value, probabilities = "equivalent", None
+        else:
+            value, probabilities = "reports", None
+        return BatchResult(
+            answers=tuple(
+                Answer(item_id=item.item_id, value=value, backend=self.identity, probabilities=probabilities)
+                for item in items
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("choice", "probabilities", "judged"),
+    [
+        ("p2", None, ["cl:prior-2"]),
+        # A generated answer names every prior it picks.
+        ("p1, P3", None, ["cl:prior-1", "cl:prior-3"]),
+        ("none", None, []),
+        # A native answer adds every other candidate at or above the floor to its own choice.
+        ("p1", {"p1": 0.5, "p3": 0.3, "p2": 0.15, "none": 0.05}, ["cl:prior-1", "cl:prior-2", "cl:prior-3"]),
+        ("none", {"none": 0.8, "p3": 0.12, "p1": 0.08}, ["cl:prior-3"]),
+        # `none` cannot be combined with a prior: the answer names no option and settles nothing.
+        ("none,p1", None, ["cl:prior-1", "cl:prior-2", "cl:prior-3"]),
+        # A label naming no candidate of this group settles nothing: every pair is judged.
+        ("p9", None, ["cl:prior-1", "cl:prior-2", "cl:prior-3"]),
+    ],
+)
+def test_triage_picks_the_pairs_to_judge_and_settles_the_rest_unrelated(
+    choice: str, probabilities: dict[str, float] | None, judged: list[str]
+) -> None:
+    backend = Triage(choice, probabilities)
+    # One pair per request, so three pairs are worth a triage question.
+    analyzer = SemanticAnalyzer(UnusedExtractor(), NewsJudgments(generated=backend, cache=MemoryCache(), batch_size=1))
+    source, extracted = _triage_input(3)
+    result = asyncio.run(analyzer.understand(source, extracted, Budget.start(5)))
+    assert sorted(backend.pairs) == judged
+    assert {row.previous_ref: row.relation for row in result.relations} == {
+        f"cl:prior-{index}": "equivalent" if f"cl:prior-{index}" in judged else "unrelated" for index in (1, 2, 3)
+    }
+    context = json.loads(backend.contexts[0] or "{}")
+    assert list(context["prior_claims"]) == ["p1", "p2", "p3"]
+
+
+def test_triage_asks_more_priors_than_one_option_set_in_groups() -> None:
+    from tracefold.news.updates.judgment import TRIAGE_CANDIDATES_MAX
+
+    backend = Triage("none")
+    analyzer = SemanticAnalyzer(UnusedExtractor(), NewsJudgments(generated=backend, cache=MemoryCache()))
+    source, extracted = _triage_input(TRIAGE_CANDIDATES_MAX + 2)
+    result = asyncio.run(analyzer.understand(source, extracted, Budget.start(5)))
+    assert [len(json.loads(context or "{}")["prior_claims"]) for context in backend.contexts] == [
+        TRIAGE_CANDIDATES_MAX,
+        2,
+    ]
+    assert backend.pairs == [] and {row.relation for row in result.relations} == {"unrelated"}
+
+
+def test_an_unavailable_triage_falls_back_to_judging_every_pair() -> None:
+    class NoTriage(Triage):
+        async def judge(self, task: Task, items: tuple[Question, ...], *, context_json: str | None) -> BatchResult:
+            if task == "relation_triage":
+                raise ProviderUnavailable("controlled provider failure")
+            return await super().judge(task, items, context_json=context_json)
+
+    backend = NoTriage("none")
+    analyzer = SemanticAnalyzer(UnusedExtractor(), NewsJudgments(generated=backend, cache=MemoryCache()))
+    source, extracted = _triage_input(2)
+    asyncio.run(analyzer.understand(source, extracted, Budget.start(5)))
+    assert sorted(backend.pairs) == ["cl:prior-1", "cl:prior-2"]
+
+
+def test_a_prior_a_reader_card_carried_is_always_judged_and_never_triaged() -> None:
+    # #742 W3: reader novelty reads the relation to a notified claim, so triage may not pass over it.
+    backend = Triage("none")
+    analyzer = SemanticAnalyzer(UnusedExtractor(), NewsJudgments(generated=backend, cache=MemoryCache(), batch_size=1))
+    source, extracted = _triage_input(3)
+    source = source.model_copy(
+        update={
+            "prior": tuple(
+                row.model_copy(update={"reader_facing": index == 1}) for index, row in enumerate(source.prior)
+            )
+        }
+    )
+    result = asyncio.run(analyzer.understand(source, extracted, Budget.start(5)))
+    assert backend.pairs == ["cl:prior-2"]
+    assert list(json.loads(backend.contexts[0] or "{}")["prior_claims"]) == ["p1", "p2"]
+    assert {row.previous_ref: row.relation for row in result.relations}["cl:prior-2"] == "equivalent"
+    # The notified marker is comparison policy, not extraction input.
+    assert (
+        source.input_sha
+        == source.model_copy(
+            update={"prior": tuple(r.model_copy(update={"reader_facing": False}) for r in source.prior)}
+        ).input_sha
+    )
+
+
+def test_no_triage_is_asked_when_every_pair_fits_in_one_judgment_request() -> None:
+    backend = Triage("none")
+    analyzer = SemanticAnalyzer(UnusedExtractor(), NewsJudgments(generated=backend, cache=MemoryCache()))
+    source, extracted = _triage_input(3)
+    result = asyncio.run(analyzer.understand(source, extracted, Budget.start(5)))
+    assert backend.contexts == [] and sorted(backend.pairs) == ["cl:prior-1", "cl:prior-2", "cl:prior-3"]
+    assert {row.relation for row in result.relations} == {"equivalent"}

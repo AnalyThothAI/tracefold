@@ -62,7 +62,7 @@ def _item(
     )
 
 
-def _event(news: Any, event_id: str, item_id: str, event_kind: EventKind) -> None:
+def _event(news: Any, event_id: str, item_id: str, event_kind: EventKind, *, admission: str = "candidate") -> None:
     news.insert_event(
         event_id=event_id,
         leader_item_id=item_id,
@@ -79,7 +79,7 @@ def _event(news: Any, event_id: str, item_id: str, event_kind: EventKind) -> Non
         focus_span_end=54,
         opened_at_ms=NOW,
         expires_at_ms=NOW + 3_600_000,
-        admission="candidate",
+        admission=admission,
         queue_priority="normal",
         provider_score=90,
         engine_type="news",
@@ -284,14 +284,18 @@ def test_exact_artifact_and_band_dedupe_stay_within_current_event_kind(conn) -> 
         _event(news, "listing-event", "listing-item", "listing")
 
     assert (
-        news.find_exact_event(dedupe_family="general", event_kind="news", fingerprint="same-fingerprint", now_ms=NOW)[
-            "event_id"
-        ]
+        news.find_exact_event(
+            dedupe_family="general", event_kind="news", fingerprint="same-fingerprint", now_ms=NOW, ingest_mode="live"
+        )["event_id"]
         == "news-event"
     )
     assert (
         news.find_exact_event(
-            dedupe_family="general", event_kind="listing", fingerprint="same-fingerprint", now_ms=NOW
+            dedupe_family="general",
+            event_kind="listing",
+            fingerprint="same-fingerprint",
+            now_ms=NOW,
+            ingest_mode="live",
         )["event_id"]
         == "listing-event"
     )
@@ -320,13 +324,13 @@ def test_exact_artifact_and_band_dedupe_stay_within_current_event_kind(conn) -> 
     assert [
         row["event_id"]
         for row in news.find_band_candidates(
-            dedupe_family="general", event_kind="news", band_keys=("same-band",), now_ms=NOW
+            dedupe_family="general", event_kind="news", band_keys=("same-band",), now_ms=NOW, ingest_mode="live"
         )
     ] == ["news-event"]
     assert [
         row["event_id"]
         for row in news.find_band_candidates(
-            dedupe_family="general", event_kind="listing", band_keys=("same-band",), now_ms=NOW
+            dedupe_family="general", event_kind="listing", band_keys=("same-band",), now_ms=NOW, ingest_mode="live"
         )
     ] == ["listing-event"]
     assert news.event_card("listing-event")["event_kind"] == "listing"
@@ -335,6 +339,27 @@ def test_exact_artifact_and_band_dedupe_stay_within_current_event_kind(conn) -> 
         "event_kind": "listing",
         "storyline_key": "story:listing-event",
     }
+
+
+@pytest.mark.parametrize("ingest_mode", ["live", "recovery"])
+def test_a_live_frame_never_joins_a_recovery_event_by_text(conn, ingest_mode: str) -> None:
+    # #742 U1: a recovery Event produces no semantic work, card or catalyst. A live report that matched it
+    # by exact text or band would disappear into it; a recovered copy may still join it as history.
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    with repos.transaction():
+        _item(news, "recovered-item")
+        _event(news, "recovery-event", "recovered-item", "news", admission="recovery")
+
+    exact = news.find_exact_event(
+        dedupe_family="general", event_kind="news", fingerprint="same-fingerprint", now_ms=NOW, ingest_mode=ingest_mode
+    )
+    bands = news.find_band_candidates(
+        dedupe_family="general", event_kind="news", band_keys=("same-band",), now_ms=NOW, ingest_mode=ingest_mode
+    )
+    joined = ["recovery-event"] if ingest_mode == "recovery" else []
+    assert ([] if exact is None else [exact["event_id"]]) == joined
+    assert [row["event_id"] for row in bands] == joined
 
 
 def test_feed_detail_filters_counts_and_status_project_the_closed_event_kinds(conn) -> None:

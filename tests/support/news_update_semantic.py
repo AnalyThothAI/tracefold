@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 
@@ -25,14 +26,21 @@ STAMP = 1_790_405_000_000
 
 
 class MemoryCache:
+    """The judgment cache port in memory; records each statement a store would run."""
+
     def __init__(self) -> None:
         self.values: dict[str, Answer] = {}
+        self.reads: list[tuple[str, ...]] = []
+        self.writes: list[tuple[str, ...]] = []
 
-    async def get(self, key: str) -> Answer | None:
-        return self.values.get(key)
+    async def get_many(self, keys: tuple[str, ...]) -> dict[str, Answer]:
+        self.reads.append(keys)
+        return {key: self.values[key] for key in keys if key in self.values}
 
-    async def put(self, key: str, answer: Answer) -> None:
-        self.values.setdefault(key, answer)
+    async def put_many(self, answers: Mapping[str, Answer]) -> None:
+        self.writes.append(tuple(answers))
+        for key, answer in answers.items():
+            self.values.setdefault(key, answer)
 
 
 class TaskBackend:

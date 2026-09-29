@@ -37,7 +37,6 @@ from tracefold.news.updates.dspy_backend import (
 )
 from tracefold.news.updates.judgment import Budget, ContractFault, NewsJudgments, Question
 from tracefold.news.updates.notification import NotificationPlanner, ReaderSnapshot
-from tracefold.news.updates.public import public_updates
 from tracefold.news.updates.semantics import SemanticAnalyzer, assemble_update
 
 STAMP = 1_790_405_000_000
@@ -82,22 +81,22 @@ def extraction_source() -> tuple[FrozenInput, dict[str, Any]]:
 
 
 @pytest.mark.parametrize(
-    "bad_relation",
+    "volunteered",
     [
+        {"slot": "a", "previous_ref": "p1", "relation": "conflicts", "change_kind": "conflict"},
         {"slot": "a", "previous_ref": "p999", "relation": "equivalent"},
-        {"slot": "absent", "previous_ref": "p1", "relation": "equivalent"},
         {"slot": "a", "previous_ref": "p1", "relation": "not_an_option"},
     ],
 )
-def test_bad_optional_hint_preserves_core_and_existing_understanding_fills_it(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-    bad_relation: dict[str, Any],
+def test_a_relation_the_extractor_volunteers_never_bypasses_triage_and_judgment(
+    monkeypatch: pytest.MonkeyPatch, volunteered: dict[str, Any]
 ) -> None:
+    # #742 S2/W3: extraction no longer outputs relations. A model that still writes one neither fails the
+    # answer nor settles the comparison: the triage and the judge own every relation.
     source, reply = extraction_source()
-    reply.update(relations=[bad_relation], supports=[{"slot": "a", "evidence_ref": "e1", "relation": "reports"}])
+    reply.update(relations=[volunteered], supports=[{"slot": "a", "evidence_ref": "e1", "relation": "reports"}])
     calls = generated(monkeypatch, reply)
-    backend = TaskBackend({"relation": "unrelated"})
+    backend = TaskBackend({"relation_triage": "p1", "relation": "unrelated"})
     analyzer = SemanticAnalyzer(
         extractor=DspyExtractor(lambda: None, model_identity="fixture", topics={}),
         judgments=NewsJudgments(generated=backend, cache=MemoryCache()),
@@ -115,9 +114,10 @@ def test_bad_optional_hint_preserves_core_and_existing_understanding_fills_it(
     asyncio.run(run())
     sent = json.loads(calls[0]["evidence_json"])
     assert sent["evidence"][0]["ref"] == "e1"
+    # The Event's own current claim is extraction context; related Events' claims are not.
     assert sent["prior"][0]["claim"]["ref"] == "p1"
     assert sent["evidence"][0]["segments"][0]["text"] == source.evidence[0].text
-    assert "news_extraction_hint_discarded" in caplog.text
+    # One pair fits one request, so no triage question is asked for it.
     assert [call[0] for call in backend.calls] == ["relation"]
 
 
@@ -162,21 +162,14 @@ def test_invalid_optional_topic_is_local_to_one_valid_core_claim(monkeypatch: py
     assert "news_optional_topic_discarded" in caplog.text
 
 
-def test_link_only_empty_extraction_adopts_without_public_delta_or_card(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_first_read_without_claims_is_not_adopted(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #742 W1: an empty first version is no Event version: no head, no notification work, no public row.
     evidence = material("Read full report here: https://example.org/report")
     source = FrozenInput(event_id="link", revision=1, lineage_id="link", evidence=(evidence,))
     generated(monkeypatch, {"claims": []})
     value = asyncio.run(DspyExtractor(lambda: None, model_identity="fixture", topics={}).extract(source))
-    head = assemble_update(source, value, None, adopted_at_ms=STAMP + 10)
-    assert head is not None and head.claims == () and head.open_questions == ()
-    assert public_updates(head, semantic_completed_at_ms=STAMP + 5) == ()
-    planner = NotificationPlanner(NewsJudgments(generated=TaskBackend({}), cache=MemoryCache()), NotifyAll())
-    plan = asyncio.run(
-        planner.plan(
-            head, ReaderSnapshot(channel="news", revision="test", receipts=()), Budget.start(5), now_ms=STAMP + 20
-        )
-    )
-    assert plan.action == "no_notification"
+    assert value.claims == () and value.discarded_claims == ()
+    assert assemble_update(source, value, None, adopted_at_ms=STAMP + 10) is None
 
 
 @pytest.mark.parametrize("answer", ["decision", "unknown", None])
@@ -372,12 +365,10 @@ def test_supplied_question_resolution_still_requires_an_exact_current_citation(
         judgments=NewsJudgments(generated=TaskBackend({}), cache=MemoryCache()),
         topics=(),
     )
-    if grounded:
-        value = asyncio.run(analyzer.extract(source, Budget.start(5)))
-        assert value.resolved_questions[0].question_ref == gap.ref
-    else:
-        with pytest.raises(ContractFault, match="news_resolution_not_grounded"):
-            asyncio.run(analyzer.extract(source, Budget.start(5)))
+    value = asyncio.run(analyzer.extract(source, Budget.start(5)))
+    # An ungrounded resolution resolves nothing; it no longer fails the claims beside it.
+    assert [row.question_ref for row in value.resolved_questions] == ([gap.ref] if grounded else [])
+    assert len(value.claims) == 1
 
 
 @pytest.mark.parametrize(
@@ -427,3 +418,93 @@ def test_grounded_optional_details_keep_their_claim_slots_and_read_target(monkey
     assert value.open_questions[0].target_ref == target.ref
     assert value.open_questions[0].slots == ("a",)
     assert value.implications[0].slots == ("a",)
+
+
+# ---------------------------------------------------------------- #742 S1: one claim at a time
+
+
+def _headline_source(text: str) -> FrozenInput:
+    evidence = material(text)
+    return FrozenInput(event_id="headline", revision=1, lineage_id="headline", evidence=(evidence,))
+
+
+def _reply_claim(slot: str, statement: str, quote: str, **fields: Any) -> dict[str, Any]:
+    return {
+        "slot": slot,
+        "statement": statement,
+        "fields": {"subject": "Citigroup", "action": "partners", "mode": "decision", **fields},
+        "citations": [{"evidence_ref": "e1", "quote": quote}],
+    }
+
+
+def _analyzer() -> SemanticAnalyzer:
+    return SemanticAnalyzer(
+        extractor=DspyExtractor(lambda: None, model_identity="fixture", topics={}),
+        judgments=NewsJudgments(generated=TaskBackend({}), cache=MemoryCache()),
+        topics=(),
+    )
+
+
+def test_a_title_cased_quote_of_an_all_caps_wsj_headline_is_kept_as_the_exact_source_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Production 2026-09-28: one Title-cased quote of this ALL-CAPS headline failed the whole extraction.
+    headline = "CITIGROUP, COINBASE PACT TO ENABLE STABLECOIN PAYMENTS:  WSJ"
+    source = _headline_source(headline)
+    generated(
+        monkeypatch,
+        {
+            "claims": [
+                _reply_claim(
+                    "pact", "Citigroup and Coinbase agree a stablecoin payments pact.", "Citigroup, Coinbase pact"
+                ),
+                _reply_claim("wsj", "WSJ reports the pact.", "stablecoin payments: WSJ"),
+                _reply_claim("invented", "Coinbase shares jump 10%.", "Coinbase shares jump 10%"),
+            ]
+        },
+    )
+    value = asyncio.run(_analyzer().extract(source, Budget.start(5)))
+    assert {claim.slot: claim.citations[0].quote for claim in value.claims} == {
+        "pact": "CITIGROUP, COINBASE PACT",
+        # Whitespace runs differ too; the stored quote is the source's own spelling.
+        "wsj": "STABLECOIN PAYMENTS:  WSJ",
+    }
+    assert all(claim.citations[0].quote in headline for claim in value.claims)
+    assert [(row.slot, row.code) for row in value.discarded_claims] == [
+        ("invented", "news_citation_not_in_frozen_source")
+    ]
+
+
+def test_an_unparseable_reading_is_dropped_from_its_claim_and_a_broken_claim_only_from_the_answer(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Production 2026-09-28: `quantity "300亿"` failed the "中美 300 亿美元对等降税框架" Event as schema_invalid.
+    text = "中美双方就300亿美元对等降税框架达成共识，对等提供降低关税待遇。"
+    source = _headline_source(text)
+    framework = _reply_claim(
+        "framework",
+        "中美就300亿美元对等降税框架达成共识。",
+        "中美双方就300亿美元对等降税框架达成共识",
+        phase="agreed",
+        quantities=[
+            {"name": "进口规模", "value": "300亿", "unit": "美元"},
+            {"name": "双方", "value": "2", "unit": "方"},
+        ],
+        assets=[{"symbol": "UST", "market_type": "bond", "role": "primary"}],
+    )
+    broken = {"slot": "broken", "statement": "对等提供降低关税待遇。", "citations": []}
+    generated(monkeypatch, {"claims": [framework, broken]})
+    value = asyncio.run(_analyzer().extract(source, Budget.start(5)))
+    [claim] = value.claims
+    assert claim.slot == "framework" and claim.citations[0].quote in text
+    assert claim.fields.phase == "unknown" and claim.fields.assets == ()
+    assert [(q.name, q.value) for q in claim.fields.quantities] == [("双方", "2")]
+    assert [(row.slot, row.code) for row in value.discarded_claims] == [("broken", "news_claim_schema_invalid")]
+    assert "news_extraction_reading_discarded" in caplog.text
+
+
+def test_only_an_answer_whose_every_claim_is_unusable_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = _headline_source("SENATE REFERS TETHER REPORT TO JUSTICE, TREASURY DEPTS: WSJ")
+    generated(monkeypatch, {"claims": [_reply_claim("a", "Senate acts.", "Senate refers Tether to the FBI")]})
+    with pytest.raises(ContractFault, match="news_citation_not_in_frozen_source"):
+        asyncio.run(_analyzer().extract(source, Budget.start(5)))

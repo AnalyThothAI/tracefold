@@ -122,7 +122,7 @@ def test_checkpoints_and_observations_are_insert_only() -> None:
     assert asyncio.run(pg.save_extraction("work-1", first)) == first
     assert asyncio.run(pg.save_extraction("work-1", other)) == first
     checkpoint = asyncio.run(pg.checkpoint("work-1"))
-    assert checkpoint is not None and checkpoint.extraction == first and checkpoint.understanding is None
+    assert checkpoint is not None and checkpoint.extraction == first
 
     observation = SemanticObservation(
         result_id="result-1",
@@ -361,7 +361,10 @@ def test_empty_extraction_records_the_task_read_and_does_not_loop_on_the_same_so
     pg, _db, clock = store()
     seed_event()
     analyzer = StubAnalyzer(lambda _source: Extraction(claims=()))
-    assert asyncio.run(run_agent(agent(pg, clock, analyzer), EVENT)) == "adopted"
+    # #742 W1: a first read without claims is not an Event version; it settles its read all the same.
+    assert asyncio.run(run_agent(agent(pg, clock, analyzer), EVENT)) == "unchanged"
+    assert asyncio.run(pg.head(EVENT)) is None
+    assert sql("SELECT count(*) AS n FROM news_notification_work WHERE event_id=%s", (EVENT,))[0]["n"] == 0
     first = sql("SELECT processed_read_refs,done_revision FROM news_semantic_work WHERE event_id=%s", (EVENT,))[0]
     assert len(first["processed_read_refs"]) == 1 and first["done_revision"] == 1
     observed = sql("SELECT read_refs FROM news_semantic_observations WHERE event_id=%s", (EVENT,))[0]
@@ -836,14 +839,16 @@ def test_judgment_cache_keeps_the_first_answer_and_retention_purges_old_rows() -
     clock = Clock()
     cache = PgJudgmentCache(db, clock=clock)
     first = Answer(item_id="q1", value="full", backend="generated")
-    asyncio.run(cache.put("key-1", first))
-    asyncio.run(cache.put("key-1", first.model_copy(update={"value": "none"})))
-    assert asyncio.run(cache.get("key-1")) == first
-    assert asyncio.run(cache.get("missing")) is None
+    second = Answer(item_id="q2", value="none", backend="generated")
+    asyncio.run(cache.put_many({"key-1": first, "key-2": second}))
+    asyncio.run(cache.put_many({"key-1": first.model_copy(update={"value": "none"})}))
+    # One statement reads a whole question set; a missing key is simply absent.
+    assert asyncio.run(cache.get_many(("key-1", "key-2", "missing"))) == {"key-1": first, "key-2": second}
+    assert db.names.count("news_judgment_cache_get") == 1
     pg = PgNewsStore(db, clock=clock)
     clock.now_ms += 15 * 24 * 3_600_000
-    assert asyncio.run(pg.purge_semantic_caches(limit=100)) == 1
-    assert asyncio.run(cache.get("key-1")) is None
+    assert asyncio.run(pg.purge_semantic_caches(limit=100)) == 2
+    assert asyncio.run(cache.get_many(("key-1",))) == {}
 
 
 def test_frozen_input_requires_material() -> None:

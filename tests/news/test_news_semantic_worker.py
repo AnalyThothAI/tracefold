@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 import dspy
 import pytest
 
+from tests.support.news_update_semantic import MemoryCache
 from tracefold.news.bus import Q_TRIAGE, BusMessage, PermanentError, TransientError
 from tracefold.news.pipeline.semantic import PROVIDER_OUTAGE_CAUSE, SemanticWorker
 from tracefold.news.storage.event_updates import SEMANTIC_ATTEMPTS_MAX, EventUpdateConflict, SemanticLease
@@ -316,19 +317,8 @@ def test_error_codes_are_bounded_and_never_free_text() -> None:
 # ---------------------------------------------------------------- analyzer retry policy (core)
 
 
-class MemoryCache:
-    def __init__(self) -> None:
-        self.values: dict[str, Answer] = {}
-
-    async def get(self, key: str) -> Answer | None:
-        return self.values.get(key)
-
-    async def put(self, key: str, answer: Answer) -> None:
-        self.values.setdefault(key, answer)
-
-
 class ScriptedBackend:
-    """Relation answers fail until `recover()`; every source answer is `supports`."""
+    """Relation answers fail until `recover()`; the triage picks the one prior; every source answer is `supports`."""
 
     identity = "scripted-generated"
 
@@ -343,7 +333,7 @@ class ScriptedBackend:
         self.calls.append((task, len(items)))
         if task == "relation" and self.failing:
             raise ProviderUnavailable("news_generation_LMRateLimitError")
-        value = "adds_information" if task == "relation" else "supports"
+        value = {"relation": "adds_information", "relation_triage": "p1"}.get(task, "supports")
         return BatchResult(
             answers=tuple(Answer(item_id=item.item_id, value=value, backend=self.identity) for item in items)
         )
@@ -415,7 +405,7 @@ def test_a_retry_re_asks_only_the_answers_the_provider_could_not_give() -> None:
 
     update = assemble_update(source, understood, head, adopted_at_ms=NOW + 1)
     assert update is not None and [change.kind for change in update.changes] == ["new_fact"]
-    # The recovered relation was asked again; the source answer cached on the first attempt was not.
+    # The recovered relation was asked again; one pair needs no triage question.
     assert backend.calls == [("relation", 1), ("relation", 1), ("support", 1)]
 
 
@@ -455,7 +445,10 @@ def test_a_transient_primary_failure_asks_the_declared_fallback_once(monkeypatch
 
 def test_a_route_that_fails_on_every_endpoint_is_provider_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     failures = {"primary": dspy.LMServerError("5xx"), "fallback": dspy.LMTimeoutError("slow")}
-    with _scripted(monkeypatch, failures) as asked, pytest.raises(ProviderUnavailable, match="LMTimeoutError"):
+    with (
+        _scripted(monkeypatch, failures) as asked,
+        pytest.raises(ProviderUnavailable, match="news_generation_lm_timeout_error"),
+    ):
         asyncio.run(dspy_backend._generate(object(), ("primary", "fallback")))
     assert asked == ["primary", "fallback"]
 
