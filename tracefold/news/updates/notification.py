@@ -24,7 +24,6 @@ from .contracts import Claim, ContentKind, EventUpdate, Exact, Source
 from .identity import digest, identity
 from .judgment import Budget, JudgmentCache
 from .reader_judgments import (
-    READER_MESSAGES_MAX,
     ClaimLink,
     LinkedReceipt,
     Novelty,
@@ -149,6 +148,8 @@ class ReaderSnapshot(Exact):
     revision: str
     # Recalled sent receipts, never observed event heads or unsent drafts.
     receipts: tuple[DeliveredText, ...]
+    # Ordered intent IDs selected independently for each active claim; receipts are shared body storage.
+    receipt_intents_by_claim: dict[str, tuple[str, ...]] = Field(default_factory=dict)
     # Claims of this Event's sends still in flight. Never counted as received; the plan waits for them.
     blocked_claim_refs: tuple[str, ...] = ()
     # Claims of this Event's sends with no provable outcome: possibly received, so never sent again.
@@ -492,14 +493,15 @@ def decide(
     return READER_REASONS[judged.outcome], judged
 
 
-def reader_messages(novelty: ReaderNovelty, reader: ReaderSnapshot) -> tuple[DeliveredText, ...]:
-    """The claim's messages: receipts its links reach, strongest first, then the recall; at most sixteen."""
+def reader_messages(claim_ref: str, reader: ReaderSnapshot) -> tuple[DeliveredText, ...]:
+    """Resolve a claim's frozen selection to exact sent bodies, preserving the selection order."""
 
-    linked = {row.intent_id: row for row in reader.linked}
-    ordered = [linked[intent] for intent in novelty.linked_intents if intent in linked]
-    ordered += [row for row in reader.receipts if row.state == "sent" and row.channel == reader.channel]
-    unique = {row.intent_id: row for row in reversed(ordered)}
-    return tuple(unique[intent] for intent in dict.fromkeys(row.intent_id for row in ordered))[:READER_MESSAGES_MAX]
+    by_id = {row.intent_id: row for row in reader.receipts}
+    return tuple(
+        by_id[intent]
+        for intent in reader.receipt_intents_by_claim.get(claim_ref, ())
+        if intent in by_id and by_id[intent].state == "sent" and by_id[intent].channel == reader.channel
+    )
 
 
 class NotificationPlanner:
@@ -523,7 +525,7 @@ class NotificationPlanner:
             if decide(claim, update, reader, now_ms=now_ms, novelty=novelty[claim.ref], judgment=None)[0]
             in {"reader_unavailable", "reader_unassessed"}
         ]
-        messages = {claim.ref: reader_messages(novelty[claim.ref], reader) for claim in pending}
+        messages = {claim.ref: reader_messages(claim.ref, reader) for claim in pending}
         inputs = {
             claim.ref: ReaderInput.of(claim, update, [row.body for row in messages[claim.ref]]) for claim in pending
         }

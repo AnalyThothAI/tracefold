@@ -21,10 +21,11 @@ from typing import Any, Final, Literal, cast
 
 from ..evidence import query_for
 from ..models import MarketAsset, market_type_of
-from ..reader_history import SIMILAR_TITLE_MAX, TARGETED_HISTORY_WINDOW_MS
 from ..similarity import trigram_similarity
+from ..source_contracts import classify_source_contracts
 from ..taxonomy import source_authority
 from ..updates.contracts import (
+    Claim,
     EstablishedRelation,
     EventUpdate,
     Evidence,
@@ -46,7 +47,18 @@ from ..updates.notification import (
 )
 from ..updates.ports import BeginSendStatus
 from ..updates.projection import extraction_scopes, item_text, reading_view, reading_views
-from .decisions import DecisionStorage
+from ..updates.reader_judgments import ClaimLink, LinkedReceipt, reader_novelty
+from ..updates.receipt_recall import (
+    LINKED_RECEIPT_WINDOW_MS,
+    RECALL_WINDOW_MS,
+    ROUTE_CANDIDATES_MAX,
+    ClaimRecallQuery,
+    RecallCandidate,
+    asset_search_variants,
+    query_for_claim,
+    reader_context_revision,
+    select_for_claim,
+)
 from .evidence import EvidenceStorage
 from .sql_values import _dumps
 from .update_commit import SemanticSource, commit_update, lock_event
@@ -72,10 +84,8 @@ INTENT_RETRY_MS: Final = (30_000, 120_000, 600_000)
 # Longer than one notification stage (20 s): compose, freeze and send happen under one lease.
 # Covers one notification stage plus card composition and the send.
 INTENT_LEASE_MS: Final = 120_000
-RECEIPT_RECALL_MAX: Final = 16
 JUDGMENT_CACHE_RETENTION_MS: Final = 14 * 24 * 3_600_000
 PURGE_BATCH_MAX: Final = 1_000
-READER_REVISION_PREFIX: Final = "reader_v2"
 EXTRA_READ_OUTCOMES: Final = frozenset({"attached", "no_material", "unavailable_or_budget_exhausted"})
 _RECEIPT_COLUMNS: Final = (
     "d.intent_id, d.event_id, d.kind, d.body, d.payload_sha256, d.settled_at_ms, "
@@ -154,35 +164,6 @@ def _retry_delay(delays: Sequence[int], attempts: int) -> int:
     return int(delays[max(0, min(int(attempts), len(delays)) - 1)])
 
 
-def reader_revision(
-    receipts: Iterable[Mapping[str, Any]],
-    *,
-    linked: Iterable[Mapping[str, Any]] = (),
-    links: Iterable[Mapping[str, Any]] = (),
-    blocked_claim_refs: Iterable[str],
-    ambiguous_claim_refs: Iterable[str],
-    watch_symbols: Iterable[str],
-    invalidated_claim_refs: Iterable[str],
-) -> str:
-    """One Event's reader version: its related receipts, its unsettled claims and the watchlist.
-
-    It is the same digest whenever nothing a plan of this Event depends on has changed, so a plan
-    decided twice from the same reader is the same decision, and a send anywhere else is not a race.
-    """
-
-    material = {
-        "receipts": sorted({(str(row["intent_id"]), "sent") for row in receipts}),
-        # Receipts a semantic link reaches, by their state: one that settles changes what the reader holds.
-        "linked": sorted({(str(row["intent_id"]), str(row["state"])) for row in linked}),
-        "links": sorted({(str(row["update_ref"]), str(row["current_ref"]), str(row["previous_ref"])) for row in links}),
-        "blocked": sorted(set(blocked_claim_refs)),
-        "ambiguous": sorted(set(ambiguous_claim_refs)),
-        "invalidated": sorted(set(invalidated_claim_refs)),
-        "watch": sorted(set(watch_symbols)),
-    }
-    return f"{READER_REVISION_PREFIX}:{digest(material)}"
-
-
 def linked_refs(update: EventUpdate, invalidated: Iterable[str] = ()) -> set[str]:
     """The active claims of an update and their antecedents: what a linked receipt carried."""
 
@@ -196,7 +177,7 @@ def delivered_text(row: Mapping[str, Any]) -> DeliveredText | None:
     body = row.get("body")
     payload_sha256 = row.get("payload_sha256")
     # Malformed or incomplete receipts cannot prove exact reader coverage.
-    if not isinstance(body, str) or not body or not isinstance(payload_sha256, str):
+    if not isinstance(body, str) or not body or not isinstance(payload_sha256, str) or digest(body) != payload_sha256:
         return None
     receipt = row.get("receipt") or {}
     message_id = None
@@ -215,64 +196,6 @@ def delivered_text(row: Mapping[str, Any]) -> DeliveredText | None:
         received_at_ms=int(row["settled_at_ms"]) if state == "sent" else None,
         provider_message_id=message_id,
     )
-
-
-def receipt_queries(
-    update: EventUpdate,
-    comparison_title: str,
-    invalidated: Iterable[str] = (),
-) -> tuple[str, ...]:
-    """Source-language and adopted-claim views; later members need not match the leader title."""
-    inactive = set(update.retired_claim_refs) | set(update.superseded_claim_refs) | set(invalidated)
-    queries: list[str] = []
-    for claim in update.claims:
-        if claim.ref in inactive:
-            continue
-        queries.extend((claim.statement, " ".join((claim.fields.subject, claim.fields.action, claim.fields.object))))
-        queries.extend(citation.quote for citation in claim.citations)
-    return tuple(dict.fromkeys(text.strip() for text in (queries or [comparison_title]) if text.strip()))
-
-
-def select_receipts(
-    update: EventUpdate,
-    queries: Sequence[str],
-    rows: Sequence[Mapping[str, Any]],
-    *,
-    invalidated: Iterable[str] = (),
-    limit: int = RECEIPT_RECALL_MAX,
-) -> tuple[DeliveredText, ...]:
-    """Rank actual receipts together before budgeting; an incremental card never replaces earlier copy.
-
-    Explicit claim/antecedent references rank first, then content relevance and recency. Neither same
-    Event nor asset-band membership is a coverage verdict. Only the planner reads the sent body for that.
-    """
-    refs = linked_refs(update, invalidated)
-    ranked = []
-    seen: set[str] = set()
-    for row in rows:
-        receipt = delivered_text(row)
-        if receipt is None or receipt.intent_id in seen:
-            continue
-        seen.add(receipt.intent_id)
-        context = row.get("history_context") or {}
-        views = (receipt.body, str(context.get("comparison_title") or ""), str(context.get("headline_zh") or ""))
-        score = max((trigram_similarity(query, view) for query in queries for view in views if view), default=0.0)
-        linked = bool(refs.intersection(row.get("claim_refs") or ()))
-        ranked.append((-int(linked), -score, -int(receipt.received_at_ms or 0), receipt.intent_id, receipt))
-    ranked.sort(key=lambda row: row[:4])
-    log.info(
-        "news_receipt_recall",
-        extra={
-            "event_id": update.event_id,
-            "candidate_count": len(ranked),
-            "limit": limit,
-            "ranked": [
-                {"intent_id": row[3], "linked": bool(-row[0]), "score": -row[1], "selected": index < limit}
-                for index, row in enumerate(ranked[: limit * 2])
-            ],
-        },
-    )
-    return tuple(row[4] for row in ranked[:limit])
 
 
 def item_evidence(item: Mapping[str, Any]) -> Evidence | None:
@@ -1222,24 +1145,21 @@ class EventUpdateStorage:
             raise EventUpdateConflict(str(exc)) from exc
 
     # ------------------------------------------------------------------ notification snapshot and plan
-    def invalidated_claim_refs(self, event_id: str) -> list[str]:
-        """Read the adopted change ledger; no second writable claim-status authority."""
+    def invalidated_claim_refs(self, refs: Sequence[str], *, as_of_ms: int) -> list[str]:
+        """Read invalidations of this exact adopted head at the reader's snapshot stamp."""
+        if not refs:
+            return []
         rows = self.conn.execute(
             """
-            WITH own AS (
-              SELECT ARRAY(SELECT jsonb_array_elements(u.document->'claims')->>'ref') AS refs
-                FROM news_event_update_heads h JOIN news_event_updates u
-                  ON u.event_id=h.event_id AND u.content_revision=h.content_revision
-               WHERE h.event_id=%s
-            )
             SELECT DISTINCT change->>'previous_ref' AS ref
-              FROM own JOIN news_event_updates u
-                ON jsonb_path_query_array(u.document, '$.changes[*].previous_ref') ?| own.refs
+              FROM news_event_updates u
               CROSS JOIN LATERAL jsonb_array_elements(u.document->'changes') change
-             WHERE change->>'previous_ref'=ANY(own.refs)
+             WHERE u.adopted_at_ms < %s
+               AND jsonb_path_query_array(u.document, '$.changes[*].previous_ref') ?| %s::text[]
+               AND change->>'previous_ref'=ANY(%s::text[])
                AND change->>'relation' IN ('corrects','real_world_change')
             """,
-            (event_id,),
+            (int(as_of_ms), list(refs), list(refs)),
         ).fetchall()
         return sorted(str(row["ref"]) for row in rows)
 
@@ -1258,66 +1178,139 @@ class EventUpdateStorage:
             sorted({str(ref) for row in rows if row["state"] == "ambiguous" for ref in row["claim_refs"] or ()}),
         )
 
-    def _receipt_rows(self, event_ids: Sequence[str], *, until_ms: int | None) -> list[dict[str, Any]]:
-        if not event_ids:
-            return []
-        return [
-            dict(row)
-            for row in self.conn.execute(
-                f"""
-                SELECT {_RECEIPT_COLUMNS} FROM news_deliveries d
-                 WHERE d.event_id = ANY(%s) AND d.kind = 'update' AND d.state = 'sent'
-                   AND d.delete_state IS DISTINCT FROM 'deleted'
-                   AND (%s::bigint IS NULL OR d.settled_at_ms < %s)
-                 ORDER BY d.settled_at_ms DESC, d.intent_id
-                """,  # noqa: S608 - a module-owned column list
-                (list(event_ids), until_ms, until_ms),
-            ).fetchall()
-        ]
-
-    def _similar_receipt_rows(
-        self, queries: Sequence[str], *, now_ms: int, until_ms: int | None
-    ) -> list[dict[str, Any]]:
-        """Receipts of any Event whose delivered text or titles are closest to this update's claims."""
+    def _recall_receipt_rows(self, queries: Sequence[ClaimRecallQuery], *, now_ms: int) -> list[dict[str, Any]]:
+        """Batch both bounded routes over the 48 h receipt window; keep the querying claim ref."""
 
         if not queries:
             return []
+        query_rows = [
+            {
+                "ref": query.ref,
+                "assets": [
+                    {"symbol": variant, "market_type": market, "role": role}
+                    for role, values in (("primary", query.primary_assets), ("mentioned", query.mentioned_assets))
+                    for symbol, market in sorted(values)
+                    for variant in sorted(asset_search_variants(symbol, market))
+                ],
+                "subject": query.subject,
+                "object": query.object,
+                "known_identity": [{"key": key, "value": value} for key, value in sorted(query.known_identity)],
+                "words": sorted(query.words),
+                "tsquery": " | ".join(sorted(query.words)),
+                "han_bigrams": sorted(query.han_bigrams),
+            }
+            for query in queries
+        ]
+        # jsonb claim projection gives PostgreSQL a high estimated plan cost and otherwise
+        # triggers JIT compilation on every short reader transaction. The plan takes much
+        # longer to compile than to execute for the bounded 48 h receipt window.
+        self.conn.execute("SET LOCAL jit = off")
         return [
             dict(row)
             for row in self.conn.execute(
                 f"""
-                SELECT {_RECEIPT_COLUMNS}
-                  FROM news_deliveries d
-                  CROSS JOIN LATERAL (
-                    SELECT max(GREATEST(
-                        similarity(COALESCE(d.history_context ->> 'comparison_title', ''), q),
-                        similarity(COALESCE(d.history_context ->> 'headline_zh', ''), q),
-                        similarity(COALESCE(d.body, d.history_context ->> 'why_zh', ''), q)
-                    )) AS score FROM unnest(%s::text[]) AS q
-                  ) relevance
-                 WHERE d.kind = 'update' AND d.state = 'sent'
-                   AND d.delete_state IS DISTINCT FROM 'deleted'
-                   AND d.settled_at_ms >= %s AND (%s::bigint IS NULL OR d.settled_at_ms < %s)
-                   AND relevance.score > 0
-                 ORDER BY relevance.score DESC, d.settled_at_ms DESC, d.intent_id
-                 LIMIT %s
+                WITH queries AS MATERIALIZED (
+                    SELECT q.*, to_tsquery('english', q.tsquery) AS search_query
+                      FROM jsonb_to_recordset(%s::jsonb) AS q(
+                        ref text, assets jsonb, subject text, object text, known_identity jsonb,
+                        words jsonb, tsquery text, han_bigrams jsonb)
+                ), window_receipts AS MATERIALIZED (
+                    SELECT {_RECEIPT_COLUMNS},
+                           COALESCE(h.claims, '[]'::jsonb) AS historical_claims,
+                           (u.document IS NULL) AS missing_projection,
+                           d.body || ' ' || COALESCE(h.statements, '') AS search_text,
+                           to_tsvector('english', d.body || ' ' || COALESCE(h.statements, '')) AS search_vector
+                      FROM news_deliveries d
+                      LEFT JOIN news_event_updates u
+                        ON u.event_id = d.event_id AND u.content_revision = d.content_revision
+                      LEFT JOIN LATERAL (
+                          SELECT jsonb_agg(claim) AS claims,
+                                 string_agg(claim ->> 'statement', ' ') AS statements
+                            FROM jsonb_array_elements(COALESCE(u.document -> 'claims', '[]'::jsonb)) claim
+                           WHERE d.claim_refs ? (claim ->> 'ref')
+                      ) h ON TRUE
+                     WHERE d.kind = 'update' AND d.state = 'sent'
+                       AND d.delete_state IS DISTINCT FROM 'deleted'
+                       AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
+                       AND d.body IS NOT NULL AND d.payload_sha256 IS NOT NULL
+                ), structured AS (
+                    SELECT q.ref AS current_ref, b.*, 'structure' AS route, 0.0::real AS route_score,
+                           row_number() OVER (PARTITION BY q.ref ORDER BY b.settled_at_ms DESC, b.intent_id) AS rn
+                      FROM queries q JOIN window_receipts b ON EXISTS (
+                          SELECT 1 FROM jsonb_array_elements(b.historical_claims) hc
+                           WHERE (q.subject <> '' AND lower(hc -> 'fields' ->> 'subject') = q.subject)
+                              OR (q.object <> '' AND lower(hc -> 'fields' ->> 'object') = q.object)
+                              OR EXISTS (
+                                  SELECT 1
+                                    FROM jsonb_array_elements(COALESCE(hc -> 'known_identity', '[]'::jsonb)) hi
+                                    JOIN jsonb_array_elements(q.known_identity) qi
+                                      ON hi ->> 'key' = qi ->> 'key'
+                                     AND lower(btrim(hi ->> 'value')) = qi ->> 'value'
+                              )
+                              OR EXISTS (
+                                  SELECT 1
+                                    FROM jsonb_array_elements(
+                                        COALESCE(hc -> 'fields' -> 'assets', '[]'::jsonb)
+                                    ) ha
+                                  JOIN jsonb_array_elements(q.assets) qa
+                                    ON lower(ha ->> 'symbol') = qa ->> 'symbol'
+                                   AND ha ->> 'market_type' = qa ->> 'market_type'
+                                   AND (ha ->> 'role' = 'primary' OR qa ->> 'role' = 'primary')
+                              )
+                      )
+                ), lexical AS (
+                    SELECT q.ref AS current_ref, b.*, 'lexical' AS route,
+                           ts_rank_cd(b.search_vector, q.search_query) AS route_score,
+                           row_number() OVER (
+                               PARTITION BY q.ref
+                               ORDER BY ts_rank_cd(b.search_vector, q.search_query) DESC,
+                                        b.settled_at_ms DESC, b.intent_id
+                           ) AS rn
+                      FROM queries q JOIN window_receipts b ON
+                          (q.tsquery <> '' AND (
+                              SELECT count(*) FROM jsonb_array_elements_text(q.words) word
+                               WHERE b.search_vector @@ plainto_tsquery('english', word)
+                          ) >= 2)
+                          OR ((SELECT count(*) FROM jsonb_array_elements_text(q.han_bigrams) bigram
+                                WHERE strpos(b.search_text, bigram) > 0) >= 2)
+                )
+                SELECT DISTINCT ON (current_ref, intent_id)
+                       current_ref, intent_id, event_id, kind, body, payload_sha256,
+                       settled_at_ms, receipt, card, history_context, claim_refs,
+                       historical_claims, missing_projection,
+                       min(rn) FILTER (WHERE route = 'structure')
+                           OVER (PARTITION BY current_ref, intent_id) AS structure_rank,
+                       min(rn) FILTER (WHERE route = 'lexical')
+                           OVER (PARTITION BY current_ref, intent_id) AS lexical_rank
+                  FROM (
+                      SELECT * FROM structured WHERE rn <= %s
+                      UNION ALL
+                      SELECT * FROM lexical WHERE rn <= %s
+                  ) routed
+                 ORDER BY current_ref, intent_id, route
                 """,  # noqa: S608 - a module-owned column list
-                (list(queries), int(now_ms) - TARGETED_HISTORY_WINDOW_MS, until_ms, until_ms, SIMILAR_TITLE_MAX),
+                (
+                    _dumps(query_rows),
+                    int(now_ms) - RECALL_WINDOW_MS,
+                    int(now_ms),
+                    ROUTE_CANDIDATES_MAX,
+                    ROUTE_CANDIDATES_MAX,
+                ),
             ).fetchall()
         ]
 
-    def _claim_links(self, refs: Sequence[str]) -> list[dict[str, Any]]:
+    def _claim_links(self, refs: Sequence[str], *, as_of_ms: int) -> list[dict[str, Any]]:
         """Persisted links within two hops of these claims, read from both ends (#742)."""
 
         if not refs:
             return []
         query = """
             SELECT update_ref, current_ref, previous_ref, relation, asserted_at_ms FROM news_claim_links
-             WHERE current_ref = ANY(%s) OR previous_ref = ANY(%s)
+             WHERE (current_ref = ANY(%s) OR previous_ref = ANY(%s)) AND asserted_at_ms < %s
         """
-        first = self.conn.execute(query, (list(refs), list(refs))).fetchall()
+        first = self.conn.execute(query, (list(refs), list(refs), as_of_ms)).fetchall()
         reached = sorted({str(row[key]) for row in first for key in ("current_ref", "previous_ref")} - set(refs))
-        second = self.conn.execute(query, (reached, reached)).fetchall() if reached else []
+        second = self.conn.execute(query, (reached, reached, as_of_ms)).fetchall() if reached else []
         rows = {
             (str(row["update_ref"]), str(row["current_ref"]), str(row["previous_ref"])): dict(row)
             for row in (*first, *second)
@@ -1341,12 +1334,19 @@ class EventUpdateStorage:
                  WHERE d.kind = 'update' AND d.delete_state IS DISTINCT FROM 'deleted'
                    AND d.claim_refs ?| %s::text[]
                    AND (d.state = 'sending'
-                        OR (d.state = 'ambiguous' AND d.settled_at_ms >= %s)
+                        OR (d.state = 'ambiguous' AND d.settled_at_ms >= %s AND d.settled_at_ms < %s)
                         OR (d.state = 'sent' AND d.settled_at_ms >= %s
                             AND (%s::bigint IS NULL OR d.settled_at_ms < %s)))
                  ORDER BY d.intent_id
                 """,  # noqa: S608 - a module-owned column list
-                (list(refs), *(int(now_ms) - TARGETED_HISTORY_WINDOW_MS,) * 2, until_ms, until_ms),
+                (
+                    list(refs),
+                    int(now_ms) - LINKED_RECEIPT_WINDOW_MS,
+                    int(now_ms),
+                    int(now_ms) - LINKED_RECEIPT_WINDOW_MS,
+                    until_ms,
+                    until_ms,
+                ),
             ).fetchall()
         ]
 
@@ -1357,47 +1357,138 @@ class EventUpdateStorage:
         head: EventUpdate,
         now_ms: int,
         watch_symbols: Iterable[str],
-        until_ms: int | None,
     ) -> dict[str, Any]:
-        """What this Event's reader revision is made of, read the same way by the snapshot and both CASes.
-
-        The related receipts are the ones a reader of this Event can be said to have been told: its own,
-        any linked to its claims, and the closest by text. A receipt that only happens to be recent is a
-        candidate the planner may still compare, but it is not what makes a plan stale, so an unrelated
-        send elsewhere never invalidates this one. The snapshot reads up to its own stamp; a CAS reads
-        whatever has settled, so a related receipt that arrived after the snapshot is exactly what it sees.
-        """
+        """Build the exact claim-scoped reader context for snapshot and both CAS sites."""
 
         sending, ambiguous = self._unsettled_claim_refs(event_id)
-        invalidated = self.invalidated_claim_refs(event_id)
+        invalidated = self.invalidated_claim_refs([claim.ref for claim in head.claims], as_of_ms=now_ms)
         event = self.conn.execute(
             "SELECT comparison_title, event_kind FROM news_events WHERE event_id = %s", (event_id,)
         ).fetchone()
-        queries = receipt_queries(head, str(event["comparison_title"] or "") if event else "", invalidated)
-        own = self._receipt_rows([event_id], until_ms=until_ms)
-        similar = self._similar_receipt_rows(queries, now_ms=now_ms, until_ms=until_ms)
+        listing_members = (
+            self.conn.execute(
+                """SELECT m.item_id,m.fact_text,i.provider_metadata
+                     FROM news_event_members m JOIN news_items i ON i.item_id=m.item_id
+                    WHERE m.event_id=%s""",
+                (event_id,),
+            ).fetchall()
+            if event is not None and event["event_kind"] == "listing"
+            else []
+        )
+        listing_scopes = [
+            row
+            for row in listing_members
+            if any(
+                contract.source_contract_family == "listing_v1"
+                for contract in classify_source_contracts(row.get("provider_metadata") or {})
+            )
+        ]
+        evidence_items = {item.ref: item for item in head.evidence}
+        protected_listing = tuple(
+            claim.ref
+            for claim in head.claims
+            if any(
+                citation.evidence_ref in evidence_items
+                and evidence_items[citation.evidence_ref].source.record_id == str(scope["item_id"])
+                and citation.quote in str(scope["fact_text"])
+                for citation in claim.citations
+                for scope in listing_scopes
+            )
+        )
+        inactive = set(head.retired_claim_refs) | set(head.superseded_claim_refs) | set(invalidated)
+        queries = {claim.ref: query_for_claim(claim) for claim in head.claims if claim.ref not in inactive}
+        ordinary = self._recall_receipt_rows(tuple(queries.values()), now_ms=now_ms)
         active = linked_refs(head, invalidated)
-        links = self._claim_links(sorted(active))
+        links = self._claim_links(sorted(active), as_of_ms=now_ms)
         reached = active | {str(row[key]) for row in links for key in ("current_ref", "previous_ref")}
-        linked = self._link_receipt_rows(sorted(reached), now_ms=now_ms, until_ms=until_ms)
+        linked = self._link_receipt_rows(sorted(reached), now_ms=now_ms, until_ms=now_ms)
+        link_models = tuple(
+            ClaimLink(
+                current_ref=str(row["current_ref"]),
+                previous_ref=str(row["previous_ref"]),
+                relation=row["relation"],
+                asserted_at_ms=int(row["asserted_at_ms"]),
+            )
+            for row in links
+        )
+        receipt_models = tuple(
+            LinkedReceipt(
+                intent_id=str(row["intent_id"]),
+                state=row["state"],
+                claim_refs=tuple(str(ref) for ref in row["claim_refs"] or ()),
+                settled_at_ms=None if row["settled_at_ms"] is None else int(row["settled_at_ms"]),
+            )
+            for row in linked
+        )
+        rows = {str(row["intent_id"]): row for row in (*linked, *ordinary)}
+        candidates = tuple(
+            RecallCandidate(
+                intent_id=intent,
+                payload_sha256=text.payload_sha256,
+                body=text.body,
+                settled_at_ms=int(text.received_at_ms),
+                claims=tuple(Claim.model_validate(claim) for claim in row.get("historical_claims") or ()),
+            )
+            for intent, row in rows.items()
+            if (text := delivered_text(row)) is not None
+            and text.state == "sent"
+            and text.received_at_ms is not None
+            and text.received_at_ms < now_ms
+        )
+        if missing := sum(bool(row.get("missing_projection")) for row in ordinary):
+            log.warning("news_reader_missing_receipt_projection", extra={"event_id": event_id, "count": missing})
+        novelties = {
+            claim.ref: reader_novelty(claim.ref, link_models, receipt_models)
+            for claim in head.claims
+            if claim.ref not in inactive
+        }
+        ordinary_ids = {
+            ref: {str(row["intent_id"]) for row in ordinary if row["current_ref"] == ref} for ref in queries
+        }
+        route_ranks = {
+            ref: {
+                str(row["intent_id"]): (row["structure_rank"], row["lexical_rank"])
+                for row in ordinary
+                if row["current_ref"] == ref
+            }
+            for ref in queries
+        }
+        selections = {
+            ref: select_for_claim(
+                query,
+                novelties[ref],
+                tuple(
+                    candidate
+                    for candidate in candidates
+                    if candidate.intent_id in ordinary_ids[ref] or candidate.intent_id in novelties[ref].linked_intents
+                ),
+                as_of_ms=now_ms,
+                route_ranks=route_ranks[ref],
+            )
+            for ref, query in queries.items()
+        }
+        selected_ids = {intent for selection in selections.values() for intent in selection.intent_ids}
         return {
             "event": None if event is None else dict(event),
-            "queries": queries,
             "sending": sending,
             "ambiguous": ambiguous,
             "invalidated": invalidated,
-            "own": own,
-            "similar": similar,
+            "protected_listing": protected_listing,
+            "receipt_intents_by_claim": {ref: selection.intent_ids for ref, selection in selections.items()},
+            "receipts": [rows[intent] for intent in sorted(selected_ids)],
             "links": links,
             "linked": linked,
-            "revision": reader_revision(
-                (*own, *similar),
-                linked=linked,
-                links=links,
-                blocked_claim_refs=sending,
-                ambiguous_claim_refs=ambiguous,
-                watch_symbols=watch_symbols,
-                invalidated_claim_refs=invalidated,
+            "revision": reader_context_revision(
+                head.ref,
+                selections,
+                novelties,
+                candidates,
+                receipt_models,
+                blocked=tuple(sending),
+                ambiguous=tuple(ambiguous),
+                invalidated=tuple(invalidated),
+                watch_symbols=tuple(watch_symbols),
+                protected_listing=protected_listing,
             ),
         }
 
@@ -1406,9 +1497,7 @@ class EventUpdateStorage:
         if document is None:
             return None
         head = EventUpdate.model_validate(document)
-        state = self._reader_state(
-            event_id=event_id, head=head, now_ms=now_ms, watch_symbols=watch_symbols, until_ms=None
-        )
+        state = self._reader_state(event_id=event_id, head=head, now_ms=now_ms, watch_symbols=watch_symbols)
         return str(state["revision"])
 
     def notification_snapshot_material(
@@ -1416,6 +1505,8 @@ class EventUpdateStorage:
     ) -> dict[str, Any] | None:
         """The pending head, the receipts the planner may compare, and the related-receipt reader revision."""
 
+        # Several reads build one model input. Pin their MVCC view before reading work or head.
+        self.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         work = self.conn.execute(
             "SELECT content_revision, state, next_attempt_at_ms, updated_at_ms FROM news_notification_work "
             "WHERE event_id = %s AND channel = %s",
@@ -1431,24 +1522,6 @@ class EventUpdateStorage:
             head=EventUpdate.model_validate(head),
             now_ms=now_ms,
             watch_symbols=watch_symbols,
-            until_ms=now_ms,
-        )
-        # The history bands use the leader. Recall content from later members directly at receipt
-        # granularity too; rank all bands again outside this read before the final model budget.
-        history = cast(DecisionStorage, self).reader_history(event_id=event_id, now_ms=now_ms)
-        band = self._receipt_rows(
-            [row.event_id for row in history.told_source_rows if row.event_id != event_id], until_ms=now_ms
-        )
-        event = reader["event"]
-        listing_members = (
-            self.conn.execute(
-                """SELECT m.item_id,m.fact_text,i.provider_metadata
-                     FROM news_event_members m JOIN news_items i ON i.item_id=m.item_id
-                    WHERE m.event_id=%s""",
-                (event_id,),
-            ).fetchall()
-            if event is not None and event["event_kind"] == "listing"
-            else []
         )
         return {
             "work_updated_at_ms": int(work["updated_at_ms"]),
@@ -1458,11 +1531,11 @@ class EventUpdateStorage:
             "ambiguous": reader["ambiguous"],
             "invalidated": reader["invalidated"],
             "revision": reader["revision"],
-            "receipt_queries": reader["queries"],
-            "receipt_rows": [*reader["own"], *band, *reader["similar"]],
+            "receipt_intents_by_claim": reader["receipt_intents_by_claim"],
+            "receipt_rows": reader["receipts"],
             "links": reader["links"],
             "link_receipts": reader["linked"],
-            "listing_members": [dict(row) for row in listing_members],
+            "protected_listing": reader["protected_listing"],
         }
 
     def _record_decision(
@@ -1625,8 +1698,11 @@ class EventUpdateStorage:
         if reserved is None:
             existing = self.conn.execute(
                 """
-                SELECT state, lease_token, next_attempt_at_ms, frozen_card, error_code
-                  FROM news_delivery_queue WHERE intent_id = %s FOR UPDATE
+                SELECT q.state, q.lease_token, q.next_attempt_at_ms, q.frozen_card, q.error_code,
+                       d.plan ->> 'reader_revision' AS previous_reader_revision
+                  FROM news_delivery_queue q
+                  LEFT JOIN news_notification_decisions d ON d.decision_ref = q.decision_ref
+                 WHERE q.intent_id = %s FOR UPDATE OF q
                 """,
                 (intent_id,),
             ).fetchone()
@@ -1644,12 +1720,18 @@ class EventUpdateStorage:
                 return {"status": "already_settled"}
             if existing["lease_token"] is not None and int(existing["next_attempt_at_ms"]) > int(now_ms):
                 return {"status": "overlap"}
-            # A re-lease sends under the decision just recorded, not the one that first reserved the intent.
+            # A pre-cut unsent reservation may have the same stable intent ID but a card frozen
+            # against the old reader input. Replan it under the new context before begin_send;
+            # an already started send lives in the ledger and never reaches this branch.
+            old_reader_card = not str(existing["previous_reader_revision"] or "").startswith("reader_v3:")
             self.conn.execute(
                 """
                 UPDATE news_delivery_queue
                    SET lease_token = %s, next_attempt_at_ms = %s, last_attempt_at_ms = %s, updated_at_ms = %s,
-                       decision_ref = %s, plan_key = %s
+                       decision_ref = %s, plan_key = %s,
+                       frozen_card = CASE WHEN %s THEN NULL ELSE frozen_card END,
+                       card_copy_document = CASE WHEN %s THEN NULL ELSE card_copy_document END,
+                       card_copy_input_digest = CASE WHEN %s THEN NULL ELSE card_copy_input_digest END
                  WHERE intent_id = %s
                 """,
                 (
@@ -1659,10 +1741,13 @@ class EventUpdateStorage:
                     int(now_ms),
                     plan.record_ref,
                     plan.key,
+                    old_reader_card,
+                    old_reader_card,
+                    old_reader_card,
                     intent_id,
                 ),
             )
-            frozen_card = existing["frozen_card"]
+            frozen_card = None if old_reader_card else existing["frozen_card"]
         # The marker stays pending while the reserved intent is in flight. If this turn dies before
         # the send is settled, the marker comes due after the lease and reclaims the same identity.
         self._settle_work(
@@ -2478,7 +2563,5 @@ __all__ = [
     "item_evidence",
     "read_target_item_id",
     "read_target_ref",
-    "reader_revision",
     "revision_evidence",
-    "select_receipts",
 ]

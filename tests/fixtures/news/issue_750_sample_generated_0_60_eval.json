@@ -1,0 +1,1819 @@
+{
+  "cases": 120,
+  "independent_label_verdicts": {
+    "keep": 7,
+    "borderline": 36,
+    "demote": 77
+  },
+  "novelty": {
+    "unlinked": 87,
+    "development": 10,
+    "known": 3,
+    "increment": 20
+  },
+  "candidate_pool": {
+    "p50": 12,
+    "max": 54
+  },
+  "messages": {
+    "baseline_p50": 16,
+    "new_p50": 8,
+    "new_p95": 16,
+    "new_zero": 4,
+    "new_sixteen": 35,
+    "new_body_chars": 161898
+  },
+  "live": {
+    "backend": "generated",
+    "answered": 60,
+    "failures": {},
+    "latency_ms": {
+      "p50": 4459,
+      "p90": 7537
+    },
+    "importance": {
+      "cases": 60,
+      "labels": {
+        "keep": 7,
+        "borderline": 36,
+        "demote": 17
+      },
+      "auc_keep_borderline_vs_demote": 0.955,
+      "auc_keep_vs_demote": 0.996,
+      "novelty": {
+        "unlinked": 47,
+        "development": 4,
+        "known": 2,
+        "increment": 7
+      }
+    },
+    "baseline_importance_auc_keep_borderline_vs_demote_same_cases": 0.904,
+    "outcomes": {
+      "push": 16,
+      "feed": 41,
+      "known": 2,
+      "key": 1
+    },
+    "pushed_by_label": {
+      "keep": 4,
+      "borderline": 13
+    },
+    "answers": {
+      "L196": {
+        "importance": {
+          "value": 2.95,
+          "probabilities": [
+            0.0,
+            0.05,
+            0.15,
+            0.6,
+            0.2
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.1,
+            "m2": 0.7,
+            "m3": 0.05,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.1,
+            "m12": 0.0,
+            "none": 0.05
+          },
+          "confidence": 0.85
+        }
+      },
+      "L128": {
+        "importance": {
+          "value": 2.6,
+          "probabilities": [
+            0.05,
+            0.1,
+            0.25,
+            0.4,
+            0.2
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.05,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "none": 0.95
+          },
+          "confidence": 0.95
+        }
+      },
+      "L106": {
+        "importance": {
+          "value": 2.35,
+          "probabilities": [
+            0.05,
+            0.15,
+            0.3,
+            0.4,
+            0.1
+          ],
+          "confidence": 0.85
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 1.0
+          },
+          "confidence": 0.98
+        }
+      },
+      "L226": {
+        "importance": {
+          "value": 3.05,
+          "probabilities": [
+            0.0,
+            0.0,
+            0.0,
+            0.95,
+            0.05
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.1,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "none": 0.9
+          },
+          "confidence": 0.85
+        }
+      },
+      "L163": {
+        "importance": {
+          "value": 2.78,
+          "probabilities": [
+            0.02,
+            0.03,
+            0.15,
+            0.75,
+            0.05
+          ],
+          "confidence": 0.85
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0485,
+            "m2": 0.0097,
+            "m3": 0.4369,
+            "m4": 0.0485,
+            "m5": 0.0485,
+            "m6": 0.0097,
+            "m7": 0.0194,
+            "m8": 0.0097,
+            "m9": 0.0097,
+            "m10": 0.0097,
+            "m11": 0.0485,
+            "m12": 0.0097,
+            "m13": 0.2913,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 0.0
+          },
+          "confidence": 0.8
+        }
+      },
+      "L037": {
+        "importance": {
+          "value": 2.05,
+          "probabilities": [
+            0.0,
+            0.0,
+            0.95,
+            0.05,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.98,
+            "m6": 0.0,
+            "m7": 0.0,
+            "none": 0.02
+          },
+          "confidence": 0.98
+        }
+      },
+      "L286": {
+        "importance": {
+          "value": 3.15,
+          "probabilities": [
+            0.0,
+            0.0,
+            0.0,
+            0.85,
+            0.15
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.9,
+            "m2": 0.05,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "none": 0.05
+          },
+          "confidence": 0.98
+        }
+      },
+      "L138": {
+        "importance": {
+          "value": 2.35,
+          "probabilities": [
+            0.0,
+            0.2,
+            0.3,
+            0.45,
+            0.05
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.98,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 0.02
+          },
+          "confidence": 0.95
+        }
+      },
+      "L001": {
+        "importance": {
+          "value": 2.02,
+          "probabilities": [
+            0.0,
+            0.0,
+            0.98,
+            0.02,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.98,
+            "m2": 0.02,
+            "none": 0.0
+          },
+          "confidence": 0.98
+        }
+      },
+      "L356": {
+        "importance": {
+          "value": 2.7,
+          "probabilities": [
+            0.0,
+            0.05,
+            0.35,
+            0.45,
+            0.15
+          ],
+          "confidence": 0.85
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.1,
+            "none": 0.9
+          },
+          "confidence": 0.95
+        }
+      },
+      "L330": {
+        "importance": {
+          "value": 3.05,
+          "probabilities": [
+            0.0,
+            0.0,
+            0.05,
+            0.85,
+            0.1
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.98,
+            "none": 0.02
+          },
+          "confidence": 0.95
+        }
+      },
+      "L256": {
+        "importance": {
+          "value": 2.53,
+          "probabilities": [
+            0.02,
+            0.08,
+            0.35,
+            0.45,
+            0.1
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.85,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "none": 0.15
+          },
+          "confidence": 0.95
+        }
+      },
+      "L030": {
+        "importance": {
+          "value": 1.75,
+          "probabilities": [
+            0.05,
+            0.25,
+            0.6,
+            0.1,
+            0.0
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.05,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 0.95
+          },
+          "confidence": 0.98
+        }
+      },
+      "L003": {
+        "importance": {
+          "value": 2.6,
+          "probabilities": [
+            0.0,
+            0.1,
+            0.3,
+            0.5,
+            0.1
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L173": {
+        "importance": {
+          "value": 1.45,
+          "probabilities": [
+            0.1,
+            0.45,
+            0.35,
+            0.1,
+            0.0
+          ],
+          "confidence": 0.8
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.1,
+            "m2": 0.1,
+            "none": 0.8
+          },
+          "confidence": 0.9
+        }
+      },
+      "L013": {
+        "importance": {
+          "value": 1.55,
+          "probabilities": [
+            0.1,
+            0.35,
+            0.45,
+            0.1,
+            0.0
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.02,
+            "none": 0.98
+          },
+          "confidence": 0.98
+        }
+      },
+      "L042": {
+        "importance": {
+          "value": 2.8,
+          "probabilities": [
+            0.0,
+            0.05,
+            0.2,
+            0.65,
+            0.1
+          ],
+          "confidence": 0.85
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 1.0
+          },
+          "confidence": 0.98
+        }
+      },
+      "L036": {
+        "importance": {
+          "value": 2.6,
+          "probabilities": [
+            0.0,
+            0.15,
+            0.25,
+            0.45,
+            0.15
+          ],
+          "confidence": 0.85
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "none": 1.0
+          },
+          "confidence": 0.95
+        }
+      },
+      "L020": {
+        "importance": {
+          "value": 1.45,
+          "probabilities": [
+            0.0,
+            0.6,
+            0.35,
+            0.05,
+            0.0
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.05,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "none": 0.95
+          },
+          "confidence": 0.9
+        }
+      },
+      "L334": {
+        "importance": {
+          "value": 2.1,
+          "probabilities": [
+            0.1,
+            0.2,
+            0.3,
+            0.3,
+            0.1
+          ],
+          "confidence": 0.75
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0196,
+            "m2": 0.0196,
+            "m3": 0.1471,
+            "m4": 0.0196,
+            "m5": 0.0196,
+            "m6": 0.3431,
+            "m7": 0.0196,
+            "m8": 0.098,
+            "m9": 0.049,
+            "m10": 0.098,
+            "none": 0.1667
+          },
+          "confidence": 0.6
+        }
+      },
+      "L307": {
+        "importance": {
+          "value": 2.58,
+          "probabilities": [
+            0.02,
+            0.13,
+            0.15,
+            0.65,
+            0.05
+          ],
+          "confidence": 0.85
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.92,
+            "m2": 0.05,
+            "m3": 0.01,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 0.02
+          },
+          "confidence": 0.9
+        }
+      },
+      "L282": {
+        "importance": {
+          "value": 1.3,
+          "probabilities": [
+            0.05,
+            0.65,
+            0.25,
+            0.05,
+            0.0
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L187": {
+        "importance": {
+          "value": 3.15,
+          "probabilities": [
+            0.0,
+            0.0,
+            0.0,
+            0.85,
+            0.15
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.95,
+            "m6": 0.0,
+            "none": 0.05
+          },
+          "confidence": 0.9
+        }
+      },
+      "L074": {
+        "importance": {
+          "value": 2.85,
+          "probabilities": [
+            0.0,
+            0.05,
+            0.15,
+            0.7,
+            0.1
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.05,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.8,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.1,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 0.05
+          },
+          "confidence": 0.95
+        }
+      },
+      "L082": {
+        "importance": {
+          "value": 2.28,
+          "probabilities": [
+            0.02,
+            0.18,
+            0.35,
+            0.4,
+            0.05
+          ],
+          "confidence": 0.85
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.9,
+            "m2": 0.05,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "none": 0.05
+          },
+          "confidence": 0.9
+        }
+      },
+      "L376": {
+        "importance": {
+          "value": 3.0,
+          "probabilities": [
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.7,
+            "m2": 0.2,
+            "m3": 0.05,
+            "m4": 0.0,
+            "m5": 0.05,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 0.0
+          },
+          "confidence": 0.95
+        }
+      },
+      "L089": {
+        "importance": {
+          "value": 2.15,
+          "probabilities": [
+            0.05,
+            0.2,
+            0.35,
+            0.35,
+            0.05
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.1,
+            "m2": 0.05,
+            "m3": 0.05,
+            "m4": 0.05,
+            "none": 0.75
+          },
+          "confidence": 0.95
+        }
+      },
+      "L275": {
+        "importance": {
+          "value": 2.6,
+          "probabilities": [
+            0.0,
+            0.1,
+            0.3,
+            0.5,
+            0.1
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.8,
+            "m3": 0.1,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.05,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 0.05
+          },
+          "confidence": 0.95
+        }
+      },
+      "L168": {
+        "importance": {
+          "value": 1.8,
+          "probabilities": [
+            0.0,
+            0.25,
+            0.7,
+            0.05,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L216": {
+        "importance": {
+          "value": 1.4,
+          "probabilities": [
+            0.0,
+            0.6,
+            0.4,
+            0.0,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L120": {
+        "importance": {
+          "value": 2.75,
+          "probabilities": [
+            0.0,
+            0.05,
+            0.15,
+            0.8,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.95,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.02,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "none": 0.03
+          },
+          "confidence": 0.98
+        }
+      },
+      "L308": {
+        "importance": {
+          "value": 1.97,
+          "probabilities": [
+            0.05,
+            0.25,
+            0.4,
+            0.28,
+            0.02
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.05,
+            "m12": 0.15,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 0.8
+          },
+          "confidence": 0.95
+        }
+      },
+      "L243": {
+        "importance": {
+          "value": 1.2,
+          "probabilities": [
+            0.0,
+            0.8,
+            0.2,
+            0.0,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L326": {
+        "importance": {
+          "value": 1.45,
+          "probabilities": [
+            0.0,
+            0.6,
+            0.35,
+            0.05,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0476,
+            "m2": 0.0476,
+            "m3": 0.0476,
+            "m4": 0.1429,
+            "m5": 0.0476,
+            "m6": 0.6667,
+            "none": 0.0
+          },
+          "confidence": 0.9
+        }
+      },
+      "L210": {
+        "importance": {
+          "value": 2.95,
+          "probabilities": [
+            0.0,
+            0.0,
+            0.05,
+            0.95,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L329": {
+        "importance": {
+          "value": 1.05,
+          "probabilities": [
+            0.3,
+            0.4,
+            0.25,
+            0.05,
+            0.0
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L228": {
+        "importance": {
+          "value": 2.0,
+          "probabilities": [
+            0.05,
+            0.25,
+            0.4,
+            0.25,
+            0.05
+          ],
+          "confidence": 0.85
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "none": 1.0
+          },
+          "confidence": 0.98
+        }
+      },
+      "L264": {
+        "importance": {
+          "value": 2.85,
+          "probabilities": [
+            0.0,
+            0.05,
+            0.1,
+            0.8,
+            0.05
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.95,
+            "m2": 0.03,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "none": 0.02
+          },
+          "confidence": 0.95
+        }
+      },
+      "L150": {
+        "importance": {
+          "value": 1.85,
+          "probabilities": [
+            0.0,
+            0.45,
+            0.3,
+            0.2,
+            0.05
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.6,
+            "m2": 0.35,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "none": 0.05
+          },
+          "confidence": 0.95
+        }
+      },
+      "L350": {
+        "importance": {
+          "value": 1.7,
+          "probabilities": [
+            0.0,
+            0.35,
+            0.6,
+            0.05,
+            0.0
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L023": {
+        "importance": {
+          "value": 2.75,
+          "probabilities": [
+            0.0,
+            0.05,
+            0.15,
+            0.8,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.95,
+            "m3": 0.0,
+            "none": 0.05
+          },
+          "confidence": 0.98
+        }
+      },
+      "L231": {
+        "importance": {
+          "value": 2.2,
+          "probabilities": [
+            0.0,
+            0.05,
+            0.7,
+            0.25,
+            0.0
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L028": {
+        "importance": {
+          "value": 1.85,
+          "probabilities": [
+            0.0,
+            0.35,
+            0.45,
+            0.2,
+            0.0
+          ],
+          "confidence": 0.8
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 1.0
+          },
+          "confidence": 0.98
+        }
+      },
+      "L107": {
+        "importance": {
+          "value": 1.6,
+          "probabilities": [
+            0.1,
+            0.3,
+            0.5,
+            0.1,
+            0.0
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L038": {
+        "importance": {
+          "value": 1.0,
+          "probabilities": [
+            0.1,
+            0.8,
+            0.1,
+            0.0,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.1,
+            "m2": 0.8,
+            "m3": 0.0,
+            "none": 0.1
+          },
+          "confidence": 0.9
+        }
+      },
+      "L068": {
+        "importance": {
+          "value": 0.62,
+          "probabilities": [
+            0.5,
+            0.4,
+            0.08,
+            0.02,
+            0.0
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.05,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.05,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 0.9
+          },
+          "confidence": 0.85
+        }
+      },
+      "L183": {
+        "importance": {
+          "value": 1.07,
+          "probabilities": [
+            0.05,
+            0.85,
+            0.08,
+            0.02,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L059": {
+        "importance": {
+          "value": 0.75,
+          "probabilities": [
+            0.5,
+            0.3,
+            0.15,
+            0.05,
+            0.0
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.1,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.7,
+            "m16": 0.0,
+            "none": 0.2
+          },
+          "confidence": 0.85
+        }
+      },
+      "L086": {
+        "importance": {
+          "value": 1.25,
+          "probabilities": [
+            0.05,
+            0.7,
+            0.2,
+            0.05,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "m11": 0.0,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m14": 0.0,
+            "m15": 0.0,
+            "m16": 0.0,
+            "none": 1.0
+          },
+          "confidence": 0.98
+        }
+      },
+      "L298": {
+        "importance": {
+          "value": 1.05,
+          "probabilities": [
+            0.05,
+            0.85,
+            0.1,
+            0.0,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L211": {
+        "importance": {
+          "value": 0.06,
+          "probabilities": [
+            0.95,
+            0.04,
+            0.01,
+            0.0,
+            0.0
+          ],
+          "confidence": 0.98
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "none": 1.0
+          },
+          "confidence": 0.95
+        }
+      },
+      "L391": {
+        "importance": {
+          "value": 1.24,
+          "probabilities": [
+            0.02,
+            0.78,
+            0.15,
+            0.04,
+            0.01
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.05,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "none": 0.95
+          },
+          "confidence": 0.95
+        }
+      },
+      "L254": {
+        "importance": {
+          "value": 1.25,
+          "probabilities": [
+            0.1,
+            0.6,
+            0.25,
+            0.05,
+            0.0
+          ],
+          "confidence": 0.9
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L171": {
+        "importance": {
+          "value": 0.2,
+          "probabilities": [
+            0.8,
+            0.2,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.1,
+            "m2": 0.0,
+            "m3": 0.0,
+            "none": 0.9
+          },
+          "confidence": 0.95
+        }
+      },
+      "L149": {
+        "importance": {
+          "value": 0.2,
+          "probabilities": [
+            0.8,
+            0.2,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "none": 1.0
+          },
+          "confidence": 0.95
+        }
+      },
+      "L294": {
+        "importance": {
+          "value": 0.95,
+          "probabilities": [
+            0.1,
+            0.85,
+            0.05,
+            0.0,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m8": 0.0,
+            "m9": 0.0,
+            "m10": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L215": {
+        "importance": {
+          "value": 0.36,
+          "probabilities": [
+            0.7,
+            0.25,
+            0.04,
+            0.01,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.05,
+            "m2": 0.8,
+            "m3": 0.05,
+            "none": 0.1
+          },
+          "confidence": 0.9
+        }
+      },
+      "L277": {
+        "importance": {
+          "value": 0.37,
+          "probabilities": [
+            0.7,
+            0.25,
+            0.03,
+            0.02,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "none": 1.0
+          },
+          "confidence": 0.98
+        }
+      },
+      "L184": {
+        "importance": {
+          "value": 2.05,
+          "probabilities": [
+            0.0,
+            0.0,
+            0.95,
+            0.05,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "none": 1.0
+          },
+          "confidence": 1.0
+        }
+      },
+      "L295": {
+        "importance": {
+          "value": 1.17,
+          "probabilities": [
+            0.05,
+            0.75,
+            0.18,
+            0.02,
+            0.0
+          ],
+          "confidence": 0.95
+        },
+        "anchor": {
+          "probabilities": {
+            "m1": 0.0,
+            "m2": 0.0,
+            "none": 1.0
+          },
+          "confidence": 0.98
+        }
+      }
+    },
+    "answer_input_digests": {
+      "L196": "b0a51b8f6ea957c1637ae915e6301479d42f6707814512ab868535d294cfa773",
+      "L128": "41e6b14d8fa2693d04aa8ddf3f3b6eba77a6edaba075ec5c9a84cc70c10a6b2e",
+      "L106": "8b786c8eb6c179440ba3b9ce76d861318090410076561b8ed11f744d7b5b75d2",
+      "L226": "5fa5b2697bf0510c93b96995e3c8be32b5eb59a24c20edfbc56e5751180d726b",
+      "L163": "2152533c0f53f0abcb2245388d0ff217cb9225baa8c860652776b642606cbbd1",
+      "L037": "2849412a653b5e67adbbef129ebab23470140fc12a79bfe0a43b7d9e320f64cf",
+      "L286": "e6a0ee26a40b161a4cf7a21ed95e63cd455eeacd81b3b8f9f977651f87cd8c6b",
+      "L138": "93b96fd465480f9e23cbf76f8d7b20ca3b55917ae26bd575142064e64756f02d",
+      "L001": "aea8c78fc38bd35e0fa107fe1d3b0dff8093942d47b85a46ee49db6a468ea6d8",
+      "L356": "2f9fb09ffb9a94e111648916069cbea9f8242514598be98a502014e3355852f5",
+      "L330": "c44c9900c000fd39ae38325b9e53afd910ded6062fb168c71b13a3d505c078f0",
+      "L256": "57307cd4a96d31fc6768299923621666b76b1d597034c31b4d1ebff12fb89365",
+      "L030": "a62a363c2e0c4365eaa82c5c0f6f5a3b199896a3ed504dc213ade1ba6a47adc4",
+      "L003": "b5511c8b0b50ab9cdd07f0be104e0672280a14b7705d53f0f08a1f61eb816319",
+      "L173": "8332eace7e1e7252d47f0b801a2b723270b065a30ede95b9567a3c3f6889edad",
+      "L013": "8207e55041da1ba8b86fdc31bb23016318eacec504ec5e3b995be8d282c6f88e",
+      "L042": "dfe1e4d698518b36dd665e0562fe70187a09c5563cc04e76b52d90d9b62c65a5",
+      "L036": "da7c4fafb07f2e422fb9ab5f9168f2b80d1d901ebc101bf00acbcf5a40e366b0",
+      "L020": "8e0a32ddc84e56f0c9f4dea26fb814a3306d8bb562929750476434b2c1a0487e",
+      "L334": "befc76f3af6ace9e4641ab9d0fe0b5941fc3d6362adbfa7c6aaaf7817bb3f534",
+      "L307": "6ab596c9c63301546eccf58c4e9afffa7ad68a68997a9a8358b214cc3cba3d36",
+      "L282": "d1699490503b39fba43ab986707001927cfb73244e1d8a920fde5ab520fa5d19",
+      "L187": "b67afb7f9059435755b70e37480b1104966d1238d325e4c8fb37c0e3f0cdd3da",
+      "L074": "0e8e54a7912617b5e61d5b60bc32a968ba37ad3c759b87cbfdca35d9cdccd94a",
+      "L082": "6ab44b1c087d02686eaee67296d040b38c5843b7938a4dd7fd6102c6f9c71f85",
+      "L376": "e04e4ef963ad0641e933d208f223f603272686631cac537096eb316e2c0a0574",
+      "L089": "dd5ee382cb1b416ed0ceedc294e68976a66a9a1141e4a4aa7ed5cf33870385d6",
+      "L275": "096f200e96bddcd810fc95e928461764ce5ef9007ff3c8b168a32f608e3d21ba",
+      "L168": "5742d95c480c51e8950a937021d417936ed50108f10945d9bcf2e6b3e7101e93",
+      "L216": "26bf25ffcfc0cf86a16fe81e210cf81123d78e26cbb3a164f259a07085f07a98",
+      "L120": "96148584c9d07521d2462b3010aa8606effd9f5975af4a2b957ba3c937498265",
+      "L308": "a46f3c9fd3dcf9050870ff37f7a24a95ea96c83b7397f87e2ca2ce203c1d2915",
+      "L243": "a6dfe9963f60fad40c3c07a7e353d042413b221c0e3d2f838284355e25bcbc60",
+      "L326": "16902603c2f59f88101a426710ed72cd60d2038805277c80dd2fad60a7ab308a",
+      "L210": "ddda2ea3c87328247af8e85da59bb220466593fd6bf07b8a353d47548ea85d02",
+      "L329": "10c8eefbf0d238d8ac600d343c553cb3b9b981ea810cad1a448c6651c18164a0",
+      "L228": "e89738be483e65db087bba4d0cc8012ee6d4b10a8917e7d2489eacccc437d086",
+      "L264": "46d14231eb2c4c96097552ba46ac34b1823dd2b2cfeb61f85722d94cf772bf5f",
+      "L150": "26f4a8a1411938ddf5c828135fd22c35eb4e15b97c5c66a91dbdee91bd030548",
+      "L350": "b7bb4aa50e6a2c5d4e36b5667efee66719adfe1d876aeff8871725bbabc0543e",
+      "L023": "530ad3334042b6138e73db858d1fe65b027237407c810f9f6a825a35f2c8ea37",
+      "L231": "0a5d9938fd3637cef7cf27371c72597bfce2a351f030c9ab91b184cd81320737",
+      "L028": "28e7d90789feede7212a1832fb8a9881a34dd0abc027f01e70406b2625b483eb",
+      "L107": "5e4a436b08bc77a6602381be3010ef76af647a8f6d87a11faecd1c28783492a2",
+      "L038": "3b19b9c1fecb7ffb4a77c86b2e867c02b0d68a131cc1103157e8a57168bee440",
+      "L068": "4cd07fe60a2ab9f9a2cc825343f215f13584eb7d51a1085cf2ab5a6ac94e7829",
+      "L183": "ae5557cfb79072a5c021f388092bedb89516f5dfeecf684357af167a62c60727",
+      "L059": "59291d898887514ac6d15537e69b20fc5b3b1e43b2874c5c3710442c648c2764",
+      "L086": "b35bb95dc9ea4984c7b2a3d0d511a170a6b8e8c3aa360fb66fd5fffd9da94ee8",
+      "L298": "24587eab1414b25716d1ac37c64306f807f7fb57f5a81361bf199cb809ebe0fb",
+      "L211": "04f3edbb328911b7bc7fdda5d95c18c12ef2651d00ac2febb908b97bbb83d42c",
+      "L391": "917c1f68c0e8b5809332e3d785e91fdf9140472e73e09a119c8a7da8ff49b177",
+      "L254": "b5b818ecf25a6f07adb0ff324428d86445a7d61eb3628655fd7795c375973f14",
+      "L171": "63084ff145b8ced2060c2c088dee2808145a58098fb377302eba683e57687c42",
+      "L149": "62aa36344cdf04dc37831571ba4995033486b77d153ac1ae460530ae45daa7eb",
+      "L294": "55cffa907612e9d89553dd370999cb7476f9c4f0c4edf0b798984ce7fabe2cf1",
+      "L215": "80ffbffea45d9933c4ed940a205a9fc3288fd0f23e0c31b865541bdc824f4766",
+      "L277": "738fc3b03b683ade9f5e8011e3181b36e25d32c49507319ccede900b5fde0186",
+      "L184": "847d1109a73cfb5bb2f1465c225773819c2767126df2c57fb45f7285cf984a15",
+      "L295": "0fdc3ae857ff30633f48c687a5b778e63c075237584dff2e5c30345454275fe7"
+    }
+  },
+  "reader_questions_identity": "news_reader_questions:4fc59a95b8cb54bee6dbee7e5e721084ea3a9c8adf51897bd8d940012a4ff5a3"
+}

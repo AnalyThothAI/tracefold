@@ -1,0 +1,27 @@
+{
+  "cases": 120,
+  "independent_label_verdicts": {
+    "keep": 7,
+    "borderline": 36,
+    "demote": 77
+  },
+  "novelty": {
+    "unlinked": 87,
+    "development": 10,
+    "known": 3,
+    "increment": 20
+  },
+  "candidate_pool": {
+    "p50": 12,
+    "max": 54
+  },
+  "messages": {
+    "baseline_p50": 16,
+    "new_p50": 8,
+    "new_p95": 16,
+    "new_zero": 4,
+    "new_sixteen": 35,
+    "new_body_chars": 161898
+  },
+  "reader_questions_identity": "news_reader_questions:4fc59a95b8cb54bee6dbee7e5e721084ea3a9c8adf51897bd8d940012a4ff5a3"
+}

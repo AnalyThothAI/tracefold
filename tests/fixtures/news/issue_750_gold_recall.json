@@ -1,0 +1,3300 @@
+{
+  "event_id": "9f8231c5eda4dffb7d68a5ca054c3eb3a74017893a0c642a324f81fabc791642",
+  "as_of_ms": 1790673975105,
+  "source": "read-only production snapshot 2026-09-29; settlement and assertion filtered at stamp",
+  "claims": [
+    {
+      "topics": [
+        "medtop:04000000",
+        "medtop:20000385"
+      ],
+      "ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+      "statement": "Gold prices ticked up after hitting an over 7-week low.",
+      "fields": {
+        "subject": "Gold",
+        "action": "tick up after hitting over 7-week low",
+        "object": "",
+        "speaker": null,
+        "conditions": [],
+        "quantities": [],
+        "effective_at": null,
+        "occurred_at": null,
+        "statistical_period": "7-week",
+        "polarity": "affirmative",
+        "mode": "observation",
+        "phase": null,
+        "content_kind": "level_crossed",
+        "assets": [
+          {
+            "symbol": "Gold",
+            "market_type": "commodity",
+            "role": "primary"
+          }
+        ]
+      },
+      "citations": [
+        {
+          "evidence_ref": "ev:1dd864670102dcb1e4291f3bc5e49ccb34f0e6fef23028801d49534bf103e2bf",
+          "quote": "Gold ticks up after hitting over 7-week low"
+        }
+      ],
+      "first_available_at_ms": 1790673957843,
+      "known_identity": [],
+      "antecedent_refs": [
+        "cl:03743c0f042f6b2d06bae85b8431180081db51e002e3b118bd469d5b1891c337",
+        "cl:2fcddeb62d01ec2888679a4e6a6b780c6b8b49f7f8e6ccb9594e0d24e7c57e3a",
+        "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+        "cl:43be146291205e4828a348da3202b32b48ccce5da7a9e3ad509f7219b58f9189",
+        "cl:6481e0cf543497d033a0b20b91bd97167268a6bde15260cea3f76642b408601a",
+        "cl:739672520c7d7c283e4ba6cb83dd6187df33721ab70f94020b3653afbb367109",
+        "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+        "cl:b7a546aa43055137cab886187f6fafee02914d2fc1f7389c3ff989b90c081ae8",
+        "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f"
+      ]
+    },
+    {
+      "topics": [
+        "medtop:20000346"
+      ],
+      "ref": "cl:c337eee1af3b62b5774bf6b6aa63b274273a41e416b37c07dfa4e36afadec59f",
+      "statement": "US data is in focus.",
+      "fields": {
+        "subject": "US economic data",
+        "action": "is in focus",
+        "object": "",
+        "speaker": null,
+        "conditions": [],
+        "quantities": [],
+        "effective_at": null,
+        "occurred_at": null,
+        "statistical_period": null,
+        "polarity": "affirmative",
+        "mode": "commentary",
+        "phase": null,
+        "content_kind": "other",
+        "assets": []
+      },
+      "citations": [
+        {
+          "evidence_ref": "ev:1dd864670102dcb1e4291f3bc5e49ccb34f0e6fef23028801d49534bf103e2bf",
+          "quote": "US data in focus"
+        }
+      ],
+      "first_available_at_ms": 1790673957843,
+      "known_identity": [],
+      "antecedent_refs": []
+    }
+  ],
+  "candidates": [
+    {
+      "intent_id": "intent:07711951cbdb767a989a3c35cc7816ff527e033276dbf8413ad79a66e781461f",
+      "body": "OKX 上线 Doppler ($XDP)\n\nDoppler ($XDP) 代币在 XDP-Base 网络中被发现在 OKX 上。",
+      "payload_sha256": "50ff0c1f37ac7624eed9f7f853c2b70dc216f499ffe0f3aa7be64a6c4553abf4",
+      "settled_at_ms": 1790632046325,
+      "claims": [
+        {
+          "ref": "cl:62070e67554a85ba5fe011093e8fa11472bf916569326f64f94e44e859f59b5d",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "lists Doppler ($XDP)",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "XDP",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "Doppler ($XDP) token",
+            "speaker": null,
+            "subject": "OKX",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "state_change",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "Doppler ($XDP) Found in OKX\nNetworks: XDP-Base`",
+              "evidence_ref": "ev:a0ae150858c61e4cd5ca0107a01d605c7c673781fab1b8525f42aab835d9068b"
+            }
+          ],
+          "statement": "Doppler ($XDP) is found in OKX on the XDP-Base network.",
+          "known_identity": [
+            {
+              "key": "subject_id",
+              "value": "XDP",
+              "surface": "$XDP",
+              "evidence_ref": "ev:a0ae150858c61e4cd5ca0107a01d605c7c673781fab1b8525f42aab835d9068b"
+            }
+          ],
+          "antecedent_refs": [
+            "cl:14365a65f04ec6eef5dc3dc2f82c095167f52af1f07c46f4382bd91417c001cb",
+            "cl:bef8bc43199394946dfe2854ad5bd33df97a23632cd673d82eb862dddd3f73e8"
+          ],
+          "first_available_at_ms": 1790632006351
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:0b4d11699530c51d6aa9ca2135c7f0e56a7e9fbf1412abe3b64de517106c6558",
+      "body": "受油价上涨及美元走强影响，铜价跌至10日低点\n\n由于油价上涨和美元走强对价格造成压力，铜价跌至10日低点。",
+      "payload_sha256": "a8291e6f8e7bae104ccb03714dc1108c5d59c7af9df3a57703f6890579daca34",
+      "settled_at_ms": 1790568233278,
+      "claims": [
+        {
+          "ref": "cl:f286373fdcf61e8b8e56ed5f2a27369e1c79f7411fbc622de7353e047e3c4f55",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "hit a 10-day low",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "Copper",
+                "market_type": "commodity"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "oil",
+                "market_type": "commodity"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "USD",
+                "market_type": "forex"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "Copper",
+            "polarity": "affirmative",
+            "conditions": [
+              "oil rally",
+              "strong dollar"
+            ],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "period_record",
+            "effective_at": null,
+            "statistical_period": "10-day"
+          },
+          "topics": [
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "METALS-Copper hits 10-day low as oil rally, strong dollar weigh",
+              "evidence_ref": "ev:cab28b82bf8f7bfaf5ccd92d0156ec842d79c9e0cd2fbc73b99135a6f3794ea2"
+            }
+          ],
+          "statement": "Copper hit a 10-day low as an oil rally and a strong dollar weighed on prices.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790568055504
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:0e6fb33bad955a23fa62b26aba176e7e1150c024976a2cf1d86a743a9353388b",
+      "body": "加元触及2.5个月低点\n\n加拿大元跌至2.5个月以来的低点。",
+      "payload_sha256": "4b0e9017cf015e5232e468b7b0321d75558ef2e7db60720f73a0f407324f241f",
+      "settled_at_ms": 1790617579562,
+      "claims": [
+        {
+          "ref": "cl:edf60962d1f6ef212c98da18088ba5e51ac3442239b4db7fdaac85a94c69ba82",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "hit 2-1/2-month low",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "CAD",
+                "market_type": "forex"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "Canadian dollar",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "period_low_duration",
+                "unit": "months",
+                "value": "2.5",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "period_record",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "Canadian dollar hits 2-1/2-month low",
+              "evidence_ref": "ev:5a3a4778711f4040d20c88c3aeca90c004e89cf23c295f8dcf6af8bc0c14ca40"
+            }
+          ],
+          "statement": "The Canadian dollar hit a 2.5-month low.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790617534891
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:177218c784941d4a2602ea9b8aacbc2489bb2c75eecae1fa31db47f88976acc5",
+      "body": "铜价跌至逾一周低点，受油价上涨及美元走强压制\n\n在油价上涨和美元走强的影响下，铜价跌至超过一周的低点。",
+      "payload_sha256": "f4c14513bf2a532fbf7fc246d5e347e76f24b936c9cae08a61a5a957e14ee786",
+      "settled_at_ms": 1790580928695,
+      "claims": [
+        {
+          "ref": "cl:24eb13326e500bf053a0e0e0e7472357d8c837c309cc8cb50921280ba59a2353",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "hit over a one-week low",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "Copper",
+                "market_type": "commodity"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "oil",
+                "market_type": "commodity"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "USD",
+                "market_type": "forex"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "Copper",
+            "polarity": "affirmative",
+            "conditions": [
+              "oil rally",
+              "strong dollar"
+            ],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "period_record",
+            "effective_at": null,
+            "statistical_period": "one-week"
+          },
+          "topics": [
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "METALS-Copper hits over one-week low as oil rally, strong dollar weigh",
+              "evidence_ref": "ev:58bb40d5f67b746f5c9de9caa4e88135ffc8b9288b3b1114e1d6356db029bb33"
+            }
+          ],
+          "statement": "Copper hit over a one-week low as an oil rally and a strong dollar weighed on prices.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790580880712
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:191d10a6c21814cf3ff182a648545e058bcc2ea9f04969d9a9f762ea6460d55b",
+      "body": "现货黄金跌幅扩大至每盎司4113.79美元，下跌近4%\n\n现货黄金延续跌势，价格下跌近4%，报每盎司4113.79美元。",
+      "payload_sha256": "faae28c218c96d0373c34724b0d8ad819ec893e49d3a49dd44d7f8621b39781c",
+      "settled_at_ms": 1790606971844,
+      "claims": [
+        {
+          "ref": "cl:e3bef833977b5196cdaf06de58ba34c89e79261da93b87d7dff163aa35652927",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "extended losses to a level down nearly 4% at $4,113.79/oz",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "spot gold",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "price_change_percentage",
+                "unit": "%",
+                "value": "-4",
+                "period": null
+              },
+              {
+                "name": "price",
+                "unit": "USD/oz",
+                "value": "4113.79",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "Spot Gold Extends Losses, Last Down Nearly 4% at $4,113.79/Oz",
+              "evidence_ref": "ev:bffc72a826a99ffbca173a665143bf4f123d7ee1b4fe61276493597195b556b6"
+            }
+          ],
+          "statement": "Spot gold extended losses, with the price down nearly 4% at $4,113.79 per ounce.",
+          "known_identity": [],
+          "antecedent_refs": [
+            "cl:35699c9eaee5c0af0f47c266cace57ddcb18f0ff7d8bf123167b29d08973b800",
+            "cl:9b1edc9caa7e0613289c1ac7649e1444c134de40ab6f79d2dbcf671e13e27f5f",
+            "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f"
+          ],
+          "first_available_at_ms": 1790606931349
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:204f5daedc583d2ca44d59932e53458bb015a84c4adb8b44827bfac06ff17202",
+      "body": "现货黄金价格下跌逾1%至每盎司4233.12美元\n\n现货黄金价格下跌超过1%，报每盎司4233.12美元。",
+      "payload_sha256": "3b7c0fea85608cc61aef3231484df61f204c79ce12b30545d3bc9cdf91a33e11",
+      "settled_at_ms": 1790555534121,
+      "claims": [
+        {
+          "ref": "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "fell over 1% to $4,233.12/oz",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "spot gold",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "price_change_percentage",
+                "unit": "%",
+                "value": "-1",
+                "period": null
+              },
+              {
+                "name": "price",
+                "unit": "USD/oz",
+                "value": "4233.12",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:04000000",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "Spot Gold Falls Over 1% to $4,233.12/Oz",
+              "evidence_ref": "ev:8f6aa6266e9d23c9934c4153a8f6d032f1367faf7bd11b0b4740a01b8318766f"
+            }
+          ],
+          "statement": "Spot gold price fell over 1% to $4,233.12 per ounce.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790555500593
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:235d95859dc970c403daf8b9d140198971ab01669df05bf133f3e3bb53b6d5ea",
+      "body": "油价引发通胀担忧助长加息预期，黄金触及七周低点\n\n由于油价引发的通胀担忧增强了加息押注，黄金触及了七周以来的低点。",
+      "payload_sha256": "490b43439e1700f28e16fbf38ca284100ec850e40a93121cdc68df6c9d589510",
+      "settled_at_ms": 1790584343817,
+      "claims": [
+        {
+          "ref": "cl:739672520c7d7c283e4ba6cb83dd6187df33721ab70f94020b3653afbb367109",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "hit a 7-week low",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "gold",
+                "market_type": "commodity"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "oil",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "gold",
+            "polarity": "affirmative",
+            "conditions": [
+              "oil-driven inflation fears boost rate-hike bets"
+            ],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "period_record",
+            "effective_at": null,
+            "statistical_period": "7-week"
+          },
+          "topics": [
+            "medtop:20000370",
+            "medtop:20000371",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "PRECIOUS-Gold hits 7-week low as oil-driven inflation fears boost rate-hike bets",
+              "evidence_ref": "ev:f01552074931c9753c668818fc488742c2fe02c34b6b6272eb53f8779e95b83b"
+            }
+          ],
+          "statement": "Gold hit a 7-week low as oil-driven inflation fears boosted rate-hike bets.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790584304457
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:252a7bbecda606fbae9ca1f294a88c00fbffb658e38db20aa92c012a35956521",
+      "body": "美债收益率飙升，市场押注美联储利率走高，黄金吸引力下降\n\n随着美国国债收益率飙升且市场押注美联储利率将进一步升高，黄金的光彩（吸引力）有所减弱。",
+      "payload_sha256": "7cca5bcbf2942aeeb45f15235e159c91921557dc04be601a25e47fae20b41058",
+      "settled_at_ms": 1790617064526,
+      "claims": [
+        {
+          "ref": "cl:4d32bc9ad1d51ebca46132a69e5f7c0f0b35d27893156fdd44f865998dfa030a",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "dimmed in appeal/value",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "gold",
+                "market_type": "commodity"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "us_treasury_yields",
+                "market_type": "index"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "gold",
+            "polarity": "negative",
+            "conditions": [
+              "Treasury yields surged",
+              "markets bet on higher Fed rates"
+            ],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "GRAPHIC-Gold’s lustre dims as Treasury yields surge, markets bet on higher Fed rates",
+              "evidence_ref": "ev:c271b5be722579ce241e8ba52457a7e0afd05a143421a43a9b16194d4e2f328c"
+            }
+          ],
+          "statement": "Gold's lustre dims as Treasury yields surge, markets bet on higher Fed rates.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790617029041
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:2dfdfb0e3339cc886f43b6eb44cf6e73120f3f18866b67645e5c29d00a811873",
+      "body": "受美国加息预期影响，金价跌幅超1%\n\n受美国加息预期影响，黄金价格下跌超过1%。",
+      "payload_sha256": "a6f8b355240650f13dcb07da7189810952587b80e3c5ca093764c002f17caf46",
+      "settled_at_ms": 1790559470055,
+      "claims": [
+        {
+          "ref": "cl:2fcddeb62d01ec2888679a4e6a6b780c6b8b49f7f8e6ccb9594e0d24e7c57e3a",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "dropped more than 1%",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "gold",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "price_change_percentage",
+                "unit": "%",
+                "value": "-1",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:20000379",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "Gold drops more than 1% on US rate-hike bets",
+              "evidence_ref": "ev:ebbefffbb98092c0d20e87999767459f834f8e4ad889d9ba04bc071a324250ab"
+            }
+          ],
+          "statement": "Gold dropped more than 1% on US rate-hike bets.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790559371395
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:33c89b97d009229b3e186a5c24285a96a64d35b0f6e89a37e3b5075f40a83660",
+      "body": "金价跌幅超3%，美股金矿股盘前走低\n\n金价跌幅超过3%。\n\n在金价下跌超过3%的情况下，美国上市的黄金矿业公司股价在盘前交易中下跌。",
+      "payload_sha256": "67c9c2564fd7c1e39de7f60cf7cf442dabccc55a6a44ecfdce9e16a871e10667",
+      "settled_at_ms": 1790582791134,
+      "claims": [
+        {
+          "ref": "cl:bb2df750c21f4323b40cdce1da51acfd171acddbb5393c9c335599b2a0aa18b1",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "fell premarket",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "US-listed gold miner shares",
+                "market_type": "equity"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "US-listed shares of gold miners",
+            "polarity": "negative",
+            "conditions": [
+              "gold prices slip more than 3%"
+            ],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:20000186",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "US-Listed Shares of Gold Miners Fall Premarket as Gold Prices Slip More Than 3%",
+              "evidence_ref": "ev:fc15fa16c5a78c5c42c6a1d47f9139f41f096ec79644a13ec5114d1d759bd0bc"
+            }
+          ],
+          "statement": "US-listed shares of gold miners fell in premarket trading as gold prices slipped more than 3%.",
+          "known_identity": [],
+          "antecedent_refs": [
+            "cl:3653df339398e77fa12492aa5d7003bafb6b3b6cd66750f3bd9a71cd23bf6e08"
+          ],
+          "first_available_at_ms": 1790582657336
+        },
+        {
+          "ref": "cl:03743c0f042f6b2d06bae85b8431180081db51e002e3b118bd469d5b1891c337",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "slipped more than 3%",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "gold prices",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "price_change_percentage",
+                "unit": "%",
+                "value": "-3",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "US-Listed Shares of Gold Miners Fall Premarket as Gold Prices Slip More Than 3%",
+              "evidence_ref": "ev:fc15fa16c5a78c5c42c6a1d47f9139f41f096ec79644a13ec5114d1d759bd0bc"
+            }
+          ],
+          "statement": "Gold prices slipped more than 3%.",
+          "known_identity": [],
+          "antecedent_refs": [
+            "cl:2fcddeb62d01ec2888679a4e6a6b780c6b8b49f7f8e6ccb9594e0d24e7c57e3a",
+            "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+            "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f"
+          ],
+          "first_available_at_ms": 1790582657336
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:38e309469d27937c55403beab67bd073e689f967c48658b40f48489681319075",
+      "body": "比特币创八个月新高，美国现货ETF单周净流入24亿美元\n\nCircle推出了数字资产抵押借贷功能，允许机构通过Morpho以原生比特币（cirBTC）为抵押品借入USDC。\n\n比特币于9月21日触及87,000美元以上的八个月高位。\n\n目前，174家上市公司共持有约129万枚比特币（占供应量的6.16%），过去30天持仓量增加约1.1万枚。\n\nStrategy于9月28日增持1,665枚比特币（总价1.427亿美元），使其总持仓增至847,666枚比特币。\n\nZest开放了比特币抵押金库的主网演示，使用户能够在EVM链上以原生比特币为抵押品借入USDC，无需进行封装。\n\n截至9月28日当周，美国现货比特币ETF录得约24亿美元净流入，为2025年10月以来最大单周流入额，并使2026年累计资金流向转正。",
+      "payload_sha256": "a9beef1a948ca032cff45b04aabef34a70675de72420206f8d80096f5a147a5d",
+      "settled_at_ms": 1790624092640,
+      "claims": [
+        {
+          "ref": "cl:31a6d01f9fb3fa8c3d2ab9bc49e8e9caa9738ae827c03ee9c82cdcef4628e3e7",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "hit an 8-month high above $87K",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "BTC",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "BTC",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "price_level",
+                "unit": "USD",
+                "value": "87000",
+                "period": null
+              }
+            ],
+            "occurred_at": "2026-09-21",
+            "content_kind": "period_record",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "→ BTC hit an 8-month high above $87K on Sept 21, then faded to ~$83-84K, up ~3-4% on the week.",
+              "evidence_ref": "ev:b73b310b865a05553b1dceea435591095183f74abe567077fd13968f83b4f9b9"
+            }
+          ],
+          "statement": "Bitcoin hit an 8-month high above $87K on September 21.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790623802187
+        },
+        {
+          "ref": "cl:eb3939a631b750b369fea5fb1d1899914eb195855a658b1ce5e3956f0843730d",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "pulled in ~$2.4B",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "BTC",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "US spot BTC ETFs",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "net_inflow",
+                "unit": "USD billion",
+                "value": "2.4",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "quantified_flow",
+            "effective_at": null,
+            "statistical_period": "week ending Sept 28"
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "→ US spot BTC ETFs pulled in ~$2.4B, the biggest week since Oct 2025 and enough to flip 2026 flows positive.",
+              "evidence_ref": "ev:b73b310b865a05553b1dceea435591095183f74abe567077fd13968f83b4f9b9"
+            }
+          ],
+          "statement": "US spot BTC ETFs pulled in ~$2.4B, the biggest week since Oct 2025 and enough to flip 2026 flows positive.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790623802187
+        },
+        {
+          "ref": "cl:391b477df34a96107a4a00978fcb4f148421469313b9d2da3033bd934a90760b",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "bought 1,665 Bitcoin for an aggregate purchase price of $142.7M",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "BTC",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "Strategy",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "Bitcoin purchased",
+                "unit": "BTC",
+                "value": "1665",
+                "period": null
+              },
+              {
+                "name": "Aggregate purchase price",
+                "unit": "USD million",
+                "value": "142.7",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "quantified_flow",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "→ Strategy added 1,665 BTC ($142.7M) on Sept 28, taking its stack to 847,666 BTC.",
+              "evidence_ref": "ev:b73b310b865a05553b1dceea435591095183f74abe567077fd13968f83b4f9b9"
+            }
+          ],
+          "statement": "Strategy added 1,665 BTC ($142.7M) on Sept 28, taking its stack to 847,666 BTC.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790596890942
+        },
+        {
+          "ref": "cl:37ad95649f6a754b86801f170f8125b8c1e4a7fa5b6483398831642efa9a2e97",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "hold ~1.29M BTC (6.16% of supply)",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "BTC",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "Public companies",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "total_holdings",
+                "unit": "million BTC",
+                "value": "1.29",
+                "period": null
+              },
+              {
+                "name": "supply_percentage",
+                "unit": "%",
+                "value": "6.16",
+                "period": null
+              },
+              {
+                "name": "entity_count",
+                "unit": "entities",
+                "value": "174",
+                "period": null
+              },
+              {
+                "name": "holdings_increase",
+                "unit": "BTC",
+                "value": "11000",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "new_quantity",
+            "effective_at": null,
+            "statistical_period": "30 days"
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "→ Public companies now hold ~1.29M BTC (6.16% of supply) across 174 entities, up ~11K BTC in 30 days.",
+              "evidence_ref": "ev:b73b310b865a05553b1dceea435591095183f74abe567077fd13968f83b4f9b9"
+            }
+          ],
+          "statement": "Public companies now hold ~1.29M BTC (6.16% of supply) across 174 entities, up ~11K BTC in 30 days.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790623802187
+        },
+        {
+          "ref": "cl:291ce0e6595352390f1bb83e5cfe9908acc5f4532b2592f060cbd6b6fd6e53e4",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "launched Digital Asset-Backed Borrowing",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "USDC",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "BTC",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "Circle",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "state_change",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "→ Circle launched Digital Asset-Backed Borrowing: institutions can borrow USDC against native BTC (cirBTC) via Morpho, with Aave to follow.",
+              "evidence_ref": "ev:b73b310b865a05553b1dceea435591095183f74abe567077fd13968f83b4f9b9"
+            }
+          ],
+          "statement": "Circle launched Digital Asset-Backed Borrowing, allowing institutions to borrow USDC against native BTC (cirBTC) via Morpho.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790623802187
+        },
+        {
+          "ref": "cl:8b3735e31febc045361dd50b1b564358588bf8328b4cb9a862bd653a2feb2389",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "opened a mainnet demo of Bitcoin Collateral Vaults",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "BTC",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "USDC",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "Zest",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "state_change",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "→ Zest opened a mainnet demo of Bitcoin Collateral Vaults, letting users borrow USDC against native BTC on EVM chains without wrapping it.",
+              "evidence_ref": "ev:b73b310b865a05553b1dceea435591095183f74abe567077fd13968f83b4f9b9"
+            }
+          ],
+          "statement": "Zest opened a mainnet demo of Bitcoin Collateral Vaults, letting users borrow USDC against native BTC on EVM chains without wrapping it.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790623802187
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:3b629d2932b9a5500d5c7a4bf437146f5fb26bdcfd7db7f85408f78b573317ff",
+      "body": "白银价格触及逾一个月低点，美国上市银矿股盘前下跌\n\n白银价格触及超过一个月的低点。\n\n美国上市的银矿股在盘前交易中下跌。",
+      "payload_sha256": "e71ca9d72bf6f738a5f2d828837cba3422c122f8b718643c39ef4c8ecdcf20f5",
+      "settled_at_ms": 1790583439735,
+      "claims": [
+        {
+          "ref": "cl:0fd05247773e232d0d7f5329b86ab337f02983cc971d034123b30e84e7a61596",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "hit over one-month lows",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "XAG/USD",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "silver prices",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "period_record",
+            "effective_at": null,
+            "statistical_period": "over one month"
+          },
+          "topics": [
+            "medtop:20000346",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "Silver Prices Hit Over One-Month Lows",
+              "evidence_ref": "ev:f1f63a715d2c3c711876a74a9acff739e5c7365663345fad55170da5af193a9e"
+            }
+          ],
+          "statement": "Silver prices hit over one-month lows.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790582871098
+        },
+        {
+          "ref": "cl:c51351a2aa3289708bd69d593861a561b43dbfbf07237c0129ebd6098765ea49",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "fell premarket",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "US-listed silver miner shares",
+                "market_type": "equity"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "XAG/USD",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "US-listed shares of silver miners",
+            "polarity": "negative",
+            "conditions": [
+              "silver prices hit over one-month lows"
+            ],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:20000186",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "US-Listed Shares of Silver Miners Fall Premarket",
+              "evidence_ref": "ev:f1f63a715d2c3c711876a74a9acff739e5c7365663345fad55170da5af193a9e"
+            }
+          ],
+          "statement": "US-listed shares of silver miners fell in premarket trading.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790582871098
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:4b5651e9c1b9695957383fa5681a742a844c62f6da82f267ab283a954199fc14",
+      "body": "金价下跌打击贵金属矿商，Fresnillo Endeavour股价跌约5%\n\n由于金价下跌冲击贵金属矿商，Fresnillo Endeavour股价下跌约5%。",
+      "payload_sha256": "089cae9b59b25b8f83b76bb45b5d54b639da9c8ae63fae422080fc04b5964865",
+      "settled_at_ms": 1790580059329,
+      "claims": [
+        {
+          "ref": "cl:f02758b0061b3720e45a409818c575e2195df7918a279bc79b60bfa5068f4f4b",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "fell around 5% due to falling gold prices hitting precious metal miners",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "Fresnillo Endeavour",
+                "market_type": "equity"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "Fresnillo Endeavour shares",
+            "polarity": "negative",
+            "conditions": [
+              "falling gold prices"
+            ],
+            "quantities": [
+              {
+                "name": "price_change_percentage",
+                "unit": "%",
+                "value": "-5",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:20000186",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "Fresnillo Endeavour Shares Down Around 5% as Falling Gold Prices Hit Precious Metal Miners",
+              "evidence_ref": "ev:ed6515c483d90254a6bc2f164850f2e074007fce135d21dc78df3ba63ef9d231"
+            }
+          ],
+          "statement": "Fresnillo Endeavour shares fell around 5% as falling gold prices hit precious metal miners.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790579889143
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:4e584665eea04c3538959fe67486ee859828fdc3a02c758eeb0c13f64c2dd935",
+      "body": "@CexAlerts发现Oklo（$OKLO）上线HTX交易所\n\n@CexAlerts报告称，在HTX交易所发现了Oklo（$OKLO）。",
+      "payload_sha256": "227403c785d9dd76fad8ae24bbced7e7752d1970ba2711ec866f65b30959ec5b",
+      "settled_at_ms": 1790593382148,
+      "claims": [
+        {
+          "ref": "cl:bec2143bc05d8594cdd1d218ba0cac68afcf1583f4eea6aaf7abb3e1ab6e0eb8",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "was found listed or available on HTX exchange",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "$OKLO",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "HTX",
+                "market_type": "unknown"
+              }
+            ],
+            "object": "HTX",
+            "speaker": "@CexAlerts",
+            "subject": "$OKLO",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "state_change",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:20000385",
+            "medtop:20001279"
+          ],
+          "citations": [
+            {
+              "quote": "New Found in HTX\n\nOklo ($OKLO)\n\nNotifer: @CexAlerts",
+              "evidence_ref": "ev:c54d4b0875f10024d5e3f1e23e8c4da5a8cee356b24f9cccfeb09cfae06e6ec5"
+            }
+          ],
+          "statement": "@CexAlerts reported that Oklo ($OKLO) was found on the HTX exchange.",
+          "known_identity": [
+            {
+              "key": "subject_id",
+              "value": "OKLO",
+              "surface": "$OKLO",
+              "evidence_ref": "ev:c54d4b0875f10024d5e3f1e23e8c4da5a8cee356b24f9cccfeb09cfae06e6ec5"
+            }
+          ],
+          "antecedent_refs": [
+            "cl:cb360147b03e2a309e6ac109cc6a0b8716ea6955cba06c068af25e50aede5d68"
+          ],
+          "first_available_at_ms": 1790593229881
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:5854973fc5fcb756229684314637f1fb07a2ed664aa36c443d17f98820213ca5",
+      "body": "现货黄金扩大跌幅至每盎司4201.18美元，跌2%\n\n现货黄金扩大跌幅，价格下跌2%至每盎司4201.18美元。",
+      "payload_sha256": "9575d3a1608975109376e25bea55255000930101bfe4b63f201d619b1e6ec30d",
+      "settled_at_ms": 1790563994046,
+      "claims": [
+        {
+          "ref": "cl:35699c9eaee5c0af0f47c266cace57ddcb18f0ff7d8bf123167b29d08973b800",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "extended losses to a level down 2% at $4,201.18/oz",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "spot gold",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "price_change_percentage",
+                "unit": "%",
+                "value": "-2",
+                "period": null
+              },
+              {
+                "name": "price",
+                "unit": "USD/oz",
+                "value": "4201.18",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:04000000",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "Spot Gold Extends Losses, Last Down 2% at $4,201.18/Oz",
+              "evidence_ref": "ev:98615bb0878ab3412a5c2c96f19f864a493033c988f40ebdaa2dd72ef1bd8c71"
+            }
+          ],
+          "statement": "Spot gold extended losses, with the price down 2% at $4,201.18 per ounce.",
+          "known_identity": [],
+          "antecedent_refs": [
+            "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f"
+          ],
+          "first_available_at_ms": 1790563955224
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:6410522ca27157227c23040e13638a9f41714f7a4fad67f1b930877640838f3f",
+      "body": "受需求担忧影响，铜价跌至一周低点\n\n受需求担忧影响，铜价跌至一周低点。",
+      "payload_sha256": "296567484c262e1e045e9ec444816ac55cd67f2d29016a44e149f7521f307f58",
+      "settled_at_ms": 1790587901827,
+      "claims": [
+        {
+          "ref": "cl:11c321b4c78feba7e9dda8ef2839face737c72aa54b733121bcd0caa4b2ec167",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "dropped to a 1-week low",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "Copper",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "Copper",
+            "polarity": "affirmative",
+            "conditions": [
+              "demand concerns"
+            ],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "period_record",
+            "effective_at": null,
+            "statistical_period": "1-week"
+          },
+          "topics": [
+            "medtop:20000346",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "METALS-Copper drops to 1-week low on demand concerns",
+              "evidence_ref": "ev:aaf511a815098f8720c24b43f3107b12ceb301c82ca75e37ae306fe7b68827f3"
+            }
+          ],
+          "statement": "Copper dropped to a 1-week low on demand concerns.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790587862014
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:7339ebb692bd58cabedb8826a171712d69710818e54feb6e9caa7837e4392238",
+      "body": "受美国加息预期影响，金价下跌逾2%\n\n受美国加息预期影响，黄金价格下跌超过2%。",
+      "payload_sha256": "66dc9f19ad369708297468107a391b21fde218545b33a87a704ca213af3e2b61",
+      "settled_at_ms": 1790568648377,
+      "claims": [
+        {
+          "ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "dropped more than 2%",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "gold",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "price_change_percentage",
+                "unit": "%",
+                "value": "-2",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:20000379",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "PRECIOUS-Gold drops more than 2% on US rate-hike bets",
+              "evidence_ref": "ev:2ca3a72cc727edab3cc041a4254182de10fdd922a4f59f254e0cbff3b231e148"
+            }
+          ],
+          "statement": "Gold dropped more than 2% on US rate-hike bets.",
+          "known_identity": [],
+          "antecedent_refs": [
+            "cl:2fcddeb62d01ec2888679a4e6a6b780c6b8b49f7f8e6ccb9594e0d24e7c57e3a"
+          ],
+          "first_available_at_ms": 1790568333896
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:8af1f7ff4a73fc3bedbf59a75da18e0daf037645166d64bc9d461c857aeaad50",
+      "body": "美联储紧缩预期压制金价\n\n黄金价格受到美联储紧缩预期的拖累。",
+      "payload_sha256": "4467dc5fd4d364e4f428a9ab51ec367d221c283155e3d116a9d46a110930cc88",
+      "settled_at_ms": 1790555059335,
+      "claims": [
+        {
+          "ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "were weighed down by bets on Federal Reserve tightening",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "gold prices",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:20000379",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "PRECIOUS-Fed tightening bets weigh on gold prices",
+              "evidence_ref": "ev:a493cf07941a63f3824ae025e644f548407d3e9e86ea5a5df51af5a4ac0f665b"
+            }
+          ],
+          "statement": "Gold prices were weighed down by bets on Federal Reserve tightening.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790554985097
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:96059b899cd6ec6e12de577a07dc75a566810dda954cb58f8b64108323926f90",
+      "body": "@CexAlerts报告USDBRL代币在HTX交易所被发现\n\n@CexAlerts报告称，USDBRL（$USDBRL）代币被发现在HTX交易所上线或可供交易。",
+      "payload_sha256": "fc2b431adefe520efb0c8912945cfaab7525780c5032d0c21c8ae0453977c5f7",
+      "settled_at_ms": 1790576598107,
+      "claims": [
+        {
+          "ref": "cl:81fd4e5786ef7ef19ac2361efd2118e5795550a5918a3554f19b871cd58f8b38",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "was found listed or available on HTX exchange",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "$USDBRL",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "HTX",
+                "market_type": "unknown"
+              }
+            ],
+            "object": "HTX",
+            "speaker": "@CexAlerts",
+            "subject": "$USDBRL",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "state_change",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:20000385",
+            "medtop:20001279"
+          ],
+          "citations": [
+            {
+              "quote": "New Found in HTX\n\nUSDBRL ($USDBRL)\n\nNotifer: @CexAlerts",
+              "evidence_ref": "ev:6b56a897e892e3ba6f52dc9b61bbc45b5e48e1d1c6ff45f2b704a2d23df28f20"
+            }
+          ],
+          "statement": "@CexAlerts reported that the USDBRL ($USDBRL) token was found on the HTX exchange.",
+          "known_identity": [
+            {
+              "key": "subject_id",
+              "value": "USDBRL",
+              "surface": "$USDBRL",
+              "evidence_ref": "ev:6b56a897e892e3ba6f52dc9b61bbc45b5e48e1d1c6ff45f2b704a2d23df28f20"
+            }
+          ],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790576528080
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:96b2f0f62c9145cbc5d35dc337ca7be2b58d3b36f8043dd8ac94ebceb4fa5463",
+      "body": "伊朗外长称结束敌对选择权在华盛顿，特朗普称美方今日与伊朗调解人通话\n\n特朗普称美国官员今日与伊朗调解人进行了通话。\n\n伊朗外长表示，现在结束敌对行动的选择权掌握在华盛顿手中。",
+      "payload_sha256": "2d0b17c47525560f60f72f1e0476a4dfb3d75cc8ad75e0d3c1a1cdf6fe7afafd",
+      "settled_at_ms": 1790621892417,
+      "claims": [
+        {
+          "ref": "cl:2dcd5651dd09091505d3c59c24807699f2827b9879f6e80441fc6b4b42c50de9",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "said that the choice to end hostilities now rests with Washington",
+            "assets": [],
+            "object": "",
+            "speaker": "Iran's foreign minister",
+            "subject": "Iran's foreign minister",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "other",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "and that the choice now rests with Washington",
+              "evidence_ref": "ev:4d57cfe15b61cb91aef7a34249f226fd12344b71917bea8a5a189f54e70eda30"
+            }
+          ],
+          "statement": "Iran's foreign minister said the choice to end hostilities now rests with Washington.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790621399459
+        },
+        {
+          "ref": "cl:22e1c56e677be1a1f0842e103f9fc5f6a8aa3f7629e23e74b312c6e9074adc28",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "stated that US officials spoke with Iranian mediators",
+            "assets": [],
+            "object": "",
+            "speaker": "Trump",
+            "subject": "Trump",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": "today",
+            "content_kind": "other",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "Trump says US officials spoke with Iranian mediators today.",
+              "evidence_ref": "ev:f824bf4bf21bff9726046eca12e73134b895d0fadc018395dda77e0c0c744068"
+            }
+          ],
+          "statement": "Trump stated that US officials spoke with Iranian mediators today.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790621778967
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:9ba6963c90b83e5a6d6ec01bffdd5f13f70732b283896b3c82e1ad82dade32c2",
+      "body": "现货黄金价格下跌近3%至每盎司4163.69美元\n\n现货黄金价格下跌近3%，跌至每盎司4163.69美元。",
+      "payload_sha256": "63205baeb2f4cc2139a0b570f81c56d53161b943e19021a5ef427fb815f16170",
+      "settled_at_ms": 1790579117093,
+      "claims": [
+        {
+          "ref": "cl:74310099d948418d0162d3a6dd258e40d98a88bebfdaec3ffdaaddd17a0c52c3",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "fell nearly 3% to $4,163.69/oz",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "spot gold",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "price_change_percentage",
+                "unit": "%",
+                "value": "-3",
+                "period": null
+              },
+              {
+                "name": "price",
+                "unit": "USD/oz",
+                "value": "4163.69",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:04000000",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "Spot Gold Falls Nearly 3% to $4,163.69/Oz",
+              "evidence_ref": "ev:73675b0324d345c1626509f0efbbccf17f72546edacb38cdc426ebb61d1e7b68"
+            }
+          ],
+          "statement": "Spot gold fell nearly 3% to $4,163.69 per ounce.",
+          "known_identity": [],
+          "antecedent_refs": [
+            "cl:35699c9eaee5c0af0f47c266cace57ddcb18f0ff7d8bf123167b29d08973b800",
+            "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f"
+          ],
+          "first_available_at_ms": 1790578702608
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:9c4bd07b7a584daff63d37e78f8fa6a5c71026b8f975ef83325145c6e2d70424",
+      "body": "BitMine可能数周内达成5%以太坊供应目标，Tom Lee对是否继续买入保持开放态度\n\nTom Lee未明确BitMine是否会继续购买超过5%供应量目标的以太坊。\n\nBitMine可能在未来数周内达成其5%的以太坊供应量目标。",
+      "payload_sha256": "d42173a69023f50fbaec798bf8a6c668fe95d510e7f3b2ac93083400c8de9704",
+      "settled_at_ms": 1790672006999,
+      "claims": [
+        {
+          "ref": "cl:8021bc4b22a4453d6fcb26e6862acb0dd96115c3345622ffebbb3f84ea725a45",
+          "fields": {
+            "mode": "commentary",
+            "phase": null,
+            "action": "left open whether BitMine would continue buying",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "ETH",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "Ether purchases beyond 5% supply target",
+            "speaker": "Tom Lee",
+            "subject": "Tom Lee",
+            "polarity": "unknown",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "other",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:04000000",
+            "medtop:20001279"
+          ],
+          "citations": [
+            {
+              "quote": "Tom Lee has left open whether it would continue buying beyond that level",
+              "evidence_ref": "ev:5d306819cab03bb12e8016b1d1a090a01e915afb6ba137461e55e4b6a25f365b"
+            }
+          ],
+          "statement": "Tom Lee has left open whether BitMine would continue buying Ether beyond the 5% supply level.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790671900453
+        },
+        {
+          "ref": "cl:8ce1fd68933499df74af49342196c142593e73a7b2729e3aaf2e2a8c5030b260",
+          "fields": {
+            "mode": "forecast",
+            "phase": null,
+            "action": "hit its 5% Ether supply target within weeks",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "ETH",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "Ether supply target",
+            "speaker": null,
+            "subject": "BitMine",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "Ether supply target",
+                "unit": "%",
+                "value": "5",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "other",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:04000000",
+            "medtop:20001279"
+          ],
+          "citations": [
+            {
+              "quote": "BitMine could hit its 5% Ether supply target within weeks",
+              "evidence_ref": "ev:138213750b65c22271349d7f70ce283fd64f6624b001e9ca4a5f69aca274f050"
+            }
+          ],
+          "statement": "BitMine could hit its 5% Ether supply target within weeks.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790671914773
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:a84d9c68239e1af5fb55a83e7a9042060e63a669f5dc514cd5de950a0bd2eceb",
+      "body": "国际现货黄金日内大幅回落，高位筹码大量堆积\n\n国际现货黄金日内大幅回落，成交量分布显示高位已有筹码大量堆积。",
+      "payload_sha256": "b18ba16af8cafe4576dca881f65aa63b8f19c27904dbeaa6fafde1281dbe0ec9",
+      "settled_at_ms": 1790599524423,
+      "claims": [
+        {
+          "ref": "cl:3ad376a47840b8957a5933b69d50c4e826e31432d3b57fd307854fb75e0825df",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "价格日内大幅回落且高位筹码大量堆积",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "国际现货黄金",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "国际现货黄金",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": "日内"
+          },
+          "topics": [
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "国际现货黄金日内大幅回落，成交量分布显示高位已有筹码大量堆积。",
+              "evidence_ref": "ev:9a6dbdb13e62ef9ef7ec0e75e738f189eeb59ce5868dfc789d795afc0bda7c7d"
+            }
+          ],
+          "statement": "国际现货黄金日内大幅回落，成交量分布显示高位已有筹码大量堆积。",
+          "known_identity": [],
+          "antecedent_refs": [
+            "cl:7567e6b3c558a2aedd813d7ce37d5a5420c89e8e812a38d9ad321341b52ab9db"
+          ],
+          "first_available_at_ms": 1790598540615
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:b9ffd5b9254a015b13f17d8b96fb90db388b2417999026074a4fbf10ca5c32c3",
+      "body": "币安宣布将于2026年9月28日上线五款USDT本位TradFi永续合约\n\n上述永续合约豁免8.1资金间隔调整规则；当先前资金费率结算达到资金费率上限或下限时，资金间隔不会从每八小时调整为每一小时。\n\n币安RIE可根据交易所规则和程序不时调整上述合约的交易参数，币安RCH可根据清算规则和程序调整最大杠杆、保证金要求和资金费率。\n\nOKLOUSDT、TWSTUSDT、CVNAUSDT、RUMUSDT和XOMUSDT永续合约将采用以下参数：结算资产为USDT，最小变动价位0.01，最小交易数量0.01个基础代币，最小名义价值5 USDT，资金费率上限+2.00% / 下限-2.00%，资金费结算频率每八小时一次，资金费率利率0%，最大杠杆20倍，交易时间7x24小时，支持多资产模式。\n\n币安期货将于2026年9月28日推出多款USDT本位TradFi永续合约，包括OKLO/USDT、TWST/USDT、CVNA/USDT、RUM/USDT和XOM/USDT。\n\n以下合约将于2026年9月28日指定时间被批准在币安RIE交易并由币安RCH进行清算结算：OKLOUSDT于09:00 UTC，TWSTUSDT于09:05 UTC，CVNAUSDT于09:10 UTC，RUMUSDT于09:15 UTC，XOMUSDT于09:20 UTC。",
+      "payload_sha256": "4735528405d1ee5132e4e7b8c31f76c66542bc65f22f8d8977c645d672314333",
+      "settled_at_ms": 1790570918078,
+      "claims": [
+        {
+          "ref": "cl:c966b6849f925f8693af1d2bd0b41849cf082c6cd20d7725fd896524018bdea4",
+          "fields": {
+            "mode": "commitment",
+            "phase": "announced",
+            "action": "will launch USDT-margined TradFi perpetual contracts",
+            "assets": [
+              {
+                "role": "mentioned",
+                "symbol": "OKLO/USDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "TWST/USDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "CVNA/USDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "RUM/USDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "XOM/USDT",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "USDT-margined TradFi perpetual contracts",
+            "speaker": "Binance",
+            "subject": "Binance Futures",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "schedule",
+            "effective_at": "2026-09-28",
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:04000000",
+            "medtop:20000205",
+            "medtop:20001279"
+          ],
+          "citations": [
+            {
+              "quote": "币安期货将于2026年9月28日推出多款TradFi美元保证金永续合约，包括OKLO/USDT、TWST/USDT、CVNA/USDT、RUM/USDT和XOM/USDT。",
+              "evidence_ref": "ev:a569074f95b3d3ffd6d06318433da6a5c24a64329211cf1575efb7713f7ecd16"
+            }
+          ],
+          "statement": "Binance Futures will launch USDT-margined TradFi perpetual contracts on 2026-09-28, including OKLO/USDT, TWST/USDT, CVNA/USDT, RUM/USDT and XOM/USDT.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790570708893
+        },
+        {
+          "ref": "cl:f1c37d1a86bdc03b983c34efabd550e1ae16bc812b6687e8246b3e4b3d32a34d",
+          "fields": {
+            "mode": "commitment",
+            "phase": "announced",
+            "action": "will admit contracts to trading and clearing/settlement",
+            "assets": [
+              {
+                "role": "mentioned",
+                "symbol": "OKLOUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "TWSTUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "CVNAUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "RUMUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "XOMUSDT",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "OKLOUSDT, TWSTUSDT, CVNAUSDT, RUMUSDT, XOMUSDT USDT-Priced Perpetual Contracts",
+            "speaker": "Binance",
+            "subject": "Binance RIE and Binance RCH",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "schedule",
+            "effective_at": "2026-09-28",
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:04000000",
+            "medtop:20000205",
+            "medtop:20001279"
+          ],
+          "citations": [
+            {
+              "quote": "the following contract(s) will be admitted to trading on Binance RIE and admitted to Clearing and Settlement by Binance RCH at the time specified below:\n2026-09-28 09:00 (UTC): OKLOUSDT USDT-Priced Perpetual Contract 2026-09-28 09:05 (UTC): TWSTUSDT USDT-Priced Perpetual Contract 2026-09-28 09:10 (UTC): CVNAUSDT USDT-Priced Perpetual Contract 2026-09-28 09:15 (UTC): RUMUSDT USDT-Priced Perpetual Contract 2026-09-28 09:20 (UTC): XOMUSDT USDT-Priced Perpetual Contract",
+              "evidence_ref": "ev:a569074f95b3d3ffd6d06318433da6a5c24a64329211cf1575efb7713f7ecd16"
+            }
+          ],
+          "statement": "The following contracts will be admitted to trading on Binance RIE and admitted to Clearing and Settlement by Binance RCH at the specified times on 2026-09-28: OKLOUSDT at 09:00 UTC, TWSTUSDT at 09:05 UTC, CVNAUSDT at 09:10 UTC, RUMUSDT at 09:15 UTC, and XOMUSDT at 09:20 UTC.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790570708893
+        },
+        {
+          "ref": "cl:af7bf2d3a7c5a5a141dea8234fe0587c4f2755d269e7d4db79798cca95002a15",
+          "fields": {
+            "mode": "commitment",
+            "phase": "announced",
+            "action": "will list perpetual contracts with specified parameters",
+            "assets": [
+              {
+                "role": "mentioned",
+                "symbol": "OKLOUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "TWSTUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "CVNAUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "RUMUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "XOMUSDT",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "OKLOUSDT, TWSTUSDT, CVNAUSDT, RUMUSDT, XOMUSDT USDT-Priced Perpetual Contracts",
+            "speaker": "Binance",
+            "subject": "Binance Futures",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "tick size",
+                "unit": "USDT",
+                "value": "0.01",
+                "period": null
+              },
+              {
+                "name": "minimum trade amount",
+                "unit": "OKLO/TWST/CVNA/RUM/XOM",
+                "value": "0.01",
+                "period": null
+              },
+              {
+                "name": "minimum notional value",
+                "unit": "USDT",
+                "value": "5",
+                "period": null
+              },
+              {
+                "name": "capped funding rate",
+                "unit": "%",
+                "value": "2.00",
+                "period": null
+              },
+              {
+                "name": "interest rate of funding rate",
+                "unit": "%",
+                "value": "0",
+                "period": null
+              },
+              {
+                "name": "maximum leverage",
+                "unit": "x",
+                "value": "20",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "schedule",
+            "effective_at": "2026-09-28",
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:04000000",
+            "medtop:20000205",
+            "medtop:20001279"
+          ],
+          "citations": [
+            {
+              "quote": "Contract TypeUSDT-PricedUSDT-PricedUSDT-PricedUSDT-PricedUSDT-PricedUSDⓈ-M Perpetual ContractOKLOUSDTTWSTUSDTCVNAUSDTRUMUSDTXOMUSDTLaunch Time2026-09-28 09:002026-09-28 09:052026-09-28 09:102026-09-28 09:152026-09-28 09:20Underlying Equity/IndexOklo Inc. Class A Common Stock (NYSE: OKLO)Twist Bioscience Corporation Common Stock(Nasdaq: TWST)Carvana Co. Class A Common Stock(NYSE: CVNA)RUM Group Inc. Class A Common Stock(Nasdaq: RUM)ExxonMobil Holdings Corporation Common Stock(NYSE: XOM)Settlement AssetUSDTUSDTUSDTUSDTUSDTTick Size0.010.010.010.010.01Min Trade Amount0.01 OKLO0.01 TWST0.01 CVNA0.01 RUM0.01 XOMMin Notional Value5 USDT5 USDT5 USDT5 USDT5 USDTCapped Funding Rate+2.00% / -2.00%+2.00% / -2.00%+2.00% / -2.00%+2.00% / -2.00%+2.00% / -2.00%Funding Fee Settlement FrequencyEvery Eight HoursEvery Eight HoursEvery Eight HoursEvery Eight HoursEvery Eight HoursInterest Rate of Funding Rate0%0%0%0%0%Maximum Leverage20x20x20x20x20xTrading Hours24/724/724/724/724/7Multi-Assets ModeSupportedSupportedSupportedSupportedSupported",
+              "evidence_ref": "ev:a569074f95b3d3ffd6d06318433da6a5c24a64329211cf1575efb7713f7ecd16"
+            }
+          ],
+          "statement": "The perpetual contracts OKLOUSDT, TWSTUSDT, CVNAUSDT, RUMUSDT and XOMUSDT will have the following parameters: settlement asset USDT, tick size 0.01, minimum trade amount 0.01 of the underlying token, minimum notional value 5 USDT, capped funding rate +2.00% / -2.00%, funding fee settlement frequency every eight hours, interest rate of funding rate 0%, maximum leverage 20x, trading hours 24/7, and multi-assets mode supported.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790570708893
+        },
+        {
+          "ref": "cl:726b04065ab3ee992a19820baf784a52d2f05c5b9b5fc93779ac1603a696fbb2",
+          "fields": {
+            "mode": "commitment",
+            "phase": "announced",
+            "action": "exempts contracts from funding interval adjustment rules",
+            "assets": [
+              {
+                "role": "mentioned",
+                "symbol": "OKLOUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "TWSTUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "CVNAUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "RUMUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "XOMUSDT",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "OKLOUSDT, TWSTUSDT, CVNAUSDT, RUMUSDT, XOMUSDT USDT-Priced Perpetual Contracts",
+            "speaker": "Binance",
+            "subject": "Binance Futures",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "schedule",
+            "effective_at": "2026-09-28",
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:04000000",
+            "medtop:20000205",
+            "medtop:20001279"
+          ],
+          "citations": [
+            {
+              "quote": "The aforementioned perpetual contract(s) are exempted from the 8.1 Adjustment of Funding Interval rules. The funding interval will not be adjusted from every eight hours to every one hour when the previous funding rate settlement of the aforementioned perpetual contract(s) reach the funding rate cap or floor.",
+              "evidence_ref": "ev:a569074f95b3d3ffd6d06318433da6a5c24a64329211cf1575efb7713f7ecd16"
+            }
+          ],
+          "statement": "The aforementioned perpetual contracts are exempted from the 8.1 Adjustment of Funding Interval rules; the funding interval will not be adjusted from every eight hours to every one hour when the previous funding rate settlement reaches the funding rate cap or floor.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790570708893
+        },
+        {
+          "ref": "cl:83d947e41dd8d2c6fca2cad6de6782952d16d912d60e8dc5d5f9d28bafbbf7f9",
+          "fields": {
+            "mode": "commitment",
+            "phase": "announced",
+            "action": "may adjust trading parameters, maximum leverage, margin requirements and funding rate",
+            "assets": [
+              {
+                "role": "mentioned",
+                "symbol": "OKLOUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "TWSTUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "CVNAUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "RUMUSDT",
+                "market_type": "crypto"
+              },
+              {
+                "role": "mentioned",
+                "symbol": "XOMUSDT",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "OKLOUSDT, TWSTUSDT, CVNAUSDT, RUMUSDT, XOMUSDT USDT-Priced Perpetual Contracts",
+            "speaker": "Binance",
+            "subject": "Binance RIE and Binance RCH",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "schedule",
+            "effective_at": "2026-09-28",
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:04000000",
+            "medtop:20000205",
+            "medtop:20001279"
+          ],
+          "citations": [
+            {
+              "quote": "Binance RIE may adjust the trading parameters of the aforementioned Contract[s] from time to time, in accordance with the Exchange Rules and the Exchange Procedures. The applicable trading parameters at any time are set out in the relevant Contract Specifications and in the Trading Parameters Table (USDS-M Futures). Binance RCH may adjust the maximum leverage and margin requirements in accordance with the Clearing Rules and the Clearing Procedures. The applicable maximum leverage and margin requirements are set out in the Leverage & Margin Table (USDⓈ-M Futures). Binance RCH may adjust the funding rate in accordance with the Clearing Rules and the Clearing Procedures. The applicable funding rate parameters are set out in the Funding Rate Table (USDⓈ-M Futures).",
+              "evidence_ref": "ev:a569074f95b3d3ffd6d06318433da6a5c24a64329211cf1575efb7713f7ecd16"
+            }
+          ],
+          "statement": "Binance RIE may adjust the trading parameters of the aforementioned contracts from time to time, and Binance RCH may adjust the maximum leverage, margin requirements and funding rate in accordance with the Exchange Rules and Clearing Rules.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790570708893
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:ccf429083d315e3e560ca19b9bc17e2f864051525607a26ce3405264c6ae48bb",
+      "body": "黄金大跌看跌期权未一致性追击，空头大单离场小范围增仓\n\n空头仍以大单离场、小范围增仓为主。\n\n黄金大跌，但看跌期权未形成一致性追击。",
+      "payload_sha256": "2a4998b130fd093e3df9af410192b01b012814644965d25d397ed32a501bb07d",
+      "settled_at_ms": 1790581233443,
+      "claims": [
+        {
+          "ref": "cl:57c19aae46e1db8dcc04190b1d5602cfd434c927420ff82044772feb855f4159",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "未形成一致性追击",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "Gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "黄金市场看跌期权",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "state_change",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:04000000",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "黄金大跌但看跌期权未形成一致性追击",
+              "evidence_ref": "ev:d98dfc035efa24de9f507cb10fdd8367703901e9d9df2c456fa8aab764371d03"
+            }
+          ],
+          "statement": "黄金大跌，但看跌期权未形成一致性追击。",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790580942663
+        },
+        {
+          "ref": "cl:2009aea6d4c664612df0e886a274c3a60ab12c900e98c904645c782b640d62be",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "以大单离场、小范围增仓为主",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "Gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "市场空头",
+            "polarity": "unknown",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "state_change",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [
+            "medtop:04000000",
+            "medtop:20000385"
+          ],
+          "citations": [
+            {
+              "quote": "空头仍以大单离场、小范围增仓为主",
+              "evidence_ref": "ev:d98dfc035efa24de9f507cb10fdd8367703901e9d9df2c456fa8aab764371d03"
+            }
+          ],
+          "statement": "空头仍以大单离场、小范围增仓为主。",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790580942663
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:cdae0aaf49226654dc5ecb875387ee30579cda325c17be08ee0c66575b26f863",
+      "body": "特朗普称美英逮捕行动前已对相关人员实施长期监控\n\n唐纳德·特朗普表示，美国当局在相关人员于英国被逮捕之前，已经对他们进行了长时间的监控。",
+      "payload_sha256": "eaa15ef8fe5fb63e23ce0e3402268201cf3df520ce88e5b9d7740a3a66a9961f",
+      "settled_at_ms": 1790520185281,
+      "claims": [
+        {
+          "ref": "cl:8cecbd8e7449ff4100fb67a1fd029c788c0fa8d1c39f977a0826f254c14d06ac",
+          "fields": {
+            "mode": "observation",
+            "phase": "unknown",
+            "action": "stated having individuals under surveillance prior to UK arrests",
+            "assets": [],
+            "object": "individuals arrested in the UK",
+            "speaker": "Donald Trump",
+            "subject": "US authorities",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "other",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "TRUMP ON UK ARRESTS: WE HAD THEM UNDER VIEW FOR LONG, GOT THEM",
+              "evidence_ref": "ev:d65a3883c4d904f5e36a8f8bd6f7c0d1e1a0a3d93b0b96af93116652f23a3734"
+            }
+          ],
+          "statement": "Donald Trump stated that US authorities had individuals under surveillance for an extended period prior to their arrest in the UK.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790520159637
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:ce1b555fa38e900703421ee57e685ae7debe4fec1a464769ad70eb94e116fed2",
+      "body": "伊朗外长称已向美国传达为期七天的结束敌对行动计划\n\n伊朗外交部长表示，德黑兰已向美国传达了为期七天的结束敌对行动的计划。",
+      "payload_sha256": "4f605bb30035dfc4e29e3fc270257bcf9cd61f13e99bc065e9043d68744a4110",
+      "settled_at_ms": 1790621472285,
+      "claims": [
+        {
+          "ref": "cl:70b796039f7a97b48246aaa650e613df10a0530dcd5600c42300e29a1aaf3fce",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "said that Tehran had conveyed a seven-day plan to the US to end hostilities",
+            "assets": [],
+            "object": "",
+            "speaker": "Iran's foreign minister",
+            "subject": "Iran's foreign minister",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "duration of plan",
+                "unit": "days",
+                "value": "7",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "other",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "Iran's foreign minister said Friday that Tehran had conveyed a seven-day plan to the US to end hostilities",
+              "evidence_ref": "ev:4d57cfe15b61cb91aef7a34249f226fd12344b71917bea8a5a189f54e70eda30"
+            }
+          ],
+          "statement": "Iran's foreign minister said Tehran had conveyed a seven-day plan to the US to end hostilities.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790621399459
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:d903d3e6d66bce347a0b93ef7a13318fbc8faf570bf6ecd5ae7002ef744792cd",
+      "body": "比特币守住8.3万美元，全球股市跌至一周低点，交易者加码押注美联储加息\n\n比特币价格维持在83,000美元。\n\n在周三个人消费支出（PCE）通胀数据发布前，交易者增加了对美联储进一步加息的押注。\n\n全球股市下跌至一周低点。",
+      "payload_sha256": "7e2e2671291cedc23fc8aa9f1630550716afac991527667366db9a6f33d06392",
+      "settled_at_ms": 1790655616214,
+      "claims": [
+        {
+          "ref": "cl:2b1fa89915c52578e7973f16280349f2e1b5c93e6ebb67477e354be85d5c59ab",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "held at $83,000",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "BTC",
+                "market_type": "crypto"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "Bitcoin",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "price_level",
+                "unit": "USD",
+                "value": "83000",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "Bitcoin holds $83,000",
+              "evidence_ref": "ev:6d63a2643631adfba98b05e6cb9a9668dcaaaca8819736c984afd7d726fbcdee"
+            }
+          ],
+          "statement": "Bitcoin held at $83,000.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790655463383
+        },
+        {
+          "ref": "cl:d411e6edd6541458af101fc2b0a1429e5584a85d692924f13eb93a7908bd910f",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "fell to a one-week low",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "global stocks",
+                "market_type": "index"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "global stocks",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "period_record",
+            "effective_at": null,
+            "statistical_period": "one week"
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "Global stocks fell to a one-week low",
+              "evidence_ref": "ev:6d63a2643631adfba98b05e6cb9a9668dcaaaca8819736c984afd7d726fbcdee"
+            }
+          ],
+          "statement": "Global stocks fell to a one-week low.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790655463383
+        },
+        {
+          "ref": "cl:a365b458ba6cd1a4d918d22ce7cc89755b99aa333eb53023dca63467e4424f97",
+          "fields": {
+            "mode": "observation",
+            "phase": "completed",
+            "action": "added to bets on more Federal Reserve rate hikes",
+            "assets": [
+              {
+                "role": "mentioned",
+                "symbol": "Federal Reserve rate futures",
+                "market_type": "unknown"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "traders",
+            "polarity": "affirmative",
+            "conditions": [
+              "ahead of Wednesday's PCE inflation data"
+            ],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "state_change",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "traders added to bets on more Federal Reserve rate hikes ahead of Wednesday's PCE inflation data",
+              "evidence_ref": "ev:6d63a2643631adfba98b05e6cb9a9668dcaaaca8819736c984afd7d726fbcdee"
+            }
+          ],
+          "statement": "Traders added to bets on more Federal Reserve rate hikes ahead of Wednesday's PCE inflation data.",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790655463383
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:eca8e37b68c82a7917b0b8bc95d4b1a1c96524c9083b78cbf4fd2c3ab9665e6d",
+      "body": "国际现货黄金站上4140美元，上方空单挂单密集\n\n国际现货黄金价格站上4140美元/盎司，且现价上方空单挂单密集。",
+      "payload_sha256": "b6dcc1a579039ab254667506acb716aa19102eec4b2fb7282128738e2dd632b1",
+      "settled_at_ms": 1790665243211,
+      "claims": [
+        {
+          "ref": "cl:fd3cdc4022a3c39acd313417811a34e4cf17952beac7e09d7e486cc0160fd197",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "价格站上4140且上方空单挂单密集",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "国际现货黄金",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "国际现货黄金",
+            "polarity": "affirmative",
+            "conditions": [],
+            "quantities": [
+              {
+                "name": "价格水平",
+                "unit": "美元/盎司",
+                "value": "4140",
+                "period": null
+              }
+            ],
+            "occurred_at": null,
+            "content_kind": "level_crossed",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "国际现货黄金站上4140，现价上方空单挂单密集",
+              "evidence_ref": "ev:4bee16daba81f7cf2944449d50ec897b31a20178719d6bb91bbfd074729023ce"
+            }
+          ],
+          "statement": "国际现货黄金价格站上4140，且现价上方空单挂单密集。",
+          "known_identity": [],
+          "antecedent_refs": [
+            "cl:061bada48b01440438f413cb32065a6d78737008ad0a80ff82314d0ca801d696",
+            "cl:1cf0a2c1feb36c29c222b60c5f392352ba739acd016181247fa79a095a5e330d",
+            "cl:262b3426f625a656dd7a26ddd88bea7e9bb989b0d248c8e1a991187e1e465cb5",
+            "cl:37e8a3c338d1c62e27d7bb7e3fead0de5b0640bc98e74dbc365ce96af654c829",
+            "cl:3ad376a47840b8957a5933b69d50c4e826e31432d3b57fd307854fb75e0825df",
+            "cl:450f7c223e32697921a01eebe02f64f31ab138efc2ddf9a8abcad41429233048",
+            "cl:566ba158980c4fc7e9781c312b03837905cd78ed613beec44a565a65ed6a95bf",
+            "cl:7567e6b3c558a2aedd813d7ce37d5a5420c89e8e812a38d9ad321341b52ab9db",
+            "cl:7c89e7ca9ec7708b332101708ff5a7c6abf2bc62832ba4fc18dd2e3f192c8518",
+            "cl:8b7c627197d486aedcbd7f4afa93835b485655b79b055aa97485867a051e3a6d",
+            "cl:8fdc08aa6be5b11e033c30520917f4778bca9e51491c1d1efd8911f56d6b8bba",
+            "cl:b74f4437ded38ab8ca933a96b1987395abe774e26dde08e9486a35933a774733",
+            "cl:b8f720d6ffa5c4c696f7b178872a69ff4bd39e0ebd42d8fe26d2699a9cbc8bfe",
+            "cl:c796f96a18ff778a1dcc87f9b15c8136f06b7abe4134fd06f22a112b0bf0bd9d",
+            "cl:cb9dbe9ed9db467d9ec1f3e5e12ba7338800c900e500fde2771a6c69f05aad3a",
+            "cl:f0eb4fb6b4fb5b406192b1c398684aad5610ce9fa8407b78b2e9f949def926cc",
+            "cl:f22873fe604e6a2b14ba586235bb1520125fd680bd91b654e61f73be684743b2"
+          ],
+          "first_available_at_ms": 1790665074511
+        }
+      ]
+    },
+    {
+      "intent_id": "intent:eec78beb21a38d13d348837c30bb3bfd79545da1e80f67b47be46971c6a4f849",
+      "body": "深圳水贝黄金部分热门款式断货，9月国际金价持续回落\n\n深圳水贝黄金珠宝市场部分热门款式出现断货。\n\n进入9月，国际金价持续回落。",
+      "payload_sha256": "e44b673a012a9b253e176b0dd390780e3c027ef8fc7509ecc53f03e3710c9b25",
+      "settled_at_ms": 1790608482449,
+      "claims": [
+        {
+          "ref": "cl:4364a330e12a0a587e87479a27590b902d2f66b66d6beba11cb319c9e1c2ede0",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "出现断货",
+            "assets": [],
+            "object": "",
+            "speaker": null,
+            "subject": "深圳水贝黄金珠宝市场部分热门款式",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": null,
+            "content_kind": "state_change",
+            "effective_at": null,
+            "statistical_period": null
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "部分热门款式甚至出现断货",
+              "evidence_ref": "ev:1df41642d38dff5372094f35fa1f30721d1691dad20c18f429f1408295d40d34"
+            }
+          ],
+          "statement": "深圳水贝黄金珠宝市场部分热门款式出现断货。",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790608038066
+        },
+        {
+          "ref": "cl:51786cc35fd6dd8cf0773a46eb084e90c4b319062304d2bafa7f84d967da7ef7",
+          "fields": {
+            "mode": "observation",
+            "phase": null,
+            "action": "持续回落",
+            "assets": [
+              {
+                "role": "primary",
+                "symbol": "Gold",
+                "market_type": "commodity"
+              }
+            ],
+            "object": "",
+            "speaker": null,
+            "subject": "国际金价",
+            "polarity": "negative",
+            "conditions": [],
+            "quantities": [],
+            "occurred_at": "2026-09",
+            "content_kind": "state_change",
+            "effective_at": null,
+            "statistical_period": "9月"
+          },
+          "topics": [],
+          "citations": [
+            {
+              "quote": "进入9月，国际金价持续回落",
+              "evidence_ref": "ev:deecb50478b244cbdf08cdc9b8239c55556a8c3fee0686e8f2bd41d84ddc516b"
+            }
+          ],
+          "statement": "进入9月，国际金价持续回落。",
+          "known_identity": [],
+          "antecedent_refs": [],
+          "first_available_at_ms": 1790608038566
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "current_ref": "cl:35699c9eaee5c0af0f47c266cace57ddcb18f0ff7d8bf123167b29d08973b800",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790563971018
+    },
+    {
+      "current_ref": "cl:35699c9eaee5c0af0f47c266cace57ddcb18f0ff7d8bf123167b29d08973b800",
+      "previous_ref": "cl:9b1edc9caa7e0613289c1ac7649e1444c134de40ab6f79d2dbcf671e13e27f5f",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790563971018
+    },
+    {
+      "current_ref": "cl:35699c9eaee5c0af0f47c266cace57ddcb18f0ff7d8bf123167b29d08973b800",
+      "previous_ref": "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790563971018
+    },
+    {
+      "current_ref": "cl:4d32bc9ad1d51ebca46132a69e5f7c0f0b35d27893156fdd44f865998dfa030a",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790617042181
+    },
+    {
+      "current_ref": "cl:4d32bc9ad1d51ebca46132a69e5f7c0f0b35d27893156fdd44f865998dfa030a",
+      "previous_ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790617042181
+    },
+    {
+      "current_ref": "cl:43be146291205e4828a348da3202b32b48ccce5da7a9e3ad509f7219b58f9189",
+      "previous_ref": "cl:739672520c7d7c283e4ba6cb83dd6187df33721ab70f94020b3653afbb367109",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790647455733
+    },
+    {
+      "current_ref": "cl:b7a546aa43055137cab886187f6fafee02914d2fc1f7389c3ff989b90c081ae8",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790643037386
+    },
+    {
+      "current_ref": "cl:b7a546aa43055137cab886187f6fafee02914d2fc1f7389c3ff989b90c081ae8",
+      "previous_ref": "cl:739672520c7d7c283e4ba6cb83dd6187df33721ab70f94020b3653afbb367109",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790643037386
+    },
+    {
+      "current_ref": "cl:b7a546aa43055137cab886187f6fafee02914d2fc1f7389c3ff989b90c081ae8",
+      "previous_ref": "cl:74310099d948418d0162d3a6dd258e40d98a88bebfdaec3ffdaaddd17a0c52c3",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790643037386
+    },
+    {
+      "current_ref": "cl:b7a546aa43055137cab886187f6fafee02914d2fc1f7389c3ff989b90c081ae8",
+      "previous_ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790643037386
+    },
+    {
+      "current_ref": "cl:b7a546aa43055137cab886187f6fafee02914d2fc1f7389c3ff989b90c081ae8",
+      "previous_ref": "cl:e3bef833977b5196cdaf06de58ba34c89e79261da93b87d7dff163aa35652927",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790643037386
+    },
+    {
+      "current_ref": "cl:739672520c7d7c283e4ba6cb83dd6187df33721ab70f94020b3653afbb367109",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790584320911
+    },
+    {
+      "current_ref": "cl:739672520c7d7c283e4ba6cb83dd6187df33721ab70f94020b3653afbb367109",
+      "previous_ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790584320911
+    },
+    {
+      "current_ref": "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790555512188
+    },
+    {
+      "current_ref": "cl:f02758b0061b3720e45a409818c575e2195df7918a279bc79b60bfa5068f4f4b",
+      "previous_ref": "cl:35699c9eaee5c0af0f47c266cace57ddcb18f0ff7d8bf123167b29d08973b800",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790579936757
+    },
+    {
+      "current_ref": "cl:f02758b0061b3720e45a409818c575e2195df7918a279bc79b60bfa5068f4f4b",
+      "previous_ref": "cl:3653df339398e77fa12492aa5d7003bafb6b3b6cd66750f3bd9a71cd23bf6e08",
+      "relation": "conflicts",
+      "asserted_at_ms": 1790579936757
+    },
+    {
+      "current_ref": "cl:f02758b0061b3720e45a409818c575e2195df7918a279bc79b60bfa5068f4f4b",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790579936757
+    },
+    {
+      "current_ref": "cl:f02758b0061b3720e45a409818c575e2195df7918a279bc79b60bfa5068f4f4b",
+      "previous_ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790579936757
+    },
+    {
+      "current_ref": "cl:2fcddeb62d01ec2888679a4e6a6b780c6b8b49f7f8e6ccb9594e0d24e7c57e3a",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790560016739
+    },
+    {
+      "current_ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+      "previous_ref": "cl:2fcddeb62d01ec2888679a4e6a6b780c6b8b49f7f8e6ccb9594e0d24e7c57e3a",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790568350508
+    },
+    {
+      "current_ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790568350508
+    },
+    {
+      "current_ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+      "previous_ref": "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f",
+      "relation": "conflicts",
+      "asserted_at_ms": 1790568350508
+    },
+    {
+      "current_ref": "cl:6481e0cf543497d033a0b20b91bd97167268a6bde15260cea3f76642b408601a",
+      "previous_ref": "cl:03743c0f042f6b2d06bae85b8431180081db51e002e3b118bd469d5b1891c337",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790666563696
+    },
+    {
+      "current_ref": "cl:6481e0cf543497d033a0b20b91bd97167268a6bde15260cea3f76642b408601a",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790666563696
+    },
+    {
+      "current_ref": "cl:6481e0cf543497d033a0b20b91bd97167268a6bde15260cea3f76642b408601a",
+      "previous_ref": "cl:43be146291205e4828a348da3202b32b48ccce5da7a9e3ad509f7219b58f9189",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790666563696
+    },
+    {
+      "current_ref": "cl:6481e0cf543497d033a0b20b91bd97167268a6bde15260cea3f76642b408601a",
+      "previous_ref": "cl:739672520c7d7c283e4ba6cb83dd6187df33721ab70f94020b3653afbb367109",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790666563696
+    },
+    {
+      "current_ref": "cl:6481e0cf543497d033a0b20b91bd97167268a6bde15260cea3f76642b408601a",
+      "previous_ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790666563696
+    },
+    {
+      "current_ref": "cl:6481e0cf543497d033a0b20b91bd97167268a6bde15260cea3f76642b408601a",
+      "previous_ref": "cl:b7a546aa43055137cab886187f6fafee02914d2fc1f7389c3ff989b90c081ae8",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790666563696
+    },
+    {
+      "current_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790673975037
+    },
+    {
+      "current_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+      "previous_ref": "cl:43be146291205e4828a348da3202b32b48ccce5da7a9e3ad509f7219b58f9189",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790673975037
+    },
+    {
+      "current_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+      "previous_ref": "cl:6481e0cf543497d033a0b20b91bd97167268a6bde15260cea3f76642b408601a",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790673975037
+    },
+    {
+      "current_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+      "previous_ref": "cl:739672520c7d7c283e4ba6cb83dd6187df33721ab70f94020b3653afbb367109",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790673975037
+    },
+    {
+      "current_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+      "previous_ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790673975037
+    },
+    {
+      "current_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+      "previous_ref": "cl:b7a546aa43055137cab886187f6fafee02914d2fc1f7389c3ff989b90c081ae8",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790673975037
+    },
+    {
+      "current_ref": "cl:c337eee1af3b62b5774bf6b6aa63b274273a41e416b37c07dfa4e36afadec59f",
+      "previous_ref": "cl:6481e0cf543497d033a0b20b91bd97167268a6bde15260cea3f76642b408601a",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790673975037
+    },
+    {
+      "current_ref": "cl:9b1edc9caa7e0613289c1ac7649e1444c134de40ab6f79d2dbcf671e13e27f5f",
+      "previous_ref": "cl:2fcddeb62d01ec2888679a4e6a6b780c6b8b49f7f8e6ccb9594e0d24e7c57e3a",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790562025848
+    },
+    {
+      "current_ref": "cl:9b1edc9caa7e0613289c1ac7649e1444c134de40ab6f79d2dbcf671e13e27f5f",
+      "previous_ref": "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790562025848
+    },
+    {
+      "current_ref": "cl:e3bef833977b5196cdaf06de58ba34c89e79261da93b87d7dff163aa35652927",
+      "previous_ref": "cl:35699c9eaee5c0af0f47c266cace57ddcb18f0ff7d8bf123167b29d08973b800",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790606949245
+    },
+    {
+      "current_ref": "cl:e3bef833977b5196cdaf06de58ba34c89e79261da93b87d7dff163aa35652927",
+      "previous_ref": "cl:74310099d948418d0162d3a6dd258e40d98a88bebfdaec3ffdaaddd17a0c52c3",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790606949245
+    },
+    {
+      "current_ref": "cl:e3bef833977b5196cdaf06de58ba34c89e79261da93b87d7dff163aa35652927",
+      "previous_ref": "cl:9b1edc9caa7e0613289c1ac7649e1444c134de40ab6f79d2dbcf671e13e27f5f",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790606949245
+    },
+    {
+      "current_ref": "cl:e3bef833977b5196cdaf06de58ba34c89e79261da93b87d7dff163aa35652927",
+      "previous_ref": "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790606949245
+    },
+    {
+      "current_ref": "cl:03743c0f042f6b2d06bae85b8431180081db51e002e3b118bd469d5b1891c337",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790582699170
+    },
+    {
+      "current_ref": "cl:03743c0f042f6b2d06bae85b8431180081db51e002e3b118bd469d5b1891c337",
+      "previous_ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790582699170
+    },
+    {
+      "current_ref": "cl:03743c0f042f6b2d06bae85b8431180081db51e002e3b118bd469d5b1891c337",
+      "previous_ref": "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790582699170
+    },
+    {
+      "current_ref": "cl:bb2df750c21f4323b40cdce1da51acfd171acddbb5393c9c335599b2a0aa18b1",
+      "previous_ref": "cl:3653df339398e77fa12492aa5d7003bafb6b3b6cd66750f3bd9a71cd23bf6e08",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790582699170
+    },
+    {
+      "current_ref": "cl:bb2df750c21f4323b40cdce1da51acfd171acddbb5393c9c335599b2a0aa18b1",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790582699170
+    },
+    {
+      "current_ref": "cl:bb2df750c21f4323b40cdce1da51acfd171acddbb5393c9c335599b2a0aa18b1",
+      "previous_ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790582699170
+    },
+    {
+      "current_ref": "cl:bb2df750c21f4323b40cdce1da51acfd171acddbb5393c9c335599b2a0aa18b1",
+      "previous_ref": "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790582699170
+    },
+    {
+      "current_ref": "cl:bb2df750c21f4323b40cdce1da51acfd171acddbb5393c9c335599b2a0aa18b1",
+      "previous_ref": "cl:f02758b0061b3720e45a409818c575e2195df7918a279bc79b60bfa5068f4f4b",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790582699170
+    },
+    {
+      "current_ref": "cl:2fcddeb62d01ec2888679a4e6a6b780c6b8b49f7f8e6ccb9594e0d24e7c57e3a",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790559387632
+    },
+    {
+      "current_ref": "cl:2fcddeb62d01ec2888679a4e6a6b780c6b8b49f7f8e6ccb9594e0d24e7c57e3a",
+      "previous_ref": "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790559387632
+    },
+    {
+      "current_ref": "cl:c51351a2aa3289708bd69d593861a561b43dbfbf07237c0129ebd6098765ea49",
+      "previous_ref": "cl:bb2df750c21f4323b40cdce1da51acfd171acddbb5393c9c335599b2a0aa18b1",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790582900067
+    },
+    {
+      "current_ref": "cl:74310099d948418d0162d3a6dd258e40d98a88bebfdaec3ffdaaddd17a0c52c3",
+      "previous_ref": "cl:35699c9eaee5c0af0f47c266cace57ddcb18f0ff7d8bf123167b29d08973b800",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790578746570
+    },
+    {
+      "current_ref": "cl:74310099d948418d0162d3a6dd258e40d98a88bebfdaec3ffdaaddd17a0c52c3",
+      "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790578746570
+    },
+    {
+      "current_ref": "cl:74310099d948418d0162d3a6dd258e40d98a88bebfdaec3ffdaaddd17a0c52c3",
+      "previous_ref": "cl:9b1edc9caa7e0613289c1ac7649e1444c134de40ab6f79d2dbcf671e13e27f5f",
+      "relation": "adds_information",
+      "asserted_at_ms": 1790578746570
+    },
+    {
+      "current_ref": "cl:74310099d948418d0162d3a6dd258e40d98a88bebfdaec3ffdaaddd17a0c52c3",
+      "previous_ref": "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f",
+      "relation": "real_world_change",
+      "asserted_at_ms": 1790578746570
+    }
+  ],
+  "link_receipts": [
+    {
+      "intent_id": "intent:191d10a6c21814cf3ff182a648545e058bcc2ea9f04969d9a9f762ea6460d55b",
+      "state": "sent",
+      "claim_refs": [
+        "cl:e3bef833977b5196cdaf06de58ba34c89e79261da93b87d7dff163aa35652927"
+      ],
+      "settled_at_ms": 1790606971844
+    },
+    {
+      "intent_id": "intent:204f5daedc583d2ca44d59932e53458bb015a84c4adb8b44827bfac06ff17202",
+      "state": "sent",
+      "claim_refs": [
+        "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f"
+      ],
+      "settled_at_ms": 1790555534121
+    },
+    {
+      "intent_id": "intent:235d95859dc970c403daf8b9d140198971ab01669df05bf133f3e3bb53b6d5ea",
+      "state": "sent",
+      "claim_refs": [
+        "cl:739672520c7d7c283e4ba6cb83dd6187df33721ab70f94020b3653afbb367109"
+      ],
+      "settled_at_ms": 1790584343817
+    },
+    {
+      "intent_id": "intent:252a7bbecda606fbae9ca1f294a88c00fbffb658e38db20aa92c012a35956521",
+      "state": "sent",
+      "claim_refs": [
+        "cl:4d32bc9ad1d51ebca46132a69e5f7c0f0b35d27893156fdd44f865998dfa030a"
+      ],
+      "settled_at_ms": 1790617064526
+    },
+    {
+      "intent_id": "intent:2dfdfb0e3339cc886f43b6eb44cf6e73120f3f18866b67645e5c29d00a811873",
+      "state": "sent",
+      "claim_refs": [
+        "cl:2fcddeb62d01ec2888679a4e6a6b780c6b8b49f7f8e6ccb9594e0d24e7c57e3a"
+      ],
+      "settled_at_ms": 1790559470055
+    },
+    {
+      "intent_id": "intent:33c89b97d009229b3e186a5c24285a96a64d35b0f6e89a37e3b5075f40a83660",
+      "state": "sent",
+      "claim_refs": [
+        "cl:03743c0f042f6b2d06bae85b8431180081db51e002e3b118bd469d5b1891c337",
+        "cl:bb2df750c21f4323b40cdce1da51acfd171acddbb5393c9c335599b2a0aa18b1"
+      ],
+      "settled_at_ms": 1790582791134
+    },
+    {
+      "intent_id": "intent:3b629d2932b9a5500d5c7a4bf437146f5fb26bdcfd7db7f85408f78b573317ff",
+      "state": "sent",
+      "claim_refs": [
+        "cl:0fd05247773e232d0d7f5329b86ab337f02983cc971d034123b30e84e7a61596",
+        "cl:c51351a2aa3289708bd69d593861a561b43dbfbf07237c0129ebd6098765ea49"
+      ],
+      "settled_at_ms": 1790583439735
+    },
+    {
+      "intent_id": "intent:4b5651e9c1b9695957383fa5681a742a844c62f6da82f267ab283a954199fc14",
+      "state": "sent",
+      "claim_refs": [
+        "cl:f02758b0061b3720e45a409818c575e2195df7918a279bc79b60bfa5068f4f4b"
+      ],
+      "settled_at_ms": 1790580059329
+    },
+    {
+      "intent_id": "intent:5854973fc5fcb756229684314637f1fb07a2ed664aa36c443d17f98820213ca5",
+      "state": "sent",
+      "claim_refs": [
+        "cl:35699c9eaee5c0af0f47c266cace57ddcb18f0ff7d8bf123167b29d08973b800"
+      ],
+      "settled_at_ms": 1790563994046
+    },
+    {
+      "intent_id": "intent:7339ebb692bd58cabedb8826a171712d69710818e54feb6e9caa7837e4392238",
+      "state": "sent",
+      "claim_refs": [
+        "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9"
+      ],
+      "settled_at_ms": 1790568648377
+    },
+    {
+      "intent_id": "intent:8af1f7ff4a73fc3bedbf59a75da18e0daf037645166d64bc9d461c857aeaad50",
+      "state": "sent",
+      "claim_refs": [
+        "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c"
+      ],
+      "settled_at_ms": 1790555059335
+    },
+    {
+      "intent_id": "intent:9ba6963c90b83e5a6d6ec01bffdd5f13f70732b283896b3c82e1ad82dade32c2",
+      "state": "sent",
+      "claim_refs": [
+        "cl:74310099d948418d0162d3a6dd258e40d98a88bebfdaec3ffdaaddd17a0c52c3"
+      ],
+      "settled_at_ms": 1790579117093
+    }
+  ],
+  "baseline_message_intents": {
+    "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537": [
+      "intent:235d95859dc970c403daf8b9d140198971ab01669df05bf133f3e3bb53b6d5ea",
+      "intent:7339ebb692bd58cabedb8826a171712d69710818e54feb6e9caa7837e4392238",
+      "intent:8af1f7ff4a73fc3bedbf59a75da18e0daf037645166d64bc9d461c857aeaad50",
+      "intent:33c89b97d009229b3e186a5c24285a96a64d35b0f6e89a37e3b5075f40a83660",
+      "intent:204f5daedc583d2ca44d59932e53458bb015a84c4adb8b44827bfac06ff17202",
+      "intent:2dfdfb0e3339cc886f43b6eb44cf6e73120f3f18866b67645e5c29d00a811873",
+      "intent:3b629d2932b9a5500d5c7a4bf437146f5fb26bdcfd7db7f85408f78b573317ff",
+      "intent:39b14372540d2cc5754a3d06d1bd721fb84f25b98a5e8a287d35852e1041db4b",
+      "intent:4e584665eea04c3538959fe67486ee859828fdc3a02c758eeb0c13f64c2dd935",
+      "intent:96059b899cd6ec6e12de577a07dc75a566810dda954cb58f8b64108323926f90",
+      "intent:07711951cbdb767a989a3c35cc7816ff527e033276dbf8413ad79a66e781461f",
+      "intent:96b2f0f62c9145cbc5d35dc337ca7be2b58d3b36f8043dd8ac94ebceb4fa5463",
+      "intent:ce1b555fa38e900703421ee57e685ae7debe4fec1a464769ad70eb94e116fed2",
+      "intent:b59e2f87d8a61be03e1f881686da75e1bd8a41e4c5e33519cd28f8395bd7e601",
+      "intent:38e309469d27937c55403beab67bd073e689f967c48658b40f48489681319075",
+      "intent:cdae0aaf49226654dc5ecb875387ee30579cda325c17be08ee0c66575b26f863"
+    ],
+    "cl:c337eee1af3b62b5774bf6b6aa63b274273a41e416b37c07dfa4e36afadec59f": [
+      "intent:8af1f7ff4a73fc3bedbf59a75da18e0daf037645166d64bc9d461c857aeaad50",
+      "intent:235d95859dc970c403daf8b9d140198971ab01669df05bf133f3e3bb53b6d5ea",
+      "intent:33c89b97d009229b3e186a5c24285a96a64d35b0f6e89a37e3b5075f40a83660",
+      "intent:204f5daedc583d2ca44d59932e53458bb015a84c4adb8b44827bfac06ff17202",
+      "intent:7339ebb692bd58cabedb8826a171712d69710818e54feb6e9caa7837e4392238",
+      "intent:2dfdfb0e3339cc886f43b6eb44cf6e73120f3f18866b67645e5c29d00a811873",
+      "intent:3b629d2932b9a5500d5c7a4bf437146f5fb26bdcfd7db7f85408f78b573317ff",
+      "intent:39b14372540d2cc5754a3d06d1bd721fb84f25b98a5e8a287d35852e1041db4b",
+      "intent:4e584665eea04c3538959fe67486ee859828fdc3a02c758eeb0c13f64c2dd935",
+      "intent:96059b899cd6ec6e12de577a07dc75a566810dda954cb58f8b64108323926f90",
+      "intent:07711951cbdb767a989a3c35cc7816ff527e033276dbf8413ad79a66e781461f",
+      "intent:96b2f0f62c9145cbc5d35dc337ca7be2b58d3b36f8043dd8ac94ebceb4fa5463",
+      "intent:ce1b555fa38e900703421ee57e685ae7debe4fec1a464769ad70eb94e116fed2",
+      "intent:b59e2f87d8a61be03e1f881686da75e1bd8a41e4c5e33519cd28f8395bd7e601",
+      "intent:38e309469d27937c55403beab67bd073e689f967c48658b40f48489681319075",
+      "intent:cdae0aaf49226654dc5ecb875387ee30579cda325c17be08ee0c66575b26f863"
+    ]
+  },
+  "labels": {
+    "235d95": 2,
+    "191d10": 2,
+    "585497": 2,
+    "eca8e3": 2,
+    "4e5846": 0,
+    "96059b": 0,
+    "077119": 0,
+    "96b2f0": 0,
+    "ce1b55": 0,
+    "cdae0a": 0
+  },
+  "update": {
+    "claims": [
+      {
+        "ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+        "fields": {
+          "mode": "observation",
+          "phase": null,
+          "action": "tick up after hitting over 7-week low",
+          "assets": [
+            {
+              "role": "primary",
+              "symbol": "Gold",
+              "market_type": "commodity"
+            }
+          ],
+          "object": "",
+          "speaker": null,
+          "subject": "Gold",
+          "polarity": "affirmative",
+          "conditions": [],
+          "quantities": [],
+          "occurred_at": null,
+          "content_kind": "level_crossed",
+          "effective_at": null,
+          "statistical_period": "7-week"
+        },
+        "topics": [
+          "medtop:04000000",
+          "medtop:20000385"
+        ],
+        "citations": [
+          {
+            "quote": "Gold ticks up after hitting over 7-week low",
+            "evidence_ref": "ev:1dd864670102dcb1e4291f3bc5e49ccb34f0e6fef23028801d49534bf103e2bf"
+          }
+        ],
+        "statement": "Gold prices ticked up after hitting an over 7-week low.",
+        "known_identity": [],
+        "antecedent_refs": [
+          "cl:03743c0f042f6b2d06bae85b8431180081db51e002e3b118bd469d5b1891c337",
+          "cl:2fcddeb62d01ec2888679a4e6a6b780c6b8b49f7f8e6ccb9594e0d24e7c57e3a",
+          "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+          "cl:43be146291205e4828a348da3202b32b48ccce5da7a9e3ad509f7219b58f9189",
+          "cl:6481e0cf543497d033a0b20b91bd97167268a6bde15260cea3f76642b408601a",
+          "cl:739672520c7d7c283e4ba6cb83dd6187df33721ab70f94020b3653afbb367109",
+          "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+          "cl:b7a546aa43055137cab886187f6fafee02914d2fc1f7389c3ff989b90c081ae8",
+          "cl:bb9f0d965b23f100106a9272ab03e60cab5c768ece6fa10590c2c61465f4425f"
+        ],
+        "first_available_at_ms": 1790673957843
+      },
+      {
+        "ref": "cl:c337eee1af3b62b5774bf6b6aa63b274273a41e416b37c07dfa4e36afadec59f",
+        "fields": {
+          "mode": "commentary",
+          "phase": null,
+          "action": "is in focus",
+          "assets": [],
+          "object": "",
+          "speaker": null,
+          "subject": "US economic data",
+          "polarity": "affirmative",
+          "conditions": [],
+          "quantities": [],
+          "occurred_at": null,
+          "content_kind": "other",
+          "effective_at": null,
+          "statistical_period": null
+        },
+        "topics": [
+          "medtop:20000346"
+        ],
+        "citations": [
+          {
+            "quote": "US data in focus",
+            "evidence_ref": "ev:1dd864670102dcb1e4291f3bc5e49ccb34f0e6fef23028801d49534bf103e2bf"
+          }
+        ],
+        "statement": "US data is in focus.",
+        "known_identity": [],
+        "antecedent_refs": [],
+        "first_available_at_ms": 1790673957843
+      }
+    ],
+    "topics": [
+      "medtop:04000000",
+      "medtop:20000346",
+      "medtop:20000385"
+    ],
+    "changes": [
+      {
+        "kind": "scope_change",
+        "relation": "real_world_change",
+        "current_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+        "previous_ref": "cl:6481e0cf543497d033a0b20b91bd97167268a6bde15260cea3f76642b408601a",
+        "previous_content_ref": "update:59a5da0fbdd4dbac6ab37a176bdc97db5637ef4822e9bf9fc165742ea2960aab"
+      },
+      {
+        "kind": "scope_change",
+        "relation": "real_world_change",
+        "current_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+        "previous_ref": "cl:b7a546aa43055137cab886187f6fafee02914d2fc1f7389c3ff989b90c081ae8",
+        "previous_content_ref": "update:1f0e72230009a1432dddab36de1e60a09e7a52bdcba01b5c8ab87287c210abd0"
+      },
+      {
+        "kind": "scope_change",
+        "relation": "real_world_change",
+        "current_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+        "previous_ref": "cl:43be146291205e4828a348da3202b32b48ccce5da7a9e3ad509f7219b58f9189",
+        "previous_content_ref": "update:1f0e72230009a1432dddab36de1e60a09e7a52bdcba01b5c8ab87287c210abd0"
+      },
+      {
+        "kind": "scope_change",
+        "relation": "real_world_change",
+        "current_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+        "previous_ref": "cl:739672520c7d7c283e4ba6cb83dd6187df33721ab70f94020b3653afbb367109",
+        "previous_content_ref": "update:32fecd615ed4e750030267fbea89a1399ef35a124e343145b32eedacb4f9561b"
+      },
+      {
+        "kind": "scope_change",
+        "relation": "real_world_change",
+        "current_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+        "previous_ref": "cl:378413533b4a569178aa71a2f106c8779a858398f5d06bf5a5b56c0e1417c93c",
+        "previous_content_ref": "update:e9c176e254ad3c51e4e5d6598d467d0571eedc2538a4f5e7db5e480e4dd91cb3"
+      },
+      {
+        "kind": "parameter_change",
+        "relation": "real_world_change",
+        "current_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+        "previous_ref": "cl:932b2d3f0b492c7a1fe98bcdecdc561512c61bd56497bb33767aabb609be5aa9",
+        "previous_content_ref": "update:52932cbc3c06551dae8651a24fc82c600678ce4eb2e8248656cb96081a3289dc"
+      },
+      {
+        "kind": "new_fact",
+        "relation": "adds_information",
+        "current_ref": "cl:c337eee1af3b62b5774bf6b6aa63b274273a41e416b37c07dfa4e36afadec59f",
+        "previous_ref": "cl:6481e0cf543497d033a0b20b91bd97167268a6bde15260cea3f76642b408601a",
+        "previous_content_ref": "update:59a5da0fbdd4dbac6ab37a176bdc97db5637ef4822e9bf9fc165742ea2960aab"
+      }
+    ],
+    "event_id": "9f8231c5eda4dffb7d68a5ca054c3eb3a74017893a0c642a324f81fabc791642",
+    "evidence": [
+      {
+        "ref": "ev:1dd864670102dcb1e4291f3bc5e49ccb34f0e6fef23028801d49534bf103e2bf",
+        "text": "PRECIOUS-Gold ticks up after hitting over 7-week low; US data in focus",
+        "source": {
+          "url": "https://news-history.newsliquid.com/b/nL1N45L07G",
+          "origin_id": "news-history.newsliquid.com",
+          "record_id": "87de01e00860ace1e3ea33174220a411d4d5a80b459047dfea8705864e724f09",
+          "artifact_id": "4252398",
+          "attribution": null,
+          "publisher_id": "news-opennews",
+          "published_at_ms": 1790673956847,
+          "source_authority": "unknown",
+          "artifact_revision": "45661c550575c11b6aa4658b66b1e263c983a32a27a2ee63a88c4b25bac72cc9",
+          "revision_sequence": 0,
+          "first_available_at_ms": 1790673957843
+        }
+      }
+    ],
+    "content_sha": "ae7fec2f4bd16d19939cc03a83dde8aba22856006abb93bac2d39c996473ec1d",
+    "implications": [],
+    "adopted_at_ms": 1790673975037,
+    "input_revision": 1,
+    "open_questions": [],
+    "schema_version": "news_event_update_v2",
+    "content_revision": "6e29e4ead785872dd32311c4b28349030e46166d20828e7a3df78ef446eb4a6f",
+    "evidence_relations": [
+      {
+        "relation": "supports",
+        "claim_ref": "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537",
+        "evidence_ref": "ev:1dd864670102dcb1e4291f3bc5e49ccb34f0e6fef23028801d49534bf103e2bf"
+      },
+      {
+        "relation": "supports",
+        "claim_ref": "cl:c337eee1af3b62b5774bf6b6aa63b274273a41e416b37c07dfa4e36afadec59f",
+        "evidence_ref": "ev:1dd864670102dcb1e4291f3bc5e49ccb34f0e6fef23028801d49534bf103e2bf"
+      }
+    ],
+    "retired_claim_refs": [],
+    "superseded_claim_refs": [],
+    "previous_content_revision": null
+  },
+  "route_ranks": {
+    "cl:8d03c8e9275cedfb483d9b3f73a4b82d3dba9e3763f3ff025bc504b3f05f7537": {
+      "intent:0b4d11699530c51d6aa9ca2135c7f0e56a7e9fbf1412abe3b64de517106c6558": [
+        null,
+        10
+      ],
+      "intent:0e6fb33bad955a23fa62b26aba176e7e1150c024976a2cf1d86a743a9353388b": [
+        null,
+        6
+      ],
+      "intent:177218c784941d4a2602ea9b8aacbc2489bb2c75eecae1fa31db47f88976acc5": [
+        null,
+        2
+      ],
+      "intent:191d10a6c21814cf3ff182a648545e058bcc2ea9f04969d9a9f762ea6460d55b": [
+        4,
+        null
+      ],
+      "intent:204f5daedc583d2ca44d59932e53458bb015a84c4adb8b44827bfac06ff17202": [
+        14,
+        null
+      ],
+      "intent:235d95859dc970c403daf8b9d140198971ab01669df05bf133f3e3bb53b6d5ea": [
+        6,
+        1
+      ],
+      "intent:252a7bbecda606fbae9ca1f294a88c00fbffb658e38db20aa92c012a35956521": [
+        2,
+        null
+      ],
+      "intent:2dfdfb0e3339cc886f43b6eb44cf6e73120f3f18866b67645e5c29d00a811873": [
+        13,
+        null
+      ],
+      "intent:33c89b97d009229b3e186a5c24285a96a64d35b0f6e89a37e3b5075f40a83660": [
+        7,
+        null
+      ],
+      "intent:38e309469d27937c55403beab67bd073e689f967c48658b40f48489681319075": [
+        null,
+        5
+      ],
+      "intent:3b629d2932b9a5500d5c7a4bf437146f5fb26bdcfd7db7f85408f78b573317ff": [
+        null,
+        8
+      ],
+      "intent:4b5651e9c1b9695957383fa5681a742a844c62f6da82f267ab283a954199fc14": [
+        9,
+        9
+      ],
+      "intent:5854973fc5fcb756229684314637f1fb07a2ed664aa36c443d17f98820213ca5": [
+        12,
+        null
+      ],
+      "intent:6410522ca27157227c23040e13638a9f41714f7a4fad67f1b930877640838f3f": [
+        null,
+        7
+      ],
+      "intent:7339ebb692bd58cabedb8826a171712d69710818e54feb6e9caa7837e4392238": [
+        11,
+        null
+      ],
+      "intent:8af1f7ff4a73fc3bedbf59a75da18e0daf037645166d64bc9d461c857aeaad50": [
+        15,
+        null
+      ],
+      "intent:9ba6963c90b83e5a6d6ec01bffdd5f13f70732b283896b3c82e1ad82dade32c2": [
+        10,
+        null
+      ],
+      "intent:9c4bd07b7a584daff63d37e78f8fa6a5c71026b8f975ef83325145c6e2d70424": [
+        null,
+        3
+      ],
+      "intent:a84d9c68239e1af5fb55a83e7a9042060e63a669f5dc514cd5de950a0bd2eceb": [
+        5,
+        null
+      ],
+      "intent:b9ffd5b9254a015b13f17d8b96fb90db388b2417999026074a4fbf10ca5c32c3": [
+        null,
+        11
+      ],
+      "intent:ccf429083d315e3e560ca19b9bc17e2f864051525607a26ce3405264c6ae48bb": [
+        8,
+        null
+      ],
+      "intent:d903d3e6d66bce347a0b93ef7a13318fbc8faf570bf6ecd5ae7002ef744792cd": [
+        null,
+        4
+      ],
+      "intent:eca8e37b68c82a7917b0b8bc95d4b1a1c96524c9083b78cbf4fd2c3ab9665e6d": [
+        1,
+        null
+      ],
+      "intent:eec78beb21a38d13d348837c30bb3bfd79545da1e80f67b47be46971c6a4f849": [
+        3,
+        null
+      ]
+    },
+    "cl:c337eee1af3b62b5774bf6b6aa63b274273a41e416b37c07dfa4e36afadec59f": {}
+  }
+}

@@ -7,32 +7,6 @@ from tracefold.news.evidence import (
     shortlist,
 )
 from tracefold.news.models import MarketAsset
-from tracefold.news.reader_history import assemble_reader_history
-
-
-def history_row(event_id: str, at_ms: int) -> dict:
-    return dict(
-        event_id=event_id,
-        at_ms=at_ms,
-        storyline_key="asset:equity:SEI",
-        comparison_title="SEI announces acquisition pending approval",
-        comparison_fingerprint=event_id,
-        dedupe_family="general",
-        grounded_assets=["SEI"],
-        canonical_assets=["SEI"],
-        assets=[{"symbol": "SEI", "market_type": "equity"}],
-        direction="neutral",
-        headline_zh="收购计划",
-        why_zh="仍待批准",
-    )
-
-
-def test_history_excludes_equal_cutoff_and_future_in_all_bands() -> None:
-    rows = [history_row("before", 999), history_row("equal", 1000), history_row("future", 1001)]
-    snapshot = assemble_reader_history(
-        recent_rows=rows, similar_rows=rows, now_ms=1000, comparison_title=rows[0]["comparison_title"]
-    )
-    assert [row.event_id for row in snapshot.told_source_rows] == ["before"]
 
 
 def test_origin_fact_duplicates_do_not_occupy_shortlist_slots():
@@ -63,11 +37,6 @@ def test_origin_fact_duplicates_do_not_occupy_shortlist_slots():
         row["leader_title"] = "Acme acquisition announced"
     query = query_for({"leader_title": "Acme acquisition approved"}, {}, cutoff=20)
     assert [r["event_id"] for r in shortlist(rows, query=query)] == ["0", "direct"]
-
-
-def test_future_duplicate_does_not_hide_older_visible_receipt():
-    snapshot = assemble_reader_history(recent_rows=[history_row("same", 1001), history_row("same", 999)], now_ms=1000)
-    assert [row.at_ms for row in snapshot.told_source_rows] == [999]
 
 
 def test_short_tickers_chinese_terms_and_generic_words():

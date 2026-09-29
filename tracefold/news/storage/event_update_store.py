@@ -13,7 +13,6 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from ..bus import DeferError, TransientError
-from ..source_contracts import classify_source_contracts
 from ..updates.contracts import EventUpdate, Evidence, Extraction, FrozenInput, PublicUpdate, ReadTarget
 from ..updates.judgment import Answer
 from ..updates.notification import NEWS_CHANNEL, CardCopy, FrozenCard, NotificationPlan, ReaderSnapshot
@@ -37,7 +36,6 @@ from .event_updates import (
     frozen_input,
     item_evidence,
     read_target_item_id,
-    select_receipts,
 )
 from .sql_values import _dumps
 from .update_commit import PUBLIC_TRADE_KINDS
@@ -197,40 +195,19 @@ class PgNewsStore:
         if material is None:
             return None
         update = EventUpdate.model_validate(material["head"])
-        listing_scopes = [
-            row
-            for row in material.get("listing_members", ())
-            if any(
-                contract.source_contract_family == "listing_v1"
-                for contract in classify_source_contracts(row.get("provider_metadata") or {})
-            )
-        ]
-        evidence_items = {item.ref: item for item in update.evidence}
-        listing_refs = tuple(
-            claim.ref
-            for claim in update.claims
-            if any(
-                citation.evidence_ref in evidence_items
-                and evidence_items[citation.evidence_ref].source.record_id == str(scope["item_id"])
-                and citation.quote in str(scope["fact_text"])
-                for citation in claim.citations
-                for scope in listing_scopes
-            )
-        )
         reader = ReaderSnapshot(
             channel=channel,
             revision=str(material["revision"]),
-            receipts=select_receipts(
-                update,
-                material["receipt_queries"],
-                material["receipt_rows"],
-                invalidated=material["invalidated"],
-            ),
+            receipts=tuple(text for row in material["receipt_rows"] if (text := delivered_text(row)) is not None),
+            receipt_intents_by_claim={
+                str(ref): tuple(str(intent) for intent in intents)
+                for ref, intents in material["receipt_intents_by_claim"].items()
+            },
             blocked_claim_refs=tuple(material["blocked"]),
             ambiguous_claim_refs=tuple(material["ambiguous"]),
             invalidated_claim_refs=tuple(material["invalidated"]),
             watch_symbols=self.watch_symbols,
-            protected_listing_claim_refs=listing_refs,
+            protected_listing_claim_refs=tuple(material["protected_listing"]),
             links=tuple(
                 ClaimLink(
                     current_ref=str(row["current_ref"]),
