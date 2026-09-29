@@ -489,8 +489,6 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
             material.get("grounded_assets") or (),
             visible_text={view.evidence_ref: " ".join(span.text for span in view.spans) for view in selected_views},
         )
-    facing = set(material.get("reader_facing_claim_refs") or ())
-    prior = tuple(row.model_copy(update={"reader_facing": row.claim.ref in facing}) for row in prior)
     wanted = int(work["wanted_revision"]) if work is not None else max(1, int(material.get("evidence_version") or 1))
     lineage = str(work["lineage_id"]) if work is not None else identity("lineage", event_id, wanted)
     return FrozenInput(
@@ -602,6 +600,11 @@ class EventUpdateStorage:
                 (code, int(now_ms), event_id),
             )
             return None
+        # The task reads this attempt is given: a crashed final attempt is quarantined by exactly these.
+        self.conn.execute(
+            "UPDATE news_semantic_work SET attempt_read_refs=%s WHERE event_id=%s",
+            ([view.read_ref for view in reading_views(source)], event_id),
+        )
         return SemanticLease(source=source, lease_token=str(row["lease_token"]), attempts=int(row["attempts"]))
 
     def require_semantic_owner(self, lease: SemanticLease, *, now_ms: int) -> Mapping[str, Any]:
@@ -727,7 +730,11 @@ class EventUpdateStorage:
         }
 
     def terminalize_exhausted_semantic_work(self, *, now_ms: int, limit: int) -> int:
-        """The Janitor settles a crashed final attempt only after its lease expires."""
+        """The Janitor settles a crashed final attempt only after its lease expires.
+
+        Like any failed revision, it quarantines the task reads that attempt was given, and only those: a member
+        that joined after the attempt froze its input stays unread and is read by the next revision.
+        """
 
         cursor = self.conn.execute(
             """
@@ -740,6 +747,9 @@ class EventUpdateStorage:
             )
             UPDATE news_semantic_work w
                SET last_outcome = 'failed', last_error_code = 'news_semantic_attempts_exhausted_after_lease',
+                   failed_read_refs = ARRAY(
+                       SELECT DISTINCT ref FROM unnest(w.failed_read_refs || w.attempt_read_refs) AS ref
+                   ),
                    lease_token = NULL, leased_until_ms = NULL, updated_at_ms = %s
               FROM expired WHERE w.event_id = expired.event_id
             """,
@@ -952,38 +962,10 @@ class EventUpdateStorage:
             "revisions": [dict(row) for row in revisions],
             "head": self.event_update_head_document(event_id),
             "established_relations": self._established_relations(event_id),
-            "reader_facing_claim_refs": self._reader_facing_claim_refs([event_id, *related_ids]),
             "related_heads": self._related_head_documents(related_ids),
             "read_targets": self._read_target_rows(related_ids, exclude_item_ids=item_ids),
             "grounded_assets": [str(value) for value in card.get("grounded_assets") or ()],
         }
-
-    def _reader_facing_claim_refs(self, event_ids: Sequence[str]) -> list[str]:
-        """Claims of these Events a reader card carried, carries or may still carry.
-
-        Queued, sending or settled cards name their claims; an Event whose notification is still undecided
-        may yet carry any claim of its current head.
-        """
-
-        rows = self.conn.execute(
-            """
-            SELECT DISTINCT ref FROM (
-              SELECT jsonb_array_elements_text(claim_refs) AS ref FROM news_deliveries
-               WHERE event_id = ANY(%s) AND kind = 'update' AND state IN ('sending', 'sent', 'ambiguous')
-              UNION ALL
-              SELECT jsonb_array_elements_text(claim_refs) FROM news_delivery_queue
-               WHERE event_id = ANY(%s) AND kind = 'update' AND state = 'pending' AND claim_refs IS NOT NULL
-              UNION ALL
-              SELECT jsonb_array_elements(u.document -> 'claims') ->> 'ref'
-                FROM news_notification_work w
-                JOIN news_event_update_heads h ON h.event_id = w.event_id
-                JOIN news_event_updates u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
-               WHERE w.event_id = ANY(%s) AND w.channel = %s AND w.state = 'pending'
-            ) facing ORDER BY ref
-            """,
-            (list(event_ids), list(event_ids), list(event_ids), NEWS_CHANNEL),
-        ).fetchall()
-        return [str(row["ref"]) for row in rows]
 
     def _established_relations(self, event_id: str) -> list[dict[str, str]]:
         """Corrections and conflicts this Event's adopted revisions already published, by claim pair."""

@@ -88,15 +88,15 @@ def extraction_source() -> tuple[FrozenInput, dict[str, Any]]:
         {"slot": "a", "previous_ref": "p1", "relation": "not_an_option"},
     ],
 )
-def test_a_relation_the_extractor_volunteers_never_bypasses_triage_and_judgment(
+def test_a_relation_the_extractor_volunteers_never_bypasses_the_relation_judge(
     monkeypatch: pytest.MonkeyPatch, volunteered: dict[str, Any]
 ) -> None:
-    # #742 S2/W3: extraction no longer outputs relations. A model that still writes one neither fails the
-    # answer nor settles the comparison: the triage and the judge own every relation.
+    # #742 S2: extraction no longer outputs relations. A model that still writes one neither fails the
+    # answer nor settles the comparison: the relation judge owns every relation.
     source, reply = extraction_source()
     reply.update(relations=[volunteered], supports=[{"slot": "a", "evidence_ref": "e1", "relation": "reports"}])
     calls = generated(monkeypatch, reply)
-    backend = TaskBackend({"relation_triage": "p1", "relation": "unrelated"})
+    backend = TaskBackend({"relation": "unrelated"})
     analyzer = SemanticAnalyzer(
         extractor=DspyExtractor(lambda: None, model_identity="fixture", topics={}),
         judgments=NewsJudgments(generated=backend, cache=MemoryCache()),
@@ -117,7 +117,6 @@ def test_a_relation_the_extractor_volunteers_never_bypasses_triage_and_judgment(
     # The Event's own current claim is extraction context; related Events' claims are not.
     assert sent["prior"][0]["claim"]["ref"] == "p1"
     assert sent["evidence"][0]["segments"][0]["text"] == source.evidence[0].text
-    # One pair fits one request, so no triage question is asked for it.
     assert [call[0] for call in backend.calls] == ["relation"]
 
 

@@ -249,3 +249,33 @@ def test_retry_reuses_the_extraction_when_only_a_related_head_changes():
     assert asyncio.run(agent.process(new)) == "adopted"
     assert analyzer.extract_calls == 1
     assert analyzer.understood[-1] == tuple(row.claim.ref for row in new.source.prior)
+
+
+def test_a_crashed_final_attempt_quarantines_exactly_the_reads_it_was_given():
+    # #742 S3: the Janitor settles a final attempt that died holding its lease the way a failed attempt is
+    # settled -- its material is quarantined -- and a member that joins afterwards is still read.
+    from tests.postgres_test_utils import connect_postgres_test
+    from tracefold.app.repository_session import repositories_for_connection
+
+    seed_event()
+    clock = Clock(STAMP + 10)
+    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    sql("UPDATE news_semantic_work SET attempts=2")
+    crashed = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=10))
+    assert crashed is not None and crashed.attempts == 3
+    given = [view.read_ref for view in reading_views(crashed.source)]
+    assert work(EVENT)["attempt_read_refs"] == given
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            news = repositories_for_connection(conn).news
+            assert news.terminalize_exhausted_semantic_work(now_ms=clock.now_ms + 11, limit=10) == 1
+    finally:
+        conn.close()
+    row = work(EVENT)
+    assert (row["last_outcome"], row["failed_read_refs"]) == ("failed", given)
+
+    add_member_evidence(EVENT, "late-member", "Agency adds a new exemption.", now_ms=clock.now_ms + 20)
+    clock.now_ms += 20
+    later = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
+    assert later is not None and [item.text for item in later.source.evidence] == ["Agency adds a new exemption."]

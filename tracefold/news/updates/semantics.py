@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from decimal import Decimal
-from typing import Any, Final, Protocol
+from typing import Any, Protocol
 
 from .contracts import (
     Change,
@@ -35,7 +35,6 @@ from .contracts import (
 from .identity import canonical_json, digest, identity
 from .judgment import (
     MAX_QUESTIONS_PER_REQUEST,
-    TRIAGE_CANDIDATES_MAX,
     Answer,
     Budget,
     ContractFault,
@@ -47,10 +46,6 @@ from .projection import reading_views
 from .topics import CODEBOOK
 
 log = logging.getLogger("tracefold.news")
-
-# Relation triage is code policy over the model's answer: a native answer's probabilities add every other
-# candidate at or above this floor to its chosen prior.
-TRIAGE_MIN_PROBABILITY: Final = 0.1
 
 
 class ClaimExtractor(Protocol):
@@ -295,25 +290,6 @@ def _require_available(answers: tuple[Answer, ...], code: str, *, final_attempt:
         raise ProviderUnavailable(code)
 
 
-def _triaged(answer: Answer, candidates: Mapping[str, PriorClaim]) -> tuple[PriorClaim, ...] | None:
-    """The priors one triage answer picks, or None when it settles nothing (every candidate is judged).
-
-    `none` picks no prior. A generated answer names every prior it picks (`p2,p5`). A native answer names
-    one option; every other candidate at or above the probability floor is picked beside it.
-    """
-
-    if answer.status != "available":
-        return None
-    named = [alias for alias in str(answer.value).split(",") if alias != "none"]
-    if any(alias not in candidates for alias in named):
-        # An alias beyond this group's candidates names no prior.
-        return None
-    for alias, probability in sorted((answer.probabilities or {}).items(), key=lambda row: (-row[1], row[0])):
-        if alias in candidates and alias not in named and probability >= TRIAGE_MIN_PROBABILITY:
-            named.append(alias)
-    return tuple(candidates[alias] for alias in named)
-
-
 def _replace(extraction: Extraction, **values: object) -> Extraction:
     """A validated copy: model_copy alone would skip the slot invariants."""
 
@@ -405,47 +381,16 @@ class SemanticAnalyzer:
     async def _relations(
         self, source: FrozenInput, extraction: Extraction, budget: Budget, *, final_attempt: bool
     ) -> Extraction:
-        """Triage, then judge: one question per new claim picks the prior claims about its proposition.
+        """Judge every new claim against every supplied current prior; no model outside the judge decides one.
 
-        Candidates are already bounded by retrieval; no global pair search. A reader-facing prior (carried,
-        or possibly still carried, by a reader card) is always judged: reader novelty reads that relation.
-        Of the other priors, only the pairs the triage picked are judged; a pair it passed over is settled
-        `unrelated`. When those pairs fit in one judgment request there is nothing to save and no triage is
-        asked. A triage without a usable answer settles nothing, so every pair of its candidate group is
-        judged. Every supplied pair ends with a relation.
+        Candidates are already bounded by retrieval (current claims only); no global pair search and no
+        title-only key for relation cache reuse. Every supplied pair ends with a relation.
         """
 
-        claims = extraction.claims
-        if not claims or not source.prior:
-            return extraction
-        chosen: set[tuple[str, str]] = {
-            (claim.slot, prior.claim.ref) for claim in claims for prior in source.prior if prior.reader_facing
-        }
-        triaged = tuple(prior for prior in source.prior if not prior.reader_facing)
-        if len(claims) * len(triaged) <= self.judgments.batch_size:
-            # A triage question costs a request of its own; it cannot save one when every pair fits in one.
-            chosen.update((claim.slot, prior.claim.ref) for claim in claims for prior in triaged)
-            triaged = ()
-        groups = [
-            {f"p{index}": prior for index, prior in enumerate(triaged[start : start + TRIAGE_CANDIDATES_MAX], 1)}
-            for start in range(0, len(triaged), TRIAGE_CANDIDATES_MAX)
-        ]
-        triage = tuple(
-            Question(item_id=identity("triage", claim.slot), payload_json=canonical_json({"claim": claim}))
-            for claim in claims
-        )
-        for group in groups:
-            context = canonical_json({"prior_claims": {alias: row.claim for alias, row in group.items()}})
-            answers = await self.judgments.judge("relation_triage", triage, budget, context_json=context)
-            for claim, answer in zip(claims, answers, strict=True):
-                picked = _triaged(answer, group)
-                chosen.update((claim.slot, prior.claim.ref) for prior in (group.values() if picked is None else picked))
-        pairs: dict[str, tuple[DraftClaim, PriorClaim]] = {}
         questions = []
-        for claim in claims:
+        pairs: dict[str, tuple[DraftClaim, PriorClaim]] = {}
+        for claim in extraction.claims:
             for prior in source.prior:
-                if (claim.slot, prior.claim.ref) not in chosen:
-                    continue
                 item_id = identity("pair", claim.slot, prior.claim.ref)
                 pairs[item_id] = (claim, prior)
                 payload = {
@@ -456,27 +401,25 @@ class SemanticAnalyzer:
                     ),
                 }
                 questions.append(Question(item_id=item_id, payload_json=canonical_json(payload)))
+        if not questions:
+            return extraction
         answers = await self.judgments.judge("relation", tuple(questions), budget)
         _require_available(answers, "news_relation_unavailable", final_attempt=final_attempt)
-        judged: dict[tuple[str, str], str] = {}
+        relations = []
         for answer in answers:
             claim, prior = pairs[answer.item_id]
             # An unavailable answer is an unresolved relation, never a manufactured one.
-            judged[(claim.slot, prior.claim.ref)] = str(answer.value or "unresolved")
-        relations = []
-        for claim in claims:
-            for prior in source.prior:
-                value = judged.get((claim.slot, prior.claim.ref), "unrelated")
-                relations.append(
-                    RelationDraft.model_validate(
-                        {
-                            "slot": claim.slot,
-                            "previous_ref": prior.claim.ref,
-                            "relation": value,
-                            "change_kind": _default_change(claim, prior.claim, value),
-                        }
-                    )
+            value = str(answer.value or "unresolved")
+            relations.append(
+                RelationDraft.model_validate(
+                    {
+                        "slot": claim.slot,
+                        "previous_ref": prior.claim.ref,
+                        "relation": value,
+                        "change_kind": _default_change(claim, prior.claim, value),
+                    }
                 )
+            )
         return _replace(extraction, relations=tuple(relations))
 
     async def _supports(

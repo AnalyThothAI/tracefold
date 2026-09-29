@@ -94,7 +94,7 @@ docker compose exec -T workers tracefold news retry-work \
 
 只恢复对应失败工作版本，保留事实、检查点和发送回执。不是更换模型后的全库重跑，也不续期原始来源。最终尝试仍持有有效 lease 时，不能把它当作已经耗尽并手工抢占。
 
-以失败结束的修订会把它读过的任务范围记为隔离（`failed_read_refs`）：之后该 Event 的新成员只读新材料，不再被同一份坏材料拖累。`retry-work --kind semantic` 清空隔离、重新送入全部隔离材料；只想重读其中一段时，用下节的 `news reanalyze` 按精确修订指定该 `read_ref`。构建冻结输入本身失败（来源缺失、重读范围已变、head 无法解码）只让该 Event 的工作失败，错误码可见，不再让语义消费者故障。
+以失败结束的修订（含 Janitor 结算的崩溃最终尝试）会把该次尝试实际送入的任务范围记为隔离（`failed_read_refs`，尝试所读范围在领取时记入 `attempt_read_refs`）：之后该 Event 的新成员只读新材料，不再被同一份坏材料拖累。`retry-work --kind semantic` 清空隔离、重新送入全部隔离材料；只想重读其中一段时，用下节的 `news reanalyze` 按精确修订指定该 `read_ref`。构建冻结输入本身失败（来源缺失、重读范围已变、head 无法解码）只让该 Event 的工作失败，错误码可见，不再让语义消费者故障。
 
 ### 已完成或已失败工作的定向重读
 

@@ -231,10 +231,6 @@ class PriorClaim(Exact):
     event_id: str
     content_revision: str
     claim: Claim
-    # A reader card carried, carries or may still carry this claim: it was queued, sent or is being sent, or
-    # its Event's notification is undecided. Reader novelty reads its relation to a new claim, so that
-    # comparison is always asked rather than left to relation triage. Not extraction input.
-    reader_facing: bool = False
 
 
 class RelationDraft(Exact):
@@ -541,7 +537,7 @@ class FrozenInput(Exact):
         """What extraction reads. Related Events' claims are comparison candidates, not extraction context."""
 
         document: dict[str, object] = self.model_dump(mode="json")
-        document["prior"] = [row.model_dump(mode="json", exclude={"reader_facing"}) for row in self.own_prior]
+        document["prior"] = [row.model_dump(mode="json") for row in self.own_prior]
         return document
 
     @property

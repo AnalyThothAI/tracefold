@@ -318,7 +318,7 @@ def test_error_codes_are_bounded_and_never_free_text() -> None:
 
 
 class ScriptedBackend:
-    """Relation answers fail until `recover()`; the triage picks the one prior; every source answer is `supports`."""
+    """Relation answers fail until `recover()`; every source answer is `supports`."""
 
     identity = "scripted-generated"
 
@@ -333,7 +333,7 @@ class ScriptedBackend:
         self.calls.append((task, len(items)))
         if task == "relation" and self.failing:
             raise ProviderUnavailable("news_generation_LMRateLimitError")
-        value = {"relation": "adds_information", "relation_triage": "p1"}.get(task, "supports")
+        value = "adds_information" if task == "relation" else "supports"
         return BatchResult(
             answers=tuple(Answer(item_id=item.item_id, value=value, backend=self.identity) for item in items)
         )
@@ -405,7 +405,7 @@ def test_a_retry_re_asks_only_the_answers_the_provider_could_not_give() -> None:
 
     update = assemble_update(source, understood, head, adopted_at_ms=NOW + 1)
     assert update is not None and [change.kind for change in update.changes] == ["new_fact"]
-    # The recovered relation was asked again; one pair needs no triage question.
+    # The recovered relation was asked again; the source answer cached on the first attempt was not.
     assert backend.calls == [("relation", 1), ("relation", 1), ("support", 1)]
 
 

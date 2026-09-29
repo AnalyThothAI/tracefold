@@ -16,21 +16,14 @@ Task = Literal[
     "mode",
     "phase",
     "content_kind",
-    "relation_triage",
     "relation",
     "support",
     "coverage",
     "next_read",
 ]
-QUESTION_VERSION: Final = "news_questions_v4"
+QUESTION_VERSION: Final = "news_questions_v3"
 # The per-claim readings the native backend owns when it is configured.
 CLAIM_READING_TASKS: Final[tuple[Task, ...]] = ("mode", "phase", "content_kind")
-# One triage question names at most this many prior claims (`p1`..`pN` in its shared context). More priors
-# are asked about in further groups of the same size.
-TRIAGE_CANDIDATES_MAX: Final = 16
-# Tasks whose generated answer may name several options (`p2,p5`). A native answer names one option and
-# carries probabilities for every option.
-MULTI_OPTION_TASKS: Final[frozenset[Task]] = frozenset({"relation_triage"})
 
 # The direct question each task asks about one item. Both backends receive it; the native backend puts it
 # in each slot's question, the generated backend in its criteria.
@@ -38,12 +31,6 @@ TASK_QUESTIONS: Final[dict[Task, str]] = {
     "mode": "Which speech act does the cited material establish for this claim?",
     "phase": "Which realization phase does the cited material establish for this action?",
     "content_kind": "Which kind of new content does this claim state?",
-    "relation_triage": (
-        "Which prior claims in the shared context are about the same proposition as this claim: the same "
-        "assertion restated, given more detail or a condition, changed or reversed, corrected, or contradicted? "
-        "Name every such prior claim, separated by commas (for example p2,p5), or none. A shared topic, story, "
-        "actor or asset alone is not the same proposition."
-    ),
     "relation": "How does the current claim relate to the previous claim?",
     "support": "How does this material relate to this exact claim?",
     "coverage": "How much of this claim does the actually delivered text cover?",
@@ -119,13 +106,6 @@ OPTIONS: Final[dict[Task, tuple[tuple[str, str], ...]]] = {
             "other",
             "A concrete proposition none of the above describes, such as a lawsuit filed, a ruling or a settlement.",
         ),
-    ),
-    "relation_triage": (
-        *(
-            (f"p{index}", f"Prior claim p{index} of the shared context.")
-            for index in range(1, 1 + TRIAGE_CANDIDATES_MAX)
-        ),
-        ("none", "No supplied prior claim is about the same proposition."),
     ),
     "relation": (
         (
@@ -443,8 +423,8 @@ class NewsJudgments:
                     raise ContractFault("news_unavailable_answer_has_value")
                 answers.append(answer)
                 continue
-            value = _options(task, answer.value, choices)
-            if value is not None:
+            value = _option_label(answer.value)
+            if value in choices:
                 answers.append(answer.model_copy(update={"value": value}))
             else:
                 answers.append(
@@ -457,22 +437,6 @@ class NewsJudgments:
 
 def _option_label(value: object) -> str:
     return "_".join(str(value).strip().casefold().replace("-", " ").split())
-
-
-def _options(task: Task, value: object, choices: set[str]) -> str | None:
-    """The normalized option an answer names, or None when it names none of this task's options.
-
-    A multi-option answer is normalized to its distinct options in their declared order, comma-joined; `none`
-    cannot be combined with another option.
-    """
-
-    if task not in MULTI_OPTION_TASKS:
-        label = _option_label(value)
-        return label if label in choices else None
-    labels = {_option_label(part) for part in re.split(r"[,;\s]+", str(value)) if part.strip()}
-    if not labels or not labels <= choices or ("none" in labels and len(labels) > 1):
-        return None
-    return ",".join(option for option, _ in OPTIONS[task] if option in labels)
 
 
 def _unavailable(batch: tuple[Question, ...], *, backend: str, code: str) -> BatchResult:

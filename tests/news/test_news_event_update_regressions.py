@@ -804,7 +804,7 @@ NVIDIA = Path(__file__).resolve().parents[1] / "fixtures" / "news" / "semantic_n
 
 
 class RecordedAnswers:
-    """The local-qwen triage picks from the PR-3 replay, and the production pairwise answer for every pair."""
+    """The production pairwise answer for every pair; supports are `reports`."""
 
     identity = "nvidia-buyback-fixture"
 
@@ -816,17 +816,7 @@ class RecordedAnswers:
         answers = []
         for item in items:
             payload = json.loads(item.payload_json)
-            if task == "relation_triage":
-                aliases = {
-                    claim["ref"]: alias for alias, claim in json.loads(context_json or "{}")["prior_claims"].items()
-                }
-                picked = [
-                    aliases[ref]
-                    for ref in self.row["replay_triage_selected"][payload["claim"]["slot"]]
-                    if ref in aliases
-                ]
-                value = ",".join(picked) or "none"
-            elif task == "relation":
+            if task == "relation":
                 self.pairs.append(payload["previous"]["ref"])
                 value = self.row["production_relations"][payload["current"]["slot"]][payload["previous"]["ref"]]
             else:
@@ -838,7 +828,7 @@ class RecordedAnswers:
 @pytest.mark.parametrize("push", [3, 4, 5])
 def test_nvidia_buyback_pushes_still_link_to_the_already_pushed_claims(push: int) -> None:
     # 2026-09-28: seven Events carried the same $150B buyback and pushed seven cards. Reader novelty (PR-2)
-    # reads the links from each later push to the claims already pushed; relation triage must keep them.
+    # reads the links from each later push to the claims already pushed; they must still form.
     row = next(json.loads(line) for line in NVIDIA.open() if json.loads(line)["push"] == push)
     source = FrozenInput(
         event_id=row["event_id"],
@@ -856,9 +846,5 @@ def test_nvidia_buyback_pushes_still_link_to_the_already_pushed_claims(push: int
     assert update is not None
     linked = {change.previous_ref for change in update.changes if change.relation in {"adds_information", "equivalent"}}
     assert set(row["required_links"]) <= linked
-    # Judged: every reader-facing prior, and of the others only what the triage picked (all of them when
-    # they fit in one request).
-    facing = {prior["claim"]["ref"] for prior in row["prior"] if prior["reader_facing"]}
-    others = {prior["claim"]["ref"] for prior in row["prior"]} - facing
-    picked = {ref for refs in row["replay_triage_selected"].values() for ref in refs}
-    assert set(backend.pairs) == facing | (others if len(others) * len(row["claims"]) <= 8 else picked)
+    # Every supplied current prior is judged; no model outside the relation judge settles a pair.
+    assert sorted(backend.pairs) == sorted(prior["claim"]["ref"] for prior in row["prior"] for _ in row["claims"])

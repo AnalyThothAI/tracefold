@@ -693,28 +693,3 @@ def test_only_substantive_changes_open_notification_work_while_unfinished_work_f
     latest = asyncio.run(store.head(EVENT))
     assert latest is not None
     assert _notification_work() == {"state": "pending", "attempts": 0, "content_revision": latest.content_revision}
-
-
-def test_reader_facing_claims_are_marked_for_comparison_and_not_extraction() -> None:
-    from tests.support.news_update_pg import Sender, adopt_other_event, notifications
-
-    clock = Clock(STAMP + 60_000)
-    store = PgNewsStore(ThreadedDb(), clock=clock)
-    seed_event("ev-other", text="Agency orders a 25% tariff on steel.", fingerprint="fp-other")
-    related = asyncio.run(adopt_other_event(store))
-    sql("UPDATE news_items SET provider_params_available_at_ms=%s WHERE item_id='it-ev-other'", (STAMP,))
-    # The related Event's notification was decided without a card: its claim is no reader-facing prior.
-    sql("DELETE FROM news_notification_work WHERE event_id = 'ev-other'")
-    seed_event()
-    assert asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock), EVENT)) == (
-        "adopted"
-    )
-    add_member_evidence(EVENT, "it-member", "Agency adds a pharmaceutical exemption.", now_ms=clock.now_ms)
-    undecided = asyncio.run(store.input_for(EVENT))
-    facing = {row.claim.ref: row.reader_facing for row in undecided.prior}
-    # This Event's notification is still undecided, so its claim may yet reach a reader.
-    assert facing[related.claim.ref] is False and [v for r, v in facing.items() if r != related.claim.ref] == [True]
-    assert asyncio.run(notifications(store, clock, Sender()).process(EVENT, "news")) == "sent"
-    sent = asyncio.run(store.input_for(EVENT))
-    assert {row.claim.ref: row.reader_facing for row in sent.prior} == facing
-    assert sent.input_sha == undecided.input_sha
