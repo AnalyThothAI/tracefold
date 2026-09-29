@@ -125,14 +125,16 @@ def plan_for(
         reason="uncovered_claims",
         update_ref=update.ref,
         claim_decisions=tuple(
-            ClaimDecision(claim_ref=claim.ref, decision="notify", reason="editor_key" if key else "editor_notify")
+            ClaimDecision(claim_ref=claim.ref, decision="notify", reason="reader_key" if key else "reader_push")
             if claim.ref in chosen
-            else ClaimDecision(claim_ref=claim.ref, decision="not_notified", reason="editor_feed_only")
+            else ClaimDecision(claim_ref=claim.ref, decision="not_notified", reason="reader_feed")
             for claim in update.claims
         ),
         key=key,
         channel=channel,
         reader_revision=reader_revision,
+        reader_identity="fixture_reader",
+        input_digest="fixture-input",
     )
 
 

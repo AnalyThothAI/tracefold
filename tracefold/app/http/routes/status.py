@@ -74,6 +74,12 @@ def get_news_status(request: Request) -> Response:
         "news_judgment_configured": models.news_judgment_model is not None,
         "judgment_backend": None if runtime_models is None else runtime_models.status()["judgment_backend"],
         "judgment_model": None if runtime_models is None else runtime_models.status()["judgment_model"],
+        "reader_judgment_backend": (
+            None if runtime_models is None else "native" if models.news_reader_judgment_model else "generated"
+        ),
+        "reader_judgment_model": (
+            None if runtime_models is None else models.news_reader_judgment_model or models.extraction_model
+        ),
         "news_program_identity": None if runtime_models is None else runtime_models.program_identity,
     }
     delivery = {

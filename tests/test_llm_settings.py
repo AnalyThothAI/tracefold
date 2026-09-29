@@ -217,3 +217,22 @@ def test_ordinary_provider_extensions_are_not_mistaken_for_credentials() -> None
         {"request": {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}, "top_k": 20}}}
     )
     assert config.request.extra_body["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_news_reader_judgment_takes_its_key_from_a_file_only_and_is_all_or_none() -> None:
+    route = {"api_key_file": "news_reader_judgment_key", "base_url": "https://api.typesafe.ai/", "model": "jev-1.13"}
+    with pytest.raises(ValidationError, match="news_reader_judgment_api_key_inline"):
+        LlmConfig(news_reader_judgment={**route, "api_key": "inline-secret"})
+    with pytest.raises(ValidationError, match="news_reader_judgment_configuration_incomplete"):
+        LlmConfig(news_reader_judgment={"api_key_file": "k", "base_url": "https://api.typesafe.ai"})
+    with pytest.raises(ValidationError, match="news_reader_judgment_base_url_invalid"):
+        LlmConfig(news_reader_judgment={**route, "base_url": "api.typesafe.ai"})
+    configured = LlmConfig(news_reader_judgment=route).news_reader_judgment
+    assert configured.configured is True and configured.base_url == "https://api.typesafe.ai"
+    assert LlmConfig().news_reader_judgment.configured is False
+
+
+def test_news_reader_judgment_is_never_inferred_from_the_other_system_one_routes() -> None:
+    route = {"api_key": "k", "base_url": "https://openrouter.ai/api", "model": "jev-1.13"}
+    llm = LlmConfig(news_judgment=route, trading_semantics=route)
+    assert llm.news_reader_judgment.configured is False

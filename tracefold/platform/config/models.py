@@ -192,9 +192,13 @@ class _SystemOneRouteConfig(BaseModel):
         normalized = str(value or "").strip()
         return normalized.rstrip("/") or None
 
+    @property
+    def key_configured(self) -> bool:
+        return self.api_key is not None
+
     @model_validator(mode="after")
     def complete_group(self) -> Self:
-        fields = (self.api_key, self.base_url, self.model)
+        fields = (self.key_configured, self.base_url, self.model)
         if any(fields) and not all(fields):
             raise ValueError(f"{self.error_prefix}_configuration_incomplete")
         if self.base_url is not None and not _is_http_base_url(self.base_url):
@@ -203,7 +207,7 @@ class _SystemOneRouteConfig(BaseModel):
 
     @property
     def configured(self) -> bool:
-        return bool(self.api_key and self.base_url and self.model)
+        return bool(self.key_configured and self.base_url and self.model)
 
 
 class TradingSemanticsConfig(_SystemOneRouteConfig):
@@ -219,6 +223,35 @@ class NewsJudgmentConfig(_SystemOneRouteConfig):
     """
 
     error_prefix: ClassVar[str] = "news_judgment"
+
+
+class NewsReaderJudgmentConfig(_SystemOneRouteConfig):
+    """The News notification decision route (#742): the reader coverage and importance questions only.
+
+    Its key is a secret file (`api_key_file`, relative to the config directory), never an inline value. It is
+    never inferred from `news_judgment` or `trading_semantics`; unset, the generative News route answers the
+    same questions with its own measured cuts.
+    """
+
+    error_prefix: ClassVar[str] = "news_reader_judgment"
+
+    api_key_file: str | None = None
+
+    @field_validator("api_key_file", mode="before")
+    @classmethod
+    def parse_optional_key_file(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+    @field_validator("api_key", mode="after")
+    @classmethod
+    def key_by_file_only(cls, value: str | None) -> None:
+        if value is not None:
+            raise ValueError("news_reader_judgment_api_key_inline")
+
+    @property
+    def key_configured(self) -> bool:
+        return self.api_key_file is not None
 
 
 class LlmConfig(BaseModel):
@@ -237,6 +270,7 @@ class LlmConfig(BaseModel):
     news_reader_card_fallback: _LlmEndpointConfig = Field(default_factory=_LlmEndpointConfig)
     trading_semantics: TradingSemanticsConfig = Field(default_factory=TradingSemanticsConfig)
     news_judgment: NewsJudgmentConfig = Field(default_factory=NewsJudgmentConfig)
+    news_reader_judgment: NewsReaderJudgmentConfig = Field(default_factory=NewsReaderJudgmentConfig)
 
     @field_validator("api_key", "news_triage_model", mode="before")
     @classmethod
@@ -773,6 +807,9 @@ class Settings(BaseModel):
     def news_telegram_bot_token_file(self) -> Path | None:
         return self._configured_path(self.news.push.telegram_bot_token_file)
 
+    def news_reader_judgment_api_key_file(self) -> Path | None:
+        return self._configured_path(self.llm.news_reader_judgment.api_key_file)
+
     def trading_binance_usdm_api_key_file(self) -> Path | None:
         return self._configured_path(self.trading.execution.credentials.api_key_file)
 
@@ -886,6 +923,8 @@ class NewsModelAvailability:
     Extraction and the generative judgments run on the `news_triage_model` endpoint (and its fallback);
     cards run on `news_reader_card`, or on the extraction endpoint when no dedicated one is configured.
     `news_judgment_model` is the optional Jev route; `None` means generative judgments.
+    `news_reader_judgment_model` is the notification decision layer's own System One route; `None` means
+    the generative News route answers the reader questions.
     """
 
     extraction_model: str | None
@@ -895,6 +934,7 @@ class NewsModelAvailability:
     card_fallback_model: str | None = None
     card_fallback_dedicated: bool = False
     news_judgment_model: str | None = None
+    news_reader_judgment_model: str | None = None
 
     @property
     def configured(self) -> bool:
@@ -927,6 +967,9 @@ def news_model_availability(settings: Settings) -> NewsModelAvailability:
         ),
         card_fallback_dedicated=bool(reader_fallback_ok),
         news_judgment_model=judgment.model if judgment.configured else None,
+        news_reader_judgment_model=(
+            settings.llm.news_reader_judgment.model if settings.llm.news_reader_judgment.configured else None
+        ),
     )
 
 

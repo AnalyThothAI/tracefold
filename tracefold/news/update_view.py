@@ -9,13 +9,13 @@ contract leaves unset stays unknown.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from pydantic import ValidationError
 
 from .taxonomy import IPTC_SUBJECT_LABELS_ZH, source_authority_zh
 from .updates.contracts import Claim, EventUpdate, Evidence
-from .updates.notification import NotificationPlan
+from .updates.notification import ClaimDecision, NotificationPlan
 
 UPDATE_DECODE_ERROR: Final = "news_event_update_undecodable"
 PLAN_DECODE_ERROR: Final = "news_notification_plan_undecodable"
@@ -90,27 +90,57 @@ IMPLICATION_ORIGIN_ZH: Final[dict[str, str]] = {
 PLAN_ACTION_ZH: Final[dict[str, str]] = {
     "notify": "通知",
     "no_notification": "不通知",
-    "unresolved": "等待进行中的发送",
+    "unresolved": "等待",
 }
 PLAN_REASON_ZH: Final[dict[str, str]] = {
-    "uncovered_claims": "有命题未被已送达内容覆盖",
+    "uncovered_claims": "有命题值得通知",
+    "awaiting": "等待进行中的发送或读者判断",
+    "no_uncovered_actionable_claims": "没有值得通知的新命题",
+    # editorial_v1 history
     "send_outcome_unresolved": "本事件仍有发送进行中",
-    "no_uncovered_actionable_claims": "没有未覆盖且可通知的命题",
 }
 CLAIM_DECISION_ZH: Final[dict[str, str]] = {"notify": "通知", "not_notified": "不通知", "deferred": "暂缓"}
 CLAIM_REASON_ZH: Final[dict[str, str]] = {
-    "editor_notify": "编辑判断值得通知",
-    "editor_key": "编辑判断为重点",
-    "editor_feed_only": "仅进入信息流",
-    "attention_unavailable_default_notify": "编辑判断暂不可用，按普通通知",
+    "retired": "已撤回的命题",
+    "send_outcome_unresolved": "本事件仍有发送进行中，等待其结果",
+    "send_outcome_ambiguous": "此前发送结果不明，按可能已送达处理，不重发",
+    "stale_source": "来源已过时",
+    "known_to_reader": "读者已收到同一事实",
+    "linked_send_in_flight": "关联命题正在发送，等待其结果",
+    "correction_of_sent": "更正此前已推送的内容",
+    "protected_listing": "上币公告",
+    "large_daily_move": "商品/指数当日大幅波动",
+    "reader_key": "新增信息重要，标为重点",
+    "reader_push": "新增信息值得推送",
+    "reader_feed": "新增信息不足以打断，只进信息流",
+    "reader_unavailable": "读者判断暂不可用，等待重试",
+    "reader_unassessed": "读者判断长时间不可用，未评估，不推送",
+}
+# Reasons of `editorial_v1` decisions, shown read-only for the history the generative editor wrote.
+LegacyClaimReason = Literal[
+    "editor_notify", "editor_key", "editor_feed_only", "attention_unavailable_default_notify", "covered_by_sent_receipt"
+]
+LEGACY_CLAIM_REASON_ZH: Final[dict[str, str]] = {
+    "editor_notify": "编辑判断值得通知（旧版）",
+    "editor_key": "编辑判断为重点（旧版）",
+    "editor_feed_only": "仅进入信息流（旧版）",
+    "attention_unavailable_default_notify": "编辑判断暂不可用，按普通通知（旧版）",
+    "covered_by_sent_receipt": "已送达内容已覆盖（旧版）",
     "protected_listing": "上币公告",
     "large_daily_move": "商品/指数日内大幅波动",
     "retired": "已撤回的命题",
     "stale_source": "来源已过时",
-    "covered_by_sent_receipt": "已送达内容已覆盖",
     "send_outcome_ambiguous": "此前发送结果不明，按可能已送达处理，不重发",
     "send_outcome_unresolved": "本事件仍有发送进行中，等待其结果",
 }
+NOVELTY_ZH: Final[dict[str, str]] = {
+    "known": "已知",
+    "increment": "增量",
+    "development": "进展",
+    "in_flight": "关联发送中",
+    "unlinked": "未关联",
+}
+RENDER_ZH: Final[dict[str, str]] = {"full": "完整", "increment": "补充", "correction": "更正"}
 SEMANTIC_STATE_ZH: Final[dict[str, str]] = {"pending": "处理中", "done": "已完成", "failed": "失败"}
 NOTIFICATION_STATE_ZH: Final[dict[str, str]] = {"pending": "待决定", "done": "已决定", "failed": "通知失败"}
 EXTRA_READ_STATE_ZH: Final[dict[str, str]] = {
@@ -150,7 +180,8 @@ def claim_reasons_zh(decisions: Any) -> str:
     counts: dict[str, int] = {}
     for row in decisions if isinstance(decisions, Sequence) and not isinstance(decisions, str) else ():
         if isinstance(row, Mapping) and row.get("decision") != "notify":
-            reason = _zh(CLAIM_REASON_ZH, row.get("reason"))
+            code = str(row.get("reason") or "")
+            reason = CLAIM_REASON_ZH.get(code) or LEGACY_CLAIM_REASON_ZH.get(code) or code
             if reason:
                 counts[reason] = counts.get(reason, 0) + 1
     return " · ".join(f"{reason} ×{n}" if n > 1 else reason for reason, n in counts.items())
@@ -400,8 +431,22 @@ def semantic_view(work: Mapping[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
+def _claim_reason_zh(row: ClaimDecision) -> str:
+    """A templated reason: the rule, and for a reader row the score and the cut it was read against."""
+
+    text = _zh(CLAIM_REASON_ZH, row.reason)
+    judgment = None if row.reader is None else row.reader.judgment
+    if judgment is not None and judgment.importance is not None and judgment.backend is not None:
+        cuts = judgment.cuts
+        text += f"（增量重要性 {judgment.importance.value:.2f}；推送 ≥ {cuts.push}，重点 ≥ {cuts.key}）"
+    if row.reader is not None and row.reader.earlier is not None:
+        text += f"；{_zh(RENDER_ZH, row.reader.render)}此前已推送的一条"
+    return text
+
+
 def plan_view(plan: NotificationPlan, *, statements: Mapping[str, str]) -> dict[str, Any]:
     return {
+        "origin": "reader_v2",
         "action": plan.action,
         "action_zh": _zh(PLAN_ACTION_ZH, plan.action),
         "reason": plan.reason,
@@ -410,8 +455,7 @@ def plan_view(plan: NotificationPlan, *, statements: Mapping[str, str]) -> dict[
         "update_ref": plan.update_ref,
         "reader_revision": plan.reader_revision,
         "decision_ref": plan.record_ref,
-        "assessment_status": plan.assessment_status,
-        "assessment_error_code": plan.assessment_error_code,
+        "reader_identity": plan.reader_identity,
         "claim_decisions": [
             {
                 "claim_ref": row.claim_ref,
@@ -420,9 +464,60 @@ def plan_view(plan: NotificationPlan, *, statements: Mapping[str, str]) -> dict[
                 "decision": row.decision,
                 "decision_zh": _zh(CLAIM_DECISION_ZH, row.decision),
                 "reason": row.reason,
-                "reason_zh": row.reason_zh or _zh(CLAIM_REASON_ZH, row.reason),
+                "reason_zh": _claim_reason_zh(row),
+                **_reader_fields(row),
             }
             for row in plan.claim_decisions
+        ],
+    }
+
+
+def _reader_fields(row: ClaimDecision) -> dict[str, Any]:
+    reader = row.reader
+    if reader is None:
+        return {}
+    judgment = reader.judgment
+    importance = None if judgment is None else judgment.importance
+    return {
+        "novelty": reader.novelty,
+        "novelty_zh": _zh(NOVELTY_ZH, reader.novelty),
+        "render": reader.render,
+        "earlier_intent_id": None if reader.earlier is None else reader.earlier.intent_id,
+        "importance": None if importance is None else round(importance.value, 2),
+        "importance_probabilities": None if importance is None else [round(p, 3) for p in importance.probabilities],
+        "reader_backend": None if judgment is None else judgment.backend,
+    }
+
+
+def legacy_plan_view(plan: Mapping[str, Any], *, statements: Mapping[str, str]) -> dict[str, Any] | None:
+    """An `editorial_v1` decision, read-only: its action and each claim's named reason, never its free text."""
+
+    rows = plan.get("claim_decisions")
+    if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
+        return None
+    action = str(plan.get("action") or "")
+    reason = str(plan.get("reason") or "")
+    return {
+        "origin": "editorial_v1",
+        "action": action,
+        "action_zh": _zh(PLAN_ACTION_ZH, action),
+        "reason": reason,
+        "reason_zh": _zh(PLAN_REASON_ZH, reason),
+        "key": bool(plan.get("key")),
+        "update_ref": str(plan.get("update_ref") or ""),
+        "reader_revision": str(plan.get("reader_revision") or ""),
+        "decision_ref": plan.get("decision_ref"),
+        "reader_identity": None,
+        "claim_decisions": [
+            {
+                "claim_ref": str(row.get("claim_ref") or ""),
+                "statement": statements.get(str(row.get("claim_ref") or "")),
+                "decision": str(row.get("decision") or ""),
+                "decision_zh": _zh(CLAIM_DECISION_ZH, row.get("decision")),
+                "reason": str(row.get("reason") or ""),
+                "reason_zh": _zh(LEGACY_CLAIM_REASON_ZH, row.get("reason")),
+            }
+            for row in rows
         ],
     }
 
@@ -430,7 +525,15 @@ def plan_view(plan: NotificationPlan, *, statements: Mapping[str, str]) -> dict[
 def notification_view(work: Mapping[str, Any] | None, *, statements: Mapping[str, str]) -> dict[str, Any] | None:
     if work is None:
         return None
-    plan = decode_plan(work.get("plan"))
+    raw = work.get("plan")
+    plan = decode_plan(raw) if work.get("origin") != "editorial_v1" else None
+    view = (
+        plan_view(plan, statements=statements)
+        if plan is not None
+        else legacy_plan_view(raw, statements=statements)
+        if work.get("origin") == "editorial_v1" and isinstance(raw, Mapping)
+        else None
+    )
     state = str(work["state"])
     return {
         "state": state,
@@ -440,8 +543,8 @@ def notification_view(work: Mapping[str, Any] | None, *, statements: Mapping[str
         "last_error_code": work.get("last_error_code"),
         "next_attempt_at_ms": work.get("next_attempt_at_ms"),
         "updated_at_ms": int(work["updated_at_ms"]),
-        "plan": plan_view(plan, statements=statements) if plan is not None else None,
-        "plan_error_code": PLAN_DECODE_ERROR if work.get("plan") is not None and plan is None else None,
+        "plan": view,
+        "plan_error_code": PLAN_DECODE_ERROR if raw is not None and view is None else None,
     }
 
 
@@ -517,12 +620,15 @@ __all__ = [
     "EVIDENCE_RELATION_ZH",
     "IMPLICATION_ORIGIN_ZH",
     "INTENT_STATE_ZH",
+    "LEGACY_CLAIM_REASON_ZH",
     "MODE_ZH",
+    "NOVELTY_ZH",
     "PHASE_ZH",
     "PLAN_ACTION_ZH",
     "PLAN_DECODE_ERROR",
     "PLAN_REASON_ZH",
     "UPDATE_DECODE_ERROR",
+    "LegacyClaimReason",
     "claim_reasons_zh",
     "decode_plan",
     "decode_update",

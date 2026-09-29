@@ -8,6 +8,18 @@
 |--------|------|----------|---------|
 | `version_num` | `VARCHAR(32)` | False | `None` |
 
+## `news_claim_links`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `update_ref` | `TEXT` | False | `None` |
+| `current_ref` | `TEXT` | False | `None` |
+| `previous_ref` | `TEXT` | False | `None` |
+| `relation` | `TEXT` | False | `None` |
+| `current_event_id` | `TEXT` | False | `None` |
+| `previous_event_id` | `TEXT` | True | `None` |
+| `asserted_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_deliveries`
 
 | Column | Type | Nullable | Default |

@@ -27,11 +27,13 @@ from ..updates.ports import (
     SemanticObservation,
     SendOutcome,
 )
+from ..updates.reader_judgments import ClaimLink, LinkedReceipt
 from ..updates.service import clock_ms
 from .event_updates import (
     INTENT_LEASE_MS,
     EventUpdateConflict,
     SemanticLease,
+    delivered_text,
     frozen_input,
     item_evidence,
     read_target_item_id,
@@ -229,6 +231,25 @@ class PgNewsStore:
             invalidated_claim_refs=tuple(material["invalidated"]),
             watch_symbols=self.watch_symbols,
             protected_listing_claim_refs=listing_refs,
+            links=tuple(
+                ClaimLink(
+                    current_ref=str(row["current_ref"]),
+                    previous_ref=str(row["previous_ref"]),
+                    relation=row["relation"],
+                    asserted_at_ms=int(row["asserted_at_ms"]),
+                )
+                for row in material["links"]
+            ),
+            link_receipts=tuple(
+                LinkedReceipt(
+                    intent_id=str(row["intent_id"]),
+                    state=row["state"],
+                    claim_refs=tuple(str(ref) for ref in row["claim_refs"] or ()),
+                    settled_at_ms=None if row["settled_at_ms"] is None else int(row["settled_at_ms"]),
+                )
+                for row in material["link_receipts"]
+            ),
+            linked=tuple(text for row in material["link_receipts"] if (text := delivered_text(row)) is not None),
         )
         return NotificationSnapshot(
             update=update,
@@ -236,17 +257,6 @@ class PgNewsStore:
             work_updated_at_ms=material["work_updated_at_ms"],
             work_due_at_ms=material["work_due_at_ms"],
         )
-
-    async def lookup_notification_decision(
-        self, event_id: str, channel: str, input_digest: str
-    ) -> NotificationPlan | None:
-        document = await self.db.read(
-            "news_update_decision_lookup",
-            lambda repos: repos.news.lookup_notification_decision(
-                event_id=event_id, channel=channel, input_digest=input_digest
-            ),
-        )
-        return None if document is None else NotificationPlan.model_validate(document)
 
     async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
         token = self.lease_token()

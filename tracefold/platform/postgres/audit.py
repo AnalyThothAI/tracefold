@@ -101,6 +101,7 @@ NEWS_TABLES = (
     "news_event_updates",
     "news_head_scope_repairs",
     "news_event_update_heads",
+    "news_claim_links",
     "news_judgment_cache",
     "news_notification_work",
     "news_notification_decisions",

@@ -27,6 +27,7 @@ def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
     password_path = _ensure_postgres_password_file(path.parent)
     bootstrap_password_path = _ensure_bootstrap_postgres_password_file(path.parent)
     telegram_bot_token_path = _ensure_optional_secret_file(path.parent / "telegram_bot_token")
+    news_reader_judgment_key_path = _ensure_optional_secret_file(path.parent / "news_reader_judgment_api_key")
     trading_execution_secret_paths = {
         name: _ensure_optional_secret_file(path.parent / name)
         for name in ("binance_usdm_api_key", "binance_usdm_api_secret")
@@ -41,6 +42,7 @@ def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
                 "postgres_database_password_file": str(password_path),
                 "postgres_bootstrap_password_file": str(bootstrap_password_path),
                 "telegram_bot_token_file": str(telegram_bot_token_path),
+                "news_reader_judgment_api_key_file": str(news_reader_judgment_key_path),
                 "trading_execution_secret_files": {
                     name: str(secret_path) for name, secret_path in trading_execution_secret_paths.items()
                 },
@@ -101,6 +103,12 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                         # The optional News Jev route; unset means generative judgments.
                         "news_judgment_configured": settings.llm.news_judgment.configured,
                         "news_judgment_model": model_availability.news_judgment_model,
+                        # The notification decision route; its key is a secret file, reported as a path only.
+                        "news_reader_judgment_configured": settings.llm.news_reader_judgment.configured,
+                        "news_reader_judgment_model": model_availability.news_reader_judgment_model,
+                        "news_reader_judgment_api_key_file": (
+                            str(path) if (path := settings.news_reader_judgment_api_key_file()) else None
+                        ),
                     },
                     "triage": settings.news.triage.model_dump(),
                     "watchlist": sorted(settings.news.watchlist_symbols),

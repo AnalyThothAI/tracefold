@@ -49,7 +49,7 @@ Platform 提供物理基础设施，Integrations 对接外部系统，App 装配
 
 [paths.py](../../tracefold/platform/paths.py)解析 `TRACEFOLD_HOME`，默认 `~/.tracefold`；[loader.py](../../tracefold/platform/config/loader.py)读取其中的 `config.yaml`，由 [models.py](../../tracefold/platform/config/models.py)校验。Compose 的可选 `.env` 只承载项目名、宿主机目录与端口等部署参数，不替代业务 Settings，也不形成两份 YAML 的隐式合并。
 
-模型 endpoint 的 `api_key`、`base_url`、`model` 是完整配置组；主 News 路由保留 `news_triage_model` 字段名。历史拼写不等于旧 Program 存在。`news_judgment` 与 `trading_semantics` 独立，不从另一条路由猜凭据。
+模型 endpoint 的 `api_key`、`base_url`、`model` 是完整配置组；主 News 路由保留 `news_triage_model` 字段名。历史拼写不等于旧 Program 存在。`news_judgment` 与 `trading_semantics` 独立，不从另一条路由猜凭据。`news_reader_judgment` 是通知决策层独用的 System One 路由，密钥只能用配置目录下的私有文件 `api_key_file` 引用（`news_reader_judgment_api_key`，初始化建空文件、Compose 只读挂载给 Workers，空文件等于未配置），不接受内联 `api_key`，也不借用 `news_judgment` 或 Trading 的凭据。
 
 未知字段显式报错；去掉旧字段必须按完整 YAML 路径修改，不能做缩进无关的批量文本替换。`tracefold init` 负责初始化与文件权限，不替升级自动解释所有历史配置。
 

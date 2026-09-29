@@ -14,12 +14,14 @@ from typing import Any, Final
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 import dspy  # type: ignore[import-untyped]
+from loguru import logger
 
 from tracefold.app.llm import ConfiguredLMEndpoint, StructuredOutputMode, configured_lm_endpoint
 from tracefold.app.news_updates import NewsJudgmentEndpoint, news_program_identity
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.updates.service import GENERATION_CALL_SECONDS
 from tracefold.platform.config.models import NewsModelAvailability, news_model_availability
+from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 
 # Code-owned generation ceilings per role. A native Jev route has none: it is not a chat model.
 EXTRACTION_MAX_TOKENS: Final = 4_000
@@ -197,6 +199,29 @@ def compose_news_models(settings: Any) -> NewsRuntimeModels | None:
         news_judgment=news_judgment,
         availability=availability,
     )
+
+
+def news_reader_judgment_endpoint(settings: Any) -> NewsJudgmentEndpoint | None:
+    """`llm.news_reader_judgment` with its key read from its secret file; None when the route is unset.
+
+    `tracefold init` creates the key file empty, and an empty file is an unset key, as for the Telegram
+    token: the generative News route answers, and the log names why. A configured route whose key file
+    cannot be read otherwise raises `SecretFileError`, whose code never names the path or the content.
+    The notification decision layer is its only consumer (#742).
+    """
+
+    route = settings.llm.news_reader_judgment
+    path = settings.news_reader_judgment_api_key_file()
+    if not route.configured or path is None:
+        return None
+    try:
+        api_key = read_secure_secret_text(path)
+    except SecretFileError as exc:
+        if exc.code != "empty":
+            raise
+        logger.warning("news_reader_judgment_key_empty: generative News route answers the reader questions")
+        return None
+    return NewsJudgmentEndpoint(base_url=str(route.base_url), model=str(route.model), api_key=api_key)
 
 
 def news_runtime_manifest_sha(settings: Any, *, image_digest: str, runtime_revision: str) -> str:

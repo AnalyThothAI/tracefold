@@ -1,75 +1,101 @@
-"""One reader selection owner: editorial choice, stable intents and actual delivered-text coverage.
+"""One reader selection owner: reader novelty, one two-question reader judgment per claim, a pure decision table.
 
-The planner reads adopted EventUpdate content and the reader's actual receipts. Every claim gets one named
-decision. There is no statement drop, headline-similarity veto,
-same-story count, ticker requirement or importance score. The only reason a plan stays pending is an
-overlapping send still in flight; a send whose outcome is ambiguous may already be on the reader's screen,
-so its claims are treated as possibly sent -- never sent again, and never holding the rest of the plan.
+The planner reads adopted EventUpdate content, the persisted semantic links between claims and the reader's
+actual receipts. Every claim gets one named decision from `decide()`: retired, sending, ambiguous and stale
+claims first; then what the reader already holds (`reader_novelty`, code over links); then corrections of
+delivered claims, listing protection and whole-market daily moves; then the incremental importance the reader
+judgment gave what the claim adds (`reader_judgments`). Cuts are code, per answering backend. A plan stays
+pending only for a send still in flight or a reader judgment that cannot be had yet, and the latter only
+for a bounded time.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
 from typing import Final, Literal, Protocol
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, model_validator
 
-from .attention import BRIEF_IDENTITY, AttentionAssessor, Disposition, assessment_input
 from .contracts import Claim, EventUpdate, Exact, Source
-from .identity import canonical_json, digest, identity
-from .judgment import Budget, ContractFault, NewsJudgments, ProviderUnavailable, Question
-from .judgment import error_code as bounded_error_code
+from .identity import digest, identity
+from .judgment import Budget, JudgmentCache
+from .reader_judgments import (
+    READER_MESSAGES_MAX,
+    ClaimLink,
+    LinkedReceipt,
+    Novelty,
+    ReaderDecision,
+    ReaderInput,
+    ReaderJudge,
+    ReaderJudgment,
+    ReaderNovelty,
+    Render,
+    cached_judgments,
+    novelty_outcome,
+    reader_decision,
+    reader_novelty,
+)
 
-SOURCE_MAX_AGE_MS: Final = 12 * 60 * 60_000
+# An ordinary push reaches the reader within three hours of the claim first being visible; a correction of
+# something the reader was told is still worth it for twelve.
+SOURCE_MAX_AGE_MS: Final = 3 * 60 * 60_000
+CORRECTION_MAX_AGE_MS: Final = 12 * 60 * 60_000
+# How long an adopted update waits for a reader judgment nobody can give before its claims are recorded as
+# unassessed. They are never pushed on a guess.
+READER_WAIT_MAX_MS: Final = 10 * 60_000
 # The one logical reader channel News notifies (#706). The configured provider is how it is reached.
 NEWS_CHANNEL: Final = "news"
 
 PlanAction = Literal["notify", "no_notification", "unresolved"]
-PlanReason = Literal["uncovered_claims", "send_outcome_unresolved", "no_uncovered_actionable_claims"]
+PlanReason = Literal["uncovered_claims", "awaiting", "no_uncovered_actionable_claims"]
 ClaimDecisionValue = Literal["notify", "not_notified", "deferred"]
 ClaimReason = Literal[
-    "editor_notify",
-    "editor_key",
-    "editor_feed_only",
-    "attention_unavailable_default_notify",
-    "protected_listing",
-    "large_daily_move",
     "retired",
-    "stale_source",
-    "covered_by_sent_receipt",
+    # deferred: a send of this Event is still in flight and must settle first
+    "send_outcome_unresolved",
     # not notified: an earlier send of this claim has no provable outcome, so it may already be read
     "send_outcome_ambiguous",
-    # deferred: an overlapping send of this Event is still in flight and must settle first
-    "send_outcome_unresolved",
+    "stale_source",
+    # novelty: the reader already holds this claim, or a linked claim's send is still in flight
+    "known_to_reader",
+    "linked_send_in_flight",
+    "correction_of_sent",
+    "protected_listing",
+    "large_daily_move",
+    # the incremental importance of what the claim adds, against the answering backend's cuts
+    "reader_key",
+    "reader_push",
+    "reader_feed",
+    # deferred while the reader judgment cannot be had; recorded unassessed after READER_WAIT_MAX_MS
+    "reader_unavailable",
+    "reader_unassessed",
 ]
 REASON_DECISIONS: Final[dict[ClaimReason, ClaimDecisionValue]] = {
-    "editor_notify": "notify",
-    "editor_key": "notify",
-    "editor_feed_only": "not_notified",
-    "attention_unavailable_default_notify": "notify",
+    "retired": "not_notified",
+    "send_outcome_unresolved": "deferred",
+    "send_outcome_ambiguous": "not_notified",
+    "stale_source": "not_notified",
+    "known_to_reader": "not_notified",
+    "linked_send_in_flight": "deferred",
+    "correction_of_sent": "notify",
     "protected_listing": "notify",
     "large_daily_move": "notify",
-    "retired": "not_notified",
-    "stale_source": "not_notified",
-    "covered_by_sent_receipt": "not_notified",
-    "send_outcome_ambiguous": "not_notified",
-    "send_outcome_unresolved": "deferred",
+    "reader_key": "notify",
+    "reader_push": "notify",
+    "reader_feed": "not_notified",
+    "reader_unavailable": "deferred",
+    "reader_unassessed": "not_notified",
 }
-EDITOR_REASONS: Final[dict[Disposition, ClaimReason]] = {
-    "notify": "editor_notify",
-    "key": "editor_key",
-    "feed_only": "editor_feed_only",
-}
-# The owner's one exception (#675 §7): a same-day move this large is itself the fact, but only where a whole
-# market moved. A single stock is excluded by its market, never by the size of the move.
+# The owner's one exception (#675 §7), narrowed by #742: a same-day price move this large is itself the fact,
+# but only where a whole market moved and only as a move, never a level, a year-on-year figure or a rate.
 PRICE_MOVE_EXCEPTION_PERCENT: Final = Decimal(5)
 PRICE_MOVE_EXCEPTION_MARKETS: Final[frozenset[str]] = frozenset({"commodity", "index"})
 _PERCENT_UNITS: Final[frozenset[str]] = frozenset({"%", "pct", "percent"})
+_MOVE_WORDS: Final = re.compile(r"change|move|rise|fall|drop|gain|loss|decline|jump|plunge|surge|涨|跌|升|降", re.I)
+_SAME_DAY_WORDS: Final = re.compile(r"intraday|today|daily|session|日内|当日|今日|今天|盘中|收盘", re.I)
 
 
 NOTIFICATION_ATTEMPTS_MAX: Final = 3
@@ -96,7 +122,7 @@ class DeliveredText(Exact):
 class ReaderSnapshot(Exact):
     channel: str
     revision: str
-    # Retrieved receipt rows, never observed event heads or unsent drafts.
+    # Recalled sent receipts, never observed event heads or unsent drafts.
     receipts: tuple[DeliveredText, ...]
     # Claims of this Event's sends still in flight. Never counted as received; the plan waits for them.
     blocked_claim_refs: tuple[str, ...] = ()
@@ -106,13 +132,38 @@ class ReaderSnapshot(Exact):
     # The reader's code-owned watchlist, as canonical upper-case base symbols supplied by the store.
     watch_symbols: tuple[str, ...] = ()
     protected_listing_claim_refs: tuple[str, ...] = ()
+    # Persisted semantic links within two hops of this update's claims, the receipts that carry any claim
+    # they reach (sent, ambiguous or still sending), and the delivered text of those receipts.
+    links: tuple[ClaimLink, ...] = ()
+    link_receipts: tuple[LinkedReceipt, ...] = ()
+    linked: tuple[DeliveredText, ...] = ()
+
+
+class ReaderRepairContext(Exact):
+    """The earlier message a card line adds to or corrects: the reader already has its exact text."""
+
+    render: Literal["increment", "correction"]
+    intent_id: str
+    body: str
+
+
+class ReaderRecord(Exact):
+    """What the reader rows decided from, for one claim: novelty, the judgment and the frozen input's shape."""
+
+    novelty: Novelty
+    link_path: tuple[ClaimLink, ...] = ()
+    render: Render = "full"
+    earlier: ReaderRepairContext | None = None
+    input_digest: str | None = None
+    message_intents: tuple[str, ...] = ()
+    judgment: ReaderJudgment | None = None
 
 
 class ClaimDecision(Exact):
     claim_ref: str
     decision: ClaimDecisionValue
     reason: ClaimReason
-    reason_zh: str | None = None
+    reader: ReaderRecord | None = None
 
     @model_validator(mode="after")
     def check_reason(self) -> ClaimDecision:
@@ -132,16 +183,15 @@ class PlanTimings(Exact):
     """Where one planning turn spent its time. Audit only: nothing reads it back to decide anything.
 
     `due_at_ms` is when the work became due and `started_at_ms` when this turn took it, so the wait for a
-    prepare slot is their difference; the three durations are the snapshot read, the coverage judgments
-    and the editor; `planned_at_ms` is when the plan was complete. The decision row's `created_at_ms` is
-    the write, so every stage from adoption to the recorded decision can be read back with SQL alone.
+    prepare slot is their difference; the two durations are the snapshot read and the reader judgments;
+    `planned_at_ms` is when the plan was complete. The decision row's `created_at_ms` is the write, so every
+    stage from adoption to the recorded decision can be read back with SQL alone.
     """
 
     due_at_ms: int | None = Field(default=None, ge=0)
     started_at_ms: int | None = Field(default=None, ge=0)
     snapshot_ms: int | None = Field(default=None, ge=0)
-    coverage_ms: int | None = Field(default=None, ge=0)
-    assessment_ms: int | None = Field(default=None, ge=0)
+    judgment_ms: int | None = Field(default=None, ge=0)
     planned_at_ms: int | None = Field(default=None, ge=0)
 
 
@@ -151,18 +201,16 @@ class NotificationPlan(Exact):
     update_ref: str
     # One decision per adopted claim, so the Console can show why each was or was not sent.
     claim_decisions: tuple[ClaimDecision, ...]
-    # Replaces the retired escalate class: a louder presentation of this notification, never a gate.
+    # A louder presentation of this notification, never a gate.
     key: bool = False
     channel: str
     purpose: Literal["news_update"] = "news_update"
     reader_revision: str
-    assessment_status: Literal["available", "unavailable", "skipped"] = "skipped"
-    assessment_error_code: str | None = None
-    assessment_identity: str | None = None
-    assessment_input_digest: str | None = None
-    assessment_input: dict[str, object] | None = None
+    # The reader judge that answered and one digest over every claim's frozen input.
+    reader_identity: str
+    input_digest: str
     decision_ref: str | None = None
-    # The receipts the coverage judgments read, so a recorded decision says what "already sent" meant.
+    # The receipts the reader judgments read, so a recorded decision says what "already sent" meant.
     compared_receipts: tuple[ComparedReceipt, ...] = ()
     timings: PlanTimings | None = None
 
@@ -188,8 +236,12 @@ class NotificationPlan(Exact):
             self.channel,
             self.reader_revision,
             self.claim_decisions,
-            self.assessment_input_digest,
+            self.input_digest,
         )
+
+    def earlier(self, claim_ref: str) -> ReaderRepairContext | None:
+        row = next((row for row in self.claim_decisions if row.claim_ref == claim_ref), None)
+        return None if row is None or row.reader is None else row.reader.earlier
 
     @model_validator(mode="after")
     def check_action(self) -> NotificationPlan:
@@ -199,7 +251,7 @@ class NotificationPlan(Exact):
         if self.selected_claim_refs:
             expected = ("notify", "uncovered_claims")
         elif self.deferred_claim_refs:
-            expected = ("unresolved", "send_outcome_unresolved")
+            expected = ("unresolved", "awaiting")
         else:
             expected = ("no_notification", "no_uncovered_actionable_claims")
         if (self.action, self.reason) != expected:
@@ -236,13 +288,26 @@ class FrozenCard(Exact):
 class CardComposer(Protocol):
     identity: str
 
-    async def compose(self, claims: tuple[Claim, ...], *, sources: Mapping[str, Source]) -> CardCopy:
+    async def compose(
+        self,
+        claims: tuple[Claim, ...],
+        *,
+        sources: Mapping[str, Source],
+        earlier: Mapping[str, ReaderRepairContext] | None = None,
+    ) -> CardCopy:
         """Chinese copy for exactly the selected claims. The caller bounds the call with asyncio.timeout."""
         ...
 
 
-def card_copy_material(claims: tuple[Claim, ...], sources: Mapping[str, Source]) -> list[dict[str, object]]:
-    """Exactly the claim and provenance fields the Chinese composer receives."""
+def card_copy_material(
+    claims: tuple[Claim, ...],
+    sources: Mapping[str, Source],
+    earlier: Mapping[str, ReaderRepairContext] | None = None,
+) -> list[dict[str, object]]:
+    """Exactly the claim and provenance fields the Chinese composer receives.
+
+    A claim rendered as an increment or a correction carries the earlier message the reader already has.
+    """
 
     return [
         {
@@ -263,19 +328,33 @@ def card_copy_material(claims: tuple[Claim, ...], sources: Mapping[str, Source])
                 }
                 for citation in claim.citations
             ],
+            **(
+                {}
+                if (context := (earlier or {}).get(claim.ref)) is None
+                else {"earlier": {"render": context.render, "delivered_text": context.body}}
+            ),
         }
         for claim in claims
     ]
 
 
 def large_daily_move(claim: Claim) -> bool:
-    """A structured percentage move of at least the exception size on a commodity or index primary."""
+    """A same-day percentage move of at least the exception size on a commodity or index primary.
 
+    Only a moved level (`level_crossed`) counts, only a quantity named as a change, and only a same-day or
+    unstated period: a yield level, a year-on-year figure or a crop-condition rate is not a daily move.
+    """
+
+    if claim.fields.content_kind != "level_crossed":
+        return False
     markets = {asset.market_type for asset in claim.fields.assets if asset.role == "primary"}
     if not markets & PRICE_MOVE_EXCEPTION_MARKETS:
         return False
     for quantity in claim.fields.quantities:
-        if quantity.unit.strip().casefold() not in _PERCENT_UNITS:
+        if quantity.unit.strip().casefold() not in _PERCENT_UNITS or not _MOVE_WORDS.search(quantity.name):
+            continue
+        period = quantity.period or claim.fields.statistical_period
+        if period is not None and not _SAME_DAY_WORDS.search(period):
             continue
         try:
             if abs(Decimal(quantity.value)) >= PRICE_MOVE_EXCEPTION_PERCENT:
@@ -285,193 +364,157 @@ def large_daily_move(claim: Claim) -> bool:
     return False
 
 
+READER_REASONS: Final[dict[str, ClaimReason]] = {
+    "known": "known_to_reader",
+    "in_flight": "linked_send_in_flight",
+    "correction": "correction_of_sent",
+    "key": "reader_key",
+    "push": "reader_push",
+    "feed": "reader_feed",
+}
+
+
+def decide(
+    claim: Claim,
+    update: EventUpdate,
+    reader: ReaderSnapshot,
+    *,
+    now_ms: int,
+    novelty: ReaderNovelty,
+    judgment: ReaderJudgment | None,
+    message_intents: Sequence[str] = (),
+) -> tuple[ClaimReason, ReaderDecision | None]:
+    """The decision table for one claim, in order. Pure: every input is already read.
+
+    `judgment` is None when the claim was not asked; it is asked only when no earlier row decides it.
+    """
+
+    age = now_ms - claim.first_available_at_ms
+    corrects = novelty.novelty == "development" and any(link.relation == "corrects" for link in novelty.path)
+    corrective = corrects or any(
+        change.current_ref == claim.ref and change.kind in {"correction", "conflict"} for change in update.changes
+    )
+    if claim.ref in set(update.retired_claim_refs) | set(update.superseded_claim_refs) | set(
+        reader.invalidated_claim_refs
+    ):
+        return "retired", None
+    if claim.ref in reader.blocked_claim_refs:
+        return "send_outcome_unresolved", None
+    if claim.ref in reader.ambiguous_claim_refs:
+        return "send_outcome_ambiguous", None
+    if age > (CORRECTION_MAX_AGE_MS if corrective else SOURCE_MAX_AGE_MS):
+        return "stale_source", None
+    early = novelty_outcome(novelty, first_available_at_ms=claim.first_available_at_ms)
+    if early is not None:
+        return READER_REASONS[early.outcome], early
+    if claim.ref in reader.protected_listing_claim_refs:
+        return "protected_listing", None
+    if claim.fields.mode == "observation" and large_daily_move(claim):
+        return "large_daily_move", None
+    if judgment is None or judgment.status != "available":
+        waited = now_ms - update.adopted_at_ms > READER_WAIT_MAX_MS
+        return ("reader_unassessed" if waited else "reader_unavailable"), None
+    judged = reader_decision(
+        novelty, judgment, first_available_at_ms=claim.first_available_at_ms, message_intents=message_intents
+    )
+    return READER_REASONS[judged.outcome], judged
+
+
+def reader_messages(novelty: ReaderNovelty, reader: ReaderSnapshot) -> tuple[DeliveredText, ...]:
+    """The claim's messages: receipts its links reach, strongest first, then the recall; at most sixteen."""
+
+    linked = {row.intent_id: row for row in reader.linked}
+    ordered = [linked[intent] for intent in novelty.linked_intents if intent in linked]
+    ordered += [row for row in reader.receipts if row.state == "sent" and row.channel == reader.channel]
+    unique = {row.intent_id: row for row in reversed(ordered)}
+    return tuple(unique[intent] for intent in dict.fromkeys(row.intent_id for row in ordered))[:READER_MESSAGES_MAX]
+
+
 class NotificationPlanner:
-    def __init__(
-        self, judgments: NewsJudgments, assessor: AttentionAssessor, *, source_max_age_ms: int = SOURCE_MAX_AGE_MS
-    ) -> None:
-        self.judgments = judgments
-        self.assessor = assessor
-        self.source_max_age_ms = source_max_age_ms
+    def __init__(self, judge: ReaderJudge, cache: JudgmentCache) -> None:
+        self.judge = judge
+        self.cache = cache
 
     async def plan(
-        self,
-        update: EventUpdate,
-        reader: ReaderSnapshot,
-        budget: Budget,
-        *,
-        now_ms: int,
-        reuse: Callable[[str], Awaitable[NotificationPlan | None]] | None = None,
+        self, update: EventUpdate, reader: ReaderSnapshot, budget: Budget, *, now_ms: int
     ) -> NotificationPlan:
-        """Filter fact/delivery constraints, then ask one editor about remaining ordinary claims."""
+        """Novelty for every claim, one reader judgment for each claim no earlier row decides, then `decide()`.
 
-        reasons: dict[str, ClaimReason] = {}
-        explanations: dict[str, str | None] = {}
-        retired = (
-            set(update.retired_claim_refs) | set(update.superseded_claim_refs) | set(reader.invalidated_claim_refs)
-        )
-        corrections = {change.current_ref for change in update.changes if change.kind in {"correction", "conflict"}}
-        candidates: list[Claim] = []
-        protected: set[str] = set(reader.protected_listing_claim_refs)
-        for claim in update.claims:
-            if claim.ref in retired:
-                reasons[claim.ref] = "retired"
-            elif (
-                self.source_max_age_ms > 0
-                and now_ms - claim.first_available_at_ms > self.source_max_age_ms
-                and claim.ref not in corrections
-            ):
-                reasons[claim.ref] = "stale_source"
-            elif claim.ref in reader.ambiguous_claim_refs:
-                reasons[claim.ref] = "send_outcome_ambiguous"
-            elif claim.ref in reader.blocked_claim_refs:
-                reasons[claim.ref] = "send_outcome_unresolved"
-            else:
-                candidates.append(claim)
-        coverage_started = time.monotonic()
-        covered = await self._fully_covered(tuple(candidates), reader, budget)
-        coverage_ms = _elapsed_ms(coverage_started)
-        ordinary: list[Claim] = []
-        for claim in candidates:
-            if claim.ref in covered:
-                reasons[claim.ref] = "covered_by_sent_receipt"
-            elif claim.ref in protected:
-                reasons[claim.ref] = "protected_listing"
-            elif claim.fields.mode == "observation" and large_daily_move(claim):
-                reasons[claim.ref] = "large_daily_move"
-            else:
-                ordinary.append(claim)
-
-        evidence = {item.ref: item.source for item in update.evidence}
-        material = json.loads(
-            canonical_json(
-                {
-                    "candidate": assessment_input(
-                        tuple(ordinary), sources=evidence, watch_symbols=reader.watch_symbols
-                    ),
-                    "assessor_identity": self.assessor.identity,
-                }
-            )
-        )
-        fingerprint = digest(material)
-        reused = None
-        assessment_started = time.monotonic()
-        if reuse is not None and ordinary:
-            previous = await reuse(fingerprint)
-            if (
-                previous is not None
-                and previous.assessment_status == "available"
-                and previous.assessment_identity == self.assessor.identity
-                and previous.assessment_input_digest == fingerprint
-            ):
-                editorial = {
-                    row.claim_ref: row
-                    for row in previous.claim_decisions
-                    if row.reason in {"editor_notify", "editor_key", "editor_feed_only"}
-                }
-                if set(editorial) == {claim.ref for claim in ordinary}:
-                    reused = editorial
-        status: Literal["available", "unavailable", "skipped"] = "skipped"
-        error_code = None
-        if ordinary:
-            if reused is not None:
-                for claim in ordinary:
-                    row = reused[claim.ref]
-                    reasons[claim.ref] = row.reason
-                    explanations[claim.ref] = row.reason_zh
-                status = "available"
-            else:
-                try:
-                    async with asyncio.timeout(min(budget.remaining() / 3, 20.0)):
-                        assessment = await self.assessor.assess(
-                            tuple(ordinary), sources=evidence, watch_symbols=reader.watch_symbols
-                        )
-                    selected = {row.claim_ref: row for row in assessment.decisions}
-                    if set(selected) != {claim.ref for claim in ordinary}:
-                        raise ProviderUnavailable("news_attention_refs_invalid")
-                    for claim in ordinary:
-                        assessment_row = selected[claim.ref]
-                        reasons[claim.ref] = EDITOR_REASONS[assessment_row.disposition]
-                        explanations[claim.ref] = assessment_row.reason_zh
-                    status = "available"
-                except (ProviderUnavailable, ContractFault, ValidationError, TimeoutError) as exc:
-                    # An expired stage raises here; only a slow or failed editor call is recorded unavailable.
-                    budget.remaining()
-                    status = "unavailable"
-                    error_code = bounded_error_code(exc, default="news_attention")
-                    for claim in ordinary:
-                        reasons[claim.ref] = "attention_unavailable_default_notify"
-
-        rows = tuple(
-            ClaimDecision(
-                claim_ref=claim.ref,
-                decision=REASON_DECISIONS[reasons[claim.ref]],
-                reason=reasons[claim.ref],
-                reason_zh=explanations.get(claim.ref),
-            )
-            for claim in update.claims
-        )
-        if any(row.decision == "notify" for row in rows):
-            action: PlanAction = "notify"
-            reason: PlanReason = "uncovered_claims"
-        elif any(row.decision == "deferred" for row in rows):
-            action, reason = "unresolved", "send_outcome_unresolved"
-        else:
-            action, reason = "no_notification", "no_uncovered_actionable_claims"
-        return NotificationPlan(
-            action=action,
-            reason=reason,
-            update_ref=update.ref,
-            claim_decisions=rows,
-            key=any(row.reason == "editor_key" for row in rows),
-            channel=reader.channel,
-            reader_revision=reader.revision,
-            assessment_status=status,
-            assessment_error_code=error_code,
-            assessment_identity=self.assessor.identity if ordinary else BRIEF_IDENTITY,
-            assessment_input_digest=fingerprint,
-            assessment_input=material,
-            compared_receipts=tuple(
-                ComparedReceipt(intent_id=row.intent_id, payload_sha256=row.payload_sha256)
-                for row in reader.receipts
-                if row.state == "sent" and row.channel == reader.channel
-            ),
-            timings=PlanTimings(coverage_ms=coverage_ms, assessment_ms=_elapsed_ms(assessment_started)),
-        )
-
-    async def _fully_covered(
-        self,
-        claims: tuple[Claim, ...],
-        reader: ReaderSnapshot,
-        budget: Budget,
-    ) -> set[str]:
-        """Claims an actually sent receipt on this channel fully covers.
-
-        Partial, unresolved and unavailable answers are not full coverage. Unsent, not-sent and ambiguous
-        copy is never reader coverage.
+        Judgments are reused per frozen input from the judgment cache and asked concurrently; an unavailable
+        one is never stored, so the next turn asks again.
         """
 
-        sent = tuple(row for row in reader.receipts if row.state == "sent" and row.channel == reader.channel)
-        pairs: dict[str, str] = {}
-        questions = []
-        for claim in claims:
-            for receipt in sent:
-                item_id = identity("coverage", claim.ref, receipt.intent_id, receipt.payload_sha256)
-                pairs[item_id] = claim.ref
-                payload = {
-                    "claim": claim,
-                    "actual_delivered_text": receipt.body,
-                    "receipt_id": receipt.intent_id,
-                    "payload_sha256": receipt.payload_sha256,
-                }
-                questions.append(Question(item_id=item_id, payload_json=canonical_json(payload)))
-        if not questions:
-            return set()
-        answers = await self.judgments.judge("coverage", tuple(questions), budget)
-        return {pairs[row.item_id] for row in answers if row.status == "available" and row.value == "full"}
-
-
-def _elapsed_ms(started: float) -> int:
-    return max(0, int((time.monotonic() - started) * 1000))
+        novelty = {claim.ref: reader_novelty(claim.ref, reader.links, reader.link_receipts) for claim in update.claims}
+        pending = [
+            claim
+            for claim in update.claims
+            if decide(claim, update, reader, now_ms=now_ms, novelty=novelty[claim.ref], judgment=None)[0]
+            in {"reader_unavailable", "reader_unassessed"}
+        ]
+        messages = {claim.ref: reader_messages(novelty[claim.ref], reader) for claim in pending}
+        inputs = {
+            claim.ref: ReaderInput.of(claim, update, [row.body for row in messages[claim.ref]]) for claim in pending
+        }
+        started = time.monotonic()
+        judgments = await cached_judgments(self.judge, self.cache, inputs, budget)
+        judgment_ms = max(0, int((time.monotonic() - started) * 1000))
+        linked = {row.intent_id: row for row in (*reader.linked, *reader.receipts)}
+        rows = []
+        for claim in update.claims:
+            intents = tuple(row.intent_id for row in messages.get(claim.ref, ()))
+            reason, decided = decide(
+                claim,
+                update,
+                reader,
+                now_ms=now_ms,
+                novelty=novelty[claim.ref],
+                judgment=judgments.get(claim.ref),
+                message_intents=intents,
+            )
+            record = None
+            if decided is not None or claim.ref in judgments:
+                earlier = None
+                anchor = None if decided is None else decided.anchor_intent_id
+                if decided is not None and decided.render != "full" and anchor in linked:
+                    earlier = ReaderRepairContext(render=decided.render, intent_id=anchor, body=linked[anchor].body)
+                record = ReaderRecord(
+                    novelty=novelty[claim.ref].novelty,
+                    link_path=novelty[claim.ref].path,
+                    render="full" if earlier is None else earlier.render,
+                    earlier=earlier,
+                    input_digest=None if claim.ref not in inputs else inputs[claim.ref].digest,
+                    message_intents=intents,
+                    judgment=judgments.get(claim.ref),
+                )
+            rows.append(
+                ClaimDecision(claim_ref=claim.ref, decision=REASON_DECISIONS[reason], reason=reason, reader=record)
+            )
+        if any(row.decision == "notify" for row in rows):
+            action: PlanAction = "notify"
+            plan_reason: PlanReason = "uncovered_claims"
+        elif any(row.decision == "deferred" for row in rows):
+            action, plan_reason = "unresolved", "awaiting"
+        else:
+            action, plan_reason = "no_notification", "no_uncovered_actionable_claims"
+        compared = {row.intent_id: row for group in messages.values() for row in group}
+        return NotificationPlan(
+            action=action,
+            reason=plan_reason,
+            update_ref=update.ref,
+            claim_decisions=tuple(rows),
+            key=any(row.reason == "reader_key" for row in rows),
+            channel=reader.channel,
+            reader_revision=reader.revision,
+            reader_identity=self.judge.identity,
+            input_digest=digest(
+                {"judge": self.judge.identity, "inputs": sorted((ref, row.digest) for ref, row in inputs.items())}
+            ),
+            compared_receipts=tuple(
+                ComparedReceipt(intent_id=row.intent_id, payload_sha256=row.payload_sha256)
+                for row in sorted(compared.values(), key=lambda row: row.intent_id)
+            ),
+            timings=PlanTimings(judgment_ms=judgment_ms),
+        )
 
 
 def _has_han(text: str) -> bool:
@@ -489,9 +532,9 @@ def _unsafe_copy(text: str) -> bool:
 
 
 def freeze_card(plan: NotificationPlan, update: EventUpdate, copy: CardCopy) -> FrozenCard:
-    """Freeze actual reader copy; selected IDs are not proof of full coverage.
+    """Freeze actual reader copy; selected IDs are not proof of what the reader was told.
 
-    Future coverage decisions compare this exact delivered body, not the original
+    Later reader judgments compare this exact delivered body, not the original
     article, the selected-ID set, or an unsent draft. Adapters may reject oversized
     copy, but may not silently truncate the frozen body.
     """
