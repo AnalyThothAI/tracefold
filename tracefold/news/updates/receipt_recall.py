@@ -23,118 +23,17 @@ LINKED_RECEIPT_WINDOW_MS: Final = 48 * 60 * 60 * 1000
 ROUTE_CANDIDATES_MAX: Final = 32
 RRF_K: Final = 60
 LEXICAL_SHARED_MIN: Final = 2
+# The only rule for lexical evidence: a shared term counts when at most this share of the 48 h window's sent
+# receipts carry it (never fewer than one receipt); there is no word list. Function words are in nearly every
+# receipt. On the 2026-09-29 window (1,321 receipts) 1 % is 13 receipts: it drops the words that filled
+# unrelated claims' lists (reported 7.6 %, prices 6.4 %, market 4.4 %, trading 4.2 %, week 3.0 %) and the
+# high-volume topics the asset route already carries (bitcoin 2.2 %, gold 2.0 %, eth 1.8 %), while specific
+# terms (hyperliquid, insider 0.3 %; oversight, probe 0.2 %) still count.
+LEXICAL_DF_MAX: Final = 0.01
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9]{2,}")
+# The SQL route extracts the same words from the same text, so both sides count the same terms.
+WORD_PATTERN: Final = _WORD.pattern
 _HAN = re.compile(r"[\u3400-\u9fff]+")
-# English function words only: PostgreSQL's `english` text-search stop words of three or more letters, which
-# the SQL lexical route already ignores, plus the modals `would`/`could`. A domain word such as "market" or
-# "price" is content: whether it is shared evidence is the route's question, not this list's.
-_STOP: Final = frozenset(
-    {
-        "about",
-        "above",
-        "after",
-        "again",
-        "against",
-        "all",
-        "and",
-        "any",
-        "are",
-        "because",
-        "been",
-        "before",
-        "being",
-        "below",
-        "between",
-        "both",
-        "but",
-        "can",
-        "could",
-        "does",
-        "did",
-        "doing",
-        "don",
-        "down",
-        "during",
-        "each",
-        "few",
-        "for",
-        "from",
-        "further",
-        "had",
-        "has",
-        "have",
-        "having",
-        "her",
-        "here",
-        "hers",
-        "herself",
-        "him",
-        "himself",
-        "his",
-        "how",
-        "into",
-        "its",
-        "itself",
-        "just",
-        "more",
-        "most",
-        "myself",
-        "nor",
-        "not",
-        "now",
-        "off",
-        "once",
-        "only",
-        "other",
-        "our",
-        "ours",
-        "ourselves",
-        "out",
-        "over",
-        "own",
-        "same",
-        "she",
-        "should",
-        "some",
-        "such",
-        "than",
-        "that",
-        "the",
-        "their",
-        "theirs",
-        "them",
-        "themselves",
-        "then",
-        "there",
-        "these",
-        "they",
-        "this",
-        "those",
-        "through",
-        "too",
-        "under",
-        "until",
-        "very",
-        "was",
-        "were",
-        "what",
-        "when",
-        "where",
-        "which",
-        "while",
-        "who",
-        "whom",
-        "why",
-        "will",
-        "with",
-        "would",
-        "you",
-        "your",
-        "yours",
-        "yourself",
-        "yourselves",
-    }
-)
 # Subjects and objects that name no one in particular; equal text on them is no shared identity.
 _GENERIC_ENTITY: Final = frozenset({"market", "markets", "data", "government", "company", "people"})
 # Asset spellings resolve through the owners that already ground them: ticker aliases from the instrument
@@ -192,6 +91,16 @@ class RecallCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class RouteEvidence:
+    """What the SQL routes found for one receipt: its rank in each bounded route and the qualifying query terms
+    it shares (empty unless the lexical route matched)."""
+
+    structure_rank: int | None = None
+    lexical_rank: int | None = None
+    lexical_terms: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ClaimSelection:
     intent_ids: tuple[str, ...]
     # These reasons are diagnostic and do not imply fact coverage.
@@ -208,7 +117,7 @@ def _asset_pairs(claim: Claim, role: str) -> frozenset[tuple[str, str]]:
 
 
 def _words(text: str) -> frozenset[str]:
-    return frozenset(word for match in _WORD.finditer(text) if (word := match.group().lower()) not in _STOP)
+    return frozenset(match.group().lower() for match in _WORD.finditer(text))
 
 
 def _han_bigrams(text: str) -> frozenset[str]:
@@ -258,13 +167,41 @@ def _structure(query: ClaimRecallQuery, candidate: RecallCandidate) -> tuple[str
     return tuple(sorted(reasons))
 
 
-def _lexical(query: ClaimRecallQuery, candidate: RecallCandidate) -> int:
+def lexical_df_cap(window: int) -> float:
+    """The most receipts of a window of `window` receipts that may carry a term for it to count as evidence."""
+
+    return max(1.0, LEXICAL_DF_MAX * window)
+
+
+def _view(candidate: RecallCandidate) -> str:
     # Only the sent body and the claims actually carried by this receipt are searchable. A source
     # leader/head may mention an unpushed sibling and must not lend that fact to the body.
-    view = " ".join((candidate.body, *(claim.statement for claim in candidate.claims)))
-    english = len(query.words & _words(view))
-    chinese = len(query.han_bigrams & _han_bigrams(view))
-    return max(english, chinese) if max(english, chinese) >= LEXICAL_SHARED_MIN else 0
+    return " ".join((candidate.body, *(claim.statement for claim in candidate.claims)))
+
+
+def lexical_evidence(
+    query: ClaimRecallQuery, window: tuple[RecallCandidate, ...]
+) -> dict[str, tuple[int, tuple[str, ...]]]:
+    """Per receipt of `window`, how many qualifying query terms it shares and which.
+
+    A term qualifies when no more than `lexical_df_cap(len(window))` receipts of the window carry it. A receipt
+    is evidence when it shares at least `LEXICAL_SHARED_MIN` qualifying English words or Han bigrams; the count
+    is the larger of the two, the terms are those of each language that reached the minimum. The SQL route
+    computes the same over the materialized 48 h window; a pure caller passes its own pool as the window.
+    """
+
+    views = {
+        candidate.intent_id: (_words(text), _han_bigrams(text)) for candidate in window for text in (_view(candidate),)
+    }
+    cap = lexical_df_cap(len(window))
+    rare_words = {word for word in query.words if sum(word in words for words, _ in views.values()) <= cap}
+    rare_han = {pair for pair in query.han_bigrams if sum(pair in han for _, han in views.values()) <= cap}
+    evidence: dict[str, tuple[int, tuple[str, ...]]] = {}
+    for intent, (words, han) in views.items():
+        kinds = [shared for shared in (rare_words & words, rare_han & han) if len(shared) >= LEXICAL_SHARED_MIN]
+        if kinds:
+            evidence[intent] = (max(len(shared) for shared in kinds), tuple(sorted(set().union(*kinds))))
+    return evidence
 
 
 def select_for_claim(
@@ -273,9 +210,13 @@ def select_for_claim(
     candidates: tuple[RecallCandidate, ...],
     *,
     as_of_ms: int,
-    route_ranks: Mapping[str, tuple[int | None, int | None]] | None = None,
+    routes: Mapping[str, RouteEvidence] | None = None,
 ) -> ClaimSelection:
-    """Keep valid semantic representatives, then fuse bounded structural and lexical routes."""
+    """Keep valid semantic representatives, then fuse bounded structural and lexical routes.
+
+    `routes` is what the SQL found over the whole 48 h window. Without it the candidates within the window are
+    the window: document frequency, both routes and their ranks are computed over them.
+    """
 
     by_id = {candidate.intent_id: candidate for candidate in candidates if candidate.settled_at_ms < as_of_ms}
     linked = tuple(intent for intent in novelty.linked_intents if intent in by_id)
@@ -283,24 +224,26 @@ def select_for_claim(
         candidate for candidate in by_id.values() if as_of_ms - RECALL_WINDOW_MS <= candidate.settled_at_ms < as_of_ms
     )
     structure = {candidate.intent_id: _structure(query, candidate) for candidate in ordinary}
-    lexical = {candidate.intent_id: _lexical(query, candidate) for candidate in ordinary}
+    lexical: dict[str, int]
     ranked_routes: tuple[tuple[str, tuple[tuple[RecallCandidate, int], ...]], ...]
-    if route_ranks is None:
-        # Pure fixture evaluation uses the same bounded routes without a PostgreSQL rank.
+    if routes is None:
+        evidence = lexical_evidence(query, ordinary)
+        lexical = {intent: len(terms) for intent, (_, terms) in evidence.items()}
         structural_rank = sorted(
             (candidate for candidate in ordinary if structure[candidate.intent_id]),
             key=lambda candidate: (-candidate.settled_at_ms, candidate.intent_id),
         )[:ROUTE_CANDIDATES_MAX]
         lexical_rank = sorted(
-            (candidate for candidate in ordinary if lexical[candidate.intent_id]),
-            key=lambda candidate: (-lexical[candidate.intent_id], -candidate.settled_at_ms, candidate.intent_id),
+            (candidate for candidate in ordinary if candidate.intent_id in evidence),
+            key=lambda candidate: (-evidence[candidate.intent_id][0], -candidate.settled_at_ms, candidate.intent_id),
         )[:ROUTE_CANDIDATES_MAX]
         ranked_routes = (
             ("structure", tuple((candidate, rank) for rank, candidate in enumerate(structural_rank, start=1))),
             ("lexical", tuple((candidate, rank) for rank, candidate in enumerate(lexical_rank, start=1))),
         )
     else:
-        # SQL has already bounded each route and ranked lexical matches with ts_rank_cd.
+        # SQL has already bounded each route, ranked it the same way and returned the qualifying terms.
+        lexical = {intent: len(hit.lexical_terms) for intent, hit in routes.items()}
         ranked_routes = tuple(
             (
                 route,
@@ -309,10 +252,10 @@ def select_for_claim(
                         (
                             (candidate, rank)
                             for candidate in ordinary
-                            if (ranks := route_ranks.get(candidate.intent_id)) is not None
-                            and (rank := ranks[index]) is not None
+                            if (hit := routes.get(candidate.intent_id)) is not None
+                            and (rank := (hit.structure_rank, hit.lexical_rank)[index]) is not None
                             and rank <= ROUTE_CANDIDATES_MAX
-                            and (route == "structure" or lexical[candidate.intent_id] > 0)
+                            and (route == "structure" or lexical[candidate.intent_id] >= LEXICAL_SHARED_MIN)
                         ),
                         key=lambda pair: pair[1],
                     )

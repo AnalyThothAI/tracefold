@@ -50,11 +50,15 @@ from ..updates.projection import extraction_scopes, item_text, reading_view, rea
 from ..updates.reader_judgments import ClaimLink, LinkedReceipt, reader_novelty
 from ..updates.receipt_recall import (
     ASSET_ALIASES,
+    LEXICAL_DF_MAX,
+    LEXICAL_SHARED_MIN,
     LINKED_RECEIPT_WINDOW_MS,
     RECALL_WINDOW_MS,
     ROUTE_CANDIDATES_MAX,
+    WORD_PATTERN,
     ClaimRecallQuery,
     RecallCandidate,
+    RouteEvidence,
     commodity_name_patterns,
     query_for_claim,
     reader_context_revision,
@@ -1203,7 +1207,6 @@ class EventUpdateStorage:
                 "object": query.object,
                 "known_identity": [{"key": key, "value": value} for key, value in sorted(query.known_identity)],
                 "words": sorted(query.words),
-                "tsquery": " | ".join(sorted(query.words)),
                 "han_bigrams": sorted(query.han_bigrams),
             }
             for query in queries
@@ -1217,16 +1220,15 @@ class EventUpdateStorage:
             for row in self.conn.execute(
                 f"""
                 WITH queries AS MATERIALIZED (
-                    SELECT q.*, to_tsquery('english', q.tsquery) AS search_query
+                    SELECT q.*
                       FROM jsonb_to_recordset(%s::jsonb) AS q(
                         ref text, assets jsonb, subject text, object text, known_identity jsonb,
-                        words jsonb, tsquery text, han_bigrams jsonb)
+                        words jsonb, han_bigrams jsonb)
                 ), window_receipts AS MATERIALIZED (
                     SELECT {_RECEIPT_COLUMNS},
                            COALESCE(h.claims, '[]'::jsonb) AS historical_claims,
                            (u.document IS NULL) AS missing_projection,
-                           d.body || ' ' || COALESCE(h.statements, '') AS search_text,
-                           to_tsvector('english', d.body || ' ' || COALESCE(h.statements, '')) AS search_vector
+                           d.body || ' ' || COALESCE(h.statements, '') AS search_text
                       FROM news_deliveries d
                       LEFT JOIN news_event_updates u
                         ON u.event_id = d.event_id AND u.content_revision = d.content_revision
@@ -1242,6 +1244,7 @@ class EventUpdateStorage:
                        AND d.body IS NOT NULL AND d.payload_sha256 IS NOT NULL
                 ), structured AS (
                     SELECT q.ref AS current_ref, b.*, 'structure' AS route, 0.0::real AS route_score,
+                           NULL::text[] AS lexical_terms,
                            row_number() OVER (PARTITION BY q.ref ORDER BY b.settled_at_ms DESC, b.intent_id) AS rn
                       FROM queries q JOIN window_receipts b ON EXISTS (
                           SELECT 1 FROM jsonb_array_elements(b.historical_claims) hc
@@ -1283,21 +1286,43 @@ class EventUpdateStorage:
                                     )
                               )
                       )
+                ), query_terms AS MATERIALIZED (
+                    SELECT q.ref, 'word' AS kind, term
+                      FROM queries q CROSS JOIN LATERAL jsonb_array_elements_text(q.words) term
+                    UNION ALL
+                    SELECT q.ref, 'han' AS kind, term
+                      FROM queries q CROSS JOIN LATERAL jsonb_array_elements_text(q.han_bigrams) term
+                ), receipt_terms AS MATERIALIZED (
+                    -- `lexical_evidence`: which query terms each window receipt's body and sent statements
+                    -- carry, as `_words` (same pattern, lower-cased) and `_han_bigrams` (adjacent Han) read them.
+                    SELECT DISTINCT b.intent_id, 'word' AS kind, lower(m[1]) AS term
+                      FROM window_receipts b CROSS JOIN LATERAL regexp_matches(b.search_text, %s, 'g') m
+                     WHERE lower(m[1]) IN (SELECT term FROM query_terms WHERE kind = 'word')
+                    UNION ALL
+                    SELECT DISTINCT b.intent_id, 'han' AS kind, t.term
+                      FROM (SELECT DISTINCT term FROM query_terms WHERE kind = 'han') t
+                      JOIN window_receipts b ON strpos(b.search_text, t.term) > 0
+                ), rare_terms AS (
+                    -- Document frequency over the same window: a term too many receipts carry is no evidence.
+                    SELECT kind, term FROM receipt_terms GROUP BY kind, term
+                    HAVING count(*) <= greatest(1, %s * (SELECT count(*) FROM window_receipts))
+                ), shared_terms AS (
+                    SELECT qt.ref AS current_ref, rt.intent_id, qt.term,
+                           count(*) OVER (PARTITION BY qt.ref, rt.intent_id, qt.kind) AS kind_shared
+                      FROM query_terms qt
+                      JOIN rare_terms r ON r.kind = qt.kind AND r.term = qt.term
+                      JOIN receipt_terms rt ON rt.kind = qt.kind AND rt.term = qt.term
+                ), lexical_evidence AS (
+                    SELECT current_ref, intent_id, max(kind_shared) AS shared, array_agg(term) AS terms
+                      FROM shared_terms WHERE kind_shared >= %s
+                     GROUP BY current_ref, intent_id
                 ), lexical AS (
-                    SELECT q.ref AS current_ref, b.*, 'lexical' AS route,
-                           ts_rank_cd(b.search_vector, q.search_query) AS route_score,
+                    SELECT e.current_ref, b.*, 'lexical' AS route, e.shared::real AS route_score,
+                           e.terms AS lexical_terms,
                            row_number() OVER (
-                               PARTITION BY q.ref
-                               ORDER BY ts_rank_cd(b.search_vector, q.search_query) DESC,
-                                        b.settled_at_ms DESC, b.intent_id
+                               PARTITION BY e.current_ref ORDER BY e.shared DESC, b.settled_at_ms DESC, b.intent_id
                            ) AS rn
-                      FROM queries q JOIN window_receipts b ON
-                          (q.tsquery <> '' AND (
-                              SELECT count(*) FROM jsonb_array_elements_text(q.words) word
-                               WHERE b.search_vector @@ plainto_tsquery('english', word)
-                          ) >= 2)
-                          OR ((SELECT count(*) FROM jsonb_array_elements_text(q.han_bigrams) bigram
-                                WHERE strpos(b.search_text, bigram) > 0) >= 2)
+                      FROM lexical_evidence e JOIN window_receipts b ON b.intent_id = e.intent_id
                 )
                 SELECT DISTINCT ON (current_ref, intent_id)
                        current_ref, intent_id, event_id, kind, body, payload_sha256,
@@ -1306,7 +1331,9 @@ class EventUpdateStorage:
                        min(rn) FILTER (WHERE route = 'structure')
                            OVER (PARTITION BY current_ref, intent_id) AS structure_rank,
                        min(rn) FILTER (WHERE route = 'lexical')
-                           OVER (PARTITION BY current_ref, intent_id) AS lexical_rank
+                           OVER (PARTITION BY current_ref, intent_id) AS lexical_rank,
+                       max(lexical_terms) FILTER (WHERE route = 'lexical')
+                           OVER (PARTITION BY current_ref, intent_id) AS lexical_terms
                   FROM (
                       SELECT * FROM structured WHERE rn <= %s
                       UNION ALL
@@ -1319,6 +1346,9 @@ class EventUpdateStorage:
                     int(now_ms) - RECALL_WINDOW_MS,
                     int(now_ms),
                     _dumps(ASSET_ALIASES),
+                    WORD_PATTERN,
+                    LEXICAL_DF_MAX,
+                    LEXICAL_SHARED_MIN,
                     ROUTE_CANDIDATES_MAX,
                     ROUTE_CANDIDATES_MAX,
                 ),
@@ -1471,9 +1501,13 @@ class EventUpdateStorage:
         ordinary_ids = {
             ref: {str(row["intent_id"]) for row in ordinary if row["current_ref"] == ref} for ref in queries
         }
-        route_ranks = {
+        routes = {
             ref: {
-                str(row["intent_id"]): (row["structure_rank"], row["lexical_rank"])
+                str(row["intent_id"]): RouteEvidence(
+                    structure_rank=row["structure_rank"],
+                    lexical_rank=row["lexical_rank"],
+                    lexical_terms=tuple(sorted(row["lexical_terms"] or ())),
+                )
                 for row in ordinary
                 if row["current_ref"] == ref
             }
@@ -1489,7 +1523,7 @@ class EventUpdateStorage:
                     if candidate.intent_id in ordinary_ids[ref] or candidate.intent_id in novelties[ref].linked_intents
                 ),
                 as_of_ms=now_ms,
-                route_ranks=route_ranks[ref],
+                routes=routes[ref],
             )
             for ref, query in queries.items()
         }
