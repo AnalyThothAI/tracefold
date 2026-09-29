@@ -14,7 +14,7 @@
 3. [News：先找失败版本，再恢复](#section-news先找失败版本再恢复)
 4. [市场与钱包定位](#section-市场与钱包定位)
 5. [Trading 与账户操作](#section-trading-与账户操作)
-6. [部署与独立 Runtime](#section-部署与独立-runtime)
+6. [部署与 executor](#section-部署与-executor)
 7. [备份与恢复](#section-备份与恢复)
 8. [故障记录应包含什么](#section-故障记录应包含什么)
 
@@ -33,14 +33,14 @@ make logs
 make config
 ```
 
-Make 命令统一使用选定的 Compose 文件、项目和 `.env`，并从实际绑定推导探针 URL。下面的高级 `docker compose` 示例必须保持相同上下文；也可以先用 `make workers-shell` 进入选定容器后执行 CLI。端口有显式调整时使用实际绑定。仓库 HEAD、正在运行的镜像 ID 和 Runtime manifest 不一定相同；诊断记录要保留各自身份，不能只报“main 最新版”。
+Make 命令统一使用选定的 Compose 文件、项目和 `.env`，并从实际绑定推导探针 URL。下面的高级 `docker compose` 示例必须保持相同上下文；也可以先用 `make workers-shell` 进入选定容器后执行 CLI。端口有显式调整时使用实际绑定。仓库 HEAD 和正在运行的镜像 ID 不一定相同；诊断记录要保留各自身份，不能只报“main 最新版”。
 
 | 检查 | 说明 |
 | --- | --- |
 | `make status-app` | 应用容器、基础依赖、迁移退出、Serve / Workers 就绪与工作台 |
-| `make status` | 同时报告应用与独立 Runtime；未启用时报告 disabled，应用失败也不会吞掉执行状态 |
+| `make status` | 报告应用、Analysis 与 executor；账户状态仍须读取签名场所事实 |
 | `make logs` | 所有服务日志，包含 Analysis、RabbitMQ policy 与 migrate |
-| `make runtime-status` / `make runtime-logs` | 独立执行角色，不等于账户已平仓或收益已齐全 |
+| `make status` / `make logs` | 查看共享镜像中的 executor 进程；不等于账户已平仓或收益已齐全 |
 | `make config` | 脱敏配置，不自动测试全部外部服务 |
 | `tracefold db audit` | schema / role / catalog 有界审计，不是全表精确计数 |
 
@@ -64,7 +64,7 @@ docker compose exec -T analysis tracefold trading status
 | 输入在增加，语义无进展 | wanted / done、lease、provider breaker、模型配置与具名失败 | 删除 Event 或重放整库 |
 | 已有 EventUpdate 但未推送 | 通知计划原因、读者覆盖、intent 与真实结果 | 把知识版本直接改成 sent |
 | 钱包没有警报 | 名单、完整前缀、每地址规则排除、episode 与发送复查 | 先加社交模型或另一套排名门槛 |
-| 有研究建议但无订单 | publish_status、Signal 作用域、Runtime 处理和账户事实 | 从 UI 强造订单状态 |
+| 有研究建议但无订单 | publish_status、Signal 去向、executor 心跳和账户事实 | 从 UI 强造订单状态 |
 | 提示未认领敞口 | 实际 venue 持仓、订单 / 计划身份及对账新鲜度 | 清空计划或为了变绿自动 flatten |
 
 Workers 的基础 / 可选任务监督和资源槽位见[Platform](modules/platform.md)。先判断是 provider 的可恢复错误，还是任务本身 faulted，二者恢复方式不同。
@@ -172,72 +172,42 @@ docker compose exec -T workers tracefold news wallets --hours 24 --queue-limit 1
 ```bash
 docker compose exec -T analysis tracefold trading cases --limit 20
 docker compose exec -T analysis tracefold trading signals --limit 20
-docker compose exec -T analysis tracefold trading observations --limit 20
+docker compose exec -T analysis tracefold trading fills --limit 20
 docker compose exec -T analysis tracefold trading commands --limit 20
-make runtime-status
+make status
 ```
 
-`trading diagnose` 提供有界只读执行诊断；检查实际配置和探针地址，不把 host loopback 自动当作另一个容器。
-
-`trading gate` 读取的 `trading_candidate_gate_decisions` 已不再由当前代码写入，不能说明当前准入；准入与排除看 Case 的 `target_selection` / `policy_reason`，链路排查顺序见 [Trading 排障](modules/trading.md#section-排障与验证)。
+`trading diagnose` 提供有界只读执行诊断。公开 HTTP 没有下单 / 控制 POST；`trading issue` 使用本地 OS 身份写持久操作意图。旧 `trading gate` 已不再由当前代码写入，不能作为准入依据。
 
 ### 显式本地操作意图
 
-公开 HTTP 没有下单 / 控制 POST。`trading issue` 使用本地 OS 身份与关闭的命令语法，保存意图而不是声称动作已完成。只有在明确授权该操作时才运行。例如暂停新入场：
-
 ```bash
-# 写操作：一次请求生成一次身份；网络不确定时保留这两个值重试
 request_id="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 requested_at_ns="$(python3 -c 'import time; print(time.time_ns())')"
-docker compose exec -T nautilus tracefold trading issue '/pause maintenance' \
+docker compose exec -T executor tracefold trading issue '/pause maintenance' \
   --request-id "$request_id" --requested-at-ns "$requested_at_ns"
 ```
 
-`/pause` 不平仓；`/flatten account` 是 reduce-only 平仓并暂停的请求，必须继续核实 venue 结果；`/halt` 在本次 Runtime 生命周期内具有粘性，不能假设 `/resume` 可清除。新 account slot 也不天然代表 paused。
+重试必须保留相同 request ID 和时间。`/pause` 不平仓；`/flatten account` 先暂停入场，再撤普通单、平仓、撤 Algo 单，并以签名场所读回验证。命令受理不等于场所动作完成。
 
-### #719 一次性执行基线硬切
+### #746 执行侧硬切
 
-切换前保存脱敏 ARK/INJ 取证与可恢复备份，记录部署 SHA、账户槽位、环境及 Binance 当前仓位、普通单、Algo 单和在途请求。暂停新经济指令并按明确现场授权处理真实敞口；PG 的 closed 不证明场所已平。停旧 Runtime、会重投执行输入的生产者及其他 writer，复核场所后升级匹配的镜像和 schema。
-
-审查 [一次性 SQL](../scripts/issue719_execution_hard_cut.sql) 的账户范围和影响行数，在停写、备份可用且场所风险已处置时才运行：
-
-```bash
-: "${TRACEFOLD_POSTGRES_DSN:?set the reviewed target PostgreSQL DSN}"
-psql -X -d "$TRACEFOLD_POSTGRES_DSN" -v ON_ERROR_STOP=1 \
-  -v account_slot=binance_usdm_primary -v expected_connection=DEMO \
-  -f scripts/issue719_execution_hard_cut.sql
-```
-
-SQL 只删除目标账户旧 Plan、执行观察、手动意图、最终入场核验及派生 Runtime 快照；已发布 Signal 保留为 Case 证据并全数退休，避免删除 Plan/处置后重新可执行。手动意图必须全部过期，脚本才允许删除，以免旧请求重试恢复可执行性。保留现有 pause/halt 与稳定 namespace。旧 RabbitMQ 投递或其他待发送工作必须在停写阶段清理并核对晚到消息；脚本不触及 broker。重启后核对当前外部风险、Cache、Plan 保护、PG 原生结果以及旧 Signal/命令未重放，再验收一笔新生命周期。未完成这些现场回执时不得宣称硬切已完成。
+先停旧执行进程，确认 DEMO 仓位、普通单和 Algo 单均为零，再备份所有 `trading_*` 表及归档目录。迁移 `20260929_0417` 删除旧执行表、建立 Signal v4 与订单/成交账本；不可降级，也不回填旧 DEMO 数据。迁移和新镜像须在同一维护窗口完成。不要把本地 Plan 的 terminal 当作场所平仓回执。保留签名账户检查与备份，直至 DEMO 生命周期回执通过。
 
 <a id="deployment"></a>
-<a id="section-部署与独立-runtime"></a>
-## 06 · 部署与独立 Runtime
+<a id="section-部署与-executor"></a>
+## 06 · 部署与 executor
 
-正常升级使用 `make up`。根 Makefile 只负责公开命令，[scripts/deploy.py](../scripts/deploy.py)持有项目级 OS 锁、验证配置、按顺序迁移并验收；[compose.yaml](../compose.yaml)拥有服务、挂载和关闭预算。迁移非零退出时，应用保持停止，不把 `depends_on` 或容器 running 当作成功。
-
-生产使用审阅后的干净源码；`make verify-main-ci` 可显式核验精确 main push 的发布证据，需要 uv 和已登录的 GitHub CLI。普通部署不再要求宿主机安装项目依赖；诊断、停止及兼容镜像恢复不依赖 GitHub 在线。
+正常升级使用 `make up`。`scripts/deploy.py` 持锁验证配置、迁移、启动 Serve、Workers、Analysis 和 executor。未启用交易时 executor 保持空闲。执行启用时，迁移前必须停止执行进程；部署脚本会拒绝带旧 Nautilus 进程的迁移。迁移失败时保持应用停止。
 
 ```bash
-# 已有本地镜像，完整 ID；先确认目标镜像与数据库 head 相同
-make deploy-image IMAGE_ID=sha256:FULL_LOCAL_IMAGE_ID
+make status
+make logs
+make db-migrate
+make up
 ```
 
-精确恢复只适用于能运行当前服务命令、且 schema 相同的镜像，不要求旧镜像等于当前源码 HEAD，不构建、不降级 PostgreSQL、不替换执行进程。配置和 image / database head 校验先于停止应用；随后验证实际镜像与 Workers 身份。不可变 image ID 而不是 tag 才是恢复依据。
-
-`make db-migrate` 是显式维护操作：构建、验证、停止应用写进程并迁移，完成后保持应用停止；再用 `make up` 启动。日常更新直接使用 `make up`，不要自行拼接多个并发部署步骤。
-
-```bash
-make runtime-build
-make runtime-up RUNTIME_IMAGE=tracefold-runtime:SOURCE_REVISION
-make runtime-restart
-make runtime-status
-make runtime-down
-```
-
-执行启动不构建、不迁移、不通过依赖关系重建 PostgreSQL。先验证执行启用状态与 image / database head，再操作账户所有者。`runtime-restart` 复用实际容器的 image ID，关闭预算仍为 90 秒。账户 paused / blocked 是诊断信息，不是自动重启依据。
-
-应用 / 前端发布不能隐式重启账户所有者。schema 变化时按[迁移指南](MIGRATIONS.md)协调 Runtime 和其他写进程；不提供绕过不兼容检查的环境开关。`make down` 先关闭执行，再停止其余服务，保留数据卷。
+`make db-migrate` 是显式维护操作，迁移后应用仍保持停止。`make down` 停止进程并保留数据卷。账户 paused 或 blocked 应读场所与 PG 事实排查，不能仅为清除告警而重启或重置账本。镜像恢复只适用于当前 schema 和服务命令均兼容的镜像。
 
 <a id="6-backup-and-restore"></a>
 <a id="backup"></a>

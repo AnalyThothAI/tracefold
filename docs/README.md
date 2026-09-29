@@ -34,7 +34,7 @@
 | 模块 | 读完后能回答 | 主要入口 |
 | :--- | :--- | :--- |
 | [**Trading Analysis**](modules/trading.md) | 来源如何进入 Case？Agent 可读什么？WATCH 和 Signal 如何产生？ | `trading/engine` · `app/trading_*` |
-| [**Execution**](modules/execution.md) | 谁拥有订单权限？如何保护、对账和归属真实成交？ | `integrations/nautilus` · `app/nautilus` |
+| [**Execution**](modules/execution.md) | 谁拥有订单权限？如何保护、对账和归属真实成交？ | `integrations/trading` · `app/executor.py` |
 
 ### 运行与呈现 · 基础设施和只读工作台
 

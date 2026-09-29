@@ -20,7 +20,7 @@ from typing import Any
 from urllib.request import ProxyHandler, build_opener
 
 ROOT = Path(__file__).resolve().parents[1]
-APP_SERVICES = ("serve", "workers", "analysis")
+APP_SERVICES = ("serve", "workers", "analysis", "executor")
 APP_IMAGE_SERVICES = ("rabbitmq-policy", "migrate", *APP_SERVICES)
 ACTIONS = (
     "init",
@@ -34,12 +34,6 @@ ACTIONS = (
     "down",
     "db-migrate",
     "db-health",
-    "runtime-build",
-    "runtime-up",
-    "runtime-restart",
-    "runtime-down",
-    "runtime-status",
-    "runtime-logs",
     "serve-shell",
     "workers-shell",
     "topology",
@@ -52,10 +46,6 @@ MUTATIONS = frozenset(
         "deploy-image",
         "down",
         "db-migrate",
-        "runtime-build",
-        "runtime-up",
-        "runtime-restart",
-        "runtime-down",
     }
 )
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -112,8 +102,6 @@ class Deployment:
             str(env_file) if env_file.is_file() else os.devnull,
             "-f",
             str(self.root / "compose.yaml"),
-            "--profile",
-            "execution",
         ]
         self._model: dict[str, Any] | None = None
         self.wait_seconds = str(int(self.env.get("TRACEFOLD_COMPOSE_WAIT_SECONDS") or "300"))
@@ -172,12 +160,12 @@ class Deployment:
         changed = self.run("git", "status", "--porcelain", "--untracked-files=normal", capture=True)
         return revision + ("-dirty" if changed else "")
 
-    def build(self, *, runtime: bool = False) -> str:
+    def build(self) -> str:
         revision = self.revision()
-        image = f"{self.project}-runtime:{revision}" if runtime else f"{self.project}-app:local"
+        image = f"{self.project}-app:local"
         self.env["TRACEFOLD_BUILD_REVISION"] = revision
-        self.env["TRACEFOLD_RUNTIME_IMAGE" if runtime else "TRACEFOLD_APP_IMAGE"] = image
-        self.compose("build", "nautilus" if runtime else "migrate")
+        self.env["TRACEFOLD_APP_IMAGE"] = image
+        self.compose("build", "migrate")
         resolved = self.image_id(image)
         print(f"Built {image} ({resolved})", flush=True)
         return resolved
@@ -250,8 +238,24 @@ class Deployment:
         return self.run("docker", "run", "--rm", "--entrypoint", "python", image, "-c", HEAD_CODE, capture=True)
 
     def require_migration_window(self, image: str) -> None:
-        if self.container("nautilus", all_states=False) and self.database_head() != self.image_head(image):
-            raise DeploymentError("schema change requires a maintenance window: stop the execution runtime first")
+        legacy = self.run(
+            "docker",
+            "ps",
+            "-q",
+            "--filter",
+            f"label=com.docker.compose.project={self.project}",
+            "--filter",
+            "label=com.docker.compose.service=nautilus",
+            capture=True,
+        )
+        if legacy:
+            raise DeploymentError("retire the legacy Nautilus container after venue flatten before migrating")
+        if (
+            self.container("executor", all_states=False)
+            and self.read_config()["trading"]["execution"]["enabled"]
+            and self.database_head() != self.image_head(image)
+        ):
+            raise DeploymentError("schema change requires a maintenance window: stop the executor first")
 
     def migrate(self) -> None:
         self.compose("up", "-d", "--no-build", "--force-recreate", "rabbitmq-policy", "migrate")
@@ -261,7 +265,7 @@ class Deployment:
         code = self.run("docker", "wait", container, capture=True)
         if code != "0":
             self.compose("logs", "--no-color", "--tail=50", "migrate", "rabbitmq-policy")
-            raise DeploymentError(f"migrate exited {code}; serve, workers and analysis were not started")
+            raise DeploymentError(f"migrate exited {code}; application roles were not started")
 
     def apply(self, image: str, *, expected_manifest: str | None = None) -> None:
         self.select_app_image(image)
@@ -309,11 +313,12 @@ class Deployment:
         head = self.database_head()
         if not head or self.image_head(image) != head:
             raise DeploymentError("image and database Alembic heads differ; no services were stopped")
+        self.require_migration_window(image)
         self.apply(image)
         print(f"Deployed exact local image {image}", flush=True)
 
     def service_url(self, service: str) -> str:
-        variable = {"serve": "API", "workers": "WORKERS", "nautilus": "NAUTILUS"}[service]
+        variable = {"serve": "API", "workers": "WORKERS"}[service]
         override = self.env.get(f"TRACEFOLD_{variable}_URL")
         if override:
             return override.rstrip("/")
@@ -341,7 +346,7 @@ class Deployment:
                 raise DeploymentError(f"{service}: state={state} exit_code={code}")
         else:
             health = self.inspect(container, "{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}")
-            if state != "running" or health != "healthy":
+            if state != "running" or (health != "healthy" and service != "executor"):
                 raise DeploymentError(f"{service}: state={state} health={health}")
 
     def status_app(self) -> None:
@@ -364,73 +369,12 @@ class Deployment:
         print("Application containers, one-shot jobs, readiness and console are healthy", flush=True)
 
     def read_config(self) -> dict[str, Any]:
-        for service in (*APP_SERVICES, "nautilus"):
+        for service in APP_SERVICES:
             if self.container(service, all_states=False):
                 payload = self.compose("exec", "-T", service, "tracefold", "config", capture=True)
                 return json.loads(payload)["data"]
         self.select_app_image(self.existing_app_image())
         return self.app_command("config")
-
-    def runtime_up(self, image: str | None = None) -> None:
-        image = image or self.env.get("RUNTIME_IMAGE") or f"{self.project}-runtime:{self.revision()}"
-        resolved = self.image_id(image)
-        self.env["TRACEFOLD_RUNTIME_IMAGE"] = resolved
-        self.env["TRACEFOLD_IMAGE_DIGEST"] = resolved
-        configured = json.loads(
-            self.compose(
-                "run",
-                "--rm",
-                "--no-deps",
-                "--entrypoint",
-                "tracefold",
-                "nautilus",
-                "config",
-                capture=True,
-            )
-        )["data"]
-        if configured["trading"]["execution"]["enabled"] is not True:
-            raise DeploymentError("trading.execution.enabled is false; no execution runtime was started")
-        database_head = self.database_head()
-        if not database_head or self.image_head(resolved) != database_head:
-            raise DeploymentError("runtime image and database Alembic heads differ; runtime was not stopped")
-        previous = self.container("nautilus")
-        if previous:
-            print(f"Previous runtime image: {self.inspect(previous, '{{.Image}}')}", flush=True)
-        self.compose("stop", "nautilus")
-        self.compose(
-            "up",
-            "-d",
-            "--no-build",
-            "--no-deps",
-            "--force-recreate",
-            "--wait",
-            "--wait-timeout",
-            self.wait_seconds,
-            "nautilus",
-        )
-        if self.inspect(self.container("nautilus"), "{{.Image}}") != resolved:
-            raise DeploymentError("runtime container does not use the requested immutable image")
-        self.runtime_status()
-
-    def runtime_down(self) -> None:
-        self.compose("stop", "nautilus")
-        self.compose("rm", "-f", "nautilus")
-
-    def runtime_status(self) -> None:
-        enabled = self.read_config()["trading"]["execution"]["enabled"]
-        container = self.container("nautilus", all_states=False)
-        if not enabled:
-            if container:
-                raise DeploymentError("execution runtime: disabled but nautilus is still running")
-            print("execution runtime: disabled (operator selected)")
-            return
-        self.check_container("nautilus")
-        print(f"Execution runtime image: {self.inspect(container, '{{.Image}}')}")
-        try:
-            print(f"Execution runtime readyz: {self.http('nautilus', '/readyz')}")
-        except OSError:
-            print("Execution runtime readyz: unreachable; inspect runtime-logs", file=sys.stderr)
-        # Entries paused or blocked is not a reason to restart the exposure owner.
 
     def dispatch(self, action: str) -> None:
         if action == "init":
@@ -451,27 +395,16 @@ class Deployment:
                         "config": str(self.home / "config.yaml"),
                         "compose_file": str(self.root / "compose.yaml"),
                         "services": sorted(self.model["services"]),
-                        "urls": {service: self.service_url(service) for service in ("serve", "workers", "nautilus")},
+                        "urls": {service: self.service_url(service) for service in ("serve", "workers")},
                     },
                     indent=2,
                 )
             )
-        elif action == "status-app":
+        elif action in {"status-app", "status"}:
             self.status_app()
-        elif action == "status":
-            failures = []
-            for report in (self.status_app, self.runtime_status):
-                try:
-                    report()
-                except (DeploymentError, subprocess.CalledProcessError, OSError) as exc:
-                    failures.append(str(exc))
-            if failures:
-                raise DeploymentError("; ".join(failures))
-        elif action in {"logs", "runtime-logs"}:
-            services = ("nautilus",) if action == "runtime-logs" else tuple(self.model["services"])
-            self.compose("logs", "-f", "--tail=100", *services)
+        elif action == "logs":
+            self.compose("logs", "-f", "--tail=100", *self.model["services"])
         elif action == "down":
-            self.runtime_down()
             self.compose("down")  # Never remove named volumes.
         elif action == "db-migrate":
             image = self.build()
@@ -484,19 +417,6 @@ class Deployment:
             print("Migration completed. Application roles remain stopped; start them with make up.")
         elif action == "db-health":
             self.compose("exec", "-T", "workers", "tracefold", "db", "health")
-        elif action == "runtime-build":
-            self.build(runtime=True)
-        elif action == "runtime-up":
-            self.runtime_up()
-        elif action == "runtime-restart":
-            container = self.container("nautilus")
-            if not container:
-                raise DeploymentError("no execution runtime container to restart; use make runtime-up")
-            self.runtime_up(self.inspect(container, "{{.Image}}"))
-        elif action == "runtime-down":
-            self.runtime_down()
-        elif action == "runtime-status":
-            self.runtime_status()
         elif action in {"serve-shell", "workers-shell"}:
             self.compose("exec", action.removesuffix("-shell"), "/bin/sh")
         else:

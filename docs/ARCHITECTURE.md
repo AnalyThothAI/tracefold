@@ -90,9 +90,9 @@ class Runtime execution;
 | Serve | [serve_runtime.py](../tracefold/app/serve_runtime.py)、[HTTP routes](../tracefold/app/http/routes/) | 读取持久化投影、提供 React 静态文件 | 模型重跑、公开写接口、下单 |
 | Workers | [entrypoint.py](../tracefold/app/workers/entrypoint.py)、[task_contract.py](../tracefold/app/workers/task_contract.py) | 消息接收、准入、语义、通知、行情复盘、钱包与维护 | Trading Analysis 生命周期、账户执行 |
 | Analysis | [trading_analysis.py](../tracefold/app/trading_analysis.py)、[trading_analyst.py](../tracefold/app/trading_analyst.py) | 来源转交、标的选择、Case、受限研究、WATCH 与研究结果 | 发送新闻卡片、向交易所写订单 |
-| Nautilus | [app/nautilus](../tracefold/app/nautilus/)、[Strategy](../tracefold/integrations/nautilus/oi_runtime/strategy.py) | Signal / 操作意图消费、订单、保护、原生成交与对账 | 新闻理解、重新决定 ReaderCard 内容 |
+| Executor | [app/executor.py](../tracefold/app/executor.py)、[REST 适配](../tracefold/integrations/trading/binance.py) | Signal / 操作意图消费、订单、保护、原生成交与对账 | 新闻理解、重新决定 ReaderCard 内容 |
 
-[compose.yaml](../compose.yaml)定义镜像、依赖、挂载与探针；[Makefile](../Makefile)提供薄命令入口，[scripts/deploy.py](../scripts/deploy.py)统一持锁、启动、迁移等待、镜像和就绪验收。[make/checks.mk](../make/checks.mk)只拥有开发验证，不进入服务启动链路。`rabbitmq-policy`、`migrate` 是一次性准备作业，不是额外业务服务。`make up` 等迁移成功后启动应用角色，Nautilus 始终单独管理。
+[compose.yaml](../compose.yaml)定义镜像、依赖、挂载与探针；[Makefile](../Makefile)提供薄命令入口，[scripts/deploy.py](../scripts/deploy.py)统一持锁、启动、迁移等待、镜像和就绪验收。[make/checks.mk](../make/checks.mk)只拥有开发验证，不进入服务启动链路。`rabbitmq-policy`、`migrate` 是一次性准备作业，不是额外业务服务。`make up` 等迁移成功后启动应用角色，executor 随应用镜像部署，启用交易时持有 DEMO 账户执行权限。
 
 ### 外部访问不是所有角色共享
 
@@ -164,7 +164,7 @@ class Trading research;
 | [trading/engine](../tracefold/trading/engine/) | 类型化目标、证据、特征、有限计划和纯决策编译 | [交易研究](modules/trading.md) |
 | [trading/storage](../tracefold/trading/storage/) | Trigger、Case、修订、研究和执行记录 | [交易状态](modules/trading.md#state) |
 | [app/news_updates.py](../tracefold/app/news_updates.py)、[trading_analysis.py](../tracefold/app/trading_analysis.py) | News 公开更新映射、接收确认及研究调度 | [跨域交接](#handoff) |
-| [integrations/nautilus](../tracefold/integrations/nautilus/) | 账户侧执行适配与 Strategy | [执行](modules/execution.md) |
+| [integrations/trading](../tracefold/integrations/trading/) | DEMO 账户签名 REST 执行适配 | [执行](modules/execution.md) |
 | [platform](../tracefold/platform/)、[app](../tracefold/app/)、[integrations](../tracefold/integrations/) | 配置、资源、数据库、进程装配与外部 I/O | [平台](modules/platform.md) |
 | [web/src](../web/src/)、[web/tests](../web/tests/) | 只读工作台、路由、查询和浏览器验证 | [前端](FRONTEND.md) |
 | [scripts](../scripts/)、[tests](../tests/)、[notebooks](../notebooks/) | 生成与维护、验证、独立离线研究 | [开发](DEVELOPMENT.md)、[测试](TESTING.md) |

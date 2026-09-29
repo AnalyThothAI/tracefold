@@ -221,10 +221,12 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "trading_case_decision_counts",
         "trading_gate_counts",
     )
-    # #604 T3: the desk table's third statement is the only read on the page with no window at all.
+    # The desk reads plans, refusals, orders and fills from the native ledger.
     assert catalog.query_routes["/api/trading/executions"] == (
-        "trading_console_executions",
-        "trading_console_scope_executions",
+        "trading_execution_plans",
+        "trading_execution_refusals",
+        "trading_execution_orders",
+        "trading_execution_fills",
         "trading_realized_totals",
     )
     assert "/api/trading/signals" not in catalog.query_routes
@@ -241,7 +243,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "trading_console_cases",
         "trading_console_cases_filtered",
         "trading_signal_ledger",
-        "trading_observation_ledger",
+        "trading_fill_ledger",
         "trading_gate_decisions_since",
         "trading_gate_decision_for_source_key",
     } <= query_names
@@ -290,6 +292,7 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
     repository.console_case(case_id="0" * 32)
     repository.console_cases(since_ms=since_ms, states=(), limit=101)
     repository.console_cases(since_ms=since_ms, states=("SIGNAL_EMITTED", "NO_TRADE"), limit=101)
+    repository.console_executions(since_ns=since_ns, limit=101)
     day_start_ns = (now_ms - now_ms % 86_400_000) * 1_000_000
     repository.console_realized_totals(
         account_slot="binance_usdm_primary",
@@ -299,7 +302,7 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
     repository.console_operator_intents(since_ns=since_ns, action=None, limit=101)
     repository.console_operator_intents(since_ns=since_ns, action="flatten", limit=101)
     repository.signal_ledger(since_ns=since_ns, limit=101)
-    repository.observation_ledger(since_ns=since_ns, limit=101)
+    repository.fill_ledger(since_ns=since_ns, limit=101)
 
     executed = conn.statements
     audited = [
@@ -308,23 +311,30 @@ def test_trading_console_audit_explains_the_statements_the_routes_execute():
             "trading_console_cases_by_id",
             "trading_console_cases",
             "trading_console_cases_filtered",
+            "trading_execution_plans",
+            "trading_execution_refusals",
+            "trading_execution_orders",
+            "trading_execution_fills",
             "trading_realized_totals",
             "trading_console_commands",
             "trading_console_commands_filtered",
             "trading_signal_ledger",
-            "trading_observation_ledger",
+            "trading_fill_ledger",
         )
     ]
-    assert executed == audited
+    assert [sql for sql, _ in executed] == [sql for sql, _ in audited]
+    assert [params for _, params in executed[:5] + executed[7:]] == [params for _, params in audited[:5] + audited[7:]]
+    assert executed[5][1] == ([],) and executed[6][1] == ([],)
     # The filtered half really is a different statement, or registering it twice proves nothing.
     assert audited[1][0] != audited[2][0]
     assert "state = ANY(%(states)s)" in audited[2][0]
     # #604 T3: the identity read is a primary-key predicate and carries no window at all, and the
     # totals read folds each plan's fills through the two partial correlation indexes (#680).
     assert "case_id = %(case_id)s" in audited[0][0] and "created_at_ms >=" not in audited[0][0]
-    assert "signal_id = plan.entry_id OR command_id = plan.entry_id" in audited[3][0]
-    assert "historical_engine_fill" not in audited[3][0]
-    assert "proof.summary ->> 'source' = 'signed_order_trades_v1'" in audited[3][0]
+    assert "FROM trading_plans p" in audited[3][0]
+    assert "FROM trading_dispositions d" in audited[4][0]
+    assert "FROM trading_fill_attributions" in audited[6][0]
+    assert "JOIN trading_fills" in audited[6][0]
     # #537 PR-5: no keyset predicate anywhere. `/api/trading/cases` published a `next_cursor` no
     # reader ever sent back, and the three routes whose cursors were followed are gone.
     assert all("before_ms" not in sql and "before_ns" not in sql for sql, _ in audited)
@@ -1005,6 +1015,20 @@ class RecordingStatementConn:
         return []
 
     def fetchone(self):
+        if "AS closed_today" in self.statements[-1][0]:
+            return {
+                name: 0
+                for name in (
+                    "closed_today",
+                    "closed_total",
+                    "known_today",
+                    "known_total",
+                    "realized_today",
+                    "realized_total",
+                    "net_today",
+                    "net_total",
+                )
+            }
         return None
 
 

@@ -621,8 +621,8 @@ class TradingExecutionRiskSettings(BaseModel):
     any of these numbers takes effect at the next Runtime restart and needs nothing else. None of
     them is a secret and `tracefold config` prints all of them.
 
-    A Signal entry carries its own stop distance in `TradeSignalV3.exit_plan`; `stop_distance_bps`
-    here sizes and protects only manual entries and seeds the route catalogue. Equity, the risk
+    A Signal entry carries its own stop distance in `SignalV4.stop_bps`; `stop_distance_bps`
+    here sizes and protects only manual entries. Equity, the risk
     fraction, leverage and venue filters bound entry size without separate dollar, position-count or
     daily-loss gates.
     """
@@ -630,7 +630,7 @@ class TradingExecutionRiskSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     risk_fraction_per_trade: Decimal = Decimal("0.01")
-    max_leverage: int = 1
+    max_leverage: int = 5
     stop_distance_bps: int = 100
     # The widest spread an entry may cross, as a fraction of the stop distance: 0.3 of a 100 bps stop
     # is 30 bps. An entry waits for a narrower book within its Signal's TTL rather than being refused

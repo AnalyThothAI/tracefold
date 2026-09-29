@@ -13,7 +13,7 @@ init: ## build the app image and initialize private operator files without start
 build: ## build the application image from this checkout without starting services
 	@python3 scripts/deploy.py build
 
-up: ## build, validate, migrate and start the application; never restart execution
+up: ## build, validate, migrate and start the application and DEMO executor
 	@python3 scripts/deploy.py up
 
 config: ## show redacted application configuration using the installed container image
@@ -25,7 +25,7 @@ topology: ## show the effective project, config path, service names and publishe
 deploy-image: ## replace the application with a local same-schema IMAGE_ID=sha256:...
 	@python3 scripts/deploy.py deploy-image
 
-status: ## report both application and execution status
+status: ## report application and executor container status
 	@python3 scripts/deploy.py status
 
 status-app: ## check application health, one-shot completion, readiness and console
@@ -34,7 +34,7 @@ status-app: ## check application health, one-shot completion, readiness and cons
 logs: ## follow all service logs, including Analysis and broker policy
 	@python3 scripts/deploy.py logs
 
-down: ## stop execution first, then the stack; preserve all named volumes
+down: ## stop the stack; preserve all named volumes
 	@python3 scripts/deploy.py down
 
 db-migrate: ## build and migrate in a maintenance window; leave application roles stopped
@@ -42,24 +42,6 @@ db-migrate: ## build and migrate in a maintenance window; leave application role
 
 db-health: ## check the database from the Workers container
 	@python3 scripts/deploy.py db-health
-
-runtime-build: ## build the separate execution image without starting it
-	@python3 scripts/deploy.py runtime-build
-
-runtime-up: ## start an existing compatible RUNTIME_IMAGE; never build or migrate
-	@python3 scripts/deploy.py runtime-up
-
-runtime-restart: ## restart execution on its actual immutable image ID, not a mutable tag
-	@python3 scripts/deploy.py runtime-restart
-
-runtime-down: ## gracefully stop and remove the execution container
-	@python3 scripts/deploy.py runtime-down
-
-runtime-status: ## report execution container health and informational readiness
-	@python3 scripts/deploy.py runtime-status
-
-runtime-logs: ## follow execution logs
-	@python3 scripts/deploy.py runtime-logs
 
 serve-shell: ## open a shell in Serve
 	@python3 scripts/deploy.py serve-shell
@@ -82,6 +64,9 @@ dev-workers: ## run Workers in the foreground against an explicitly isolated dev
 dev-analysis: ## run Analysis in the foreground against an explicitly isolated development config
 	@uv run --locked tracefold analysis
 
+dev-executor: ## run the DEMO executor in the foreground against an isolated config
+	@uv run --locked tracefold executor
+
 include make/checks.mk
 
-.PHONY: help sync verify-main-ci dev-serve dev-workers dev-analysis init build up config topology deploy-image status status-app logs down db-migrate db-health runtime-build runtime-up runtime-restart runtime-down runtime-status runtime-logs serve-shell workers-shell
+.PHONY: help sync verify-main-ci dev-serve dev-workers dev-analysis dev-executor init build up config topology deploy-image status status-app logs down db-migrate db-health serve-shell workers-shell

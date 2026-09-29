@@ -105,9 +105,9 @@ class Market,LLM,Venue external;
 | FrameReader | 并发拉取 6 路行情，冻结快照、特征与简报 | 每个 Case 一次，取数期限 5 s | [trading_analysis.py](../../tracefold/app/trading_analysis.py)、[features.py](../../tracefold/trading/engine/features.py) |
 | 计划菜单 | 代码生成、内容寻址的有限计划 | 纯函数 | [plans.py](../../tracefold/trading/engine/plans.py) |
 | TradeAnalyst | 在菜单中选择或放弃，带引用 | DSPy ReAct，模型截止默认 60 s | [trading_analyst.py](../../tracefold/app/trading_analyst.py)、[trading_tools.py](../../tracefold/app/trading_tools.py) |
-| Nautilus Runtime | 账户唯一执行权：准入、定仓、下单、保护、时间退出、对账 | 独立镜像与容器，见[执行](execution.md#section-runtime-进程与线程模型) | [app/nautilus](../../tracefold/app/nautilus/)、[oi_runtime](../../tracefold/integrations/nautilus/oi_runtime/) |
+| DEMO Executor | 账户唯一执行权：准入、定仓、下单、保护、时间退出、对账 | 应用镜像的独立进程，见[执行](execution.md) | [executor.py](../../tracefold/app/executor.py)、[trading/executor](../../tracefold/trading/executor/) |
 
-Analysis 属于应用角色，由 `make up` 构建和启动；Runtime 在 Compose profile `execution` 中，`make up` 不启动、不重启它（见[部署与验证边界](execution.md#section-部署与验证边界)）。Analysis 发布 Signal 前**不读取** Runtime 心跳或 `trading_execution_runtime_state`，因此 Runtime 不在线时 Case 仍会被研究、Signal 仍会被写入，随后在无人消费的情况下过期。
+Analysis 属于应用角色；DEMO Executor 使用同一应用镜像的独立进程，由 Compose 管理（见[执行](execution.md)）。当前 Analysis 仍会在 Executor 离线时研究 Case；执行器恢复后对已过期的 Signal 写入 `expired` disposition。
 
 <a id="section-研究链路"></a>
 ## 02 · 研究链路
@@ -244,7 +244,7 @@ sequenceDiagram
 | Case 领取 | 每次领取生成新的 `claim_token`，`claim_attempt` 自增 | `FOR UPDATE SKIP LOCKED`；同一资产同时最多一个 RUNNING Case；租约 = min(领取时刻 + `model_timeout_seconds` + 20 s, 根到期, work 截止) | 租约过期 → 回到 PENDING，旧 attempt 记 `interrupted`、在途模型请求记 `result_unknown`；重领复用首次冻结输入 |
 | 研究写入 | 快照、工具、模型请求开始 / 完成、最终结算都带 claim token | 每次写入重新校验 token、租约、work 截止和根到期；旧所有者的迟到答案被拒绝 | 结算被拒 → attempt 标记 unsettled，不覆盖新结果 |
 | Analysis → Runtime | `signal_id` 由 Case 与决策身份派生；`entry_scope_id` 由来源与资产派生 | Runtime 以 `pg_try_advisory_lock` 独占账户槽位；Plan 以 `entry_id = signal_id` 关联，同一 entry scope 至多一个 Plan | 轮询 SQL 只返回 `expires_at_ns > now` 且没有处置、Plan 或退役记录的 Signal；**过期未读的 Signal 没有任何处置记录** |
-| Runtime → PG | 观察 `event_id`、Plan 状态转换 | Nautilus 回调不访问 PG，只写内存 journal；数据库桥逐行提交 | 关键行（Plan、成交、原生证据）退避重试；非关键观察被拒时记录日志后丢弃。详见[执行](execution.md#section-runtime-进程与线程模型) |
+| Runtime → PG | 观察 `event_id`、Plan 状态转换 | Nautilus 回调不访问 PG，只写内存 journal；数据库桥逐行提交 | 关键行（Plan、成交、原生证据）退避重试；非关键观察被拒时记录日志后丢弃。详见[执行](execution.md) |
 
 <a id="editorial-catalyst-versus-source-amendment"></a>
 <a id="section-催化增量与来源修订"></a>
@@ -465,7 +465,7 @@ class ATR,Stop,Exit,Ref,Levels,Long,Short,WL,WS research;
 
 计划入场有效期不超过根到期时间，并受参考 K 线后 **120 秒**窗口约束。根 TTL 的默认配置为 **600 秒**。这些分别是来源、入场计划和持仓期限，不能相互替代，更不能在模型重试或 WATCH 触发后不断续期。全部时钟见[时钟与期限](#section-时钟与期限)。
 
-纯编译器检查所选计划确实存在、方向和引用有效、proposal 契约合法，再生成最终 action。它不需要网络，也不会从一个自由文本“看多”直接构造账户订单。选中的计划退出参数写入 Signal 的 `exit_plan`，Runtime 对 Signal 入场使用它，而不是 `trading.execution.risk.stop_distance_bps` 或 `exit_policy`（这两项只作用于手动入场，见[执行](execution.md#section-signal-到保护完成)）。
+纯编译器检查所选计划确实存在、方向和引用有效、proposal 契约合法，再生成最终 action。它不需要网络，也不会从一个自由文本“看多”直接构造账户订单。选中的计划退出参数写入 Signal 的 `exit_plan`，Runtime 对 Signal 入场使用它，而不是 `trading.execution.risk.stop_distance_bps` 或 `exit_policy`（这两项只作用于手动入场，见[执行](execution.md)）。
 
 <a id="state"></a>
 <a id="section-case结果与发布状态"></a>
@@ -581,7 +581,7 @@ WATCH 保存 waiting / triggered / cancelled / expired 的观察语义。穿越�
 
 默认 `trading.enabled=false`、`trading.analysis.publish_signals=false`、`trading.execution.enabled=false` 分别控制分析能力、Signal 发布和执行。开启模型配置不会隐式开启账户。
 
-Runtime 仍需读取准确的 Binance connection、账户状态、风险、保护与并发条件。News 通知命中观察名单、标记 key 或 OI 数字很大，都不能跨越这条权限边界。Runtime 侧的准入、定仓与保护见[执行](execution.md#section-signal-到保护完成)。
+Runtime 仍需读取准确的 Binance connection、账户状态、风险、保护与并发条件。News 通知命中观察名单、标记 key 或 OI 数字很大，都不能跨越这条权限边界。Runtime 侧的准入、定仓与保护见[执行](execution.md)。
 
 <a id="section-研究结果与真实执行收益"></a>
 ## 13 · 研究结果与真实执行收益
@@ -604,7 +604,7 @@ Runtime 仍需读取准确的 Binance connection、账户状态、风险、保�
 | RC3 | 菜单与触发无关、对称多空，Agent 同步处在 120 s 入场窗口内 | 全部策略压在一次多空选择上；模型推理消耗大半入场窗口 |
 | RC4 | 模型输出上的二值 Gate（引用精确性、单次纠错），模型路由隐式回落并与 News 共享 | 与交易安全无关的引用错误、限流与超时构成主要失败类别 |
 | RC5 | 发布方与消费方生命周期脱钩 | Analysis 不看 Runtime 心跳照常发布；`make up` 不管理 Runtime；过期 Signal 被轮询 SQL 静默跳过 |
-| RC6 | 执行身份合同不完整 | 替换保护单、重复平仓与 venue-only 平仓使用 Nautilus 生成的 id；永久错误进入可重试恢复队列；终态结算缺少收敛出口（见[执行](execution.md#section-已知执行问题)） |
+| RC6 | 执行身份合同不完整 | 替换保护单、重复平仓与 venue-only 平仓使用 Nautilus 生成的 id；永久错误进入可重试恢复队列；终态结算缺少收敛出口（见[执行](execution.md)） |
 | RC7 | 同一规则多处重复实现，OI 时代命名与参数残留 | 期限检查十余处；Signal `exit_plan` 与 Runtime `exit_policy` 两套退出配置；`oi_runtime` / `OI-RUNTIME` 命名；`trading gate` 读取已不再写入的表 |
 
 <a id="section-排障与验证"></a>
@@ -621,7 +621,7 @@ docker compose exec -T analysis tracefold trading signals --limit 20
 > [!NOTE]
 > `tracefold trading gate` 读取 `trading_candidate_gate_decisions`，当前代码不再写入这张表（生产最后写入在 2026-09-23），它不能说明当前准入结果。按 #746 它属于待删除的遗留读路径；排查准入请看 Case 的 `target_selection` 与 `policy_reason`。
 
-验证入口：[领域边界](../../tests/architecture/test_trading_boundaries.py)、[计划与策略](../../tests/trading/test_oi_price_strategy.py)、[Analysis runner](../../tests/integration/test_trading_analysis_runner.py)、[分析存储](../../tests/integration/test_trading_analysis_storage.py)、[公开来源修订](../../tests/integration/test_trading_analysis_public_updates.py)、[Signal 作用域](../../tests/integration/test_trading_signal_v3_scope.py)。
+验证入口：[领域边界](../../tests/architecture/test_trading_boundaries.py)、[计划与策略](../../tests/trading/test_oi_price_strategy.py)、[Analysis runner](../../tests/integration/test_trading_analysis_runner.py)、[分析存储](../../tests/integration/test_trading_analysis_storage.py)、[公开来源修订](../../tests/integration/test_trading_analysis_public_updates.py)、[Signal 作用域](../../tests/e2e/test_executor_recovery.py)。
 
 <a id="section-源码责任地图"></a>
 ## 16 · 源码责任地图
@@ -638,7 +638,7 @@ docker compose exec -T analysis tracefold trading signals --limit 20
 | [engine/features.py](../../tracefold/trading/engine/features.py)、[brief.py](../../tracefold/trading/engine/brief.py) | 将原始来源和市场证据变成可审计特征、简报 |
 | [engine/plans.py](../../tracefold/trading/engine/plans.py)、[policy.py](../../tracefold/trading/engine/policy.py) | 内容寻址的有限计划、引用校验与纯决策编译 |
 | [storage/analysis.py](../../tracefold/trading/storage/analysis.py) | Trigger、Case、租约、决策、WATCH、来源修订、研究标签与原子结算 |
-| [execution_contracts.py](../../tracefold/trading/execution_contracts.py)、[storage/execution_stream.py](../../tracefold/trading/storage/execution_stream.py) | Signal / 操作意图 / 执行观察的严格交接与轮询 SQL |
+| [executor/core.py](../../tracefold/trading/executor/core.py)、[storage/executor.py](../../tracefold/trading/storage/executor.py) | Signal v4 / 操作意图 / 原生成交的严格交接 |
 
 `trading/engine` 不调用模型、网络或数据库；App 按显式端口装配 I/O。Analysis 是独立进程，不是 News Workers 的一条可选函数调用。
 

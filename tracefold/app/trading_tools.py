@@ -427,7 +427,6 @@ class CaseToolContext:
             request = analysis_market_request(
                 dataset=cast(Dataset, dataset),
                 native_symbol=str(instrument["native_symbol"]),
-                instrument_environment=str(instrument["environment"]),
                 end_ms=end,
                 window_minutes=effective_window if end is not None else None,
                 deadline_at_monotonic=min(time.monotonic() + 5.0, self._budget().deadline_at_monotonic),

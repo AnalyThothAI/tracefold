@@ -189,7 +189,7 @@ test("positions and recent decisions stay separate, and source identity survives
   await installResearchScenario(page);
   await page.goto("/trading");
   await expect(page.getByLabel("已记录的退出价格区间")).toBeVisible();
-  await expect(page.getByText("BTCUSDT-PERP.BINANCE").first()).toBeVisible();
+  await expect(page.getByText("BTCUSDT", { exact: true }).first()).toBeVisible();
   await expect(page.locator(".trading-recent")).toContainText("WIF");
   await expectNoDocumentHorizontalOverflow(page);
   await page.screenshot({ path: testInfo.outputPath("execution-positions.png"), fullPage: true });

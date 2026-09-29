@@ -1,9 +1,13 @@
 import { TradingPriceRange } from "@features/trading/ui/TradingPriceRange";
 import { render, screen } from "@testing-library/react";
-import { tradingCurrentAccountFixture } from "@tests/fixtures/tradingFixture";
 import { expect, it } from "vitest";
 
-const position = tradingCurrentAccountFixture().positions![0]!;
+const position = {
+  stop_trigger_price: "9800",
+  take_profit_trigger_price: "10200",
+  entry_price: "10000",
+  mark_price: "9999.5",
+};
 
 it("orders short exit prices numerically and labels a stale mark beyond the range", () => {
   const { container } = render(
@@ -11,7 +15,6 @@ it("orders short exit prices numerically and labels a stale mark beyond the rang
       stale
       position={{
         ...position,
-        side: "short",
         stop_trigger_price: "10200",
         take_profit_trigger_price: "9800",
         mark_price: "10300",

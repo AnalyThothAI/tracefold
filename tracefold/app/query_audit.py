@@ -12,7 +12,16 @@ from tracefold.platform.postgres.audit import (
     postgres_query_specs,
 )
 from tracefold.trading.storage.analysis import TRADING_ANALYSIS_RUNTIME_SQL, TRADING_TRIGGER_BY_ID_SQL
-from tracefold.trading.storage.execution_stream import execution_stream_query_specs
+from tracefold.trading.storage.executor import (
+    EXECUTION_FILLS_SQL,
+    EXECUTION_ORDERS_SQL,
+    EXECUTION_PLANS_SQL,
+    EXECUTION_REFUSALS_SQL,
+    FILL_LEDGER_SQL,
+    OPERATOR_INTENTS_SQL,
+    REALIZED_TOTALS_SQL,
+    SIGNAL_LEDGER_SQL,
+)
 from tracefold.trading.storage.gate import (
     GATE_DECISION_FOR_SOURCE_KEY_SQL,
     GATE_DECISIONS_SINCE_SQL,
@@ -27,11 +36,6 @@ from tracefold.trading.storage.queries import (
     TRADING_CASE_OUTCOMES_SQL,
     TRADING_GATE_COUNTS_SQL,
     console_cases_statement,
-    console_executions_statement,
-    console_operator_intents_statement,
-    console_realized_totals_statement,
-    observation_ledger_statement,
-    signal_ledger_statement,
 )
 
 from .workers.runtime import workers_runtime_read_query
@@ -150,8 +154,10 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     # unfiltered window of the Command ledger it renders beside it, and the realized totals that are
     # the only numbers on the page not bounded by that window.
     "/api/trading/executions": (
-        "trading_console_executions",
-        "trading_console_scope_executions",
+        "trading_execution_plans",
+        "trading_execution_refusals",
+        "trading_execution_orders",
+        "trading_execution_fills",
         "trading_realized_totals",
     ),
 }
@@ -178,7 +184,6 @@ def query_audit_catalog(
         *postgres_query_specs(),
         workers_runtime_read_query(),
         *provider(now_ms=int(now_ms)),
-        *execution_stream_query_specs(),
         *_trading_query_specs(now_ms=int(now_ms)),
     )
     return QueryAuditCatalog(
@@ -227,13 +232,8 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
 
     since_ms = int(now_ms) - 24 * 3_600_000
     since_ns = since_ms * 1_000_000
-    executions_sql, executions_params = console_executions_statement(since_ns=since_ns, limit=101)
     day_start_ns = (int(now_ms) - int(now_ms) % 86_400_000) * 1_000_000
-    totals_sql, totals_params = console_realized_totals_statement(
-        account_slot="binance_usdm_primary",
-        day_start_ns=day_start_ns,
-        day_end_ns=day_start_ns + 86_400_000 * 1_000_000,
-    )
+    day_end_ns = day_start_ns + 86_400_000 * 1_000_000
     return (
         ReadQuerySpec(
             # The Decision Plane's liveness: one index-only probe of the newest Case, and the whole
@@ -351,10 +351,6 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                         count_only=True,
                     ),
                 ),
-                (
-                    "trading_console_scope_executions",
-                    console_executions_statement(since_ns=0, limit=101, case_id="0" * 32),
-                ),
             )
         ),
         ReadQuerySpec(
@@ -387,50 +383,38 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_read_return_amplification=200.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
-        ReadQuerySpec(
-            # #528 PR-1. One plan, not two: the desk table takes no filter. The fold reads every
-            # observation of the Signals in its own window, so its input is the join rather than the
-            # row per Signal it returns.
-            name="trading_console_executions",
-            sql=executions_sql,
-            params=executions_params,
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            # #604 T3. The one read on the desk with no window at all: an operator's running realized
-            # result is the sum over every trade the slot ever closed, and a 24 h bound would answer a
-            # different question. What bounds it instead is the ledger's correlated slice -- a
-            # `position` observation always carries the entry identity it belongs to, so the plan is a
-            # `BitmapOr` of the two partial recovery indexes and never touches the reconciliation rows
-            # that are ~97% of the table. Measured on a 12,240-row ledger with 40 closed positions:
-            # 240 rows read, 35 buffers, 0.3 ms, against 12,240 rows and 1,118 buffers for the bare
-            # kind filter. The amplification ceiling is the shape of an entry rather than a guess:
-            # an entry that reaches the venue writes ~8 correlated observations and at most one of
-            # them is a `closed` position, and entries the Runtime refuses write one disposition each
-            # with no close at all -- production's 233 correlated rows over 10 closed positions is 23.
-            name="trading_realized_totals",
-            sql=totals_sql,
-            params=totals_params,
-            max_read_return_amplification=40.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        *_console_specs(
-            name="trading_console_commands",
-            unfiltered=console_operator_intents_statement(since_ns=since_ns, limit=101),
-            filtered=console_operator_intents_statement(since_ns=since_ns, action="flatten", limit=101),
-        ),
-        *(
+        *tuple(
             ReadQuerySpec(
                 name=name,
                 sql=sql,
                 params=params,
-                max_read_return_amplification=20.0,
+                max_read_return_amplification=40.0,
                 max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
             )
-            for name, (sql, params) in (
-                ("trading_signal_ledger", signal_ledger_statement(since_ns=since_ns, limit=101)),
-                ("trading_observation_ledger", observation_ledger_statement(since_ns=since_ns, limit=101)),
+            for name, sql, params in (
+                ("trading_execution_plans", EXECUTION_PLANS_SQL, (since_ns, None, None, 101)),
+                ("trading_execution_refusals", EXECUTION_REFUSALS_SQL, (since_ns, None, None, 101)),
+                ("trading_execution_orders", EXECUTION_ORDERS_SQL, (["0" * 64],)),
+                ("trading_execution_fills", EXECUTION_FILLS_SQL, (["0" * 64],)),
+                (
+                    "trading_realized_totals",
+                    REALIZED_TOTALS_SQL,
+                    (
+                        day_start_ns,
+                        day_end_ns,
+                        day_start_ns,
+                        day_end_ns,
+                        day_start_ns,
+                        day_end_ns,
+                        day_start_ns,
+                        day_end_ns,
+                        "binance_usdm_primary",
+                    ),
+                ),
+                ("trading_console_commands", OPERATOR_INTENTS_SQL, (since_ns, None, None, 101)),
+                ("trading_console_commands_filtered", OPERATOR_INTENTS_SQL, (since_ns, "flatten", "flatten", 101)),
+                ("trading_signal_ledger", SIGNAL_LEDGER_SQL, (since_ns, 101)),
+                ("trading_fill_ledger", FILL_LEDGER_SQL, (since_ns, 101)),
             )
         ),
     )

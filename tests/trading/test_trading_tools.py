@@ -250,7 +250,7 @@ def test_market_defaults_real_environment_features_and_duplicate_menu(tmp_path: 
         spot = json.loads(await context.get_market_snapshot("spot_bars", 60))
         assert spot["environment"] == market.requests[-1].environment == "live"
         assert market.requests[-1].product == "spot"
-        assert market.requests[0].environment == "demo"
+        assert market.requests[0].environment == "live"
 
     asyncio.run(run())
 

@@ -47,7 +47,7 @@ def test_every_postgres_consumer_mounts_the_same_application_credential() -> Non
         "${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password"
     )
     assert services["postgres"]["secrets"] == ["postgres_password", "postgres_database_password"]
-    for service_name in ("migrate", "serve", "workers", "nautilus"):
+    for service_name in ("migrate", "serve", "workers", "executor"):
         assert credential in services[service_name]["volumes"]
 
 

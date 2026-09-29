@@ -929,76 +929,69 @@
 | `analysis_status` | `TEXT` | True | `None` |
 | `evidence_ref` | `TEXT` | True | `None` |
 
-## `trading_entry_validity_checks`
+## `trading_control_state`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `check_id` | `BIGINT` | False | `None` |
-| `entry_id` | `TEXT` | False | `None` |
-| `check_version` | `TEXT` | False | `None` |
-| `checked_at_ns` | `BIGINT` | False | `None` |
-| `allowed` | `BOOLEAN` | False | `None` |
+| `account_slot` | `TEXT` | False | `None` |
+| `entries_paused` | `BOOLEAN` | False | `true` |
+| `emergency_halted` | `BOOLEAN` | False | `false` |
+| `flatten_command_id` | `TEXT` | True | `None` |
+| `updated_at_ns` | `BIGINT` | False | `None` |
+
+## `trading_dispositions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `input_kind` | `TEXT` | False | `None` |
+| `input_id` | `TEXT` | False | `None` |
+| `account_slot` | `TEXT` | False | `None` |
+| `disposition` | `TEXT` | False | `None` |
 | `reason` | `TEXT` | False | `None` |
+| `plan_id` | `TEXT` | True | `None` |
+| `decided_at_ns` | `BIGINT` | False | `None` |
 
-## `trading_execution_observations`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `seq` | `BIGINT` | False | `None` |
-| `event_id` | `TEXT` | False | `None` |
-| `account_slot` | `TEXT` | False | `None` |
-| `execution_strategy` | `TEXT` | False | `None` |
-| `signal_id` | `TEXT` | True | `None` |
-| `command_id` | `TEXT` | True | `None` |
-| `normalized_kind` | `TEXT` | False | `None` |
-| `occurred_at_ns` | `BIGINT` | False | `None` |
-| `observed_at_ns` | `BIGINT` | False | `None` |
-| `native_identity_references` | `JSONB` | False | `None` |
-| `summary` | `JSONB` | False | `None` |
-| `payload` | `JSONB` | False | `None` |
-| `native_environment` | `TEXT` | True | `None` |
-| `native_instrument` | `TEXT` | True | `None` |
-| `native_trade_id` | `TEXT` | True | `None` |
-
-## `trading_execution_runtime_control_state`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `entries_paused` | `BOOLEAN` | False | `None` |
-| `emergency_halted` | `BOOLEAN` | False | `None` |
-| `last_command_seq` | `BIGINT` | False | `None` |
-| `last_command_id` | `TEXT` | True | `None` |
-| `updated_at_ns` | `BIGINT` | False | `None` |
-| `account_slot` | `TEXT` | False | `None` |
-| `execution_namespace` | `TEXT` | False | `None` |
-
-## `trading_execution_runtime_state`
+## `trading_executor_state`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `account_slot` | `TEXT` | False | `None` |
-| `connection` | `TEXT` | False | `None` |
-| `runtime_id` | `UUID` | False | `None` |
-| `alive` | `BOOLEAN` | False | `None` |
-| `unexpected_exposure` | `BOOLEAN` | False | `None` |
+| `environment` | `TEXT` | False | `None` |
 | `heartbeat_at_ns` | `BIGINT` | False | `None` |
-| `entry_block_reason` | `TEXT` | True | `None` |
-| `started_at_ns` | `BIGINT` | False | `None` |
-| `updated_at_ns` | `BIGINT` | False | `None` |
-| `entries_armed` | `BOOLEAN` | False | `None` |
-| `positions_count` | `INTEGER` | False | `None` |
-| `open_orders_count` | `INTEGER` | False | `None` |
-| `protection_status` | `TEXT` | False | `None` |
+| `last_signal_seq` | `BIGINT` | False | `0` |
+| `last_intent_seq` | `BIGINT` | False | `0` |
+| `last_full_reconcile_at_ns` | `BIGINT` | True | `None` |
 | `account_snapshot` | `JSONB` | True | `None` |
-| `routes_count` | `INTEGER` | False | `0` |
-| `account_projection_failure` | `TEXT` | True | `None` |
-| `convergence_checked_at_ns` | `BIGINT` | True | `None` |
-| `convergence_failure` | `TEXT` | True | `None` |
-| `venue_read_started_at_ns` | `BIGINT` | True | `None` |
-| `venue_read_completed_at_ns` | `BIGINT` | True | `None` |
-| `venue_read_failure` | `TEXT` | True | `None` |
-| `recovery_attempted_at_ns` | `BIGINT` | True | `None` |
-| `recovery_result` | `TEXT` | True | `None` |
+| `unexpected_exposure` | `BOOLEAN` | False | `false` |
+| `last_error` | `TEXT` | True | `None` |
+
+## `trading_fill_attributions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `environment` | `TEXT` | False | `None` |
+| `native_symbol` | `TEXT` | False | `None` |
+| `trade_id` | `BIGINT` | False | `None` |
+| `plan_id` | `TEXT` | True | `None` |
+| `command_id` | `TEXT` | True | `None` |
+| `client_order_id` | `TEXT` | False | `None` |
+| `attributed_at_ns` | `BIGINT` | False | `None` |
+
+## `trading_fills`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `environment` | `TEXT` | False | `None` |
+| `native_symbol` | `TEXT` | False | `None` |
+| `trade_id` | `BIGINT` | False | `None` |
+| `venue_order_id` | `TEXT` | False | `None` |
+| `quantity` | `NUMERIC` | False | `None` |
+| `price` | `NUMERIC` | False | `None` |
+| `realized_pnl` | `NUMERIC` | False | `None` |
+| `fee` | `NUMERIC` | False | `None` |
+| `fee_asset` | `TEXT` | False | `None` |
+| `traded_at_ns` | `BIGINT` | False | `None` |
+| `evidence` | `JSONB` | False | `None` |
 
 ## `trading_model_calls`
 
@@ -1028,8 +1021,8 @@
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `seq` | `BIGINT` | False | `None` |
 | `command_id` | `TEXT` | False | `None` |
+| `seq` | `BIGINT` | False | `None` |
 | `account_slot` | `TEXT` | False | `None` |
 | `action` | `TEXT` | False | `None` |
 | `scope` | `TEXT` | False | `None` |
@@ -1038,17 +1031,69 @@
 | `authentication_identity` | `TEXT` | False | `None` |
 | `requested_at_ns` | `BIGINT` | False | `None` |
 | `expires_at_ns` | `BIGINT` | False | `None` |
-| `market_key` | `TEXT` | True | `None` |
-| `direction` | `TEXT` | True | `None` |
 | `payload` | `JSONB` | False | `None` |
 
-## `trading_signal_retirements`
+## `trading_orders`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `client_order_id` | `TEXT` | False | `None` |
+| `plan_id` | `TEXT` | True | `None` |
+| `command_id` | `TEXT` | True | `None` |
+| `environment` | `TEXT` | False | `None` |
+| `native_symbol` | `TEXT` | False | `None` |
+| `leg` | `TEXT` | False | `None` |
+| `attempt` | `INTEGER` | False | `None` |
+| `venue_order_id` | `TEXT` | True | `None` |
+| `status` | `TEXT` | False | `None` |
+| `error_code` | `INTEGER` | True | `None` |
+| `submitted_at_ns` | `BIGINT` | True | `None` |
+| `resolved_at_ns` | `BIGINT` | True | `None` |
+| `evidence` | `JSONB` | True | `None` |
+| `updated_at_ns` | `BIGINT` | False | `None` |
+
+## `trading_plans`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `plan_id` | `TEXT` | False | `None` |
+| `signal_id` | `TEXT` | True | `None` |
+| `command_id` | `TEXT` | True | `None` |
+| `account_slot` | `TEXT` | False | `None` |
+| `environment` | `TEXT` | False | `None` |
+| `native_symbol` | `TEXT` | False | `None` |
+| `side` | `TEXT` | False | `None` |
+| `quantity` | `NUMERIC` | False | `None` |
+| `reference_price` | `NUMERIC` | False | `None` |
+| `reserved_notional` | `NUMERIC` | False | `None` |
+| `stop_bps` | `INTEGER` | False | `None` |
+| `tp_bps` | `INTEGER` | False | `None` |
+| `max_hold_s` | `INTEGER` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `opened_at_ns` | `BIGINT` | True | `None` |
+| `terminal_at_ns` | `BIGINT` | True | `None` |
+| `terminal_reason` | `TEXT` | True | `None` |
+| `pnl_status` | `TEXT` | False | `'pending'::text` |
+| `realized_pnl` | `NUMERIC` | True | `None` |
+| `fees` | `NUMERIC` | True | `None` |
+| `net_pnl` | `NUMERIC` | True | `None` |
+| `pnl_deadline_ns` | `BIGINT` | True | `None` |
+| `updated_at_ns` | `BIGINT` | False | `None` |
+
+## `trading_signals`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `signal_id` | `TEXT` | False | `None` |
-| `reason` | `TEXT` | False | `None` |
-| `retired_at_ns` | `BIGINT` | False | `None` |
+| `seq` | `BIGINT` | False | `None` |
+| `case_id` | `TEXT` | False | `None` |
+| `decision_id` | `TEXT` | False | `None` |
+| `account_slot` | `TEXT` | False | `None` |
+| `native_symbol` | `TEXT` | False | `None` |
+| `decided_at_ns` | `BIGINT` | False | `None` |
+| `expires_at_ns` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+| `created_at_ns` | `BIGINT` | False | `None` |
 
 ## `trading_source_amendments`
 
@@ -1063,50 +1108,14 @@
 | `payload_sha256` | `TEXT` | False | `None` |
 | `received_at_ms` | `BIGINT` | False | `None` |
 
-## `trading_trade_plans`
+## `trading_trade_cursors`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `entry_id` | `TEXT` | False | `None` |
-| `source` | `TEXT` | False | `None` |
-| `case_id` | `TEXT` | True | `None` |
-| `account_slot` | `TEXT` | False | `None` |
-| `market_key` | `TEXT` | False | `None` |
-| `instrument_id` | `TEXT` | False | `None` |
-| `direction` | `TEXT` | False | `None` |
-| `entry_client_order_id` | `TEXT` | False | `None` |
-| `created_at_ns` | `BIGINT` | False | `None` |
-| `entry_expires_at_ns` | `BIGINT` | False | `None` |
-| `entry_quantity` | `NUMERIC` | False | `None` |
-| `stop_distance_bps` | `INTEGER` | False | `None` |
-| `risk_budget_usd` | `NUMERIC` | False | `None` |
-| `max_leverage_at_creation` | `INTEGER` | False | `None` |
-| `exit_policy_id` | `TEXT` | False | `None` |
-| `take_profit_bps` | `INTEGER` | False | `None` |
-| `max_holding_ns` | `BIGINT` | False | `None` |
-| `status` | `TEXT` | False | `None` |
-| `opened_at_ns` | `BIGINT` | True | `None` |
-| `terminal_at_ns` | `BIGINT` | True | `None` |
-| `exit_reason` | `TEXT` | True | `None` |
-| `updated_at_ns` | `BIGINT` | False | `None` |
-| `entry_scope_id` | `TEXT` | False | `None` |
-
-## `trading_trade_signals`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `seq` | `BIGINT` | False | `None` |
-| `signal_id` | `TEXT` | False | `None` |
-| `case_id` | `TEXT` | False | `None` |
-| `market_key` | `TEXT` | False | `None` |
-| `direction` | `TEXT` | False | `None` |
-| `observed_at_ns` | `BIGINT` | False | `None` |
-| `expires_at_ns` | `BIGINT` | False | `None` |
-| `payload` | `JSONB` | False | `None` |
-| `account_slot` | `TEXT` | True | `None` |
-| `entry_scope_id` | `TEXT` | True | `None` |
-| `asset_id` | `TEXT` | True | `None` |
-| `mapping_semantics_digest` | `TEXT` | True | `None` |
+| `environment` | `TEXT` | False | `None` |
+| `native_symbol` | `TEXT` | False | `None` |
+| `next_trade_id` | `BIGINT` | False | `None` |
+| `checked_at_ns` | `BIGINT` | False | `None` |
 
 ## `trading_trigger_conflicts`
 

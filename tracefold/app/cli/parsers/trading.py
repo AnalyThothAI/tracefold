@@ -12,7 +12,6 @@ def add_trading_commands(
     commands = trading.add_subparsers(dest="trading_command", required=True)
     commands.add_parser("status", help="show Alpha producer and execution readiness")
     diagnose = commands.add_parser("diagnose", help="sample bounded read-only execution evidence")
-    diagnose.add_argument("--probe-url", help="optional Runtime /readyz URL")
     diagnose.add_argument("--status-url", help="optional serve /api/trading/status URL")
 
     cases = commands.add_parser("cases", help="list Trading cases newest first")
@@ -23,11 +22,11 @@ def add_trading_commands(
     )
     cases.add_argument("--limit", type=_positive_int, default=20)
 
-    signals = commands.add_parser("signals", help="list engine-neutral TradeSignalV3 rows")
+    signals = commands.add_parser("signals", help="list TradeSignalV4 rows")
     signals.add_argument("--limit", type=_positive_int, default=20)
 
-    observations = commands.add_parser("observations", help="list append-only Runtime observations")
-    observations.add_argument("--limit", type=_positive_int, default=20)
+    fills = commands.add_parser("fills", help="list signed DEMO venue fills")
+    fills.add_argument("--limit", type=_positive_int, default=20)
 
     gate = commands.add_parser("gate", help="read the candidate admission ledger")
     gate.add_argument(
