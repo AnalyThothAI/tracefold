@@ -359,10 +359,12 @@ class NewsNotificationPlanData(ExactApiSchema):
 
 
 class NewsNotificationWorkData(ExactApiSchema):
-    state: Literal["pending", "done", "exhausted"]
+    state: Literal["pending", "done", "failed"]
     state_zh: str = ""
     content_revision: str
     attempts: int = 0
+    # Present on failed work: the error that ended it, kept until the work completes.
+    last_error_code: str | None = None
     next_attempt_at_ms: int | None = None
     updated_at_ms: int
     plan: NewsNotificationPlanData | None = None

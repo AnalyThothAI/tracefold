@@ -61,7 +61,6 @@ def _handle_retry_work(args: Namespace) -> tuple[int, dict[str, Any]]:
                 event_id=str(args.event),
                 kind=str(args.kind),
                 revision=str(args.revision),
-                intent_id=args.intent,
                 now_ms=now_ms(),
             )
     except ValueError as exc:
@@ -71,7 +70,6 @@ def _handle_retry_work(args: Namespace) -> tuple[int, dict[str, Any]]:
         "event_id": args.event,
         "kind": args.kind,
         "revision": args.revision,
-        "intent_id": args.intent,
         "status": "reopened" if reopened else "not_failed_or_version_changed",
     }
 

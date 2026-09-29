@@ -908,7 +908,7 @@ export interface components {
              * Reason
              * @enum {string}
              */
-            reason: "editor_notify" | "editor_key" | "editor_feed_only" | "attention_unavailable_default_notify" | "protected_listing" | "large_daily_move" | "retired" | "stale_source" | "covered_by_sent_receipt" | "send_outcome_unresolved";
+            reason: "editor_notify" | "editor_key" | "editor_feed_only" | "attention_unavailable_default_notify" | "protected_listing" | "large_daily_move" | "retired" | "stale_source" | "covered_by_sent_receipt" | "send_outcome_ambiguous" | "send_outcome_unresolved";
             /**
              * Reason Zh
              * @default
@@ -2103,6 +2103,8 @@ export interface components {
             attempts: number;
             /** Content Revision */
             content_revision: string;
+            /** Last Error Code */
+            last_error_code?: string | null;
             /** Next Attempt At Ms */
             next_attempt_at_ms?: number | null;
             plan?: components["schemas"]["NewsNotificationPlanData"] | null;
@@ -2112,7 +2114,7 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "pending" | "done" | "exhausted";
+            state: "pending" | "done" | "failed";
             /**
              * State Zh
              * @default
@@ -2144,7 +2146,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "held_recovery" | "held_gate" | "pending_delivery" | "delivered" | "delivery_failed" | "queued_semantic" | "semantic_failed" | "no_update" | "queued_notification" | "notification_deferred" | "notification_exhausted" | "not_notified" | "delivery_ambiguous";
+            kind: "held_recovery" | "held_gate" | "pending_delivery" | "delivered" | "delivery_failed" | "queued_semantic" | "semantic_failed" | "no_update" | "queued_notification" | "notification_deferred" | "notification_failed" | "not_notified" | "delivery_ambiguous";
             /**
              * Reason Zh
              * @default

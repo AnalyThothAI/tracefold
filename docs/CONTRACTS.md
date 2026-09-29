@@ -61,6 +61,8 @@
 
 `/api/news/status` 将可领取的 `semantic_pending`、等待调度的 `semantic_deferred`、租约中的 `semantic_in_progress` 与终结的 `semantic_failed_exhausted` 分开。已耗尽 revision 不属于可运行 pending；计数不是推送次数或模型调用次数。
 
+Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed`；`failed` 是通知工作的持久终态，带 `last_error_code`，对应结果 `outcome.kind = notification_failed`（归入“被拦截”），只有 `news retry-work --kind notification` 按精确 content revision 重开。逐命题原因 `send_outcome_ambiguous` 表示此前发送结果不明、按可能已送达处理且不重发；`send_outcome_unresolved` 只表示本 Event 仍有发送进行中。
+
 ### 认证与浏览器行为
 
 `/api/bootstrap` 返回名为 `ws_token` 的读取 bearer。字段名是历史拼写，不证明仍有 WebSocket。该令牌不提供命令权限，也不是独立保护整个公开站点的身份系统；对外服务时需保护整个工作台 origin，见[安全](SECURITY.md)。

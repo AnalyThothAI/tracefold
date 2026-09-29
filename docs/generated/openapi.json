@@ -1773,6 +1773,7 @@
               "retired",
               "stale_source",
               "covered_by_sent_receipt",
+              "send_outcome_ambiguous",
               "send_outcome_unresolved"
             ],
             "title": "Reason",
@@ -4980,6 +4981,17 @@
             "title": "Content Revision",
             "type": "string"
           },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
           "next_attempt_at_ms": {
             "anyOf": [
               {
@@ -5016,7 +5028,7 @@
             "enum": [
               "pending",
               "done",
-              "exhausted"
+              "failed"
             ],
             "title": "State",
             "type": "string"
@@ -5097,7 +5109,7 @@
               "no_update",
               "queued_notification",
               "notification_deferred",
-              "notification_exhausted",
+              "notification_failed",
               "not_notified",
               "delivery_ambiguous"
             ],
