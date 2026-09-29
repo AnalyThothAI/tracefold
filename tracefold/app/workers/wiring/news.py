@@ -82,8 +82,15 @@ class _MarketNotificationDatabase:
 
     lane: WorkerNewsDatabase
 
-    async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = 3.0) -> T:
-        return await self.lane.read(name, fn, timeout_seconds=timeout_seconds)
+    async def read[T](
+        self,
+        name: str,
+        fn: Callable[[Any], T],
+        *,
+        timeout_seconds: float = 3.0,
+        repeatable_read: bool = False,
+    ) -> T:
+        return await self.lane.read(name, fn, timeout_seconds=timeout_seconds, repeatable_read=repeatable_read)
 
     async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = 3.0) -> T:
         return await self.lane.tx(name, fn, timeout_seconds=timeout_seconds)

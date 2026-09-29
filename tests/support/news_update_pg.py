@@ -65,18 +65,27 @@ class ThreadedDb:
     def __init__(self) -> None:
         self.names: list[str] = []
 
-    async def read(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
-        return await asyncio.to_thread(self._run, name, fn)
+    async def read(
+        self,
+        name: str,
+        fn: Callable[[Any], Any],
+        *,
+        timeout_seconds: float = 3.0,
+        repeatable_read: bool = False,
+    ) -> Any:
+        return await asyncio.to_thread(self._run, name, fn, repeatable_read)
 
     async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float = 3.0) -> Any:
         return await asyncio.to_thread(self._run, name, fn)
 
-    def _run(self, name: str, fn: Callable[[Any], Any]) -> Any:
+    def _run(self, name: str, fn: Callable[[Any], Any], repeatable_read: bool = False) -> Any:
         self.names.append(name)
         conn = connect_postgres_test(read_only=False)
         try:
             repos = repositories_for_connection(conn)
             with repos.transaction():
+                if repeatable_read:
+                    conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 return fn(repos)
         finally:
             conn.close()

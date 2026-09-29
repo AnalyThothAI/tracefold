@@ -66,9 +66,11 @@ def _in_session[T, RepositoriesT](
     fn: Callable[[RepositoriesT], T],
     timeout: float,
     select_repositories: Callable[[RepositorySession], RepositoriesT],
+    *,
+    repeatable_read: bool = False,
 ) -> Callable[[], T]:
     def _run() -> T:
-        with database.worker_session(name, timeout) as repos:
+        with database.worker_session(name, timeout, repeatable_read=repeatable_read) as repos:
             return fn(select_repositories(repos))
 
     return _run
@@ -86,11 +88,16 @@ class WorkerNewsDatabase:
         self._database = database
 
     async def read[T](
-        self, name: str, fn: Callable[[NewsRepositories], T], *, timeout_seconds: float = _NEWS_DEFAULT_TIMEOUT_SECONDS
+        self,
+        name: str,
+        fn: Callable[[NewsRepositories], T],
+        *,
+        timeout_seconds: float = _NEWS_DEFAULT_TIMEOUT_SECONDS,
+        repeatable_read: bool = False,
     ) -> T:
         return await self._run(
             name,
-            _in_session(self._database, name, fn, timeout_seconds, _news_repositories),
+            _in_session(self._database, name, fn, timeout_seconds, _news_repositories, repeatable_read=repeatable_read),
             timeout_seconds,
         )
 
@@ -125,11 +132,16 @@ class WorkerNewsColdDatabase:
         self._lane = database.heavy_business()
 
     async def read[T](
-        self, name: str, fn: Callable[[NewsRepositories], T], *, timeout_seconds: float = _NEWS_DEFAULT_TIMEOUT_SECONDS
+        self,
+        name: str,
+        fn: Callable[[NewsRepositories], T],
+        *,
+        timeout_seconds: float = _NEWS_DEFAULT_TIMEOUT_SECONDS,
+        repeatable_read: bool = False,
     ) -> T:
         return await self._run(
             name,
-            _in_session(self._database, name, fn, timeout_seconds, _news_repositories),
+            _in_session(self._database, name, fn, timeout_seconds, _news_repositories, repeatable_read=repeatable_read),
             timeout_seconds,
         )
 

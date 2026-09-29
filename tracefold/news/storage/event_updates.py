@@ -1505,8 +1505,8 @@ class EventUpdateStorage:
     ) -> dict[str, Any] | None:
         """The pending head, the receipts the planner may compare, and the related-receipt reader revision."""
 
-        # Several reads build one model input. Pin their MVCC view before reading work or head.
-        self.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        # The port starts a repeatable-read transaction before session configuration or any query.
+        # Several reads below must see one MVCC view for the model input and revision.
         work = self.conn.execute(
             "SELECT content_revision, state, next_attempt_at_ms, updated_at_ms FROM news_notification_work "
             "WHERE event_id = %s AND channel = %s",

@@ -191,6 +191,7 @@ class PgNewsStore:
             lambda repos: repos.news.notification_snapshot_material(
                 event_id=event_id, channel=channel, now_ms=now_ms, watch_symbols=self.watch_symbols
             ),
+            repeatable_read=True,
         )
         if material is None:
             return None
