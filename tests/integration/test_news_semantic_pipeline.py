@@ -8,6 +8,8 @@ item revisions, semantic work, observations, adopted heads and the public outbox
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -26,6 +28,9 @@ from tests.support.news_update_pg import (
     seed_event,
     sql,
 )
+from tests.support.scripted_lm import ScriptedLM
+from tracefold.app.cli.commands import news_diagnostics
+from tracefold.app.cli.parser import build_parser
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.bus import BusMessage
 from tracefold.news.pipeline.admission import DeduperConsumer
@@ -43,6 +48,7 @@ from tracefold.news.updates.contracts import (
     RelationDraft,
     SupportDraft,
 )
+from tracefold.news.updates.dspy_backend import DspyExtractor
 from tracefold.news.updates.judgment import (
     Answer,
     BatchResult,
@@ -626,6 +632,67 @@ def test_a_failed_revision_can_be_reanalysed_by_its_exact_revision() -> None:
     assert revision == 2
     source = asyncio.run(store.input_for(EVENT))
     assert [item.text for item in source.evidence] == [TEXT]
+
+
+def test_a_revision_failed_by_unusable_claims_is_rerun_by_the_retry_work_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #742 PR-6: a revision whose every generated claim was unusable failed on its first attempt and
+    # quarantined its read. After the fix is deployed the operator re-runs that exact revision with
+    # `tracefold news retry-work --event <id> --kind semantic --revision <wanted>`; the same material is
+    # read again and adopted.
+    clock = Clock(STAMP + 60_000)
+    db = ThreadedDb()
+    store = PgNewsStore(db, clock=clock)
+    seed_event()
+    claim = {
+        "slot": "a",
+        "statement": TEXT,
+        "fields": {"subject": "Agency", "action": "orders tariff", "mode": "decision", "phase": "ordered"},
+        "citations": [{"evidence_ref": "e1", "quote": TEXT}],
+    }
+
+    def analyzer(reply: dict[str, Any]) -> SemanticAnalyzer:
+        route = ScriptedLM([{"result": {"claims": [reply]}}])
+        return SemanticAnalyzer(
+            DspyExtractor(lambda: route, model_identity="fixture", topics={}),
+            NewsJudgments(generated=RelationBackend(), cache=PgJudgmentCache(db)),
+        )
+
+    asyncio.run(_worker(db, store, analyzer({**claim, "citations": []}), clock).handle(_wake(EVENT)))
+    failed = work(EVENT)
+    assert (failed["last_outcome"], failed["last_error_code"], failed["attempts"]) == (
+        "failed",
+        "news_claim_schema_invalid",
+        1,
+    )
+    assert len(failed["failed_read_refs"]) == 1
+
+    conn = connect_postgres_test(read_only=False)
+
+    @contextmanager
+    def test_database(*_args: Any, **_kwargs: Any) -> Iterator[Any]:
+        yield conn
+
+    monkeypatch.setattr(news_diagnostics, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", test_database)
+    monkeypatch.setattr("tracefold.news.bus.now_ms", clock)
+    command = ["news", "retry-work", "--event", EVENT, "--kind", "semantic", "--revision", "1"]
+    try:
+        assert news_diagnostics.handle_news(build_parser().parse_args(command))[0] == 0
+        # The exact revision is reopened once; a second run finds nothing failed.
+        assert news_diagnostics.handle_news(build_parser().parse_args(command))[1]["status"] == (
+            "not_failed_or_version_changed"
+        )
+    finally:
+        conn.close()
+    reopened = work(EVENT)
+    assert (reopened["last_outcome"], reopened["attempts"], reopened["failed_read_refs"]) == (None, 0, [])
+
+    asyncio.run(_worker(db, store, analyzer(claim), clock).handle(_wake(EVENT)))
+    head = asyncio.run(store.head(EVENT))
+    assert head is not None and [claim.statement for claim in head.claims] == [TEXT]
+    assert (work(EVENT)["done_revision"], work(EVENT)["last_outcome"]) == (1, "adopted")
 
 
 def test_an_input_that_cannot_be_built_fails_only_its_own_work() -> None:
