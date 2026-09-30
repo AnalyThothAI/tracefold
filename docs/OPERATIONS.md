@@ -80,7 +80,7 @@ docker compose exec -T workers tracefold news why EVENT_ID
 
 结合 Event 详情读取这些身份：**来源修订、wanted / done 输入版本、语义 owner / lease / attempt、当前 content revision、通知工作、intent 与发送账本**。不要只凭 UI 上一个“失败”标签选重试命令。
 
-生成错误区分 `news_generation_output_truncated`、`news_generation_output_empty`、`news_generation_output_schema_invalid`。配置了请求契约具有实质差异的 fallback 时（模型、端点或输出上限不同；抽取 fallback 的输出上限更大），允许一次替代回答；否则显式失败，不重复同一请求消耗全部预算。命题逐条校验：一条命题引文不在来源中或结构无效，只丢弃这一条（原因记在观察的 `discarded_claims`），其余照常采纳；所有命题都不可用才算失败。配置错误立即失败；provider 限流、超时、服务端或传输错误保留有界恢复，错误码保留 LM 错误类型（如 `news_generation_lm_timeout_error`）。先修正具体输出 / 配置原因，再决定是否精确恢复。
+生成错误区分 `news_generation_output_truncated`、`news_generation_output_empty`、`news_generation_output_schema_invalid`。配置了请求契约具有实质差异的 fallback 时（模型、端点或输出上限不同；抽取 fallback 的输出上限更大），允许一次替代回答；否则显式失败，不重复同一请求消耗全部预算。截断（`finish_reason=length`）即使被 JSON 修复也按截断处理；一个抽取回答里没有任何可用命题时同样先走 fallback，路由上最后一个回答仍不可用才失败。命题逐条校验：可修复的字段就地修复（写错层级的 citations / topics、选项外的读数、不可解析的列表条目、null 可选字段、多余的键），只有缺陈述、引文、主语或动作，或引文不在来源中的命题才丢弃这一条（原因记在观察的 `discarded_claims`），其余照常采纳；所有命题都不可用才算失败。日志 `news_extraction_claim_schema_invalid index=… errors=[(loc, type)]` 给出不可用命题的字段位置与错误类型，`news_extraction_claim_repaired` 给出被修复的字段，二者都不含模型原文。配置错误立即失败；provider 限流、超时、服务端或传输错误保留有界恢复，错误码保留 LM 错误类型（如 `news_generation_lm_timeout_error`）。先修正具体输出 / 配置原因，再决定是否精确恢复。
 
 状态接口将可领取、等待调度、有效租约和已失败分别记录为 `semantic_pending`、`semantic_deferred`、`semantic_in_progress`、`semantic_failed_exhausted`，不要把最后一类解释成即将自动运行的积压：它计入当前仍失败、等待新证据或人工恢复的修订，只要大于 0，模型健康就至少为 warn。失败行保留真实尝试次数，一次性的契约错误显示 `attempts=1`。
 
