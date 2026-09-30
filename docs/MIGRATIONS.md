@@ -100,7 +100,7 @@ class Runtime execution;
 
 ### 0419：保留事实的 Trading 根修
 
-直接前驱0418。停止Analysis/Executor等受影响writers，同维护窗口用匹配镜像；lock_timeout=5s、statement_timeout=60s，失败整事务回滚。保留Case/失败预测/Signal/活跃Plan/订单/原生成交/归因。旧SHA/route建立legacy，缺参数/usage/准入/episode不伪造。run/assessment只追加，action事实不变、发布仅从初态结算。历史Signal/action外键NOT VALID保留不可恢复来源，但约束新Signal；冻结Case不回写。bootstrap_since_ns仅记实际建立窗口，旧起点unknown仍NULL。
+直接前驱0418。停止Analysis/Executor等受影响writers，同维护窗口用匹配镜像；lock_timeout=5s、statement_timeout=60s，失败整事务回滚。保留Case/失败预测/Signal/活跃Plan/订单/原生成交/归因。旧SHA/route建立legacy，缺参数/usage/准入/episode不伪造。run/assessment只追加，action事实不变、发布仅从初态结算。历史Signal/action外键NOT VALID保留不可恢复来源，但约束新Signal；冻结Case不回写。bootstrap_since_ns仅记实际建立窗口，旧起点unknown仍NULL。Case.intake_context存首受理relay边界，历史NULL不推断catchup/prospective。
 
 不要求清空或先平仓所有账户；维护核实暴露/保护、stopped-writer期间持续场所保护，恢复后签名对账。0417/0418历史硬切不重复用于0419。回退为前向修复或验证备份与匹配镜像，禁止旧writer写新schema。
 

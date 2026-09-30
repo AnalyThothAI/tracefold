@@ -862,6 +862,7 @@
 | `decided_at_ms` | `BIGINT` | True | `None` |
 | `failure_code` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `intake_context` | `JSONB` | True | `None` |
 | `units_per_contract` | `NUMERIC` | True | `None` |
 | `episode_id` | `TEXT` | True | `None` |
 | `episode_role` | `TEXT` | True | `None` |

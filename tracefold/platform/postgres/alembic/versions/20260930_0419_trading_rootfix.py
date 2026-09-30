@@ -40,6 +40,7 @@ def upgrade() -> None:
 
     op.execute("""
         ALTER TABLE public.trading_cases
+          ADD COLUMN intake_context jsonb CHECK (jsonb_typeof(intake_context)='object'),
           ADD COLUMN units_per_contract numeric CHECK (units_per_contract > 0),
           ADD COLUMN episode_id text,
           ADD COLUMN episode_role text CHECK (episode_role IN ('leader','repeat','material'))

@@ -61,6 +61,7 @@ class AnalysisRunner:
         execution_catalogue: BinanceCatalogue | None = None,
     ) -> None:
         self.settings = settings
+        self._relay_started_at_ms = _clock_ms()
         self.market_data = market_data
         self.execution_catalogue = execution_catalogue
         self._db_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-db")
@@ -139,6 +140,8 @@ class AnalysisRunner:
                             selection=selection,
                             now_ms=_clock_ms(),
                             root_ttl_ms=self.settings.trading.analysis.root_ttl_seconds * 1_000,
+                            relay_started_at_ms=self._relay_started_at_ms,
+                            source_recorded_at_ms=event["source_recorded_at_ms"],
                         ),
                         transaction=True,
                     )

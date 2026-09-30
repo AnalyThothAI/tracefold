@@ -37,7 +37,7 @@ ANALYSIS_CASE_SQL = (
     "SELECT case_id,trigger_id,trigger_kind,asset_id,native_symbol,mapping_digest,created_at_ms,"
     "root_expires_at_ms,state,claim_token,lease_until_ms,claim_attempt,view,view_sha256,raw_snapshot_ref,"
     "geometry_version,stop_bps,tp_bps,half_spread_bps,reference_price,decided_at_ms,failure_code,"
-    "updated_at_ms,units_per_contract,episode_id,episode_role FROM trading_cases WHERE case_id=%s"
+    "updated_at_ms,units_per_contract,episode_id,episode_role,intake_context FROM trading_cases WHERE case_id=%s"
 )
 ASSESSMENTS_BY_CASE_SQL = (
     "SELECT assessment_id,run_id,evaluator_id,case_id,program_sha,route,status,forecast,drivers,notes,"
@@ -165,10 +165,27 @@ class AnalysisStorage:
         selection: TargetSelection,
         now_ms: int,
         root_ttl_ms: int,
+        relay_started_at_ms: int | None = None,
+        source_recorded_at_ms: int | None = None,
     ) -> tuple[str, str | None, str]:
         """Deduplicate the public News fact; only a selected target gets a Case."""
         if kind not in ("oi", "catalyst") or root_ttl_ms <= 0:
             raise ValueError("analysis_trigger_invalid")
+        intake_context = None
+        if relay_started_at_ms is not None and source_recorded_at_ms is not None:
+            if min(relay_started_at_ms, source_recorded_at_ms) < 0 or relay_started_at_ms > now_ms:
+                raise ValueError("analysis_intake_clock_invalid")
+            intake_context = {
+                "contract": "relay_capture_v1",
+                "relay_started_at_ms": relay_started_at_ms,
+                "source_recorded_at_ms": source_recorded_at_ms,
+                "accepted_at_ms": now_ms,
+                "cohort": "unknown"
+                if source_recorded_at_ms > now_ms
+                else "backlog"
+                if source_recorded_at_ms < relay_started_at_ms
+                else "prospective",
+            }
         trigger_id = _sha((kind, source_fact_key, source_revision))
         case_id = _sha((trigger_id, "case_v1")) if selection.reason == "selected" else None
         observed = int(payload.get("first_available_at_ms") or payload.get("provider_event_at_ms") or now_ms)
@@ -250,8 +267,8 @@ class AnalysisStorage:
             self.conn.execute(
                 "INSERT INTO trading_cases (case_id,trigger_id,trigger_kind,asset_id,native_symbol,"
                 "mapping_digest,created_at_ms,root_expires_at_ms,state,updated_at_ms,"
-                "units_per_contract,episode_id,episode_role) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s,%s,%s,%s)",
+                "units_per_contract,episode_id,episode_role,intake_context) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'pending',%s,%s,%s,%s,%s::jsonb)",
                 (
                     case_id,
                     trigger_id,
@@ -265,6 +282,7 @@ class AnalysisStorage:
                     selection.instrument.units_per_contract,
                     episode,
                     role,
+                    None if intake_context is None else _json(intake_context),
                 ),
             )
         return trigger_id, case_id, "accepted"
@@ -416,12 +434,17 @@ class AnalysisStorage:
         self, *, case_id: str, account_slot: str, now_ms: int, max_source_age_ms: int
     ) -> str | None:
         row = self.conn.execute(
-            "SELECT c.episode_id,c.trigger_kind,c.view,t.payload "
+            "SELECT c.episode_id,c.trigger_kind,c.view,c.intake_context,t.payload "
             "FROM trading_cases c JOIN trading_triggers t USING(trigger_id) WHERE c.case_id=%s",
             (case_id,),
         ).fetchone()
         if row is None or row["episode_id"] is None:
             return "episode_unknown"
+        cohort = (row["intake_context"] or {}).get("cohort")
+        if cohort == "backlog":
+            return "source_stale"
+        if cohort == "unknown":
+            return "input_incomplete"
         payload = row["payload"]
         observed = (
             payload.get("provider_event_at_ms") if row["trigger_kind"] == "oi" else payload.get("first_available_at_ms")

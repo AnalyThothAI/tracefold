@@ -94,6 +94,7 @@ def test_0418_populated_ledger_is_preserved_and_new_runs_are_isolated(postgres_m
             "reserved_margin": None,
             "admission_snapshot": None,
         }
+        assert conn.execute("SELECT intake_context FROM trading_cases").fetchone()["intake_context"] is None
         storage = TradingRepository(conn)
         historical = storage.analysis_case(case)["assessments"][0]
         assert historical["status"] == "rate_limit" and historical["input_tokens"] is None

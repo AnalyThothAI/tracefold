@@ -19,7 +19,7 @@ from tracefold.app.trading_analysis import AnalysisRunner
 from tracefold.app.trading_assessor import AssessmentResult
 from tracefold.platform.config.models import PostgresConfig, Settings
 from tracefold.platform.market_identity import AssetId, InstrumentRef
-from tracefold.trading.engine.case_view import BaseRates, build_case_view
+from tracefold.trading.engine.case_view import BaseRates, build_case_view, case_view_from_record
 from tracefold.trading.engine.evaluation import EvaluationRun, EvaluatorSpec
 from tracefold.trading.engine.forecast import Forecast, LegProbabilities, PolicyConfig, all_policy_decisions
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult
@@ -62,6 +62,8 @@ def test_case_claim_freeze_paper_and_scoreboard_roundtrip(tmp_path, postgres_clo
                 selection=_selection(),
                 now_ms=at,
                 root_ttl_ms=600_000,
+                relay_started_at_ms=at - 1000,
+                source_recorded_at_ms=at,
             )
             assert result == "accepted" and case_id is not None
             assert (
@@ -157,6 +159,11 @@ def test_case_claim_freeze_paper_and_scoreboard_roundtrip(tmp_path, postgres_clo
         assert board["funnel"]["assessed"] == 1
         assert len(board["programs"]) == 1
         assert len(board["programs"][0]["policies"]) == 6
+        assert any(
+            row["dimension"] == "capture_cohort" and row["group"] == "prospective"
+            for row in board["programs"][0]["cohorts"]
+        )
+        assert detail["intake_context"]["relay_started_at_ms"] == at - 1000
         assert board["programs"][0]["forecast"]["status"] == "insufficient_data"
         settings = Settings()
         settings.storage.postgres = PostgresConfig(
@@ -374,6 +381,8 @@ def test_runner_freezes_live_data_and_finishes_without_executor(tmp_path, postgr
                 selection=_selection(),
                 now_ms=at,
                 root_ttl_ms=600_000,
+                relay_started_at_ms=at - 1000,
+                source_recorded_at_ms=at,
             )
         assert case_id is not None
         settings = Settings()
@@ -404,6 +413,10 @@ def test_runner_freezes_live_data_and_finishes_without_executor(tmp_path, postgr
         raw = tmp_path / "archive" / "trading-cases" / digest[:2] / f"{digest}.json.gz"
         snapshot = json.loads(gzip.decompress(raw.read_bytes()))
         assert snapshot["data_environment"] == "live"
+        assert snapshot["intake_context"] == row["view"]["intake_context"] == row["intake_context"]
+        restored_view = case_view_from_record(row["view"])
+        assert restored_view.intake_context == row["intake_context"]
+        assert "relay_started_at_ms" not in restored_view.prompt_json()
         assert row["policy_actions"][0]["publish_status"] != "published"
     finally:
         conn.close()

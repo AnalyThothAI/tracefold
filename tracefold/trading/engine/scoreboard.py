@@ -31,6 +31,7 @@ class ScoredCase:
     ingest_mode: str = "unknown"
     geometry_version: str = "unknown"
     assessment_status: str = "unknown"
+    capture_cohort: str = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,14 +299,7 @@ def cohort_scores(cases: tuple[ScoredCase, ...]) -> tuple[dict[str, object], ...
             ("trigger", case.trigger_kind),
             ("asset", case.asset_id),
             ("source_age", age),
-            (
-                "capture_cohort",
-                "unknown"
-                if case.source_age_ms is None
-                else "delayed_over_10m"
-                if case.source_age_ms > 600000
-                else "current_under_10m",
-            ),
+            ("capture_cohort", case.capture_cohort),
             ("episode_role", case.episode_role),
             ("ingest_mode", case.ingest_mode),
             ("geometry", case.geometry_version),

@@ -10,7 +10,7 @@ import os
 import tempfile
 import time
 from concurrent.futures import Executor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -207,7 +207,9 @@ class CasePreparer:
             },
             episode={"role": case.get("episode_role") or "unknown", "contract": "episode_v1"},
         )
+        view = replace(view, intake_context=case.get("intake_context"))
         snapshot = {
+            "intake_context": view.intake_context,
             "snapshot_version": "live_case_snapshot_v1",
             "case_id": case["case_id"],
             "knowledge_cutoff_ms": cutoff,

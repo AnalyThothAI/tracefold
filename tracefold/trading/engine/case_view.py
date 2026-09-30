@@ -39,6 +39,7 @@ class CaseView:
     version: str = VIEW_VERSION
     evidence_refs: dict[str, str] | None = None
     paper_contract: dict[str, str] | None = None
+    intake_context: dict[str, Any] | None = None
 
     def prompt_json(self) -> str:
         """Expose semantic asset and relative ages; durable identities stay in PG."""
@@ -306,4 +307,5 @@ def case_view_from_record(record: dict[str, Any]) -> CaseView:
         version=str(record["version"]),
         evidence_refs=dict(record["evidence_refs"]) if record.get("evidence_refs") is not None else None,
         paper_contract=dict(record["paper_contract"]) if record.get("paper_contract") is not None else None,
+        intake_context=dict(record["intake_context"]) if record.get("intake_context") is not None else None,
     )

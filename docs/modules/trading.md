@@ -81,7 +81,7 @@ active_policy 选择唯一在线策略，publish_signals 默认 false。发布�
 
 记分按 run 展示漏斗/失败、原始与已落库校准预测、PIT 覆盖、动作率、净 R、资产/来源/年龄/episode/采集方式分组和执行筛选。BSS 在匹配 PIT 子样本计算，至少 30 腿并报告覆盖。
 
-配对只用共同 Case、同几何、成熟双腿；abstain 为零持仓收益，失败/缺标签保持 missing。均值可描述；区间要求七个有效日期、十个资产日簇，整日重采样，仍不证明市场因子独立。capture_cohort 从来源年龄区分 >10m 迟到和较新输入，不冒充现场 catchup/prospective；原 ingest_mode 未记则 unknown。#746 七天 prospective/双腿覆盖须独立真实窗口。
+配对只用共同 Case、同几何、成熟双腿；abstain 为零持仓收益，失败/缺标签保持 missing。均值可描述；区间要求七个有效日期、十个资产日簇，整日重采样，仍不证明市场因子独立。capture_cohort 来自首次受理时记录的 relay_capture_v1：本轮 relay 启动前已在公开 outbox 落库为 backlog，其后落库为 prospective；保存启动/落库/受理时间，重试不改组。它描述 Trading 领取边界，不推断 News 上游采集模式；来源年龄与原 ingest_mode 单列，旧记录缺边界仍 unknown。backlog 保留预测与双腿但不自动发布。#746 七天 prospective/双腿覆盖须独立真实窗口。
 
 ```bash
 tracefold trading scoreboard --since 2026-09-01 --until 2026-09-08

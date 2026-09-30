@@ -19,6 +19,7 @@ from tracefold.trading.engine.scoreboard import ScoredCase, cohort_scores, forec
 
 SCOREBOARD_CASES_SQL = (
     "SELECT c.case_id,c.asset_id,c.trigger_kind,c.created_at_ms,c.view,c.geometry_version,c.episode_id,c.episode_role,"
+    "c.intake_context,"
     "t.payload FROM trading_cases c JOIN trading_triggers t USING(trigger_id) "
     "WHERE c.created_at_ms >= %s AND c.created_at_ms < %s"
 )
@@ -223,6 +224,7 @@ class ScoreboardStorage:
                             ]
                         ),
                         ingest_mode=case["payload"].get("ingest_mode", "unknown"),
+                        capture_cohort=(case["intake_context"] or {}).get("cohort", "unknown"),
                         geometry_version=case["geometry_version"] or "unknown",
                         assessment_status="unknown" if assessment is None else assessment["status"],
                     )

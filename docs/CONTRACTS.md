@@ -129,7 +129,7 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 
 `SignalV4` 与 `OperatorIntentV1` 的身份与作用域由执行契约定义，模型不能自由添加未知字段来绕过编译器。Signal 绑定 Case / decision、几何、映射、账户槽位、entry scope 与截止时间；订单与成交由 DEMO 场所对账确认。
 
-CaseView v2 保留标的/原生单位/相对年龄/覆盖/episode；evaluator/run/assessment/action 分开，Signal.decision_id 引用实际 action。legacy参数仍unknown，assessment终态不可改。scoreboard.programs 保留字段名但按run_id区分，带evaluator/mode/manifest；原始/校准预测分开，PIT显示覆盖、配对失败/缺失不填零、七日/十簇不足区间为空。capture_cohort年龄分组不冒充现场catchup/prospective。status.active_faults为未解决故障，last_error为历史摘要；totals仅归因Plan成交/手续费，未覆盖资金费/转账/未归因历史。
+CaseView v2 保留标的/原生单位/相对年龄/覆盖/episode；evaluator/run/assessment/action 分开，Signal.decision_id 引用实际 action。legacy参数仍unknown，assessment终态不可改。scoreboard.programs 保留字段名但按run_id区分，带evaluator/mode/manifest；原始/校准预测分开，PIT显示覆盖、配对失败/缺失不填零、七日/十簇不足区间为空。capture_cohort使用持久relay_capture_v1启动/outbox落库/受理边界分开backlog与prospective，来源年龄和上游ingest_mode另列，存量边界未知继续unknown；backlog不自动发布。status.active_faults为未解决故障，last_error为历史摘要；totals仅归因Plan成交/手续费，未覆盖资金费/转账/未归因历史。
 
 本地 `trading issue` 使用关闭的命令语法，必须有稳定 `--request-id` 和调用方封存的 `--requested-at-ns`，重试保留两者。它记录本地 OS 认证的意图，不证明交易所动作完成。
 
