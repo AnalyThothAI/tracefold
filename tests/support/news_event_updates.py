@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from tracefold.news.notifications.contracts import ClaimDecision, NotificationPlan
+from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
     DraftClaim,
     EventUpdate,
@@ -23,8 +25,6 @@ from tracefold.news.updates.contracts import (
     SupportDraft,
 )
 from tracefold.news.updates.identity import canonical_json, digest
-from tracefold.news.updates.notification import ClaimDecision, NotificationPlan
-from tracefold.news.updates.semantics import assemble_update
 
 STAMP = 1_790_405_000_000
 TARIFF_TOPIC = "medtop:20000384"

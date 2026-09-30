@@ -28,8 +28,8 @@ from tests.support.news_event_updates import (
 )
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_json
+from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import Extraction, FrozenInput, PriorClaim, RelationDraft, SupportDraft
-from tracefold.news.updates.semantics import assemble_update
 
 pytestmark = pytest.mark.integration
 

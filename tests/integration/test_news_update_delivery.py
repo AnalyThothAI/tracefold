@@ -1,7 +1,8 @@
 """News update delivery against real PostgreSQL: plan, intent, card, send, settle and the crash windows (#706).
 
-Every object on the path is the production one -- `PgNewsStore`, the core `Notifications` turn and the
-`DelivererLoop` that is its `Sender` -- over one real database, with a fresh connection and transaction
+Every object on the path is the production one: the semantic and notification stores, the
+`Notifications` workflow, its `NotificationSender` and the `DelivererLoop` scheduler, over one real
+database with a fresh connection and transaction
 per port call. Only the two outside parties are doubles: the card model (a composer that answers or
 fails on cue) and the push provider (a sender that sends, refuses or goes silent on cue). Assertions
 are durable rows and what reached the provider, never a private call sequence.
@@ -38,9 +39,17 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.bus import TransientError
 from tracefold.news.delivery_contracts import COMMIT_PHASE_NOT_SENT, COMMIT_PHASE_UNKNOWN
 from tracefold.news.models import ReaderDeliveryPresentation
+from tracefold.news.notifications.contracts import CardCopy, CardLine, FrozenCard
+from tracefold.news.notifications.planner import NotificationPlanner
+from tracefold.news.notifications.service import Notifications
 from tracefold.news.pipeline.delivery import DelivererLoop
+from tracefold.news.pipeline.delivery_enrichment import DeliveryEnrichment
+from tracefold.news.pipeline.notification_sender import NotificationSender
+from tracefold.news.pipeline.send_entry import InitialSendEntry
 from tracefold.news.reader_card import ReaderCard
-from tracefold.news.storage.event_update_store import PgJudgmentCache, PgNewsStore
+from tracefold.news.storage.judgment_store import PgJudgmentCache
+from tracefold.news.storage.notification_store import PgNotificationStore
+from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.updates.contracts import (
     Asset,
     ClaimFields,
@@ -50,9 +59,10 @@ from tracefold.news.updates.contracts import (
     FrozenInput,
     PriorClaim,
 )
+from tracefold.news.updates.identity import identity
 from tracefold.news.updates.judgment import ProviderUnavailable
-from tracefold.news.updates.notification import CardCopy, CardLine, FrozenCard, NotificationPlanner
-from tracefold.news.updates.service import Notifications
+from tracefold.news.updates.ports import SemanticObservation
+from tracefold.news.updates.projection import reading_views
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -154,7 +164,8 @@ class Rig:
     ) -> None:
         self.clock = clock or Clock()
         self.db = db or FaultDb()
-        self.store = PgNewsStore(self.db, clock=self.clock)
+        self.semantic_store = PgSemanticStore(self.db, clock=self.clock)
+        self.store = PgNotificationStore(self.db, clock=self.clock)
         self.composer = composer or Composer()
         self.notifications = Notifications(
             self.store,
@@ -163,11 +174,12 @@ class Rig:
             clock=self.clock,
         )
         self.provider = provider
+        entry = InitialSendEntry(sender=provider, finite_operations=InlineFinite(), min_interval_seconds=0.0)
+        enrichment = DeliveryEnrichment(db=self.db, send_entry=entry)
         self.loop = DelivererLoop(
             db=self.db,
-            sender=provider,
-            finite_operations=InlineFinite(),
-            min_interval_seconds=0.0,
+            notification_sender=NotificationSender(entry, enrichment),
+            enrichment=enrichment,
             notifications=self.notifications,
         )
 
@@ -182,7 +194,7 @@ class Rig:
 
 def _adopt(clock: Clock, analyzer: StubAnalyzer | None = None) -> EventUpdate:
     seed_event()
-    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
     assert asyncio.run(run_agent(agent(pg, clock, analyzer), EVENT)) == "adopted"
     head = asyncio.run(pg.head(EVENT))
     assert head is not None
@@ -296,13 +308,13 @@ def test_a_failed_plan_spends_one_bounded_attempt_and_the_third_fails_the_work_v
     # Terminal: it is no longer due, and nothing else moved.
     assert asyncio.run(rig.store.pending_notification_events("news", 10)) == ()
     assert rig.composer.calls == 0 and provider.sent == [] and _queue() == [] and _ledger() == []
-    assert asyncio.run(rig.store.head(EVENT)) == head
+    assert asyncio.run(rig.semantic_store.head(EVENT)) == head
 
     retried = asyncio.run(
         rig.db.tx(
             "retry",
-            lambda r: r.news.retry_failed_work(
-                event_id=EVENT, kind="notification", revision=head.content_revision, now_ms=clock.now_ms
+            lambda r: r.news.notification_work.retry_failed_revision(
+                event_id=EVENT, revision=head.content_revision, now_ms=clock.now_ms
             ),
         )
     )
@@ -338,7 +350,7 @@ def test_a_card_failure_retries_only_that_intents_card() -> None:
     assert (queued["state"], queued["attempts"], queued["lease_token"]) == ("pending", 1, None)
     assert queued["error_code"] == "news_card:ProviderUnavailable" and queued["frozen_card"] is None
     assert _ledger() == [] and provider.sent == []
-    assert asyncio.run(rig.store.head(EVENT)) == head
+    assert asyncio.run(rig.semantic_store.head(EVENT)) == head
     assert sql("SELECT kind, source_revision, acknowledged_at_ms FROM news_trade_events") == outbox_before
     assert _work()["state"] == "pending"
 
@@ -373,7 +385,7 @@ def test_a_head_that_changes_before_the_send_retires_the_unsent_reservation() ->
                         for claim in head.claims
                     ),
                 )
-                store = PgNewsStore(ThreadedDb(), clock=clock)
+                store = PgSemanticStore(ThreadedDb(), clock=clock)
                 adopted, _update = await adopt_next(store, head, source, extraction_for(source))
                 assert adopted
             return await Composer.compose(self, claims, sources=sources)
@@ -391,7 +403,7 @@ def test_a_head_that_changes_before_the_send_retires_the_unsent_reservation() ->
 
     # The next turn plans the new head: the stale reservation is retired and one card is sent for it.
     (ledger,) = _ledger()
-    newer = asyncio.run(rig.store.head(EVENT))
+    newer = asyncio.run(rig.semantic_store.head(EVENT))
     assert newer is not None and ledger["content_revision"] == newer.content_revision
     assert ledger["intent_id"] != stale_intent
     assert stale_intent not in {row["intent_id"] for row in _queue()}
@@ -492,7 +504,7 @@ def test_a_send_whose_outcome_is_unknown_is_held_ambiguous_and_never_resent() ->
         prior=tuple(PriorClaim(event_id=EVENT, content_revision=head.content_revision, claim=c) for c in head.claims),
     )
     aluminium = Extraction(claims=(draft(source.evidence[0], "a", action="adds aluminium to the tariff"),))
-    adopted, update = asyncio.run(adopt_next(PgNewsStore(ThreadedDb(), clock=clock), head, source, aluminium))
+    adopted, update = asyncio.run(adopt_next(PgSemanticStore(ThreadedDb(), clock=clock), head, source, aluminium))
     assert adopted and {claim.ref for claim in update.claims} > {ambiguous_claim}
     for _ in range(4):
         rig.advance()
@@ -539,7 +551,9 @@ def test_a_crash_after_the_send_leaves_the_sending_payload_untouched_and_it_is_n
     conn = connect_postgres_test(read_only=False)
     try:
         with conn.transaction():
-            repositories_for_connection(conn).news.terminalize_interrupted_deliveries(now_ms=clock.now_ms + 120_000)
+            repositories_for_connection(conn).news.notification_delivery.terminalize_interrupted_deliveries(
+                now_ms=clock.now_ms + 120_000
+            )
     finally:
         conn.close()
     clock.now_ms += 15 * 60_000
@@ -641,7 +655,7 @@ def test_only_a_related_receipt_settled_meanwhile_invalidates_a_ready_card(relat
             "event-second", text="Miner halts copper pit in Chile.", title="Chile pit halted", fingerprint="fp-2"
         )
         analyzer = StubAnalyzer(_unrelated_copper)
-    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
     assert asyncio.run(run_agent(agent(pg, clock, analyzer), "event-second")) == "adopted"
 
     provider = Provider()
@@ -761,3 +775,77 @@ def test_the_stage_breakdown_from_adoption_to_the_provider_is_read_back_with_sql
     assert row["card_finished_at_ms"] <= row["ready_at_ms"] <= row["attempted_at_ms"] <= row["settled_at_ms"]
     assert min(row["snapshot_ms"], row["judgment_ms"], row["send_slot_wait_ms"]) >= 0
     assert row["compared"] == 0
+
+
+def test_new_program_reuses_extraction_and_keeps_legacy_observation_and_frozen_intent() -> None:
+    """An old program's saved observation cannot collide with the next program's immutable result."""
+
+    clock = Clock()
+    _adopt(clock)
+    rig = Rig(Provider(), clock=clock)
+    prepared = asyncio.run(rig.notifications.prepare(EVENT, "news"))
+    assert prepared.status == "ready" and prepared.card is not None and prepared.lease is not None
+    frozen_before = sql("SELECT * FROM news_delivery_queue WHERE intent_id=%s", (prepared.lease.intent_id,))[0]
+
+    retry_event = "event-program-retry"
+    seed_event(
+        retry_event,
+        text="Agency lifts the aluminium export ban.",
+        title="Agency lifts aluminium export ban",
+        fingerprint="fp-program-retry",
+    )
+    pg = rig.semantic_store
+    analyzer = StubAnalyzer()
+
+    async def resume() -> tuple[str, str]:
+        lease = await pg.claim_semantic_work(retry_event, lease_ms=180_000)
+        assert lease is not None
+        source = lease.source
+        extracted = extraction_for(source)
+        work_id = identity("semantic_work", source.event_id, source.revision, source.input_sha, analyzer.identity)
+        await pg.save_extraction(work_id, extracted)
+        # This is the deployed pre-759 formula, deliberately lacking program identity.
+        legacy = SemanticObservation(
+            result_id=identity("semantic_result", work_id, source.prior, extracted),
+            work_id=work_id,
+            event_id=source.event_id,
+            input_revision=source.revision,
+            input_sha256=source.input_sha,
+            program_identity="program-before-refactor",
+            completed_at_ms=clock.now_ms,
+            understanding=extracted,
+            read_refs=tuple(view.read_ref for view in reading_views(source)),
+        )
+        await pg.save_observation(legacy)
+        legacy_before = sql("SELECT * FROM news_semantic_observations WHERE result_id=%s", (legacy.result_id,))[0]
+        await pg.defer_semantic_event(lease, reason="resume_after_program_change")
+        clock.now_ms = sql("SELECT next_attempt_at_ms FROM news_semantic_work WHERE event_id=%s", (retry_event,))[0][
+            "next_attempt_at_ms"
+        ]
+        subject = agent(pg, clock, analyzer)
+        subject.program_identity = "program-after-refactor"
+        assert await run_agent(subject, retry_event) == "adopted"
+        assert analyzer.extract_calls == 0, "the same analyzer/input work must reuse its saved extraction"
+        assert (
+            sql("SELECT * FROM news_semantic_observations WHERE result_id=%s", (legacy.result_id,))[0] == legacy_before
+        )
+        return legacy.result_id, work_id
+
+    legacy_id, work_id = asyncio.run(resume())
+    observations = sql("SELECT * FROM news_semantic_observations WHERE event_id=%s", (retry_event,))
+    assert len(observations) == 2
+    assert {row["work_id"] for row in observations} == {work_id}
+    assert {row["program_identity"] for row in observations} == {"program-before-refactor", "program-after-refactor"}
+    assert len({row["result_id"] for row in observations}) == 2
+    adopted = next(row for row in observations if row["program_identity"] == "program-after-refactor")
+    head = asyncio.run(pg.head(retry_event))
+    assert head is not None
+    adopted_row = sql(
+        "SELECT observation_result_id FROM news_event_updates WHERE event_id=%s AND content_revision=%s",
+        (retry_event, head.content_revision),
+    )[0]
+    assert adopted_row["observation_result_id"] == adopted["result_id"]
+    assert adopted["result_id"] != legacy_id
+    # A deployment identity is no reason to rewrite another Event's exact frozen pending body or intent.
+    assert sql("SELECT * FROM news_delivery_queue WHERE intent_id=%s", (prepared.lease.intent_id,))[0] == frozen_before
+    assert _ledger() == [], "resuming semantic work performs no provider send"

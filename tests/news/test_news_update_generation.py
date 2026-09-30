@@ -19,6 +19,12 @@ from tests.support.news_update_semantic import (
     prior_of,
     update_one,
 )
+from tracefold.news.adapters.card_copy import CARD_INSTRUCTION, DspyCardComposer
+from tracefold.news.adapters.extraction import DspyExtractor
+from tracefold.news.adapters.semantic_judgments import GeneratedJudgments
+from tracefold.news.notifications.contracts import ReaderRepairContext, ReaderSnapshot
+from tracefold.news.notifications.planner import NotificationPlanner
+from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
     Citation,
     Claim,
@@ -29,15 +35,8 @@ from tracefold.news.updates.contracts import (
     Quantity,
     Source,
 )
-from tracefold.news.updates.dspy_backend import (
-    CARD_INSTRUCTION,
-    DspyCardComposer,
-    DspyExtractor,
-    GeneratedJudgments,
-)
 from tracefold.news.updates.judgment import Budget, ContractFault, NewsJudgments, Question
-from tracefold.news.updates.notification import NotificationPlanner, ReaderRepairContext, ReaderSnapshot
-from tracefold.news.updates.semantics import SemanticAnalyzer, assemble_update
+from tracefold.news.updates.semantics import SemanticAnalyzer
 
 STAMP = 1_790_405_000_000
 

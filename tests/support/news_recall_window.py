@@ -12,8 +12,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from tracefold.news.notifications.recall import WORD_PATTERN
 from tracefold.news.updates.identity import identity
-from tracefold.news.updates.receipt_recall import WORD_PATTERN
 
 GOLD_RECALL = Path(__file__).resolve().parents[1] / "fixtures/news/issue_750_gold_recall.json"
 # The 48 h sent window read-only on 2026-09-29 14:13 UTC: 1,321 receipts, and the document frequency of the

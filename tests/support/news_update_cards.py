@@ -9,6 +9,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from tracefold.news.notifications.card import freeze_card
+from tracefold.news.notifications.contracts import CardCopy, CardLine, ClaimDecision, FrozenCard, NotificationPlan
+from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
     Asset,
     Change,
@@ -23,15 +26,6 @@ from tracefold.news.updates.contracts import (
     SupportDraft,
 )
 from tracefold.news.updates.identity import digest
-from tracefold.news.updates.notification import (
-    CardCopy,
-    CardLine,
-    ClaimDecision,
-    FrozenCard,
-    NotificationPlan,
-    freeze_card,
-)
-from tracefold.news.updates.semantics import assemble_update
 
 # 2026-08-18 14:40 UTC, which the reader's clock (UTC+8) prints as 22:40.
 STAMP = 1_787_064_000_000

@@ -66,9 +66,25 @@ def _event(event_id: str = "ev-1") -> dict[str, Any]:
 _OUTCOME = {"kind": "no_update", "text_zh": "仅有来源", "reason_zh": "没有当前语义工作记录", "group": "held"}
 
 
+class _FakeSemanticWork:
+    def __init__(self, calls: list[tuple[str, dict[str, Any]]]) -> None:
+        self.calls = calls
+
+    def semantic_status(self, *, now_ms: int) -> dict[str, Any]:
+        self.calls.append(("semantic_status", {"now_ms": now_ms}))
+        return {
+            "semantic_observations_24h": 0,
+            "semantic_adopted_24h": 0,
+            "semantic_failed_24h": 0,
+            "semantic_pending": 0,
+            "semantic_failed_by_code_24h": {},
+        }
+
+
 class _FakeNewsRepository:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.semantic_work = _FakeSemanticWork(self.calls)
         self.events = [_event()]
         self.event_assets_by_id = {"ev-1": ["COPPER", "SPOT"]}
         self.detail_overrides: dict[str, dict[str, Any]] = {}
@@ -146,16 +162,6 @@ class _FakeNewsRepository:
     def asset_usage_24h(self, *, now_ms: int) -> dict[str, list[str]]:
         self.calls.append(("asset_usage_24h", {"now_ms": now_ms}))
         return {"ev-1": ["COPPER", "SPOT"], "ev-2": ["SPOT"]}
-
-    def semantic_status(self, *, now_ms: int) -> dict[str, Any]:
-        self.calls.append(("semantic_status", {"now_ms": now_ms}))
-        return {
-            "semantic_observations_24h": 0,
-            "semantic_adopted_24h": 0,
-            "semantic_failed_24h": 0,
-            "semantic_pending": 0,
-            "semantic_failed_by_code_24h": {},
-        }
 
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         self.calls.append(("status_snapshot", {"now_ms": now_ms}))
@@ -1135,7 +1141,7 @@ def test_status_marks_the_product_degraded_when_model_outputs_are_unusable(
         }
 
     news.status_snapshot = status_snapshot  # type: ignore[method-assign]
-    news.semantic_status = semantic_status  # type: ignore[method-assign]
+    news.semantic_work.semantic_status = semantic_status  # type: ignore[method-assign]
     app = create_app(settings=settings)
     app.state.service = _FakeRuntime(settings, news)
     monkeypatch.setattr(

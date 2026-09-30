@@ -48,7 +48,7 @@ from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import QUOTE_FRESH_MAX_AGE_MS, QUOTE_READ_TIMEOUT_SECONDS, Quote
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
-from tracefold.news.pipeline.delivery import read_display_quotes, read_pushed_news
+from tracefold.news.pipeline.delivery_quotes import read_display_quotes, read_pushed_news
 from tracefold.news.smart_money import parse_smart_money
 
 pytestmark = pytest.mark.integration

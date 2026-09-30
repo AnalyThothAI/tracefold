@@ -15,6 +15,7 @@ import pytest
 
 from tests.support.news_update_semantic import MemoryCache
 from tracefold.app.system_one import SystemOneConnection
+from tracefold.news.adapters.semantic_judgments import NativeJudgments
 from tracefold.news.updates.contracts import (
     Citation,
     ClaimFields,
@@ -24,7 +25,6 @@ from tracefold.news.updates.contracts import (
     FrozenInput,
     Source,
 )
-from tracefold.news.updates.dspy_backend import NativeJudgments
 from tracefold.news.updates.judgment import (
     OPTIONS,
     Answer,

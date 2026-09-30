@@ -15,6 +15,7 @@ from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict
 
+from .entities import asset_retrieval_symbols, source_asset_symbols
 from .events.tokens import comparison_tokens
 from .models import MarketAsset
 
@@ -32,10 +33,9 @@ class Exact(BaseModel):
 
 class EvidenceQuery(Exact):
     event_id: str
-    focus_fact_id: str
-    source_artifact_id: str = ""
-    canonical_url: str = ""
-    title: str
+    texts: tuple[str, ...]
+    source_artifact_ids: tuple[str, ...] = ()
+    canonical_urls: tuple[str, ...] = ()
     assets: tuple[MarketAsset, ...] = ()
     terms: tuple[str, ...] = ()
     cutoff_at_ms: int
@@ -56,16 +56,38 @@ def text_sha(text: str) -> str:
 
 
 def query_for(
-    card: Mapping[str, Any], item: Mapping[str, Any], *, cutoff: int, assets: Sequence[MarketAsset] = ()
+    card: Mapping[str, Any],
+    item: Mapping[str, Any],
+    *,
+    cutoff: int,
+    assets: Sequence[MarketAsset] = (),
+    task_texts: Sequence[str] | None = None,
+    source_items: Sequence[Mapping[str, Any]] | None = None,
 ) -> EvidenceQuery:
-    title = str(card.get("leader_title") or "")
-    terms = tuple(sorted(evidence_terms(title) | {a.symbol.lower() for a in assets}))[:32]
+    """Query from the actual pending reading scope when supplied, before any new Claim exists."""
+    texts = tuple(
+        dict.fromkeys(
+            text.strip()
+            for text in (task_texts if task_texts is not None else (str(card.get("leader_title") or ""),))
+            if text.strip()
+        )
+    )
+    sources = tuple(source_items) if source_items is not None else (item,)
+    assets = tuple(
+        dict.fromkeys(
+            (*assets, *(MarketAsset(symbol, "unknown") for text in texts for symbol in source_asset_symbols(text)))
+        )
+    )
+    terms = tuple(sorted(set().union(*(evidence_terms(text) for text in texts)) | {a.symbol.lower() for a in assets}))[
+        :32
+    ]
     return EvidenceQuery(
         event_id=str(card.get("event_id") or ""),
-        focus_fact_id=str(card.get("focus_fact_id") or ""),
-        title=title,
-        source_artifact_id=str(item.get("source_artifact_id") or ""),
-        canonical_url=str(item.get("canonical_url") or ""),
+        texts=texts,
+        source_artifact_ids=tuple(
+            sorted({str(row.get("source_artifact_id")) for row in sources if row.get("source_artifact_id")})
+        ),
+        canonical_urls=tuple(sorted({str(row.get("canonical_url")) for row in sources if row.get("canonical_url")})),
         assets=tuple(assets),
         terms=terms,
         cutoff_at_ms=cutoff,
@@ -234,14 +256,17 @@ def _relevant_candidate(row: Mapping[str, Any], query: EvidenceQuery) -> bool:
         for b in assets
     ):
         return False
-    terms = evidence_terms(str(row.get("leader_title") or row.get("comparison_title") or ""))
-    shared = terms & evidence_terms(query.title)
+    texts = row.get("task_texts") or (str(row.get("leader_title") or row.get("comparison_title") or ""),)
+    terms = set().union(*(evidence_terms(text) for text in texts))
+    shared = terms & set().union(*(evidence_terms(text) for text in query.texts))
     symbols = {a.symbol.lower() for a in (*query.assets, *assets)}
     specific = shared - symbols
     # A shared issuer/coin or generic announcement is insufficient. Preserve a
     # concrete event cue together with a shared subject/asset clue, including CJK.
     subject_clues = {term for term in shared - _EVENT_CUES if not term.isdigit()}
-    asset_overlap = {a.symbol for a in query.assets} & {a.symbol for a in assets}
+    asset_overlap = {
+        symbol for asset in query.assets for symbol in asset_retrieval_symbols(asset.symbol, asset.market_type)
+    } & {symbol for asset in assets for symbol in asset_retrieval_symbols(asset.symbol, asset.market_type)}
     return bool(specific & _EVENT_CUES) and bool(subject_clues or asset_overlap)
 
 

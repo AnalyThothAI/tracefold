@@ -11,12 +11,12 @@ from tests.support.news_head_scope import BODY, historical_head
 from tests.support.news_update_pg import STAMP, Clock, ThreadedDb, notify_plan, save_card, seed_event, sql
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.events.facts import extract_fact_units
-from tracefold.news.storage.event_update_store import PgNewsStore
+from tracefold.news.notifications.contracts import FrozenCard
+from tracefold.news.notifications.ports import SendOutcome
 from tracefold.news.storage.head_scope_repairs import audit_scope_rows
+from tracefold.news.storage.notification_store import PgNotificationStore
 from tracefold.news.storage.update_commit import lock_event
 from tracefold.news.updates.identity import digest
-from tracefold.news.updates.notification import FrozenCard
-from tracefold.news.updates.ports import SendOutcome
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -94,15 +94,17 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(n
     try:
         repos = repositories_for_connection(conn)
         with conn.transaction():
-            report = audit_scope_rows(repos.news.head_scope_material())
+            report = audit_scope_rows(repos.news.head_scope_repairs.head_scope_material())
             assert report["affected_heads"] == report["outside_active_claims"] == 1
             proof = report["events"][0]
-            revision = repos.news.adopt_head_scope_repair(
+            revision = repos.news.head_scope_repairs.adopt_head_scope_repair(
                 expected_head=head.content_revision, proof=proof, now_ms=STAMP + 2
             )
         assert revision != head.content_revision
         with pytest.raises(ValueError, match="news_scope_repair_head_changed"), conn.transaction():
-            repos.news.adopt_head_scope_repair(expected_head=head.content_revision, proof=proof, now_ms=STAMP + 3)
+            repos.news.head_scope_repairs.adopt_head_scope_repair(
+                expected_head=head.content_revision, proof=proof, now_ms=STAMP + 3
+            )
     finally:
         conn.close()
     revisions = sql(
@@ -171,7 +173,7 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(n
 
 def _prepared_intent(head):
     clock = Clock(STAMP + 2)
-    store = PgNewsStore(ThreadedDb(), clock=clock)
+    store = PgNotificationStore(ThreadedDb(), clock=clock)
     snapshot = asyncio.run(store.notification_snapshot(head.event_id, "news"))
     assert snapshot is not None
     plan = notify_plan(head, snapshot.reader.revision)
@@ -195,8 +197,8 @@ def _repair(head) -> str:
     try:
         repos = repositories_for_connection(conn)
         with conn.transaction():
-            proof = audit_scope_rows(repos.news.head_scope_material())["events"][0]
-            return repos.news.adopt_head_scope_repair(
+            proof = audit_scope_rows(repos.news.head_scope_repairs.head_scope_material())["events"][0]
+            return repos.news.head_scope_repairs.adopt_head_scope_repair(
                 expected_head=head.content_revision, proof=proof, now_ms=STAMP + 3
             )
     finally:
@@ -238,8 +240,10 @@ def test_begin_waiting_for_event_lock_rechecks_head_after_repair_commit() -> Non
                 else:
                     begin.cancel()
                     raise AssertionError("begin did not reach the Event lock")
-                proof = audit_scope_rows(repos.news.head_scope_material())["events"][0]
-                repos.news.adopt_head_scope_repair(expected_head=head.content_revision, proof=proof, now_ms=STAMP + 3)
+                proof = audit_scope_rows(repos.news.head_scope_repairs.head_scope_material())["events"][0]
+                repos.news.head_scope_repairs.adopt_head_scope_repair(
+                    expected_head=head.content_revision, proof=proof, now_ms=STAMP + 3
+                )
             return await asyncio.wait_for(begin, 5)
         finally:
             conn.close()

@@ -8,20 +8,18 @@ from importlib.resources import files
 from typing import Any
 
 from tracefold.app.system_one import SystemOneConnection, SystemOneReceipt
-from tracefold.news.updates.dspy_backend import (
-    READER_NATIVE_SECONDS,
-    DspyCardComposer,
-    DspyExtractor,
-    DspyReaderJudge,
-    GeneratedJudgments,
-    NativeJudgments,
-)
+from tracefold.news.adapters.card_copy import DspyCardComposer
+from tracefold.news.adapters.extraction import DspyExtractor
+from tracefold.news.adapters.reader_judge import READER_NATIVE_SECONDS, DspyReaderJudge
+from tracefold.news.adapters.semantic_judgments import GeneratedJudgments, NativeJudgments
+from tracefold.news.notifications.planner import NotificationPlanner
+from tracefold.news.notifications.ports import NotificationStore
+from tracefold.news.notifications.service import Notifications
 from tracefold.news.updates.identity import digest, identity
 from tracefold.news.updates.judgment import NATIVE_OPERATION_SECONDS, JudgmentCache, NewsJudgments
-from tracefold.news.updates.notification import NotificationPlanner
-from tracefold.news.updates.ports import ExistingSourceReader, NewsStore
+from tracefold.news.updates.ports import ExistingSourceReader, SemanticStore
 from tracefold.news.updates.semantics import SemanticAnalyzer
-from tracefold.news.updates.service import NewsAgent, Notifications
+from tracefold.news.updates.service import NewsAgent
 from tracefold.news.updates.topics import CODEBOOK, CODEBOOK_SHA256
 
 
@@ -54,7 +52,8 @@ class NewsUpdateRuntime:
 
 
 def _source_identity() -> str:
-    # Every module of the core, plus the pinned codebook it imports; no hand-kept file list to go stale.
+    # Fingerprint the semantic core's packaged sources and codebook. Model adapters bind their
+    # prompt/schema/model contracts separately; this is not an entire image/dependency fingerprint.
     root = files("tracefold.news.updates")
     sources = {
         entry.name: entry.read_text(encoding="utf-8")
@@ -85,7 +84,7 @@ def _analyzer(
     return SemanticAnalyzer(extractor, judgments, topics=CODEBOOK)
 
 
-def _program_identity(analyzer: SemanticAnalyzer, card_model_identity: str) -> str:
+def _program_identity(analyzer: SemanticAnalyzer) -> str:
     # Small code-owned identity, no old image decoding, compatibility whitelist,
     # half-loaded artifact, registry availability check, or global model mutation.
     return identity(
@@ -93,7 +92,6 @@ def _program_identity(analyzer: SemanticAnalyzer, card_model_identity: str) -> s
         _source_identity(),
         analyzer.extractor.identity,
         analyzer.judgments.identity,
-        card_model_identity,
     )
 
 
@@ -108,14 +106,13 @@ class _NoCache:
 
 
 # Source files are read once per process and model set.
-_PROGRAM_IDENTITIES: dict[tuple[str, str, str, str | None], str] = {}
+_PROGRAM_IDENTITIES: dict[tuple[str, str, str | None], str] = {}
 
 
 def news_program_identity(
     *,
     extraction_model_identity: str,
     judgment_model_identity: str,
-    card_model_identity: str,
     news_judgment: NewsJudgmentEndpoint | None = None,
 ) -> str:
     """The identity `compose_news_updates` gives this model set, computed without composing a runtime.
@@ -127,7 +124,6 @@ def news_program_identity(
     key = (
         extraction_model_identity,
         judgment_model_identity,
-        card_model_identity,
         None if news_judgment is None else news_judgment.identity,
     )
     cached = _PROGRAM_IDENTITIES.get(key)
@@ -142,7 +138,7 @@ def news_program_identity(
         news_judgment=news_judgment,
         native_factory=_unbound,
     )
-    value = _program_identity(analyzer, card_model_identity)
+    value = _program_identity(analyzer)
     _PROGRAM_IDENTITIES[key] = value
     return value
 
@@ -183,7 +179,8 @@ def compose_reader_judge(
 
 def compose_news_updates(
     *,
-    store: NewsStore,
+    semantic_store: SemanticStore,
+    notification_store: NotificationStore,
     relation_cache: JudgmentCache,
     extraction_lm_factory: Callable[[], Any],
     card_lm_factory: Callable[[], Any],
@@ -233,7 +230,7 @@ def compose_news_updates(
         news_judgment=news_judgment,
         native_factory=native_factory,
     )
-    program_identity = _program_identity(analyzer, card_model_identity)
+    program_identity = _program_identity(analyzer)
     # The notification decision layer's own route; its answers are cached apart, keyed by its identity.
     reader_judge, reader_connection = compose_reader_judge(
         generated_lm_factory=judgment_lm_factory,
@@ -242,11 +239,11 @@ def compose_news_updates(
         after_native_call=after_native_call,
     )
     return NewsUpdateRuntime(
-        agent=NewsAgent(store, analyzer, program_identity=program_identity, source_reader=source_reader),
+        agent=NewsAgent(semantic_store, analyzer, program_identity=program_identity, source_reader=source_reader),
         judgments=analyzer.judgments,
         # The Deliverer owns the provider side and hands its sender to each notification turn.
         notifications=Notifications(
-            store,
+            notification_store,
             NotificationPlanner(reader_judge, relation_cache),
             DspyCardComposer(card_lm_factory, model_identity=card_model_identity),
         ),

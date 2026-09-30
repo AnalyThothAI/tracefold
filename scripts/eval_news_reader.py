@@ -30,21 +30,23 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from tracefold.news.updates.reader_judgments import (
+from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
+from tracefold.news.notifications.policy import (
     READER_CUTS,
-    AnchorEvidence,
-    ClaimLink,
-    ImportanceEvidence,
-    LinkedReceipt,
-    ReaderBackend,
     ReaderCuts,
     ReaderDecision,
-    ReaderJudgment,
-    ReaderNovelty,
-    message_id,
+    anchor_index,
+    cuts_for,
     reader_decision,
-    reader_novelty,
 )
+from tracefold.news.notifications.reader import (
+    AnchorEvidence,
+    ImportanceEvidence,
+    ReaderBackend,
+    ReaderJudgment,
+    message_id,
+)
+from tracefold.news.updates.contracts import ClaimFields
 
 FIXTURES = Path(__file__).resolve().parents[1] / "tests/fixtures/news"
 READER_REPLAY = FIXTURES / "reader_replay_2026-09-28.jsonl.gz"
@@ -142,6 +144,7 @@ def decision(row: Mapping[str, Any], judgment: ReaderJudgment, cuts: ReaderCuts 
         first_available_at_ms=row["first_available_at_ms"],
         message_intents=row["message_intents"],
         cuts=cuts,
+        claim_fields=ClaimFields.model_validate(row["reader_input"]["claim"]["fields"]),
     )
 
 
@@ -170,7 +173,7 @@ def decision_row(
     keep_weight = sum(row["weight"] for row in labelled if row["label"]["verdict"] == "keep")
     outcomes = {}
     for row in labelled:
-        own = answers[row["case_id"]].cuts
+        own = cuts_for(answers[row["case_id"]])
         recut = ReaderCuts(push=push, key=max(push, key), anchor_none_below=own.anchor_none_below)
         outcomes[row["case_id"]] = decision(row, answers[row["case_id"]], recut).outcome
     pushed = [row for row in labelled if outcomes[row["case_id"]] in PUSHED]
@@ -236,7 +239,7 @@ def anchor_report(
         weights: Counter[str] = Counter()
         for row in judged:
             anchor = answers[row["case_id"]].anchor
-            index = anchor.anchor(ReaderCuts(push=0, key=0, anchor_none_below=threshold))  # type: ignore[union-attr]
+            index = anchor_index(anchor, ReaderCuts(push=0, key=0, anchor_none_below=threshold))  # type: ignore[union-attr]
             truth, weight = anchor_truth(row), row.get("weight", 1.0)
             if truth != "none":
                 counts["anchors"] += 1

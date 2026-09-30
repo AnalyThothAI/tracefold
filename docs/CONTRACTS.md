@@ -27,7 +27,7 @@
 | CLI | [parsers](../tracefold/app/cli/parsers/)、[commands](../tracefold/app/cli/commands/) | [生成帮助](generated/cli-help.md) |
 | 配置 | [models.py](../tracefold/platform/config/models.py)、[loader.py](../tracefold/platform/config/loader.py) | 初始化生成配置与校验测试 |
 | 数据库 | [Alembic versions](../tracefold/platform/postgres/alembic/versions/) | [db-schema.md](generated/db-schema.md)，隔离迁移数据库生成 |
-| News 知识与通知 | [updates/contracts.py](../tracefold/news/updates/contracts.py)、[notification.py](../tracefold/news/updates/notification.py) | 引用、版本、采用、实际正文与发送测试 |
+| News 知识与通知 | [updates/contracts.py](../tracefold/news/updates/contracts.py)、[notifications/contracts.py](../tracefold/news/notifications/contracts.py) | 引用、版本、采用、实际正文与发送测试 |
 | Trading 执行交接 | [executor/core.py](../tracefold/trading/executor/core.py)、[operator_control.py](../tracefold/trading/operator_control.py) | Signal v4、操作员意图与执行决策 |
 
 生成物保留机器标识和源语法；文档中文化不改变 JSON 字段、CLI 参数、错误码或协议版本。

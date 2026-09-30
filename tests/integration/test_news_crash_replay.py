@@ -602,10 +602,10 @@ class _OneClaimAnalyzer:
 
 def _semantic_worker(db: FaultInjectingDatabase, bus: RecordingBus) -> Any:
     from tracefold.news.pipeline.semantic import SemanticWorker
-    from tracefold.news.storage.event_update_store import PgNewsStore
+    from tracefold.news.storage.semantic_store import PgSemanticStore
     from tracefold.news.updates.service import NewsAgent
 
-    store = PgNewsStore(db, watch_symbols=WATCHLIST)
+    store = PgSemanticStore(db)
     agent = NewsAgent(store, _OneClaimAnalyzer(), program_identity="crash-replay-program")  # type: ignore[arg-type]
     return SemanticWorker(
         bus=bus,
@@ -615,7 +615,6 @@ def _semantic_worker(db: FaultInjectingDatabase, bus: RecordingBus) -> Any:
         concurrency=1,
         circuit_failures=3,
         circuit_open_seconds=60.0,
-        program_identity="crash-replay-program",
     )
 
 

@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from tests.support.news_update_semantic import MemoryCache
+from tracefold.news.updates.assembly import assemble_update, proven_mismatches
 from tracefold.news.updates.contracts import (
     ChangeKind,
     Citation,
@@ -41,7 +42,7 @@ from tracefold.news.updates.judgment import (
     Task,
 )
 from tracefold.news.updates.public import public_updates
-from tracefold.news.updates.semantics import SemanticAnalyzer, assemble_update, proven_mismatches
+from tracefold.news.updates.semantics import SemanticAnalyzer
 
 STAMP = 1_790_405_000_000
 
@@ -786,7 +787,7 @@ def test_a_to_b_to_a_compares_only_the_current_claim_and_keeps_a_distinct_occurr
 
 
 def test_an_unestablished_phase_is_not_a_phase_change() -> None:
-    from tracefold.news.updates.semantics import _default_change
+    from tracefold.news.updates.assembly import relation_change
 
     report = evidence("Issuer announces 25 MW.", 1)
     head = adopt(report, 1, "25")
@@ -794,7 +795,7 @@ def test_an_unestablished_phase_is_not_a_phase_change() -> None:
     current = draft(evidence("Issuer changes the site.", 2)).model_copy(
         update={"fields": draft(report).fields.model_copy(update={"phase": "unknown"})}
     )
-    assert _default_change(current, prior, "real_world_change") == "scope_change"
+    assert relation_change(current, prior, "real_world_change") == "scope_change"
 
 
 # ---------------------------------------------------------------- #742 W3: the Nvidia buyback pushes

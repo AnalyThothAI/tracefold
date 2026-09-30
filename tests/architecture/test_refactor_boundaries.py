@@ -342,6 +342,71 @@ def test_owning_packages_have_acyclic_internal_import_graphs() -> None:
     }
 
 
+def _news_dependency_violations(path: Path, tree: ast.AST, forbidden: tuple[str, ...]) -> list[str]:
+    return sorted(
+        imported
+        for imported in _import_targets(path, tree)
+        if any(imported == prefix or imported.startswith(f"{prefix}.") for prefix in forbidden)
+    )
+
+
+def test_news_semantics_and_notifications_keep_their_actual_ownership_boundaries() -> None:
+    """#759: algorithms use adopted contracts/ports; external technology stays in adapters."""
+
+    forbidden = (
+        "tracefold.news.pipeline",
+        "tracefold.news.storage",
+        "tracefold.app",
+        "tracefold.integrations",
+        "dspy",
+        "httpx",
+    )
+    scopes = {
+        "updates": (*forbidden, "tracefold.news.notifications"),
+        "notifications": (*forbidden, "tracefold.news.updates.semantics", "tracefold.news.updates.assembly"),
+    }
+    violations = {
+        path.relative_to(ROOT).as_posix(): _news_dependency_violations(
+            path, ast.parse(path.read_text(encoding="utf-8")), prefixes
+        )
+        for package, prefixes in scopes.items()
+        for path in (SRC / "news" / package).glob("*.py")
+    }
+    assert {path: imports for path, imports in violations.items() if imports} == {}
+
+
+def test_news_boundary_checks_reject_nested_relative_and_namespace_bypasses() -> None:
+    path = SRC / "news" / "updates" / "semantics.py"
+    forbidden = ("tracefold.news.notifications", "tracefold.news.storage", "tracefold.integrations")
+    for statement in (
+        "from ..notifications import policy",
+        "from tracefold.news.notifications.policy import decide",
+        "from .. import storage",
+        "import tracefold.integrations.telegram",
+    ):
+        assert _news_dependency_violations(path, ast.parse(f"def bypass():\n    {statement}\n"), forbidden), statement
+
+
+def test_news_replaced_owners_have_no_alias_or_competing_implementation() -> None:
+    for relative in (
+        "updates/dspy_backend.py",
+        "updates/notification.py",
+        "updates/reader_judgments.py",
+        "updates/receipt_recall.py",
+        "storage/event_updates.py",
+        "storage/event_update_store.py",
+    ):
+        assert not (SRC / "news" / relative).exists(), relative
+    retired = {"NewsStore", "PgNewsStore", "EventUpdateStorage"}
+    declarations = {
+        node.name
+        for path in (SRC / "news").rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.ClassDef)
+    }
+    assert not declarations & retired
+
+
 CROSS_CONTEXT_BOUNDARY_MODULES = (
     "news/pipeline/runtime.py",
     "news/storage/trade_projection.py",

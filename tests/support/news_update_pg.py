@@ -8,12 +8,20 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from tests.postgres_test_utils import connect_postgres_test, seed_current_news_evidence
 from tests.support.news_reader import PushAll
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.storage.event_update_store import PgJudgmentCache, PgNewsStore
+from tracefold.news.notifications.contracts import CardCopy, CardLine, ClaimDecision, FrozenCard, NotificationPlan
+from tracefold.news.notifications.planner import NotificationPlanner
+from tracefold.news.notifications.ports import IntentLease, SendOutcome
+from tracefold.news.notifications.service import Notifications
+from tracefold.news.storage.judgment_store import PgJudgmentCache
+from tracefold.news.storage.notification_store import PgNotificationStore
+from tracefold.news.storage.semantic_store import PgSemanticStore
+from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
     Citation,
     ClaimFields,
@@ -29,19 +37,10 @@ from tracefold.news.updates.contracts import (
 )
 from tracefold.news.updates.identity import digest, identity
 from tracefold.news.updates.judgment import Answer, BatchResult, ProviderUnavailable, Question, Task
-from tracefold.news.updates.notification import (
-    CardCopy,
-    CardLine,
-    ClaimDecision,
-    FrozenCard,
-    NotificationPlan,
-    NotificationPlanner,
-)
-from tracefold.news.updates.ports import IntentLease, SemanticObservation, SendOutcome
+from tracefold.news.updates.ports import SemanticObservation
 from tracefold.news.updates.projection import reading_views
 from tracefold.news.updates.public import public_updates
-from tracefold.news.updates.semantics import assemble_update
-from tracefold.news.updates.service import NewsAgent, Notifications
+from tracefold.news.updates.service import NewsAgent
 
 STAMP = 1_790_405_000_000
 EVENT = "ev-tariff"
@@ -156,7 +155,7 @@ def seed_event(
                 (event_id, item_id, at_ms, f"fact-{item_id}", title),
             )
             seed_current_news_evidence(conn)
-            repositories_for_connection(conn).news.request_semantic_revision(
+            repositories_for_connection(conn).news.semantic_work.request_semantic_revision(
                 event_id=event_id, lineage_id=f"lineage-{event_id}", now_ms=at_ms
             )
     finally:
@@ -246,7 +245,7 @@ class Composer:
         )
 
 
-async def save_card(pg: PgNewsStore, lease: IntentLease, card: FrozenCard) -> FrozenCard:
+async def save_card(pg: PgNotificationStore, lease: IntentLease, card: FrozenCard) -> FrozenCard:
     parts = card.body.split("\n\n")
     copy = CardCopy(
         headline_zh=parts[0],
@@ -293,28 +292,36 @@ class Sender:
         )
 
 
-def store(clock: Clock | None = None, **kwargs: Any) -> tuple[PgNewsStore, ThreadedDb, Clock]:
+@dataclass(frozen=True)
+class NewsStores:
+    """Two concrete adapters sharing one test database; no delegated runtime facade."""
+
+    semantic: PgSemanticStore
+    notifications: PgNotificationStore
+
+
+def store(clock: Clock | None = None) -> tuple[NewsStores, ThreadedDb, Clock]:
     db = ThreadedDb()
     clock = clock or Clock()
-    return PgNewsStore(db, clock=clock, **kwargs), db, clock
+    return NewsStores(PgSemanticStore(db, clock=clock), PgNotificationStore(db, clock=clock)), db, clock
 
 
 async def run_agent(subject: NewsAgent, event_id: str) -> str:
-    assert isinstance(subject.store, PgNewsStore)
+    assert isinstance(subject.store, PgSemanticStore)
     lease = await subject.store.claim_semantic_work(event_id, lease_ms=180_000)
     if lease is None:
         return "unchanged"
     return await subject.process(lease)
 
 
-def agent(pg: PgNewsStore, clock: Clock, analyzer: StubAnalyzer | None = None) -> NewsAgent:
+def agent(pg: PgSemanticStore, clock: Clock, analyzer: StubAnalyzer | None = None) -> NewsAgent:
     return NewsAgent(pg, analyzer or StubAnalyzer(), program_identity="program-test", clock=clock)  # type: ignore[arg-type]
 
 
 class Turns:
     """One notification service and the sender its turns hand the frozen card to, as the Deliverer does."""
 
-    def __init__(self, pg: PgNewsStore, clock: Clock, sender: Sender, composer: Composer | None = None) -> None:
+    def __init__(self, pg: PgNotificationStore, clock: Clock, sender: Sender, composer: Composer | None = None) -> None:
         self.service = Notifications(
             pg, NotificationPlanner(PushAll(), PgJudgmentCache(pg.db)), composer or Composer(), clock=clock
         )
@@ -324,11 +331,11 @@ class Turns:
         return (await self.service.process(event_id, channel, self.sender)).status
 
 
-def notifications(pg: PgNewsStore, clock: Clock, sender: Sender, composer: Composer | None = None) -> Turns:
+def notifications(pg: PgNotificationStore, clock: Clock, sender: Sender, composer: Composer | None = None) -> Turns:
     return Turns(pg, clock, sender, composer)
 
 
-def adopted_head(pg: PgNewsStore, clock: Clock) -> EventUpdate:
+def adopted_head(pg: PgSemanticStore, clock: Clock) -> EventUpdate:
     seed_event()
     assert asyncio.run(run_agent(agent(pg, clock), EVENT)) == "adopted"
     head = asyncio.run(pg.head(EVENT))
@@ -349,7 +356,7 @@ def evidence(text: str, *, revision: str = "2", publisher: str = "wire") -> Evid
 
 
 async def adopt_next(
-    pg: PgNewsStore,
+    pg: PgSemanticStore,
     head: EventUpdate | None,
     source: FrozenInput,
     extracted: Extraction,
@@ -413,7 +420,7 @@ def trade_rows() -> list[dict[str, Any]]:
     return sql("SELECT kind, source_fact_key, source_revision, payload, acknowledged_at_ms FROM news_trade_events")
 
 
-async def adopt_other_event(pg: PgNewsStore) -> PriorClaim:
+async def adopt_other_event(pg: PgSemanticStore) -> PriorClaim:
     source = FrozenInput(
         event_id="ev-other", revision=1, lineage_id="lineage-o", evidence=(evidence("Agency orders a 25% tariff."),)
     )

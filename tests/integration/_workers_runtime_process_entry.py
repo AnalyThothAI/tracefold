@@ -82,8 +82,8 @@ class _TurnPipeline:
 
     def __init__(self, turns: tuple[tuple[str, Any, float], ...]) -> None:
         self._turns = turns
-        # The Deliverer's send entry as composition reads it. This harness builds no push sender.
-        self.deliverer = SimpleNamespace(send_entry=SimpleNamespace(available=False))
+        # The shared send entry as composition reads it. This harness builds no push sender.
+        self.send_entry = SimpleNamespace(available=False)
 
     def runners(self) -> list[tuple[str, Any]]:
         return [(name, _turn_runner(turn, idle_seconds)) for name, turn, idle_seconds in self._turns]

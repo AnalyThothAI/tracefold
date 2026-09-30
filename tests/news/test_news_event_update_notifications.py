@@ -15,6 +15,12 @@ from pydantic import ValidationError
 
 from tests.support.news_reader import FixedReader, Unavailable
 from tests.support.news_update_semantic import MemoryCache
+from tracefold.news.notifications.card import card_copy_material
+from tracefold.news.notifications.contracts import ClaimDecision, DeliveredText, NotificationPlan, ReaderSnapshot
+from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt
+from tracefold.news.notifications.planner import NotificationPlanner
+from tracefold.news.notifications.policy import READER_CUTS, READER_WAIT_MAX_MS, large_daily_move, stale_occurrence
+from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
     Asset,
     Citation,
@@ -29,19 +35,6 @@ from tracefold.news.updates.contracts import (
 )
 from tracefold.news.updates.identity import digest, identity
 from tracefold.news.updates.judgment import Budget
-from tracefold.news.updates.notification import (
-    READER_WAIT_MAX_MS,
-    ClaimDecision,
-    DeliveredText,
-    NotificationPlan,
-    NotificationPlanner,
-    ReaderSnapshot,
-    card_copy_material,
-    large_daily_move,
-    stale_occurrence,
-)
-from tracefold.news.updates.reader_judgments import READER_CUTS, ClaimLink, LinkedReceipt
-from tracefold.news.updates.semantics import assemble_update
 
 STAMP = 1_790_405_000_000
 HOUR_MS = 60 * 60_000
@@ -212,7 +205,7 @@ def test_novelty_from_persisted_links_decides_known_in_flight_and_corrections() 
     assert only_reason(plan) == "linked_send_in_flight" and plan.action == "unresolved"
     corrects = reader(links=(link(ref, "old", "corrects"),), link_receipts=(delivered("r-old", "old"),))
     earlier = sent("旧消息", "r-old")
-    plan = run_plan(update, corrects.model_copy(update={"linked": (earlier,)}), judge=FixedReader(0.1))
+    plan = run_plan(update, corrects.model_copy(update={"receipts": (earlier,)}), judge=FixedReader(0.1))
     assert only_reason(plan) == "correction_of_sent"
     record = plan.claim_decisions[0].reader
     assert record is not None and record.render == "correction" and record.earlier is not None
@@ -233,7 +226,6 @@ def test_an_increment_is_scored_on_what_it_adds_with_the_linked_message_first() 
         receipt_intents_by_claim={ref: ("r-old",)},
         links=(link(ref, "old", "adds_information"),),
         link_receipts=(delivered("r-old", "old"),),
-        linked=(earlier,),
     )
     cuts = READER_CUTS["native"]
     judge = FixedReader(cuts.key, anchor="m1")
@@ -379,3 +371,17 @@ def test_card_copy_input_changes_for_same_ref_with_changed_expression_or_source(
 def test_decision_reason_contract_rejects_mismatch():
     with pytest.raises(ValidationError, match="news_claim_decision_reason_mismatch"):
         ClaimDecision(claim_ref="a", decision="notify", reason="stale_source")
+
+
+def test_a_policy_change_reuses_model_evidence_but_records_a_new_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tracefold.news.notifications import planner as planning
+
+    update = single()
+    judge, cache = FixedReader(), MemoryCache()
+    before = run_plan(update, judge=judge, cache=cache)
+    monkeypatch.setattr(planning, "NOTIFICATION_POLICY_IDENTITY", "next-policy")
+    after = run_plan(update, judge=judge, cache=cache)
+    assert len(judge.asked) == 1
+    assert before.reader_identity == after.reader_identity == judge.identity
+    assert before.input_digest != after.input_digest and before.record_ref != after.record_ref
+    assert before.intent_id == after.intent_id

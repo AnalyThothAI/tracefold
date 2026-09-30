@@ -139,3 +139,70 @@ def test_archived_webpage_rows_remain_append_only_and_new_details_never_query_th
             ]
             == "Archived text"
         )
+
+
+def test_real_semantic_candidate_routes_recall_pair_spelling_and_member_topic(postgres_clone_dsn):
+    from tracefold.news.entities import asset_features
+    from tracefold.news.models import MarketAsset
+
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repos = repositories_for_connection(conn)
+        first = admit(repos, "Aster lists SIUSDT perpetual with 5x leverage.", record=31, stamp=1000)
+        event = first.results[0].event_id
+        conn.execute(
+            "INSERT INTO news_event_assets(event_id, symbol, market_type, opened_at_ms) "
+            "VALUES (%s, 'SIUSDT', NULL, 1000) ON CONFLICT DO NOTHING",
+            (event,),
+        )
+        query = query_for(
+            {"event_id": "later", "leader_title": "Unrelated old leader"},
+            {},
+            cutoff=2000,
+            task_texts=("Aster DEX上线$SI，最大5倍杠杆",),
+            assets=(MarketAsset("SI", "crypto"),),
+        )
+        rows = repos.news.evidence_candidates(query)
+        assert event in {row["event_id"] for row in rows}
+        assert next(row for row in rows if row["event_id"] == event)["retrieval_reason"] == "entity_event_terms"
+        # A lexical quote suffix is only a comparison candidate; it does not resolve the venue contract.
+        assert asset_features("SIUSDT", "crypto")[0].key != asset_features("SI", "crypto")[0].key
+
+        child = admit(repos, "Atlas launches a quantum networking product.", record=32, stamp=1100)
+        conn.execute(
+            "INSERT INTO news_event_members(event_id,item_id,joined_at_ms,match_kind,fact_id,fact_text) "
+            "VALUES (%s,%s,1100,'near','member-topic','Atlas launches a quantum networking product.')",
+            (event, child.item_id),
+        )
+        member_query = query_for(
+            {"event_id": child.results[0].event_id, "leader_title": "Old acquisition"},
+            {},
+            cutoff=2000,
+            task_texts=("Atlas launches a quantum networking product.",),
+        )
+        matched = repos.news.evidence_candidates(member_query)
+        assert event in {row["event_id"] for row in matched}
+        assert max(row["score"] for row in matched if row["event_id"] == event) == 1.0
+        before_member = query_for(
+            {"event_id": "earlier"},
+            {},
+            cutoff=1050,
+            task_texts=("Atlas launches a quantum networking product.",),
+        )
+        assert event not in {row["event_id"] for row in repos.news.evidence_candidates(before_member)}
+
+
+@pytest.mark.parametrize(("pair", "base", "partial"), [("ABCFDUSD", "ABC", "ABCFD"), ("BTCBUSD", "BTC", "BTCB")])
+def test_real_semantic_pair_route_uses_only_the_first_valid_quote_suffix(postgres_clone_dsn, pair, base, partial):
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repos = repositories_for_connection(conn)
+        first = admit(repos, f"Aster lists {pair} perpetual with leverage.", record=40, stamp=1000)
+        event = first.results[0].event_id
+        # Isolate this actual admission's candidate tag from the helper's default BTC provider tag.
+        conn.execute("DELETE FROM news_event_assets WHERE event_id=%s", (event,))
+        conn.execute(
+            "INSERT INTO news_event_assets(event_id, symbol, market_type, opened_at_ms) VALUES (%s,%s,'crypto',1000)",
+            (event, pair),
+        )
+        for symbol, expected in ((base, True), (partial, False)):
+            query = query_for({"event_id": "later"}, {}, cutoff=2000, task_texts=(f"Aster批准${symbol}独家交易。",))
+            assert (event in {row["event_id"] for row in repos.news.evidence_candidates(query)}) is expected

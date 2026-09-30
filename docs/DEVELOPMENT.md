@@ -43,7 +43,8 @@ uv sync --locked
 | 要改变的行为 | 首选位置 |
 | --- | --- |
 | 新闻来源范围、归组与证据 | `news/events`、`news/pipeline` |
-| 命题理解、采用与通知 | `news/updates` 及其 News storage |
+| 命题提取与采用 | `news/updates`、语义 storage；具体模型调用放 `news/adapters` |
+| 通知选择、卡片与持久发送工作流 | `news/notifications`、通知 storage；实际传输由 pipeline 适配器完成 |
 | 市场 / 钱包确定性规则 | 对应 market、chain_tape 领域逻辑，不复制进 UI |
 | 交易计划、特征与编译 | `trading/engine` 的纯逻辑 |
 | 持久 Case / 执行记录 | `trading/storage` |

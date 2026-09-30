@@ -45,10 +45,10 @@ from tracefold.news import (
 from tracefold.news.delivery import news_update_card
 from tracefold.news.feishu_card import feishu_card
 from tracefold.news.market_notifications import MarketObservation, MarketTrack, market_reader_card
+from tracefold.news.notifications.contracts import FrozenCard
 from tracefold.news.reader_card import ReaderCard, ReaderCardLink
 from tracefold.news.updates.contracts import SupportDraft
 from tracefold.news.updates.identity import digest
-from tracefold.news.updates.notification import FrozenCard
 
 # 14:32 on the reader's clock, so a card that states no time of its own still states this one.
 NEWS_AT_MS = 1_787_898_725_000

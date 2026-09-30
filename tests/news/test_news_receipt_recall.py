@@ -15,20 +15,20 @@ from tests.support.news_recall_window import (
     probe_window,
 )
 from tests.support.news_update_semantic import draft, material
-from tracefold.news.updates import receipt_recall
-from tracefold.news.updates.contracts import Asset, Claim, Extraction, FrozenInput, IdentityHint
-from tracefold.news.updates.identity import digest
-from tracefold.news.updates.reader_judgments import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
-from tracefold.news.updates.receipt_recall import (
+from tracefold.news.entities import asset_retrieval_symbols
+from tracefold.news.notifications import recall as receipt_recall
+from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
+from tracefold.news.notifications.recall import (
     RecallCandidate,
     RouteEvidence,
-    asset_symbols,
     lexical_evidence,
     query_for_claim,
     reader_context_revision,
     select_for_claim,
 )
-from tracefold.news.updates.semantics import assemble_update
+from tracefold.news.updates.assembly import assemble_update
+from tracefold.news.updates.contracts import Asset, Claim, Extraction, FrozenInput, IdentityHint
+from tracefold.news.updates.identity import digest
 
 STAMP = 1_790_405_000_000
 
@@ -106,11 +106,15 @@ def test_silver_history_is_recalled_across_spellings_and_languages() -> None:
 
 
 def test_asset_spelling_is_canonical_but_market_type_still_separates() -> None:
-    assert asset_symbols("$OKLO", "crypto") == asset_symbols(" oklo ", "crypto") == {"OKLO"}
-    assert asset_symbols("xyz:GOLD", "commodity") >= {"GOLD"} and "GOLD" in asset_symbols("spot gold", "commodity")
-    assert asset_symbols("WTI", "commodity") == asset_symbols("oil", "commodity") == {"CL"}
+    assert asset_retrieval_symbols("$OKLO", "crypto") == asset_retrieval_symbols(" oklo ", "crypto") == {"OKLO"}
+    assert asset_retrieval_symbols("xyz:GOLD", "commodity") >= {"GOLD"} and "GOLD" in asset_retrieval_symbols(
+        "spot gold", "commodity"
+    )
+    assert "CL" in asset_retrieval_symbols("WTI", "commodity") & asset_retrieval_symbols("oil", "commodity")
     # A commodity word names the commodity only on a commodity asset.
-    assert asset_symbols("Silver", "equity") == {"SILVER"} and asset_symbols("白银", "equity") == {"白银"}
+    assert asset_retrieval_symbols("Silver", "equity") == {"SILVER"} and asset_retrieval_symbols("白银", "equity") == {
+        "白银"
+    }
     oklo = claim("Oklo shares jump", asset="OKLO", market="equity")
     listed = claim("Oklo token listed", asset="$OKLO", market="crypto")
     assert select(oklo, [receipt("listing", "代币上线", STAMP - 1, listed)]).intent_ids == ()
@@ -134,6 +138,29 @@ def test_sql_lexical_rank_is_preserved_by_final_fusion() -> None:
         },
     )
     assert selected.intent_ids == ("ranked-first", "recent")
+
+
+def test_aster_pair_and_cross_language_issuer_features_recall_without_asserting_same_fact() -> None:
+    # Frozen source case: Aster/SIUSDT vs Aster DEX/$SI. Neither text proves the same venue contract.
+    current = claim("Aster DEX上线$SI，最大5倍杠杆", asset="$SI", market="crypto", subject="Aster DEX")
+    previous = claim("Aster lists SIUSDT perpetual", asset="SIUSDT", market="crypto", subject="Aster")
+    novelty = ReaderNovelty(novelty="unlinked")
+    assert select(current, [receipt("aster", "此前永续上线报道", STAMP - 1, previous)], novelty=novelty).intent_ids == (
+        "aster",
+    )
+    assert novelty.novelty == "unlinked"
+    # A source/Claim asset tag is usable as a related query feature across languages; no actor dictionary or
+    # stronger subject_id is fabricated from a mentioned asset.
+    chinese = claim("英伟达发布下一代产品", asset="NVDA", market="equity", subject="英伟达")
+    english = claim("Nvidia introduces a different chip", asset="$NVDA", market="equity", subject="Nvidia")
+    assert select(chinese, [receipt("issuer", "芯片报道", STAMP - 2, english)]).intent_ids == ("issuer",)
+    assert not chinese.known_identity and not english.known_identity
+
+
+def test_unresolved_chain_addresses_remain_case_sensitive_retrieval_features() -> None:
+    first = claim("Current update", asset="solana:AbCdEFGh123456789", market="crypto", subject="Current actor")
+    other = claim("Earlier account", asset="solana:abcdefgh123456789", market="crypto", subject="Earlier actor")
+    assert select(first, [receipt("different-address", "Earlier", STAMP - 1, other)]).intent_ids == ()
 
 
 def test_a_lexical_rank_without_two_qualifying_terms_is_not_evidence() -> None:
@@ -206,7 +233,6 @@ def test_context_revision_tracks_order_body_and_semantic_state() -> None:
             blocked=(),
             ambiguous=(),
             invalidated=(),
-            watch_symbols=(),
         )
 
     assert revision((a, b)) == revision((a, b))

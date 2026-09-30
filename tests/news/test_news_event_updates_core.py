@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from tests.support.news_update_semantic import STAMP, draft, material, prior_of, update_one
+from tracefold.news.updates.assembly import assemble_update, proven_mismatches
 from tracefold.news.updates.contracts import (
     Asset,
     Change,
@@ -20,7 +21,6 @@ from tracefold.news.updates.contracts import (
     SupportDraft,
 )
 from tracefold.news.updates.public import public_updates
-from tracefold.news.updates.semantics import assemble_update, proven_mismatches
 
 
 def next_revision(

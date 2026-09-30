@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from tests.support.news_update_semantic import STAMP, draft, material
 from tracefold.news.events.facts import extract_fact_units
+from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import Citation, Extraction, FrozenInput
-from tracefold.news.updates.semantics import assemble_update
 
 BODY = (
     "1. Alpha approves a plan.\n"

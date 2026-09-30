@@ -5,10 +5,11 @@ from typing import Any, Literal
 from pydantic import Field
 
 from tracefold.news import EventKind, SourceAuthority
+from tracefold.news.notifications.contracts import ClaimDecisionValue, ClaimReason, PlanAction, PlanReason
+from tracefold.news.notifications.novelty import Novelty, Render
+from tracefold.news.notifications.reader import ReaderBackend
 from tracefold.news.update_view import LegacyClaimReason
 from tracefold.news.updates.contracts import ChangeKind, ContentKind, Mode, Phase, Relation
-from tracefold.news.updates.notification import ClaimDecisionValue, ClaimReason, PlanAction, PlanReason
-from tracefold.news.updates.reader_judgments import Novelty, ReaderBackend, Render
 
 from .common import ExactApiSchema
 from .news_common import (

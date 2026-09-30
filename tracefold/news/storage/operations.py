@@ -139,6 +139,8 @@ class OperationsStorage:
         )
         # Build a current EventUpdate and decision, then a terminal update intent. This drill is a
         # synthetic schema/restore proof; it makes no provider or model call.
+        from ..notifications.contracts import ClaimDecision, FrozenCard, NotificationPlan
+        from ..updates.assembly import assemble_update
         from ..updates.contracts import (
             Citation,
             ClaimFields,
@@ -150,8 +152,6 @@ class OperationsStorage:
             SupportDraft,
         )
         from ..updates.identity import digest
-        from ..updates.notification import ClaimDecision, FrozenCard, NotificationPlan
-        from ..updates.semantics import assemble_update
 
         repository = cast(Any, self)
         evidence_snapshot = repository.append_evidence_snapshot(event_id=current_event_id, now_ms=11)

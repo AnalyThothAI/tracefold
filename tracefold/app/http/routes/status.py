@@ -29,7 +29,7 @@ def get_news_status(request: Request) -> Response:
     settings = runtime.settings
     with runtime.repositories() as repos:
         snapshot = repos.news.status_snapshot(now_ms=now_ms)
-        semantic = repos.news.semantic_status(now_ms=now_ms)
+        semantic = repos.news.semantic_work.semantic_status(now_ms=now_ms)
         workers_runtime_row = repos.workers_runtime_row()
         workers_state, _ = _news_workers_observation(workers_runtime_row, now_ms=now_ms)
         instruments = repos.instruments.universe_summary()
