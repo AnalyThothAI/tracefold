@@ -9,7 +9,8 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -76,8 +77,7 @@ def run_restore_drill(
             dump_seconds = time.perf_counter() - dump_started
             restore_started = time.perf_counter()
             _run_client(admin_dsn, database=restored_name, workspace=workspace, pgpass=pgpass, action="restore_pre")
-            _set_restore_function_search_path(restored_admin_dsn, enabled=True)
-            try:
+            with _restored_function_search_path(restored_admin_dsn):
                 _run_client(
                     admin_dsn,
                     database=restored_name,
@@ -85,8 +85,6 @@ def run_restore_drill(
                     pgpass=pgpass,
                     action="restore_data",
                 )
-            finally:
-                _set_restore_function_search_path(restored_admin_dsn, enabled=False)
             _run_client(admin_dsn, database=restored_name, workspace=workspace, pgpass=pgpass, action="restore_post")
             restore_seconds = time.perf_counter() - restore_started
 
@@ -165,9 +163,9 @@ def _drop_database(admin_dsn: str, name: str) -> None:
         conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
 
 
-def _set_restore_function_search_path(dsn: str, *, enabled: bool) -> None:
-    """Let restored PL/pgSQL bodies resolve their public helpers during COPY, then restore exact config."""
-
+@contextmanager
+def _restored_function_search_path(dsn: str) -> Iterator[None]:
+    """Resolve public helpers during COPY, then reset exactly the routines we changed."""
     with psycopg.connect(dsn, row_factory=dict_row) as conn:
         functions = conn.execute(
             """
@@ -178,16 +176,26 @@ def _set_restore_function_search_path(dsn: str, *, enabled: bool) -> None:
              ORDER BY procedure.proname, arguments
             """
         ).fetchall()
-        setting = sql.SQL("SET search_path = pg_catalog, public") if enabled else sql.SQL("RESET search_path")
         for function in functions:
             conn.execute(
-                sql.SQL("ALTER FUNCTION {}.{}({}) {}").format(
+                sql.SQL("ALTER FUNCTION {}.{}({}) SET search_path = pg_catalog, public").format(
                     sql.Identifier("public"),
                     sql.Identifier(str(function["proname"])),
                     sql.SQL(str(function["arguments"])),
-                    setting,
                 )
             )
+    try:
+        yield
+    finally:
+        with psycopg.connect(dsn) as conn:
+            for function in functions:
+                conn.execute(
+                    sql.SQL("ALTER FUNCTION {}.{}({}) RESET search_path").format(
+                        sql.Identifier("public"),
+                        sql.Identifier(str(function["proname"])),
+                        sql.SQL(str(function["arguments"])),
+                    )
+                )
 
 
 def _write_pgpass(path: Path, dsn: str) -> None:

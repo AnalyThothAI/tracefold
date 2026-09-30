@@ -234,7 +234,7 @@ docker compose exec -T postgres sh -eu -c \
 docker compose exec -T postgres pg_restore --list < "$backup"
 ```
 
-`pg_restore --list` 只验证归档可读取，不证明完整可恢复。`make postgres-restore-drill` 使用隔离资源做恢复演练，实际资源要求以 Makefile 和 [restore_drill.py](../tracefold/platform/postgres/restore_drill.py)为准。
+`pg_restore --list` 只验证归档可读取，不证明完整可恢复。`make postgres-restore-drill` 使用隔离资源做恢复演练，实际资源要求以 Makefile 和 [restore_drill.py](../tracefold/platform/postgres/restore_drill.py)为准。 COPY期间仅临时设置原先未配置search_path的函数，成功或失败后按捕获的函数集合复原；已有显式设置保持原值，演练不得残留临时函数配置。
 
 恢复前停止或隔离会写入目标数据库的进程，先在隔离环境恢复与验证，再按备份版本的兼容路径升级。旧镜像不能靠改 `alembic_version` 假装兼容新 schema；新代码也不能无条件解释 baseline 以前的数据库。
 
