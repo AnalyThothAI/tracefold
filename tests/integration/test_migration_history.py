@@ -480,7 +480,7 @@ def test_execution_hard_cut_retires_old_tables_and_is_forward_only() -> None:
     command.upgrade(config, "20260929_0417")
     with pytest.raises(RuntimeError, match="trading_execution_hard_cut_forward_only_restore_verified_backup"):
         command.downgrade(config, "20260929_0416")
-    command.upgrade(config, HEAD)
+    command.upgrade(config, "20260929_0418")
 
     conn = connect_postgres_test(read_only=True)
     try:
@@ -514,6 +514,10 @@ def test_execution_hard_cut_retires_old_tables_and_is_forward_only() -> None:
         conn.close()
     with pytest.raises(RuntimeError, match="Irreversible #746 Analysis hard cut"):
         command.downgrade(config, "20260929_0417")
+    assert _stamped_revision() == "20260929_0418"
+    command.upgrade(config, HEAD)
+    with pytest.raises(RuntimeError, match="trading_rootfix_forward_only_restore_verified_backup"):
+        command.downgrade(config, "20260929_0418")
     assert _stamped_revision() == HEAD
 
 
