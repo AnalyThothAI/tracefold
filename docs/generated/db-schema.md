@@ -829,6 +829,11 @@
 | `output_tokens` | `INTEGER` | True | `None` |
 | `started_at_ms` | `BIGINT` | False | `None` |
 | `ended_at_ms` | `BIGINT` | False | `None` |
+| `assessment_id` | `TEXT` | False | `None` |
+| `run_id` | `TEXT` | False | `None` |
+| `evaluator_id` | `TEXT` | False | `None` |
+| `reused_assessment_id` | `TEXT` | True | `None` |
+| `error_metadata` | `JSONB` | False | `'{}'::jsonb` |
 
 ## `trading_cases`
 
@@ -857,6 +862,9 @@
 | `decided_at_ms` | `BIGINT` | True | `None` |
 | `failure_code` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `units_per_contract` | `NUMERIC` | True | `None` |
+| `episode_id` | `TEXT` | True | `None` |
+| `episode_role` | `TEXT` | True | `None` |
 
 ## `trading_control_state`
 
@@ -879,6 +887,18 @@
 | `reason` | `TEXT` | False | `None` |
 | `plan_id` | `TEXT` | True | `None` |
 | `decided_at_ns` | `BIGINT` | False | `None` |
+| `admission_snapshot` | `JSONB` | True | `None` |
+
+## `trading_evaluation_runs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `run_id` | `TEXT` | False | `None` |
+| `evaluator_id` | `TEXT` | False | `None` |
+| `kind` | `TEXT` | False | `None` |
+| `evaluator_spec` | `JSONB` | False | `None` |
+| `manifest` | `JSONB` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
 
 ## `trading_executor_state`
 
@@ -893,6 +913,8 @@
 | `account_snapshot` | `JSONB` | True | `None` |
 | `unexpected_exposure` | `BOOLEAN` | False | `false` |
 | `last_error` | `TEXT` | True | `None` |
+| `faults` | `JSONB` | False | `'{}'::jsonb` |
+| `last_error_at_ns` | `BIGINT` | True | `None` |
 
 ## `trading_fill_attributions`
 
@@ -1003,6 +1025,9 @@
 | `net_pnl` | `NUMERIC` | True | `None` |
 | `pnl_deadline_ns` | `BIGINT` | True | `None` |
 | `updated_at_ns` | `BIGINT` | False | `None` |
+| `admitted_at_ns` | `BIGINT` | True | `None` |
+| `admission_snapshot` | `JSONB` | True | `None` |
+| `reserved_margin` | `NUMERIC` | True | `None` |
 
 ## `trading_policy_actions`
 
@@ -1019,6 +1044,9 @@
 | `publish_status` | `TEXT` | False | `'not_live'::text` |
 | `signal_id` | `TEXT` | True | `None` |
 | `decided_at_ms` | `BIGINT` | False | `None` |
+| `action_id` | `TEXT` | False | `None` |
+| `assessment_id` | `TEXT` | False | `None` |
+| `policy_config` | `JSONB` | False | `'{"contract": "legacy", "parameters": "unknown"}'::jsonb` |
 
 ## `trading_signals`
 
@@ -1056,6 +1084,7 @@
 | `native_symbol` | `TEXT` | False | `None` |
 | `next_trade_id` | `BIGINT` | False | `None` |
 | `checked_at_ns` | `BIGINT` | False | `None` |
+| `bootstrap_since_ns` | `BIGINT` | True | `None` |
 
 ## `trading_trigger_conflicts`
 

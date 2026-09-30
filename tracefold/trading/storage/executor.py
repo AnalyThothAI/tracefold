@@ -10,7 +10,9 @@ from tracefold.trading.operator_control import PreparedOperatorIntent
 
 SIGNAL_LEDGER_SQL = "SELECT seq,payload FROM trading_signals WHERE decided_at_ns>=%s ORDER BY seq DESC LIMIT %s"
 FILL_LEDGER_SQL = (
-    "SELECT f.environment,f.native_symbol,f.trade_id,a.plan_id,a.client_order_id,"
+    "SELECT f.environment,f.native_symbol,f.trade_id,a.plan_id,a.command_id,a.client_order_id,"
+    "CASE WHEN a.plan_id IS NOT NULL THEN 'owned_plan' WHEN a.command_id IS NOT NULL "
+    "THEN 'owned_command' ELSE 'unbound' END AS ownership,"
     "f.venue_order_id,f.quantity,f.price,f.realized_pnl,f.fee,f.fee_asset,f.traded_at_ns "
     "FROM trading_fills f LEFT JOIN trading_fill_attributions a "
     "ON (a.environment,a.native_symbol,a.trade_id)=(f.environment,f.native_symbol,f.trade_id) "
@@ -113,13 +115,14 @@ class ExecutorStorage:
     def heartbeat(self, *, account_slot: str, now_ns: int, error: str | None = None) -> None:
         self.conn.execute(
             """
-            INSERT INTO trading_executor_state(account_slot,environment,heartbeat_at_ns,last_error)
-            VALUES (%s,'DEMO',%s,%s)
+            INSERT INTO trading_executor_state(account_slot,environment,heartbeat_at_ns,last_error,last_error_at_ns)
+            VALUES (%s,'DEMO',%s,%s,%s)
             ON CONFLICT(account_slot) DO UPDATE SET
               heartbeat_at_ns=EXCLUDED.heartbeat_at_ns,
-              last_error=EXCLUDED.last_error
+              last_error=COALESCE(EXCLUDED.last_error,trading_executor_state.last_error),
+              last_error_at_ns=COALESCE(EXCLUDED.last_error_at_ns,trading_executor_state.last_error_at_ns)
             """,
-            (account_slot, now_ns, error),
+            (account_slot, now_ns, error, now_ns if error is not None else None),
         )
 
     def state(self, account_slot: str) -> dict[str, Any] | None:
@@ -165,6 +168,17 @@ class ExecutorStorage:
         )
 
     def append_signal(self, signal: SignalV4) -> int:
+        action = self.conn.execute(
+            "SELECT case_id,policy_id,policy_version,action FROM trading_policy_actions WHERE action_id=%s",
+            (signal.decision_id,),
+        ).fetchone()
+        if action is None or (action["case_id"], action["policy_id"], action["policy_version"], action["action"]) != (
+            signal.case_id,
+            signal.policy_id,
+            signal.policy_version,
+            signal.side,
+        ):
+            raise ValueError("signal_policy_action_mismatch")
         payload = signal.model_dump(mode="json", exclude={"seq"})
         packed = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         inserted = self.conn.execute(
@@ -239,14 +253,25 @@ class ExecutorStorage:
         reason: str,
         now_ns: int,
         plan_id: str | None = None,
+        admission_snapshot: dict[str, Any] | None = None,
     ) -> None:
         self.conn.execute(
             """
-            INSERT INTO trading_dispositions(input_kind,input_id,account_slot,disposition,reason,plan_id,decided_at_ns)
-            VALUES (%s,%s,%s,%s,%s,%s,%s)
+            INSERT INTO trading_dispositions(input_kind,input_id,account_slot,disposition,reason,plan_id,
+                                             decided_at_ns,admission_snapshot)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
             ON CONFLICT(input_kind,input_id) DO NOTHING
             """,
-            (kind, input_id, account_slot, disposition, reason, plan_id, now_ns),
+            (
+                kind,
+                input_id,
+                account_slot,
+                disposition,
+                reason,
+                plan_id,
+                now_ns,
+                None if admission_snapshot is None else json.dumps(admission_snapshot),
+            ),
         )
         row = self.disposition(kind=kind, input_id=input_id)
         if row is None or (row["disposition"], row["reason"], row["plan_id"]) != (disposition, reason, plan_id):
@@ -281,13 +306,18 @@ class ExecutorStorage:
         tp_bps: int,
         max_hold_s: int,
         now_ns: int,
+        admission_snapshot: dict[str, Any] | None = None,
+        reserved_margin: str | None = None,
+        reserved_notional: str | None = None,
     ) -> None:
         self.conn.execute(
             """
             INSERT INTO trading_plans(plan_id,signal_id,command_id,account_slot,environment,native_symbol,
                                       side,quantity,reference_price,reserved_notional,
-                                      stop_bps,tp_bps,max_hold_s,status,updated_at_ns)
-            VALUES (%s,%s,%s,%s,'DEMO',%s,%s,%s,%s,%s::numeric * %s::numeric,%s,%s,%s,'accepted',%s)
+                                      stop_bps,tp_bps,max_hold_s,status,updated_at_ns,
+                                      admitted_at_ns,admission_snapshot,reserved_margin)
+            VALUES (%s,%s,%s,%s,'DEMO',%s,%s,%s,%s,
+                    COALESCE(%s::numeric,%s::numeric * %s::numeric),%s,%s,%s,'accepted',%s,%s,%s::jsonb,%s)
             """,
             (
                 plan_id,
@@ -298,12 +328,16 @@ class ExecutorStorage:
                 side,
                 quantity,
                 reference_price,
+                reserved_notional,
                 quantity,
                 reference_price,
                 stop_bps,
                 tp_bps,
                 max_hold_s,
                 now_ns,
+                now_ns if admission_snapshot is not None else None,
+                None if admission_snapshot is None else json.dumps(admission_snapshot),
+                reserved_margin,
             ),
         )
 
@@ -313,8 +347,8 @@ class ExecutorStorage:
         inserted = self.conn.execute(
             """
             INSERT INTO trading_orders(client_order_id,plan_id,environment,native_symbol,
-                                       leg,attempt,status,updated_at_ns)
-            VALUES (%s,%s,'DEMO',%s,%s,%s,'reserved',%s)
+                                       leg,attempt,status,updated_at_ns,evidence)
+            VALUES (%s,%s,'DEMO',%s,%s,%s,'reserved',%s,'{"submission":"not_started"}'::jsonb)
             ON CONFLICT(plan_id,leg,attempt) DO NOTHING RETURNING *
             """,
             (client_id, plan_id, native_symbol, leg, attempt, now_ns),
@@ -336,8 +370,8 @@ class ExecutorStorage:
         inserted = self.conn.execute(
             """
             INSERT INTO trading_orders(client_order_id,command_id,environment,native_symbol,
-                                       leg,attempt,status,updated_at_ns)
-            VALUES (%s,%s,'DEMO',%s,'account_flatten',%s,'reserved',%s)
+                                       leg,attempt,status,updated_at_ns,evidence)
+            VALUES (%s,%s,'DEMO',%s,'account_flatten',%s,'reserved',%s,'{"submission":"not_started"}'::jsonb)
             ON CONFLICT(command_id,native_symbol,leg,attempt) DO NOTHING RETURNING *
             """,
             (client_id, command_id, symbol, attempt, now_ns),
@@ -377,8 +411,8 @@ class ExecutorStorage:
         self.conn.execute(
             """
             UPDATE trading_orders SET status=%s,venue_order_id=COALESCE(%s,venue_order_id),
-              error_code=%s,evidence=COALESCE(%s::jsonb,evidence),
-              submitted_at_ns=CASE WHEN %s IN ('unknown','submitted','working','filled')
+              error_code=%s,evidence=COALESCE(evidence,'{}'::jsonb) || COALESCE(%s::jsonb,'{}'::jsonb),
+              submitted_at_ns=CASE WHEN %s IN ('unknown','submitted','working','filled','rejected','cancelled')
                                    THEN COALESCE(submitted_at_ns,%s) ELSE submitted_at_ns END,
               resolved_at_ns=CASE WHEN %s IN ('filled','cancelled','rejected','not_submitted')
                                   THEN %s ELSE resolved_at_ns END,
@@ -406,6 +440,38 @@ class ExecutorStorage:
                 "SELECT * FROM trading_plans WHERE account_slot=%s AND terminal_at_ns IS NULL ORDER BY updated_at_ns",
                 (account_slot,),
             ).fetchall(),
+        )
+
+    def last_stop_at_ns(self, account_slot: str, symbol: str) -> int | None:
+        row = self.conn.execute(
+            "SELECT MAX(f.traded_at_ns) AS stopped_at_ns FROM trading_plans p "
+            "JOIN trading_orders o ON o.plan_id=p.plan_id AND o.leg='sl' "
+            "JOIN trading_fill_attributions a ON a.client_order_id=o.client_order_id "
+            "JOIN trading_fills f ON (f.environment,f.native_symbol,f.trade_id)="
+            "(a.environment,a.native_symbol,a.trade_id) "
+            "WHERE p.account_slot=%s AND p.native_symbol=%s AND p.terminal_at_ns IS NOT NULL",
+            (account_slot, symbol),
+        ).fetchone()
+        return None if row is None else row["stopped_at_ns"]
+
+    def set_fault(self, *, account_slot: str, key: str, reason: str, now_ns: int) -> None:
+        self.conn.execute(
+            "UPDATE trading_executor_state SET faults=faults || jsonb_build_object(%s::text,"
+            "jsonb_build_object('reason',%s::text,'observed_at_ns',%s::bigint)) WHERE account_slot=%s",
+            (key, reason, now_ns, account_slot),
+        )
+
+    def clear_fault(self, *, account_slot: str, key: str) -> None:
+        self.conn.execute(
+            "UPDATE trading_executor_state SET faults=faults - %s WHERE account_slot=%s", (key, account_slot)
+        )
+
+    def clear_flatten_faults(self, *, account_slot: str, command_id: str) -> None:
+        self.conn.execute(
+            "UPDATE trading_executor_state SET faults=COALESCE("
+            "(SELECT jsonb_object_agg(key,value) FROM jsonb_each(faults) WHERE key NOT LIKE %s), '{}'::jsonb) "
+            "WHERE account_slot=%s",
+            (command_id + ":%", account_slot),
         )
 
     def active_client_ids(self, account_slot: str) -> set[str]:
@@ -463,6 +529,25 @@ class ExecutorStorage:
             (symbol,),
         ).fetchone()
         return None if row is None else int(row["next_trade_id"])
+
+    def initialize_trade_window(self, *, symbol: str, now_ns: int) -> int:
+        """Start from retained strategy intent, bounded by Binance's seven-day REST availability."""
+        oldest = self.conn.execute(
+            "SELECT min(COALESCE(p.admitted_at_ns,s.created_at_ns,i.requested_at_ns)) AS first_at "
+            "FROM trading_plans p LEFT JOIN trading_signals s ON s.signal_id=p.signal_id "
+            "LEFT JOIN trading_operator_intents i ON i.command_id=p.command_id WHERE p.native_symbol=%s",
+            (symbol,),
+        ).fetchone()["first_at"]
+        start = max(now_ns - 7 * 86400 * 1000000000, (int(oldest) - 60000000000) if oldest is not None else now_ns)
+        row = self.conn.execute(
+            "INSERT INTO trading_trade_cursors"
+            "(environment,native_symbol,next_trade_id,checked_at_ns,bootstrap_since_ns) "
+            "VALUES ('DEMO',%s,0,%s,%s) ON CONFLICT(environment,native_symbol) DO UPDATE SET "
+            "bootstrap_since_ns=COALESCE(trading_trade_cursors.bootstrap_since_ns,EXCLUDED.bootstrap_since_ns) "
+            "RETURNING bootstrap_since_ns",
+            (symbol, now_ns, start),
+        ).fetchone()
+        return int(row["bootstrap_since_ns"])
 
     def advance_trade_cursor(self, *, symbol: str, next_id: int, now_ns: int) -> None:
         self.conn.execute(
@@ -596,11 +681,25 @@ class ExecutorStorage:
         entry_qty = sum(row["quantity"] for row in rows if row["leg"] == "entry")
         exit_qty = sum(row["quantity"] for row in rows if row["leg"] != "entry")
         entry_order = self.conn.execute(
-            "SELECT status,evidence FROM trading_orders WHERE plan_id=%s AND leg='entry'",
+            "SELECT status,error_code,evidence FROM trading_orders WHERE plan_id=%s AND leg='entry'",
             (plan["plan_id"],),
         ).fetchone()
         entry_evidence = {} if entry_order is None else entry_order["evidence"] or {}
-        expected_entry = Decimal(str(entry_evidence.get("executedQty", plan["quantity"])))
+        definitely_zero = bool(
+            entry_order
+            and (
+                entry_order["status"] == "not_submitted"
+                or (
+                    entry_order["status"] == "rejected"
+                    and entry_order["error_code"] is not None
+                    and entry_order["error_code"] not in (-1000, -1001, -1003, -1006, -1007)
+                )
+            )
+            and entry_qty == 0
+        )
+        expected_entry = (
+            Decimal(0) if definitely_zero else Decimal(str(entry_evidence.get("executedQty", plan["quantity"])))
+        )
         complete = bool(
             entry_order
             and entry_order["status"] in ("filled", "cancelled", "rejected", "not_submitted")

@@ -17,6 +17,8 @@ from urllib.parse import urlencode
 
 import httpx
 
+from tracefold.integrations.binance_catalogue import BinanceCatalogue
+
 _BASE = "https://demo-fapi.binance.com"
 _CLIENT_ID = re.compile(r"^[\.A-Z\:/a-z0-9_-]{1,36}$")
 
@@ -30,7 +32,16 @@ class BinanceFailure(RuntimeError):
 
     @property
     def transient(self) -> bool:
-        return self.status >= 500 or self.status == 429 or self.code in (-1000, -1001, -1003)
+        return self.status >= 500 or self.status == 429 or self.code in (-1000, -1001, -1003, -1006, -1007)
+
+    def evidence(self) -> dict[str, Any]:
+        # Provider messages may echo signed requests. Persist codes, never a URL,
+        # request body or arbitrary provider text.
+        return {
+            "http_status": self.status,
+            "error_code": self.code,
+            "submission": "unknown" if self.transient else "rejected",
+        }
 
 
 class DemoBinance:
@@ -51,6 +62,7 @@ class DemoBinance:
         self._owns_client = client is None
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
         self._offset_ms = 0
+        self.catalogue = BinanceCatalogue(self._catalogue_get, clock_ms=self._clock_ms)
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -87,8 +99,34 @@ class DemoBinance:
     async def account(self) -> dict[str, Any]:
         return await self._signed("GET", "/fapi/v3/account")
 
-    async def position_mode(self) -> dict[str, Any]:
-        return await self._signed("GET", "/fapi/v1/positionSide/dual")
+    async def account_config(self) -> dict[str, Any]:
+        return await self._signed("GET", "/fapi/v1/accountConfig")
+
+    async def symbol_config(self, symbol: str) -> dict[str, Any]:
+        rows = await self._signed("GET", "/fapi/v1/symbolConfig", {"symbol": symbol})
+        matches = [row for row in rows if row.get("symbol") == symbol]
+        if len(matches) != 1:
+            raise ValueError("symbol_margin_config_unavailable")
+        return matches[0]
+
+    async def mark_price(self, symbol: str) -> Decimal:
+        response = await self._client.get(_BASE + "/fapi/v1/premiumIndex", params={"symbol": symbol})
+        response.raise_for_status()
+        price = Decimal(str(response.json()["markPrice"]))
+        if not price.is_finite() or price <= 0:
+            raise ValueError("mark_price_invalid")
+        return price
+
+    async def commission_rate(self, symbol: str) -> Decimal:
+        row = await self._signed("GET", "/fapi/v1/commissionRate", {"symbol": symbol})
+        rate = Decimal(str(row["takerCommissionRate"]))
+        if not rate.is_finite() or rate < 0:
+            raise ValueError("commission_rate_invalid")
+        return rate
+
+    async def cancel_order(self, symbol: str, client_id: str) -> dict[str, Any]:
+        self._validate_id(client_id)
+        return await self._signed("DELETE", "/fapi/v1/order", {"symbol": symbol, "origClientOrderId": client_id})
 
     async def open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
         return await self._signed("GET", "/fapi/v1/openOrders", {"symbol": symbol} if symbol else None)
@@ -96,10 +134,18 @@ class DemoBinance:
     async def open_algo_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
         return await self._signed("GET", "/fapi/v1/openAlgoOrders", {"symbol": symbol} if symbol else None)
 
-    async def user_trades(self, symbol: str, *, from_id: int | None = None) -> list[dict[str, Any]]:
+    async def user_trades(
+        self,
+        symbol: str,
+        *,
+        from_id: int | None = None,
+        start_time_ms: int | None = None,
+    ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"symbol": symbol, "limit": 1_000}
         if from_id is not None:
             params["fromId"] = from_id
+        elif start_time_ms is not None:
+            params["startTime"] = start_time_ms
         return await self._signed("GET", "/fapi/v1/userTrades", params)
 
     async def query_order(self, symbol: str, client_id: str) -> dict[str, Any] | None:
@@ -180,10 +226,22 @@ class DemoBinance:
     async def cancel_symbol_algo_orders(self, symbol: str) -> dict[str, Any]:
         return await self._signed("DELETE", "/fapi/v1/algoOpenOrders", {"symbol": symbol})
 
-    async def exchange_info(self) -> dict[str, Any]:
-        response = await self._client.get(_BASE + "/fapi/v1/exchangeInfo")
+    async def _catalogue_get(self, url: str, *, params: dict[str, Any], receipts: list[dict[str, Any]]) -> Any:
+        started = time.monotonic()
+        response = await self._client.get(url, params=params)
+        receipts.append(
+            {
+                "endpoint": "/fapi/v1/exchangeInfo",
+                "http_status": response.status_code,
+                "latency_ms": round((time.monotonic() - started) * 1000),
+                "cache_hit": False,
+            }
+        )
         response.raise_for_status()
         return response.json()
+
+    async def exchange_info(self) -> dict[str, Any]:
+        return (await self.catalogue.read("demo", deadline_at_monotonic=time.monotonic() + 5)).payload
 
     async def book_ticker(self, symbol: str) -> dict[str, Any]:
         response = await self._client.get(_BASE + "/fapi/v1/ticker/bookTicker", params={"symbol": symbol})

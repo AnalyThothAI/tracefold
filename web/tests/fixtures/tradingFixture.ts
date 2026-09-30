@@ -169,8 +169,16 @@ export function tradingScoreboardFixture(
       execution_accepted: 1,
       filled: 1,
     },
+    comparisons: [],
     programs: [
       {
+        run_id: "f".repeat(64),
+        evaluator_id: "e".repeat(64),
+        mode: "online",
+        evaluator_spec: {},
+        manifest: {},
+        cohorts: [],
+        calibrated_forecasts: {},
         program_sha: "d".repeat(64),
         route: "qwen",
         assessments: 8,
@@ -185,6 +193,8 @@ export function tradingScoreboardFixture(
         ].map((policy_id) => ({
           policy_id,
           policy_version: "policy_v1",
+          clusters: 1,
+          effective_days: 1,
           cases: 10,
           actions: policy_id === "abstain" ? 0 : 6,
           scored: policy_id === "abstain" ? 0 : 6,
@@ -196,6 +206,8 @@ export function tradingScoreboardFixture(
           status: "insufficient_data" as const,
         })),
         forecast: {
+          matched_baseline_legs: 0,
+          baseline_coverage: "0",
           legs: 12,
           multiclass_brier: null,
           log_loss: null,

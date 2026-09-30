@@ -191,7 +191,15 @@ docker compose exec -T executor tracefold trading issue '/pause maintenance' \
 
 重试必须保留相同 request ID 和时间。`/pause` 不平仓；`/flatten account` 先暂停入场，再撤普通单、平仓、撤 Algo 单，并以签名场所读回验证。命令受理不等于场所动作完成。
 
-### #746 Trading 硬切
+### #760 前向保留与恢复
+
+0419保留账本。维护记录源码/镜像/schema、验证备份、活跃Plan和签名仓位/普通单/Algo，协调writers、迁移后匹配镜像；有仓位时保持场所保护。它不授权账户副作用、不将平仓当设计前提，见[迁移](MIGRATIONS.md#0419保留事实的-trading-根修)。
+
+status区分active_faults与历史last_error；submission_unresolved按原ID对账，查询不存在不重发；flatten_exhausted核实敞口/保护后定向恢复，heartbeat/resume不能清未解fault。fills ownership与bootstrap范围隔离历史；totals仅归因Plan成交/USDT手续费，未覆盖资金费/转账/期初权益/未归因历史。
+
+候选先声明时间外窗口，记录成本/动作率/Brier/BSS/配对R/missing/有效日期。Mock或一天正收益不替代#746七天prospective/双腿；自然SL/TP/到期/拒绝/重启和签名回执另按会话授权，可复用合格证据。
+
+### #746 Trading 硬切（历史切换）
 
 先停旧执行进程，确认 DEMO 仓位、普通单和 Algo 单均为零，再备份所有 `trading_*` 表及归档目录。迁移 `20260929_0417` 删除旧执行表、建立 Signal v4 与订单/成交账本；`20260929_0418` 删除旧 Analysis Case、Gate、WATCH、逐调用账本并建立冻结预测、六策略和纸面双腿账本。两者不可降级，也不回填旧 DEMO 数据。0418 要求 Signal 表为空；恢复只能使用已验证备份。迁移和新镜像须在同一维护窗口完成。不要把本地 Plan 的 terminal 当作场所平仓回执。保留签名账户检查与备份，直至 DEMO 生命周期回执通过。
 

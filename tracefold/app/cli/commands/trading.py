@@ -52,12 +52,30 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
         return _issue_operator_intent(args, settings=settings)
     if command == "diagnose":
         return _diagnose(args, settings=settings)
+    if command == "calibrate":
+        from tracefold.app.trading_calibration import calibrate
+
+        try:
+            result = calibrate(
+                settings,
+                source_run_id=args.source_run,
+                train_since_ms=_window_clock(args.train_since),
+                train_until_ms=_window_clock(args.train_until),
+                validate_until_ms=_window_clock(args.validate_until),
+                output=Path(args.output),
+            )
+        except (ValueError, OSError) as exc:
+            return 2, {"ok": False, "error": str(exc)}
+        return 0, {"ok": True, "data": result}
     if command == "replay":
         try:
             result = asyncio.run(
                 replay(
                     settings,
-                    program_file=Path(args.program),
+                    program_file=None if args.program is None else Path(args.program),
+                    mode=args.mode,
+                    source_run_id=args.source_run,
+                    tag=args.tag,
                     since_ms=_window_clock(args.since),
                     until_ms=_window_clock(args.until),
                 )

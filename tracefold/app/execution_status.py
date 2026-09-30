@@ -27,6 +27,8 @@ def execution_readiness_projection(
         "emergency_halted": False,
         "unexpected_exposure": False,
         "last_error": None,
+        "last_error_at_ms": None,
+        "faults": {},
         "heartbeat_at_ms": None,
         "facts_expire_at_ms": None,
         "facts_remaining_ms": None,
@@ -48,12 +50,13 @@ def execution_readiness_projection(
     halted = False if control is None else bool(control["emergency_halted"])
     error = state.get("last_error")
     unexpected = bool(state["unexpected_exposure"])
-    armed = alive and reconciled and not paused and not halted and not unexpected and error is None
+    faults = state.get("faults") or {}
+    armed = alive and reconciled and not paused and not halted and not unexpected and not faults
     reason = (
         "executor_heartbeat_stale"
         if not alive
         else "executor_error"
-        if error
+        if faults
         else "account_reconcile_stale"
         if not reconciled
         else "unexpected_exposure"
@@ -75,6 +78,10 @@ def execution_readiness_projection(
             "emergency_halted": halted,
             "unexpected_exposure": unexpected,
             "last_error": error,
+            "last_error_at_ms": None
+            if state.get("last_error_at_ns") is None
+            else int(state["last_error_at_ns"]) // 1_000_000,
+            "faults": faults,
             "heartbeat_at_ms": heartbeat // 1_000_000,
             "facts_expire_at_ms": (heartbeat + _HEARTBEAT_STALE_AFTER_NS) // 1_000_000,
             "facts_remaining_ms": remaining // 1_000_000,

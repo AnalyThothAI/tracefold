@@ -144,7 +144,7 @@ class _ScriptedNewsLM(dspy.LM):
         return False
 
 
-def scripted_generative_lm(endpoint: Any, *, max_tokens: int, timeout: float) -> dspy.LM:
+def scripted_generative_lm(endpoint: Any, *, settings: Any, max_tokens: int, timeout: float) -> dspy.LM:
     """Stands in for `tracefold.app.learning_runtime.generative_lm`: same endpoint, a deterministic answer."""
 
     del max_tokens, timeout

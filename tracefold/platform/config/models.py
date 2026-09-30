@@ -246,6 +246,7 @@ class NewsReaderJudgmentConfig(_SystemOneRouteConfig):
 
 
 class LlmConfig(BaseModel):
+    max_shared_concurrent_calls: int = Field(default=2, ge=1, le=32)
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     api_key: str | None = Field(default=None, repr=False)
@@ -622,11 +623,13 @@ class TradingExecutionRiskSettings(BaseModel):
     risk_fraction_per_trade: Decimal = Decimal("0.01")
     max_leverage: int = 5
     stop_distance_bps: int = 100
+    max_plans: int = Field(default=5, ge=1, le=100)
+    max_drift_bps: int = Field(default=50, ge=1, le=2_000)
+    entry_price_buffer_bps: Decimal = Field(default=Decimal("20"), ge=0, le=1_000, allow_inf_nan=False)
     # The widest spread an entry may cross, as a fraction of the stop distance: 0.3 of a 100 bps stop
-    # is 30 bps. An entry waits for a narrower book within its Signal's TTL rather than being refused
-    # on one tick, and the refusal it ends with records the spread it measured.
+    # is 30 bps. A refusal records the measured book in its admission snapshot.
     max_spread_fraction_of_stop: Decimal = Decimal("0.3")
-    # After a stop-out, Signals for the same market are refused for this long; manual entries are not.
+    # A venue-confirmed stop-out cools down both automatic and manual entry for the symbol/account.
     post_stop_cooldown_seconds: int = 14_400
     market_stale_after_seconds: float = 5.0
 
@@ -716,9 +719,13 @@ class TradingAnalysisSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     model_name: str | None = None
+    model_revision: str | None = None
     program: TradingProgramSettings | None = None
     active_policy: Literal["forecast", "always_long", "always_short", "abstain", "momentum15m", "fade15m"] = "forecast"
     publish_signals: bool = False
+    min_expected_r: Decimal = Field(default=Decimal(0), allow_inf_nan=False)
+    min_direction_gap_r: Decimal = Field(default=Decimal(0), ge=0, allow_inf_nan=False)
+    calibration: TradingProgramSettings | None = None
     verified_routes: list[TradingVerifiedRouteSettings] = Field(default_factory=list)
     excluded_asset_ids: list[str] = Field(
         default_factory=lambda: [

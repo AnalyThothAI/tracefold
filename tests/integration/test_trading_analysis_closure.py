@@ -10,6 +10,7 @@ from dataclasses import asdict
 from decimal import Decimal
 from pathlib import Path
 
+import psycopg
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test, postgres_migration_test_dsn
@@ -19,6 +20,7 @@ from tracefold.app.trading_assessor import AssessmentResult
 from tracefold.platform.config.models import PostgresConfig, Settings
 from tracefold.platform.market_identity import AssetId, InstrumentRef
 from tracefold.trading.engine.case_view import BaseRates, build_case_view
+from tracefold.trading.engine.evaluation import EvaluationRun, EvaluatorSpec
 from tracefold.trading.engine.forecast import Forecast, LegProbabilities, PolicyConfig, all_policy_decisions
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult
 from tracefold.trading.engine.paper import Bar, LegGeometry, both_legs
@@ -105,10 +107,11 @@ def test_case_claim_freeze_paper_and_scoreboard_roundtrip(tmp_path, postgres_clo
                 LegProbabilities(Decimal("0.7"), Decimal("0.2"), Decimal("0.1")),
                 LegProbabilities(Decimal("0.2"), Decimal("0.7"), Decimal("0.1")),
             )
-            trading.record_assessment(
+            run = EvaluationRun.online(EvaluatorSpec("c" * 64, "fixture", None, "case_view_v1", "forecast_v1", 2000))
+            trading.register_evaluation_run(run, now_ms=at)
+            assessment = trading.record_assessment(
                 case_id=case_id,
-                program_sha="c" * 64,
-                route="fixture-model",
+                run_id=run.run_id,
                 status="ok",
                 forecast=forecast,
                 notes=(),
@@ -117,7 +120,14 @@ def test_case_claim_freeze_paper_and_scoreboard_roundtrip(tmp_path, postgres_clo
                 ended_at_ms=at + 3_000,
             )
             decisions = all_policy_decisions(view.features, forecast, PolicyConfig(200, 400, Decimal("2")))
-            trading.record_policy_actions(case_id=case_id, program_sha="c" * 64, decisions=decisions, now_ms=at + 3_000)
+            trading.record_policy_actions(
+                assessment=assessment,
+                decisions=decisions,
+                policy_config=PolicyConfig(
+                    view.geometry.stop_bps, view.geometry.tp_bps, view.half_spread_bps
+                ).snapshot(),
+                now_ms=at + 3000,
+            )
             assert trading.finish_case(
                 case_id=case_id,
                 claim_token=claim["claim_token"],
@@ -161,11 +171,14 @@ def test_case_claim_freeze_paper_and_scoreboard_roundtrip(tmp_path, postgres_clo
             cache_calls.append(kwargs["cache"])
             return object()
 
+        inference_calls = []
+
         class FakeAssessor:
             def __init__(self, **_kwargs):
                 pass
 
             async def assess(self, _view):
+                inference_calls.append(_view.case_id)
                 return AssessmentResult(forecast, "complete", None, (), {"input_tokens": 1, "output_tokens": 1})
 
         monkeypatch.setattr(trading_replay, "generative_lm", fake_lm)
@@ -175,7 +188,7 @@ def test_case_claim_freeze_paper_and_scoreboard_roundtrip(tmp_path, postgres_clo
             trading_replay.replay(settings, program_file=artifact, since_ms=at - 1, until_ms=at + 86_400_000)
         )
         assert result["cases"] == result["assessed"] == 1
-        assert cache_calls == [True]
+        assert cache_calls == [False]
         first_replay = trading.analysis_case(case_id)
         assert first_replay is not None
         assert len(first_replay["policy_actions"]) == 12
@@ -189,7 +202,69 @@ def test_case_claim_freeze_paper_and_scoreboard_roundtrip(tmp_path, postgres_clo
         assert second_replay is not None
         assert second_replay["assessments"] == first_replay["assessments"]
         assert second_replay["policy_actions"] == first_replay["policy_actions"]
-        assert cache_calls == [True, True]
+        assert cache_calls == [False, False]
+        assert inference_calls == [case_id]
+        policy_run = asyncio.run(
+            trading_replay.replay(
+                settings,
+                program_file=None,
+                since_ms=at - 1,
+                until_ms=at + 86400000,
+                mode="policies",
+                source_run_id=run.run_id,
+            )
+        )
+        assert policy_run["mode"] == "policies" and policy_run["assessed"] == 1
+        assert len(cache_calls) == 2 and inference_calls == [case_id]
+        copy = trading.assessment_for_run(case_id=case_id, run_id=policy_run["run_id"])
+        assert copy["reused_assessment_id"] == assessment
+        assert copy["input_tokens"] == copy["output_tokens"] == 0
+        assert trading.assessment_for_run(case_id=case_id, run_id=run.run_id)["input_tokens"] == 25
+
+        # A competing process holding the same session key prevents even one LM call.
+        from tracefold.trading.engine.evaluation import content_id
+
+        owner_key = int.from_bytes(bytes.fromhex(content_id({"replay_run": result["run_id"]}))[:8], "big", signed=True)
+        with psycopg.connect(postgres_clone_dsn, autocommit=True) as owner:
+            owner.execute("SELECT pg_advisory_lock(%s)", (owner_key,))
+            before = list(inference_calls)
+            with pytest.raises(ValueError, match="trading_replay_run_busy"):
+                asyncio.run(
+                    trading_replay.replay(
+                        settings,
+                        program_file=artifact,
+                        since_ms=at - 1,
+                        until_ms=at + 86400000,
+                    )
+                )
+            assert inference_calls == before
+        # Release after process/connection exit, then normal same-run replay remains idempotent.
+        assert (
+            asyncio.run(
+                trading_replay.replay(
+                    settings,
+                    program_file=artifact,
+                    since_ms=at - 1,
+                    until_ms=at + 86400000,
+                )
+            )
+            == result
+        )
+
+        # Same program on another model is an independent run, visible in the scoreboard.
+        settings.trading.analysis.model_name = "candidate-model-2"
+        other = asyncio.run(
+            trading_replay.replay(settings, program_file=artifact, since_ms=at - 1, until_ms=at + 86400000)
+        )
+        assert other["evaluator_id"] != result["evaluator_id"]
+        board = trading.scoreboard(since_ms=at - 1, until_ms=at + 86400000)
+        assert len(board["programs"]) == 4
+        assert {row["run_id"] for row in board["programs"]} == {
+            run.run_id,
+            result["run_id"],
+            policy_run["run_id"],
+            other["run_id"],
+        }
         assert conn.execute("SELECT count(*) AS n FROM trading_signals").fetchone()["n"] == 0
     finally:
         conn.close()

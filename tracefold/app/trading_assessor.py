@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
+import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -53,6 +55,7 @@ class AssessmentResult:
     error_code: str | None
     notes: tuple[str, ...]
     usage: dict[str, Any]
+    error_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def program_sha256(path: Path) -> str:
@@ -90,6 +93,12 @@ def _from_output(value: object, view: CaseView) -> tuple[Forecast, tuple[str, ..
 
 def _error_code(exc: BaseException) -> str:
     name = type(exc).__name__.lower()
+    status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
+    if status == 429:
+        return "rate_limit"
+    provider_code = getattr(exc, "code", None)
+    if provider_code in ("timeout", "rate_limit", "truncated", "parse", "schema"):
+        return str(provider_code)
     if isinstance(exc, (ValidationError, ValueError)) or "schema" in name:
         return "schema"
     if isinstance(exc, TimeoutError) or "timeout" in name:
@@ -103,6 +112,45 @@ def _error_code(exc: BaseException) -> str:
     return "provider"
 
 
+def usage_totals(raw: dict[str, Any]) -> dict[str, int | None]:
+    """DSPy nests token usage by LM; unknown observations remain unknown."""
+    values = (
+        [raw]
+        if any(key in raw for key in ("input_tokens", "prompt_tokens", "output_tokens", "completion_tokens"))
+        else [value for value in raw.values() if isinstance(value, dict)]
+    )
+    result: dict[str, int | None] = {}
+    for target, keys in (
+        ("input_tokens", ("input_tokens", "prompt_tokens")),
+        ("output_tokens", ("output_tokens", "completion_tokens")),
+    ):
+        counts = [value.get(keys[0], value.get(keys[1])) for value in values]
+        observed = [count for count in counts if isinstance(count, int) and count >= 0]
+        result[target] = sum(observed) if observed else None
+    return result
+
+
+def _failure_metadata(exc: BaseException) -> dict[str, Any]:
+    response = getattr(exc, "response", None)
+    status = getattr(exc, "status", None) or getattr(exc, "status_code", None) or getattr(response, "status_code", None)
+    result: dict[str, Any] = {"error_type": type(exc).__name__}
+    if isinstance(status, int):
+        result["http_status"] = status
+    headers = getattr(response, "headers", {}) or {}
+    request_id = getattr(exc, "request_id", None) or headers.get("x-request-id")
+    if isinstance(request_id, str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", request_id):
+        result["provider_request_ref"] = request_id
+    retry = getattr(exc, "retry_after", None)
+    if retry is None:
+        retry = headers.get("retry-after")
+    try:
+        if retry is not None and math.isfinite(float(retry)):
+            result["retry_after_seconds"] = max(0, float(retry))
+    except (TypeError, ValueError):
+        pass
+    return result
+
+
 class TradingAssessor:
     def __init__(self, *, program: dspy.Predict, lm: GenerativeLM, timeout_s: float, concurrent: int) -> None:
         if timeout_s <= 0 or concurrent <= 0 or program.lm is not None:
@@ -111,11 +159,15 @@ class TradingAssessor:
         self.lm = lm
         self.timeout_s = timeout_s
         self._slots = asyncio.Semaphore(concurrent)
+        self.capacity = concurrent
 
     async def assess(self, view: CaseView) -> AssessmentResult:
+        queued = time.monotonic()
         async with self._slots:
-            # Provider time starts when a call has a slot, not while its Case waits in the queue.
-            deadline = time.monotonic() + self.timeout_s
+            started = time.monotonic()
+            deadline = started + self.timeout_s
+            metadata: dict[str, Any] = {"queue_ms": round((started - queued) * 1000)}
+            errors: list[dict[str, Any]] = []
             for attempt in range(2):
                 try:
                     with dspy.context(adapter=dspy.JSONAdapter(), track_usage=True):
@@ -124,18 +176,31 @@ class TradingAssessor:
                             timeout=max(0.1, deadline - time.monotonic()),
                         )
                     forecast, notes = _from_output(prediction.assessment, view)
-                    return AssessmentResult(forecast, "complete", None, notes, prediction.get_lm_usage() or {})
+                    metadata.update(
+                        attempts=attempt + 1, provider_ms=round((time.monotonic() - started) * 1000), errors=errors
+                    )
+                    return AssessmentResult(
+                        forecast, "complete", None, notes, usage_totals(prediction.get_lm_usage() or {}), metadata
+                    )
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     raise
                 except Exception as exc:
                     code = _error_code(exc)
+                    detail = _failure_metadata(exc)
+                    detail.update(code=code, attempt=attempt + 1)
+                    errors.append(detail)
+                    delay = max(1.0, float(detail.get("retry_after_seconds", 1.0)))
                     if (
                         attempt == 0
                         and code in ("timeout", "rate_limit", "provider")
-                        and deadline - time.monotonic() > 5
+                        and delay + 5 < deadline - time.monotonic()
                     ):
+                        await asyncio.sleep(delay)
                         continue
-                    return AssessmentResult(None, "failed", code, (), {})
+                    metadata.update(
+                        attempts=attempt + 1, provider_ms=round((time.monotonic() - started) * 1000), errors=errors
+                    )
+                    return AssessmentResult(None, "failed", code, (), {}, metadata)
         raise AssertionError("assessor_unreachable")
 
 

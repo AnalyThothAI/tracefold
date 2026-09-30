@@ -55,6 +55,7 @@ async def _run(settings: Settings) -> None:
                 endpoint = configured_lm_endpoint(settings, model_name=analysis.model_name)
                 lm = generative_lm(
                     endpoint,
+                    settings=settings,
                     max_tokens=analysis.max_model_output_tokens,
                     timeout=analysis.model_timeout_seconds,
                 )
@@ -73,6 +74,7 @@ async def _run(settings: Settings) -> None:
         runner = AnalysisRunner(
             settings=settings,
             market_data=market,
+            execution_catalogue=market.catalogue,
             assessor=assessor,
             program_sha=program_sha,
             raw_root=settings.app_home / "archive" / "trading-cases",

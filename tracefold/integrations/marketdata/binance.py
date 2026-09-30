@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from tracefold.integrations.binance_catalogue import BinanceCatalogue
 from tracefold.trading.engine.marketdata import MarketDataRequest, MarketDataResult
 
 _FUTURES = "https://fapi.binance.com"
@@ -67,8 +68,7 @@ class BinanceMarketData:
         self._backoff_until = 0.0
         self._server_clocks: dict[str, tuple[int, int, int]] = {}  # offset, half RTT, sampled local ms
         self._clock_lock = asyncio.Lock()
-        self._rules_lock = asyncio.Lock()
-        self._rules_cache: dict[str, tuple[float, Any, int]] = {}
+        self.catalogue = BinanceCatalogue(self._get, clock_ms=self._clock_ms)
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -97,43 +97,21 @@ class BinanceMarketData:
         receipts: list[dict[str, Any]] = []
         if request.max_age_ms is None:
             raise ValueError("market_data_age_invalid")
-        async with self._rules_lock:
-            cached = self._rules_cache.get(request.environment)
-            if cached is not None and time.monotonic() - cached[0] <= min(request.max_age_ms, 3_600_000) / 1_000:
-                raw, received = cached[1], cached[2]
-                receipts.append(
-                    {
-                        "endpoint": "cache:/fapi/v1/exchangeInfo",
-                        "native_symbol": request.native_symbol,
-                        "http_status": None,
-                        "latency_ms": 0,
-                        "request_weight": 0,
-                        "cache_hit": True,
-                    }
-                )
-            else:
-                remaining = request.deadline_at_monotonic - time.monotonic()
-                if remaining <= 0:
-                    return self._result(request, status="missing", rows=(), missing=("deadline_exceeded",))
-                try:
-                    raw = await asyncio.wait_for(
-                        self._get(
-                            _futures_base(request.environment) + "/fapi/v1/exchangeInfo",
-                            params={},
-                            receipts=receipts,
-                        ),
-                        timeout=remaining,
-                    )
-                except (httpx.HTTPError, TimeoutError):
-                    return self._result(
-                        request, status="error", rows=(), missing=("provider_error",), receipts=tuple(receipts)
-                    )
-                received = self._clock_ms()
-                if not isinstance(raw, dict) or not isinstance(raw.get("symbols"), list):
-                    return self._result(
-                        request, status="error", rows=(), missing=("exchange_info_invalid",), receipts=tuple(receipts)
-                    )
-                self._rules_cache[request.environment] = (time.monotonic(), raw, received)
+        try:
+            snapshot = await self.catalogue.read(
+                "live",
+                max_age_ms=request.max_age_ms,
+                deadline_at_monotonic=request.deadline_at_monotonic,
+            )
+        except (httpx.HTTPError, TimeoutError, ValueError) as exc:
+            return self._result(
+                request,
+                status="error",
+                rows=(),
+                missing=("exchange_info_invalid" if isinstance(exc, ValueError) else "provider_error",),
+            )
+        raw, received = snapshot.payload, snapshot.received_at_ms
+        receipts.extend(snapshot.receipts)
         symbols = raw["symbols"]
         symbol = next(
             (item for item in symbols if isinstance(item, dict) and item.get("symbol") == request.native_symbol),

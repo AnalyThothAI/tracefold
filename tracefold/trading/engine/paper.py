@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_CEILING, Decimal
 from itertools import pairwise
-from typing import Literal
+from typing import Any, Literal
 
 BAR_MS = 60_000
 GEOMETRY_VERSION = "leg_geometry_v1"
@@ -145,7 +145,12 @@ def paper_leg(
 
 
 def both_legs(
-    *, decided_at_ms: int, bars: tuple[Bar, ...], leg_geometry: LegGeometry, half_spread_bps: Decimal
+    *,
+    decided_at_ms: int,
+    bars: tuple[Bar, ...],
+    leg_geometry: LegGeometry,
+    half_spread_bps: Decimal,
+    taker_fee_bps: Decimal = Decimal(5),
 ) -> tuple[PaperLeg, PaperLeg]:
     return (
         paper_leg(
@@ -154,6 +159,7 @@ def both_legs(
             bars=bars,
             leg_geometry=leg_geometry,
             half_spread_bps=half_spread_bps,
+            taker_fee_bps=taker_fee_bps,
         ),
         paper_leg(
             side="short",
@@ -161,5 +167,30 @@ def both_legs(
             bars=bars,
             leg_geometry=leg_geometry,
             half_spread_bps=half_spread_bps,
+            taker_fee_bps=taker_fee_bps,
         ),
+    )
+
+
+def paper_leg_from_record(row: dict[str, Any]) -> PaperLeg:
+    def number(key: str) -> Decimal | None:
+        if row[key] is None:
+            return None
+        value = Decimal(str(row[key]))
+        if not value.is_finite():
+            raise ValueError("paper_numeric_fact_invalid")
+        return value
+
+    return PaperLeg(
+        row["side"],
+        row["status"],
+        row["outcome"],
+        row["reason"],
+        row["anchor_at_ms"],
+        row["exit_at_ms"],
+        number("anchor_price"),
+        number("exit_price"),
+        number("gross_bps"),
+        number("cost_bps"),
+        number("net_r"),
     )

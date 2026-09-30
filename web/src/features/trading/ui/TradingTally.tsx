@@ -48,8 +48,8 @@ export function TradingTally({
   return (
     <Card
       data-block="tally"
-      hint="含手工入场，按 UTC 日界聚合；净收益按 DEMO 原生成交和手续费计算"
-      title="账户收益与记录范围"
+      hint="已归因 Plan，含手工入场；按 UTC 聚合成交与手续费，未覆盖资金费、转账和未归因历史"
+      title="已归因成交收益与记录范围"
     >
       {/*
        * `.trading-fact-grid` rather than `@shared/ui/FactGrid`: that primitive drops a pair whose value is

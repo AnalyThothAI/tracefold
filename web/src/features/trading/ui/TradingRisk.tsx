@@ -48,9 +48,13 @@ export function TradingSafetyStrip({
           状态通道失联：未取得有效期内的新状态；下方保留上次签名读取。
         </p>
       ) : null}
-      {!stale && execution.last_error ? (
+      {!stale && Object.keys(execution.faults ?? {}).length ? (
         <p role="status" className="trading-alert-line" data-tone="caution">
-          执行器错误：{execution.last_error}；新增仓位已关闭。
+          待处理故障：
+          {Object.values(execution.faults ?? {})
+            .map((fault) => String(fault.reason))
+            .join(" · ")}
+          ；新增仓位已关闭。
         </p>
       ) : null}
       {!stale && execution.entry_block_reason === "account_reconcile_stale" ? (
@@ -78,7 +82,7 @@ export function TradingExposure({
   const unconfirmed =
     stale ||
     execution.entry_block_reason === "account_reconcile_stale" ||
-    Boolean(execution.last_error) ||
+    Object.keys(execution.faults ?? {}).length > 0 ||
     !execution.alive;
   const open =
     (account?.positions_total ?? 0) > 0 ||

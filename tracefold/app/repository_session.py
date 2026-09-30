@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -13,6 +13,7 @@ from tracefold.news.search import NewsSearchPlan, compile_news_search
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.postgres.client import (
     connect_postgres,
+    connect_postgres_async,
     require_transaction,
     transaction,
     with_password_from_file,
@@ -65,18 +66,7 @@ _LONG_LIVED_SESSION_SETTINGS = {
 }
 
 
-@contextmanager
-def postgres_connection(
-    settings: Any,
-    *,
-    application_name: str = "tracefold_cli",
-    long_lived: bool = False,
-) -> Iterator[Any]:
-    """Open the PostgreSQL connection used by application operations.
-
-    `long_lived=True` is for a session that is meant to stay open for the life of a process rather
-    than for one operation, and adds TCP keepalives on both ends.
-    """
+def _connection_settings(settings: Any, *, long_lived: bool) -> tuple[str, dict[str, Any]]:
     postgres = settings.storage.postgres
     dsn = with_password_from_file(
         postgres.dsn,
@@ -93,9 +83,25 @@ def postgres_connection(
         if long_lived
         else {}
     )
+    return dsn, keepalives
+
+
+@contextmanager
+def postgres_connection(
+    settings: Any,
+    *,
+    application_name: str = "tracefold_cli",
+    long_lived: bool = False,
+) -> Iterator[Any]:
+    """Open the PostgreSQL connection used by application operations.
+
+    `long_lived=True` is for a session that is meant to stay open for the life of a process rather
+    than for one operation, and adds TCP keepalives on both ends.
+    """
+    dsn, keepalives = _connection_settings(settings, long_lived=long_lived)
     conn = connect_postgres(
         dsn,
-        connect_timeout_seconds=postgres.connect_timeout_seconds,
+        connect_timeout_seconds=settings.storage.postgres.connect_timeout_seconds,
         application_name=application_name,
         **keepalives,
     )
@@ -103,6 +109,26 @@ def postgres_connection(
         yield conn
     finally:
         conn.close()
+
+
+@asynccontextmanager
+async def async_postgres_connection(
+    settings: Any,
+    *,
+    application_name: str = "tracefold_async",
+    long_lived: bool = False,
+) -> AsyncIterator[Any]:
+    dsn, keepalives = _connection_settings(settings, long_lived=long_lived)
+    conn = await connect_postgres_async(
+        dsn,
+        connect_timeout_seconds=settings.storage.postgres.connect_timeout_seconds,
+        application_name=application_name,
+        **keepalives,
+    )
+    try:
+        yield conn
+    finally:
+        await conn.close()
 
 
 @contextmanager
@@ -120,6 +146,7 @@ def repositories(
 __all__ = [
     "NewsSearchPlan",
     "RepositorySession",
+    "async_postgres_connection",
     "postgres_connection",
     "repositories",
     "repositories_for_connection",

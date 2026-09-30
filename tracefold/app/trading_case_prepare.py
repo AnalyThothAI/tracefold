@@ -188,6 +188,24 @@ class CasePreparer:
             half_spread_bps=half_spread_bps,
             base_rates=(_baseline("long", base_rates["long"]), _baseline("short", base_rates["short"])),
             recent_context=recent_context,
+            native_symbol=native,
+            units_per_contract=None
+            if case.get("units_per_contract") is None
+            else Decimal(str(case["units_per_contract"])),
+            observations={
+                name: {
+                    "status": result.status,
+                    "missing_reasons": result.missing_reasons,
+                    "received_age_s": None
+                    if result.received_at_ms is None
+                    else (cutoff - result.received_at_ms) // 1000,
+                    "event_age_s": None if result.event_end_ms is None else (cutoff - result.event_end_ms) // 1000,
+                    "source_identity": result.source_identity,
+                    "unit_definition": result.unit_definition,
+                }
+                for name, result in results.items()
+            },
+            episode={"role": case.get("episode_role") or "unknown", "contract": "episode_v1"},
         )
         snapshot = {
             "snapshot_version": "live_case_snapshot_v1",

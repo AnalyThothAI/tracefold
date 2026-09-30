@@ -31,7 +31,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20260929_0418`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20260930_0419`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序
@@ -92,10 +92,17 @@ class Runtime execution;
 | `20260929_0416` | 新增只追加的 `news_claim_links` 并从历史 EventUpdate 回填；通知决定支持 `reader_v2` | [0416](../tracefold/platform/postgres/alembic/versions/20260929_0416_news_reader_decisions.py) |
 | `20260929_0417` | DEMO 执行账本硬切：Signal v4、disposition、Plan、订单与原生成交；删除 Nautilus 执行表 | [0417](../tracefold/platform/postgres/alembic/versions/20260929_0417_trading_execution_hard_cut.py) |
 | `20260929_0418` | LIVE Analysis 硬切：仅选中 Trigger 建 Case，冻结预测、六策略和双腿纸面账本；删除旧 Gate、WATCH 与逐调用表 | [0418](../tracefold/platform/postgres/alembic/versions/20260929_0418_trading_analysis_hard_cut.py) |
+| `20260930_0419` | 保留Trading事实，新增准入/游标/episode/评估run与不可变身份，不清空/伪造 | [0419](../tracefold/platform/postgres/alembic/versions/20260930_0419_trading_rootfix.py) |
 
 这些切换是前向迁移，不通过旧卡片 / verdict 伪造新 Claim。0407 曾将旧 pending `first` / `followup` 意图结算；0411 将它们连同旧发送行删除。当前 intent 只接受 `update`，发送账本保留决策引用。EventUpdate 的不可变版本与已发送的当前通知保留。
 
 `20260927_0406` 为 [执行硬切 Signal 退休原因](../tracefold/platform/postgres/alembic/versions/20260927_0406_execution_hard_cut_retirement.py) 增加约束取值；它自身不清理账户数据。数据切换步骤见 [Trading 运维](OPERATIONS.md#trading-operations)。
+
+### 0419：保留事实的 Trading 根修
+
+直接前驱0418。停止Analysis/Executor等受影响writers，同维护窗口用匹配镜像；lock_timeout=5s、statement_timeout=60s，失败整事务回滚。保留Case/失败预测/Signal/活跃Plan/订单/原生成交/归因。旧SHA/route建立legacy，缺参数/usage/准入/episode不伪造。run/assessment只追加，action事实不变、发布仅从初态结算。历史Signal/action外键NOT VALID保留不可恢复来源，但约束新Signal；冻结Case不回写。bootstrap_since_ns仅记实际建立窗口，旧起点unknown仍NULL。
+
+不要求清空或先平仓所有账户；维护核实暴露/保护、stopped-writer期间持续场所保护，恢复后签名对账。0417/0418历史硬切不重复用于0419。回退为前向修复或验证备份与匹配镜像，禁止旧writer写新schema。
 
 ### 配套检查
 

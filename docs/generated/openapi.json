@@ -8202,6 +8202,10 @@
       "TradingAssessmentData": {
         "additionalProperties": false,
         "properties": {
+          "assessment_id": {
+            "title": "Assessment Id",
+            "type": "string"
+          },
           "case_id": {
             "title": "Case Id",
             "type": "string"
@@ -8217,6 +8221,15 @@
           "ended_at_ms": {
             "title": "Ended At Ms",
             "type": "integer"
+          },
+          "error_metadata": {
+            "additionalProperties": true,
+            "title": "Error Metadata",
+            "type": "object"
+          },
+          "evaluator_id": {
+            "title": "Evaluator Id",
+            "type": "string"
           },
           "forecast": {
             "anyOf": [
@@ -8263,8 +8276,23 @@
             "title": "Program Sha",
             "type": "string"
           },
+          "reused_assessment_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reused Assessment Id"
+          },
           "route": {
             "title": "Route",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
             "type": "string"
           },
           "started_at_ms": {
@@ -8277,6 +8305,9 @@
           }
         },
         "required": [
+          "assessment_id",
+          "run_id",
+          "evaluator_id",
           "case_id",
           "program_sha",
           "route",
@@ -8319,6 +8350,28 @@
               }
             ],
             "title": "Decided At Ms"
+          },
+          "episode_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Id"
+          },
+          "episode_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Episode Role"
           },
           "failure_code": {
             "anyOf": [
@@ -8388,6 +8441,17 @@
             ],
             "title": "Trigger Kind",
             "type": "string"
+          },
+          "units_per_contract": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Units Per Contract"
           },
           "view": {
             "anyOf": [
@@ -8640,6 +8704,14 @@
             ],
             "title": "Facts Remaining Ms"
           },
+          "faults": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Faults",
+            "type": "object"
+          },
           "heartbeat_at_ms": {
             "anyOf": [
               {
@@ -8661,6 +8733,17 @@
               }
             ],
             "title": "Last Error"
+          },
+          "last_error_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error At Ms"
           },
           "last_full_reconcile_at_ms": {
             "anyOf": [
@@ -9198,6 +9281,14 @@
             "title": "Action",
             "type": "string"
           },
+          "action_id": {
+            "title": "Action Id",
+            "type": "string"
+          },
+          "assessment_id": {
+            "title": "Assessment Id",
+            "type": "string"
+          },
           "calibrator_version": {
             "title": "Calibrator Version",
             "type": "string"
@@ -9220,6 +9311,11 @@
               }
             ],
             "title": "Expected R"
+          },
+          "policy_config": {
+            "additionalProperties": true,
+            "title": "Policy Config",
+            "type": "object"
           },
           "policy_id": {
             "title": "Policy Id",
@@ -9254,6 +9350,9 @@
           }
         },
         "required": [
+          "action_id",
+          "assessment_id",
+          "policy_config",
           "case_id",
           "program_sha",
           "policy_id",
@@ -9409,9 +9508,188 @@
         "title": "TradingReliabilityBinData",
         "type": "object"
       },
+      "TradingScoreboardCohortData": {
+        "additionalProperties": false,
+        "properties": {
+          "cases": {
+            "title": "Cases",
+            "type": "integer"
+          },
+          "complete_pairs": {
+            "title": "Complete Pairs",
+            "type": "integer"
+          },
+          "dimension": {
+            "title": "Dimension",
+            "type": "string"
+          },
+          "episodes": {
+            "title": "Episodes",
+            "type": "integer"
+          },
+          "failures": {
+            "title": "Failures",
+            "type": "integer"
+          },
+          "forecast": {
+            "$ref": "#/components/schemas/TradingScoreboardForecastData"
+          },
+          "group": {
+            "title": "Group",
+            "type": "string"
+          },
+          "missing_legs": {
+            "title": "Missing Legs",
+            "type": "integer"
+          },
+          "policies": {
+            "items": {
+              "$ref": "#/components/schemas/TradingScoreboardPolicyData"
+            },
+            "title": "Policies",
+            "type": "array"
+          },
+          "unknown_episodes": {
+            "title": "Unknown Episodes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "dimension",
+          "group",
+          "cases",
+          "episodes",
+          "unknown_episodes",
+          "complete_pairs",
+          "missing_legs",
+          "failures",
+          "policies",
+          "forecast"
+        ],
+        "title": "TradingScoreboardCohortData",
+        "type": "object"
+      },
+      "TradingScoreboardComparisonData": {
+        "additionalProperties": false,
+        "properties": {
+          "average_r_delta": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Average R Delta"
+          },
+          "ci_high": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ci High"
+          },
+          "ci_low": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ci Low"
+          },
+          "clusters": {
+            "title": "Clusters",
+            "type": "integer"
+          },
+          "common_cases": {
+            "title": "Common Cases",
+            "type": "integer"
+          },
+          "effective_days": {
+            "title": "Effective Days",
+            "type": "integer"
+          },
+          "left_policy": {
+            "title": "Left Policy",
+            "type": "string"
+          },
+          "left_run": {
+            "title": "Left Run",
+            "type": "string"
+          },
+          "left_version": {
+            "title": "Left Version",
+            "type": "string"
+          },
+          "missing_decisions": {
+            "title": "Missing Decisions",
+            "type": "integer"
+          },
+          "missing_labels": {
+            "title": "Missing Labels",
+            "type": "integer"
+          },
+          "right_policy": {
+            "title": "Right Policy",
+            "type": "string"
+          },
+          "right_run": {
+            "title": "Right Run",
+            "type": "string"
+          },
+          "right_version": {
+            "title": "Right Version",
+            "type": "string"
+          },
+          "scored": {
+            "title": "Scored",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "ok",
+              "insufficient_data"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "left_run",
+          "right_run",
+          "left_policy",
+          "left_version",
+          "right_policy",
+          "right_version",
+          "common_cases",
+          "scored",
+          "missing_labels",
+          "missing_decisions",
+          "clusters",
+          "effective_days",
+          "status"
+        ],
+        "title": "TradingScoreboardComparisonData",
+        "type": "object"
+      },
       "TradingScoreboardData": {
         "additionalProperties": false,
         "properties": {
+          "comparisons": {
+            "items": {
+              "$ref": "#/components/schemas/TradingScoreboardComparisonData"
+            },
+            "title": "Comparisons",
+            "type": "array"
+          },
           "funnel": {
             "additionalProperties": {
               "type": "integer"
@@ -9437,7 +9715,8 @@
         "required": [
           "window",
           "funnel",
-          "programs"
+          "programs",
+          "comparisons"
         ],
         "title": "TradingScoreboardData",
         "type": "object"
@@ -9445,6 +9724,10 @@
       "TradingScoreboardForecastData": {
         "additionalProperties": false,
         "properties": {
+          "baseline_coverage": {
+            "title": "Baseline Coverage",
+            "type": "string"
+          },
           "brier_skill_score": {
             "anyOf": [
               {
@@ -9470,6 +9753,10 @@
               }
             ],
             "title": "Log Loss"
+          },
+          "matched_baseline_legs": {
+            "title": "Matched Baseline Legs",
+            "type": "integer"
           },
           "multiclass_brier": {
             "anyOf": [
@@ -9499,6 +9786,8 @@
           }
         },
         "required": [
+          "matched_baseline_legs",
+          "baseline_coverage",
           "legs",
           "status"
         ],
@@ -9549,9 +9838,17 @@
             ],
             "title": "Ci Low"
           },
+          "clusters": {
+            "title": "Clusters",
+            "type": "integer"
+          },
           "coverage": {
             "title": "Coverage",
             "type": "string"
+          },
+          "effective_days": {
+            "title": "Effective Days",
+            "type": "integer"
           },
           "policy_id": {
             "title": "Policy Id",
@@ -9586,6 +9883,8 @@
           }
         },
         "required": [
+          "clusters",
+          "effective_days",
           "policy_id",
           "policy_version",
           "cases",
@@ -9604,6 +9903,29 @@
             "title": "Assessments",
             "type": "integer"
           },
+          "calibrated_forecasts": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TradingScoreboardForecastData"
+            },
+            "title": "Calibrated Forecasts",
+            "type": "object"
+          },
+          "cohorts": {
+            "items": {
+              "$ref": "#/components/schemas/TradingScoreboardCohortData"
+            },
+            "title": "Cohorts",
+            "type": "array"
+          },
+          "evaluator_id": {
+            "title": "Evaluator Id",
+            "type": "string"
+          },
+          "evaluator_spec": {
+            "additionalProperties": true,
+            "title": "Evaluator Spec",
+            "type": "object"
+          },
           "execution_deviation": {
             "additionalProperties": true,
             "title": "Execution Deviation",
@@ -9619,6 +9941,21 @@
           "forecast": {
             "$ref": "#/components/schemas/TradingScoreboardForecastData"
           },
+          "manifest": {
+            "additionalProperties": true,
+            "title": "Manifest",
+            "type": "object"
+          },
+          "mode": {
+            "enum": [
+              "online",
+              "inference",
+              "policies",
+              "legacy"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
           "policies": {
             "items": {
               "$ref": "#/components/schemas/TradingScoreboardPolicyData"
@@ -9633,9 +9970,20 @@
           "route": {
             "title": "Route",
             "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
           }
         },
         "required": [
+          "run_id",
+          "evaluator_id",
+          "mode",
+          "evaluator_spec",
+          "manifest",
+          "cohorts",
+          "calibrated_forecasts",
           "program_sha",
           "route",
           "assessments",

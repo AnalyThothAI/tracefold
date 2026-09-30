@@ -104,6 +104,24 @@ def e2e_postgres() -> Iterator[str]:
         yield dsn
 
 
+@pytest.fixture(scope="session")
+def executor_clone_factory(e2e_postgres: str):
+    from tests.postgres_test_utils import MigratedPostgresCloneFactory
+
+    factory = MigratedPostgresCloneFactory(e2e_postgres)
+    try:
+        yield factory
+    finally:
+        factory.close()
+
+
+@pytest.fixture
+def executor_postgres(executor_clone_factory) -> Iterator[str]:
+    """Each synthetic account owns a fresh native-order/trade ledger."""
+    with executor_clone_factory.clone() as dsn:
+        yield dsn
+
+
 def _wait_for_readyz(url: str, timeout: float = 60.0) -> None:
     """Poll a URL for HTTP 200 by shelling out to curl.
 

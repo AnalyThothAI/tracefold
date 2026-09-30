@@ -129,6 +129,8 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 
 `SignalV4` 与 `OperatorIntentV1` 的身份与作用域由执行契约定义，模型不能自由添加未知字段来绕过编译器。Signal 绑定 Case / decision、几何、映射、账户槽位、entry scope 与截止时间；订单与成交由 DEMO 场所对账确认。
 
+CaseView v2 保留标的/原生单位/相对年龄/覆盖/episode；evaluator/run/assessment/action 分开，Signal.decision_id 引用实际 action。legacy参数仍unknown，assessment终态不可改。scoreboard.programs 保留字段名但按run_id区分，带evaluator/mode/manifest；原始/校准预测分开，PIT显示覆盖、配对失败/缺失不填零、七日/十簇不足区间为空。capture_cohort年龄分组不冒充现场catchup/prospective。status.active_faults为未解决故障，last_error为历史摘要；totals仅归因Plan成交/手续费，未覆盖资金费/转账/未归因历史。
+
 本地 `trading issue` 使用关闭的命令语法，必须有稳定 `--request-id` 和调用方封存的 `--requested-at-ns`，重试保留两者。它记录本地 OS 认证的意图，不证明交易所动作完成。
 
 执行结果只从与 Plan 精确绑定的交易所原生成交计算。原生成交按交易所交易 ID 去重，延迟归因另记不可变绑定；缺少完整成交或 USDT 手续费时净收益显示未知。执行器周期性核验仍有责任的订单与账户。
@@ -145,6 +147,8 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 | `trading` | status / diagnose、Case / scoreboard / replay / Signal / fill 查询、本地操作与历史核验 |
 
 `news replay` 在本地重放 provider hits 的准入 / Gate，不调用模型或 broker；它也不代表完整 EventUpdate→通知→交易回放。实际参数和默认值见[生成 CLI 帮助](generated/cli-help.md)，不要把命令名称扩展为未实现能力。
+
+Trading replay 默认 policies/source-run，复用输出零LM；inference/program才隔离新推理并关cache，均不发布/访问交易所，同run幂等、tag区分新评估。calibrate声明训练/未来验证，仅写候选，不启用。llm.max_shared_concurrent_calls为同实际endpoint跨进程总slots，各owner配置须一致。
 
 未知配置 key 按 Settings 拒绝。`llm.news_reader_judgment` 是通知决策层独用的 System One 路由，密钥只能以 `api_key_file` 引用配置目录下的私有文件（固定为初始化创建、只挂载给 Workers 的 `news_reader_judgment_api_key`；空文件等于未配置），`config` 与 `/api/news/status` 只报告是否配置、模型和作答后端。密钥放在配置允许的位置 / 文件，不能通过 `llm.request.extra_body` 注入 transport-owned 字段或秘密。业务配置只有 `TRACEFOLD_HOME/config.yaml`，默认 `~/.tracefold/config.yaml`；Compose 可读取 `.env` 持久化项目、路径和端口，但 Settings 不把它作为业务字段回退。
 

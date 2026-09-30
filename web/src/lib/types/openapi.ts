@@ -3311,6 +3311,8 @@ export interface components {
         };
         /** TradingAssessmentData */
         TradingAssessmentData: {
+            /** Assessment Id */
+            assessment_id: string;
             /** Case Id */
             case_id: string;
             /** Drivers */
@@ -3319,6 +3321,12 @@ export interface components {
             }[];
             /** Ended At Ms */
             ended_at_ms: number;
+            /** Error Metadata */
+            error_metadata?: {
+                [key: string]: unknown;
+            };
+            /** Evaluator Id */
+            evaluator_id: string;
             /** Forecast */
             forecast?: {
                 [key: string]: unknown;
@@ -3331,8 +3339,12 @@ export interface components {
             output_tokens?: number | null;
             /** Program Sha */
             program_sha: string;
+            /** Reused Assessment Id */
+            reused_assessment_id?: string | null;
             /** Route */
             route: string;
+            /** Run Id */
+            run_id: string;
             /** Started At Ms */
             started_at_ms: number;
             /** Status */
@@ -3350,6 +3362,10 @@ export interface components {
             created_at_ms: number;
             /** Decided At Ms */
             decided_at_ms?: number | null;
+            /** Episode Id */
+            episode_id?: string | null;
+            /** Episode Role */
+            episode_role?: string | null;
             /** Failure Code */
             failure_code?: string | null;
             /** Geometry Version */
@@ -3372,6 +3388,8 @@ export interface components {
              * @enum {string}
              */
             trigger_kind: "oi" | "catalyst";
+            /** Units Per Contract */
+            units_per_contract?: string | null;
             /** View */
             view?: {
                 [key: string]: unknown;
@@ -3451,10 +3469,18 @@ export interface components {
             facts_expire_at_ms?: number | null;
             /** Facts Remaining Ms */
             facts_remaining_ms?: number | null;
+            /** Faults */
+            faults?: {
+                [key: string]: {
+                    [key: string]: unknown;
+                };
+            };
             /** Heartbeat At Ms */
             heartbeat_at_ms?: number | null;
             /** Last Error */
             last_error?: string | null;
+            /** Last Error At Ms */
+            last_error_at_ms?: number | null;
             /** Last Full Reconcile At Ms */
             last_full_reconcile_at_ms?: number | null;
             signed_account?: components["schemas"]["TradingSignedAccountData"] | null;
@@ -3589,6 +3615,10 @@ export interface components {
              * @enum {string}
              */
             action: "long" | "short" | "abstain";
+            /** Action Id */
+            action_id: string;
+            /** Assessment Id */
+            assessment_id: string;
             /** Calibrator Version */
             calibrator_version: string;
             /** Case Id */
@@ -3597,6 +3627,10 @@ export interface components {
             decided_at_ms: number;
             /** Expected R */
             expected_r?: string | null;
+            /** Policy Config */
+            policy_config: {
+                [key: string]: unknown;
+            };
             /** Policy Id */
             policy_id: string;
             /** Policy Version */
@@ -3657,8 +3691,70 @@ export interface components {
             /** Observed Tp Rate */
             observed_tp_rate: string;
         };
+        /** TradingScoreboardCohortData */
+        TradingScoreboardCohortData: {
+            /** Cases */
+            cases: number;
+            /** Complete Pairs */
+            complete_pairs: number;
+            /** Dimension */
+            dimension: string;
+            /** Episodes */
+            episodes: number;
+            /** Failures */
+            failures: number;
+            forecast: components["schemas"]["TradingScoreboardForecastData"];
+            /** Group */
+            group: string;
+            /** Missing Legs */
+            missing_legs: number;
+            /** Policies */
+            policies: components["schemas"]["TradingScoreboardPolicyData"][];
+            /** Unknown Episodes */
+            unknown_episodes: number;
+        };
+        /** TradingScoreboardComparisonData */
+        TradingScoreboardComparisonData: {
+            /** Average R Delta */
+            average_r_delta?: string | null;
+            /** Ci High */
+            ci_high?: string | null;
+            /** Ci Low */
+            ci_low?: string | null;
+            /** Clusters */
+            clusters: number;
+            /** Common Cases */
+            common_cases: number;
+            /** Effective Days */
+            effective_days: number;
+            /** Left Policy */
+            left_policy: string;
+            /** Left Run */
+            left_run: string;
+            /** Left Version */
+            left_version: string;
+            /** Missing Decisions */
+            missing_decisions: number;
+            /** Missing Labels */
+            missing_labels: number;
+            /** Right Policy */
+            right_policy: string;
+            /** Right Run */
+            right_run: string;
+            /** Right Version */
+            right_version: string;
+            /** Scored */
+            scored: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ok" | "insufficient_data";
+        };
         /** TradingScoreboardData */
         TradingScoreboardData: {
+            /** Comparisons */
+            comparisons: components["schemas"]["TradingScoreboardComparisonData"][];
             /** Funnel */
             funnel: {
                 [key: string]: number;
@@ -3672,12 +3768,16 @@ export interface components {
         };
         /** TradingScoreboardForecastData */
         TradingScoreboardForecastData: {
+            /** Baseline Coverage */
+            baseline_coverage: string;
             /** Brier Skill Score */
             brier_skill_score?: string | null;
             /** Legs */
             legs: number;
             /** Log Loss */
             log_loss?: string | null;
+            /** Matched Baseline Legs */
+            matched_baseline_legs: number;
             /** Multiclass Brier */
             multiclass_brier?: string | null;
             /** Reliability */
@@ -3700,8 +3800,12 @@ export interface components {
             ci_high?: string | null;
             /** Ci Low */
             ci_low?: string | null;
+            /** Clusters */
+            clusters: number;
             /** Coverage */
             coverage: string;
+            /** Effective Days */
+            effective_days: number;
             /** Policy Id */
             policy_id: string;
             /** Policy Version */
@@ -3720,6 +3824,18 @@ export interface components {
         TradingScoreboardProgramData: {
             /** Assessments */
             assessments: number;
+            /** Calibrated Forecasts */
+            calibrated_forecasts: {
+                [key: string]: components["schemas"]["TradingScoreboardForecastData"];
+            };
+            /** Cohorts */
+            cohorts: components["schemas"]["TradingScoreboardCohortData"][];
+            /** Evaluator Id */
+            evaluator_id: string;
+            /** Evaluator Spec */
+            evaluator_spec: {
+                [key: string]: unknown;
+            };
             /** Execution Deviation */
             execution_deviation: {
                 [key: string]: unknown;
@@ -3729,12 +3845,23 @@ export interface components {
                 [key: string]: number;
             };
             forecast: components["schemas"]["TradingScoreboardForecastData"];
+            /** Manifest */
+            manifest: {
+                [key: string]: unknown;
+            };
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "online" | "inference" | "policies" | "legacy";
             /** Policies */
             policies: components["schemas"]["TradingScoreboardPolicyData"][];
             /** Program Sha */
             program_sha: string;
             /** Route */
             route: string;
+            /** Run Id */
+            run_id: string;
         };
         /**
          * TradingSignedAccountData

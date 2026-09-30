@@ -433,3 +433,33 @@ async def _shadow_market_sources() -> None:
     assert "/fapi/v1/markPriceKlines" in paths
     assert "/fapi/v1/fundingRate" in paths
     assert hosts == {"fapi.binance.com"}
+
+
+def test_catalogue_keeps_environments_separate_and_deadline_covers_lock_wait() -> None:
+    from tracefold.integrations.binance_catalogue import BinanceCatalogue
+
+    async def run():
+        calls = []
+        hold = asyncio.Event()
+        started = asyncio.Event()
+
+        async def fetch(url, **_kwargs):
+            calls.append(url)
+            if "demo" in url:
+                started.set()
+                await hold.wait()
+            return {"symbols": []}
+
+        catalogue = BinanceCatalogue(fetch, clock_ms=lambda: 1000)
+        owner = asyncio.create_task(catalogue.read("demo", deadline_at_monotonic=time.monotonic() + 2))
+        await started.wait()
+        await catalogue.read("live", deadline_at_monotonic=time.monotonic() + 1)
+        with pytest.raises(TimeoutError):
+            await catalogue.read("demo", deadline_at_monotonic=time.monotonic() + 0.05)
+        hold.set()
+        await owner
+        cached = await catalogue.read("demo", deadline_at_monotonic=time.monotonic() + 1)
+        assert cached.receipts[0]["cache_hit"]
+        assert len(calls) == 2
+
+    asyncio.run(run())

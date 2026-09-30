@@ -39,9 +39,9 @@ export function TradingCaseDetail({ item }: { item: TradingCase }) {
       <Card flush title="两侧预测" hint="程序版本与模型路由随评估保存">
         {item.assessments?.length ? (
           item.assessments.map((assessment) => (
-            <div key={assessment.program_sha}>
+            <div key={assessment.assessment_id}>
               <p>
-                <code>{assessment.program_sha.slice(0, 12)}</code> · {assessment.route} ·{" "}
+                <code>{assessment.run_id.slice(0, 12)}</code> · {assessment.route} ·{" "}
                 {assessment.status}
               </p>
               {assessment.forecast ? (
@@ -56,7 +56,7 @@ export function TradingCaseDetail({ item }: { item: TradingCase }) {
       <Card flush title="同场 Policy 动作" hint="只有配置中的 live policy 可能发布 Signal">
         <ul>
           {item.policy_actions?.map((action) => (
-            <li key={`${action.program_sha}:${action.policy_id}`}>
+            <li key={action.action_id}>
               {action.policy_id}: {action.action} · {action.reason} · {action.publish_status}
             </li>
           ))}

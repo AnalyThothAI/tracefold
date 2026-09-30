@@ -30,9 +30,21 @@ def add_trading_commands(
     scoreboard.add_argument("--program", help="optional 64-character program sha")
 
     replay = commands.add_parser("replay", help="assess frozen CaseViews with a candidate DSPy program")
-    replay.add_argument("--program", required=True, help="candidate DSPy JSON file")
+    replay.add_argument("--program", help="candidate DSPy JSON file; required for inference")
+    replay.add_argument("--mode", choices=("policies", "inference"), default="policies")
+    replay.add_argument("--source-run", help="stored source run; required for policies")
+    replay.add_argument("--tag", default="default", help="new tag creates a separate evaluation run")
     replay.add_argument("--since", required=True, help="UTC date or ISO timestamp")
     replay.add_argument("--until", required=True, help="exclusive UTC date or ISO timestamp")
+
+    calibration = commands.add_parser(
+        "calibrate", help="fit a local candidate on training labels and compare a future window"
+    )
+    calibration.add_argument("--source-run", required=True)
+    calibration.add_argument("--train-since", required=True, help="UTC training start")
+    calibration.add_argument("--train-until", required=True, help="exclusive training/label availability boundary")
+    calibration.add_argument("--validate-until", required=True, help="exclusive future validation boundary")
+    calibration.add_argument("--output", required=True, help="local calibration JSON; does not activate it")
 
     operator_intents = commands.add_parser("commands", help="list authenticated OperatorIntentV1 rows")
     operator_intents.add_argument(

@@ -14,6 +14,8 @@ from psycopg.rows import dict_row
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.postgres.restore_drill import run_restore_drill as run_platform_restore_drill
+from tracefold.trading.engine.evaluation import EvaluationRun, EvaluatorSpec
+from tracefold.trading.engine.forecast import PolicyDecision
 from tracefold.trading.executor.core import SignalV4
 from tracefold.trading.operator_control import prepare_operator_intent
 
@@ -79,6 +81,25 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
         with conn.transaction():
             repos.news.seed_restore_drill_facts(current_event_id=_CURRENT_EVENT_ID)
             repos.trading.seed_restore_drill_case(case_id=_CASE_ID)
+            run = EvaluationRun.online(EvaluatorSpec("f" * 64, "restore-fixture", None, "fixture", "fixture", 1))
+            repos.trading.register_evaluation_run(run, now_ms=0)
+            assessment = repos.trading.record_assessment(
+                case_id=_CASE_ID,
+                run_id=run.run_id,
+                status="data_missing",
+                forecast=None,
+                notes=("restore_fixture",),
+                usage={},
+                started_at_ms=0,
+                ended_at_ms=0,
+            )
+            actions = repos.trading.record_policy_actions(
+                assessment=assessment,
+                decisions=(PolicyDecision("restore", "v1", "long", "restore_fixture"),),
+                policy_config={"calibrator_version": "fixture"},
+                now_ms=0,
+            )
+            signal = signal.model_copy(update={"decision_id": actions["restore"]})
             repos.trading.append_signal(signal)
             repos.trading.append_operator_intent(command)
             repos.trading.record_disposition(

@@ -295,13 +295,17 @@ class Case,Amendment,Decision research;
 | 语义处理 | 冻结输入、owner token、lease、版本级尝试预算、检查点复用 |
 | EventUpdate 采用 | 比较当前 head 并条件更新；同事务生成公开 outbox 与通知工作 |
 | 通知发送 | 先记录意图和精确正文；等待共用发送时隙、完成目标预检，再以短事务重检并记录 sending；事务外发送并在释放时隙前结算实际结果；不盲重试未知结果 |
-| Trading 研究完成 | 校验 Case 所有权，保存冻结预测和六策略；发布前核实来源与 DEMO 执行器 |
+| Trading 研究完成 | 容量绑定领取/续租；owner fence 下先存不可变 checkpoint，再存策略与发布；重领复用输出 |
 | 钱包采集 | 完整交易事实与连续进度一起提交，不能跳过未完成回执 |
 | 交易所写操作 | 命令与计划只是意图；通过交易所 REST 回执和对账确定真实结果 |
 
 数据库事务由调用方拥有，仓储不隐藏提交。模型、网络、文件 I/O 在事务外完成；昂贵的序列化、验证和哈希也不占着数据库连接执行。RabbitMQ ack 与 PostgreSQL commit 是两个边界，不能写成“一个跨系统原子事务”。
 
 物理操作与调用方超时也不是一回事：阻塞线程或数据库请求未真正结束时，资源许可不能提前释放。[平台文档](modules/platform.md)解释资源所有权、Workers 任务和故障隔离。
+
+### Trading 的具体边界
+
+完整数据流与所有者见 [Trading](modules/trading.md)，资金/恢复见 [Execution](modules/execution.md)。evaluator/run/assessment/action 分别拥有预测合同、评估范围、终态观测和策略事实。episode 控制重复发布，保留全部观察。App ModelBudget 为同 endpoint 的 News/Trading 提供 PG advisory slots；BinanceCatalogue 拥有分环境目录读取。纯核心不依赖这些 I/O，执行器短事务预留、事务外 POST，unknown 只查询、faults 与 heartbeat 独立；CLI/API/UI 共用记分构造器，不新增总线/通用 Agent/代理层。
 
 <a id="section-验证与文档边界"></a>
 ## 08 · 验证与文档边界

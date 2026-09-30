@@ -50,6 +50,21 @@ def facts() -> EntryFacts:
         active_notional_usdt=Decimal(0),
         max_leverage=5,
         risk_fraction=Decimal("0.01"),
+        available_margin_usdt=Decimal("1000"),
+        pending_margin_usdt=Decimal(0),
+        venue_leverage=5,
+        margin_mode="CROSSED",
+        mark_price=Decimal("100"),
+        fee_bps=Decimal("5"),
+        price_buffer_bps=Decimal("20"),
+        max_spread_fraction_of_stop=Decimal("0.3"),
+        live_mid_price=Decimal("100"),
+        live_quote_at_ns=1_000_000_000,
+        account_at_ns=1_900_000_000,
+        account_max_age_ns=5_000_000_000,
+        cooldown_until_ns=0,
+        multi_assets_mode=False,
+        can_trade=True,
         bid=Decimal("99.95"),
         ask=Decimal("100.05"),
         quote_at_ns=1_900_000_000,
@@ -87,6 +102,19 @@ def test_client_ids_are_deterministic_bounded_and_distinct_per_leg_attempt() -> 
         ({"quote_at_ns": -5_000_000_000}, "quote_stale"),
         ({"active_notional_usdt": Decimal("5000")}, "leverage_capacity"),
         ({"min_notional": Decimal("6000")}, "market_lot_or_notional"),
+        ({"available_margin_usdt": Decimal(0)}, "margin_capacity"),
+        ({"available_margin_usdt": Decimal("NaN")}, "entry_facts_invalid"),
+        ({"live_mid_price": Decimal("NaN")}, "entry_facts_invalid"),
+        ({"live_mid_price": Decimal("0")}, "live_quote_stale"),
+        ({"live_quote_at_ns": -5_000_000_000}, "live_quote_stale"),
+        ({"pending_margin_usdt": None}, "pending_margin_unknown"),
+        ({"pending_margin_usdt": Decimal("1000")}, "margin_capacity"),
+        ({"account_at_ns": -5_000_000_000}, "account_stale"),
+        ({"account_at_ns": 3_000_000_000}, "account_stale"),
+        ({"margin_mode": "ISOLATED"}, "margin_mode_unsupported"),
+        ({"multi_assets_mode": True}, "multi_assets_mode_unsupported"),
+        ({"can_trade": False}, "account_trading_disabled"),
+        ({"cooldown_until_ns": 3_000_000_000}, "post_stop_cooldown"),
     ],
 )
 def test_entry_gate_returns_one_named_disposition(change: dict, reason: str) -> None:
@@ -97,6 +125,43 @@ def test_sizing_counts_inflight_notional_and_market_step() -> None:
     result = admit(signal(), replace(facts(), active_notional_usdt=Decimal("4500")))
     assert result.accepted and result.quantity == Decimal("4.99")
     assert result.quantity * facts().ask <= Decimal("500")
+
+
+def test_live_account_reproduction_is_limited_by_available_margin_and_costs() -> None:
+    account = replace(
+        facts(),
+        equity_usdt=Decimal("3950.11534580"),
+        active_notional_usdt=Decimal("3763.35957972"),
+        available_margin_usdt=Decimal("183.69098636"),
+        max_leverage=1,
+        venue_leverage=1,
+    )
+    result = admit(signal(), account)
+    assert result.accepted and result.quantity is not None and result.reserved_margin_usdt is not None
+    assert result.reserved_margin_usdt <= account.available_margin_usdt
+    assert result.quantity * account.ask < Decimal("183.69098636")
+    assert result.quantity * account.ask < Decimal("186.71867")
+
+
+def test_pending_margin_is_reserved_once_and_actual_leverage_is_used() -> None:
+    account = replace(facts(), available_margin_usdt=Decimal("100"), venue_leverage=1)
+    first = admit(signal(), account)
+    assert first.accepted and first.reserved_margin_usdt is not None
+    second = admit(signal(), replace(account, pending_margin_usdt=first.reserved_margin_usdt))
+    assert not second.accepted  # The remaining funds cannot support the minimum lot/notional.
+    high = admit(signal(), replace(account, venue_leverage=5))
+    assert high.quantity is not None and first.quantity is not None and high.quantity > first.quantity
+
+
+def test_exchange_limit_and_market_max_are_applied_before_lot_rounding() -> None:
+    account = replace(facts(), market_step=Decimal("3"), market_max_qty=Decimal("5"), market_min_qty=Decimal("3"))
+    assert admit(signal(), account).quantity == 3
+    capped = admit(signal(), replace(facts(), venue_max_notional_usdt=Decimal("200")))
+    assert capped.quantity is not None and capped.quantity * facts().ask <= 200
+
+
+def test_spread_configuration_is_consumed() -> None:
+    assert admit(signal(), replace(facts(), max_spread_fraction_of_stop=Decimal("0.001"))).reason == "spread"
 
 
 def plan() -> PlanFacts:
@@ -120,9 +185,13 @@ def plan() -> PlanFacts:
     )
 
 
-def test_partial_entry_waits_for_terminal_before_protection() -> None:
-    assert step(replace(plan(), entry_order_status="PARTIALLY_FILLED")).action == "await_entry"
-    assert step(replace(plan(), entry_submission_unknown=True)).action == "query_entry"
+def test_partial_or_unknown_entry_protects_exposure_then_cancels_entry() -> None:
+    assert step(replace(plan(), entry_order_status="PARTIALLY_FILLED")).action == "submit_sl"
+    assert step(replace(plan(), entry_submission_unknown=True, sl_status="NEW")).action == "cancel_entry"
+    assert step(replace(plan(), entry_submission_unknown=True, position_amount=Decimal(0))).action == "query_entry"
+    assert (
+        step(replace(plan(), entry_order_status="PARTIALLY_FILLED", position_amount=Decimal(0))).action == "await_entry"
+    )
     assert step(plan()).action == "submit_sl"
     assert step(replace(plan(), sl_status="NEW")).action == "submit_tp"
     assert step(replace(plan(), sl_status="NEW", tp_status="NEW")).action == "await_venue"

@@ -85,6 +85,8 @@ class TradingExecutionReadinessData(ExactApiSchema):
     emergency_halted: bool = False
     unexpected_exposure: bool = False
     last_error: str | None = None
+    last_error_at_ms: int | None = None
+    faults: dict[str, dict[str, Any]] = Field(default_factory=dict)
     heartbeat_at_ms: int | None = None
     facts_expire_at_ms: int | None = None
     facts_remaining_ms: int | None = None
@@ -106,6 +108,11 @@ class TradingStatusData(ExactApiSchema):
 
 
 class TradingAssessmentData(ExactApiSchema):
+    assessment_id: str
+    run_id: str
+    evaluator_id: str
+    reused_assessment_id: str | None = None
+    error_metadata: dict[str, Any] = Field(default_factory=dict)
     case_id: str
     program_sha: str
     route: str
@@ -120,6 +127,9 @@ class TradingAssessmentData(ExactApiSchema):
 
 
 class TradingPolicyActionData(ExactApiSchema):
+    action_id: str
+    assessment_id: str
+    policy_config: dict[str, Any]
     case_id: str
     program_sha: str
     policy_id: str
@@ -162,6 +172,9 @@ class TradingCaseData(ExactApiSchema):
     geometry_version: str | None = None
     view_sha256: str | None = None
     raw_snapshot_ref: str | None = None
+    episode_id: str | None = None
+    episode_role: str | None = None
+    units_per_contract: str | None = None
     view: dict[str, Any] | None = None
     assessments: list[TradingAssessmentData] = Field(default_factory=list)
     policy_actions: list[TradingPolicyActionData] = Field(default_factory=list)
@@ -175,6 +188,8 @@ class TradingCasesData(ExactApiSchema):
 
 
 class TradingScoreboardPolicyData(ExactApiSchema):
+    clusters: int
+    effective_days: int
     policy_id: str
     policy_version: str
     cases: int
@@ -195,6 +210,8 @@ class TradingReliabilityBinData(ExactApiSchema):
 
 
 class TradingScoreboardForecastData(ExactApiSchema):
+    matched_baseline_legs: int
+    baseline_coverage: str
     legs: int
     multiclass_brier: str | None = None
     log_loss: str | None = None
@@ -203,7 +220,46 @@ class TradingScoreboardForecastData(ExactApiSchema):
     status: Literal["ok", "insufficient_data"]
 
 
+class TradingScoreboardComparisonData(ExactApiSchema):
+    left_run: str
+    right_run: str
+    left_policy: str
+    left_version: str
+    right_policy: str
+    right_version: str
+    common_cases: int
+    scored: int
+    missing_labels: int
+    missing_decisions: int
+    average_r_delta: str | None = None
+    ci_low: str | None = None
+    ci_high: str | None = None
+    clusters: int
+    effective_days: int
+    status: Literal["ok", "insufficient_data"]
+
+
+class TradingScoreboardCohortData(ExactApiSchema):
+    dimension: str
+    group: str
+    cases: int
+    episodes: int
+    unknown_episodes: int
+    complete_pairs: int
+    missing_legs: int
+    failures: int
+    policies: list[TradingScoreboardPolicyData]
+    forecast: TradingScoreboardForecastData
+
+
 class TradingScoreboardProgramData(ExactApiSchema):
+    run_id: str
+    evaluator_id: str
+    mode: Literal["online", "inference", "policies", "legacy"]
+    evaluator_spec: dict[str, Any]
+    manifest: dict[str, Any]
+    cohorts: list[TradingScoreboardCohortData]
+    calibrated_forecasts: dict[str, TradingScoreboardForecastData]
     program_sha: str
     route: str
     assessments: int
@@ -217,6 +273,7 @@ class TradingScoreboardData(ExactApiSchema):
     window: dict[str, int]
     funnel: dict[str, int]
     programs: list[TradingScoreboardProgramData]
+    comparisons: list[TradingScoreboardComparisonData]
 
 
 class TradingExecutionRowData(ExactApiSchema):

@@ -465,10 +465,10 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,diagnose,cases,signals,fills,scoreboard,replay,commands,issue} ...
+                         {status,diagnose,cases,signals,fills,scoreboard,replay,calibrate,commands,issue} ...
 
 positional arguments:
-  {status,diagnose,cases,signals,fills,scoreboard,replay,commands,issue}
+  {status,diagnose,cases,signals,fills,scoreboard,replay,calibrate,commands,issue}
     status              show Alpha producer and execution readiness
     diagnose            sample bounded read-only execution evidence
     cases               list Trading cases newest first
@@ -476,6 +476,8 @@ positional arguments:
     fills               list signed DEMO venue fills
     scoreboard          compare all Trading policies on LIVE paper legs
     replay              assess frozen CaseViews with a candidate DSPy program
+    calibrate           fit a local candidate on training labels and compare a
+                        future window
     commands            list authenticated OperatorIntentV1 rows
     issue               durably record one local OS-authenticated operator
                         intent
@@ -560,14 +562,42 @@ options:
 ## `trading replay`
 
 ```
-usage: tracefold trading replay [-h] --program PROGRAM --since SINCE
-                                --until UNTIL
+usage: tracefold trading replay [-h] [--program PROGRAM]
+                                [--mode {policies,inference}]
+                                [--source-run SOURCE_RUN] [--tag TAG]
+                                --since SINCE --until UNTIL
 
 options:
-  -h, --help         show this help message and exit
-  --program PROGRAM  candidate DSPy JSON file
-  --since SINCE      UTC date or ISO timestamp
-  --until UNTIL      exclusive UTC date or ISO timestamp
+  -h, --help            show this help message and exit
+  --program PROGRAM     candidate DSPy JSON file; required for inference
+  --mode {policies,inference}
+  --source-run SOURCE_RUN
+                        stored source run; required for policies
+  --tag TAG             new tag creates a separate evaluation run
+  --since SINCE         UTC date or ISO timestamp
+  --until UNTIL         exclusive UTC date or ISO timestamp
+
+```
+
+## `trading calibrate`
+
+```
+usage: tracefold trading calibrate [-h] --source-run SOURCE_RUN
+                                   --train-since TRAIN_SINCE
+                                   --train-until TRAIN_UNTIL
+                                   --validate-until VALIDATE_UNTIL
+                                   --output OUTPUT
+
+options:
+  -h, --help            show this help message and exit
+  --source-run SOURCE_RUN
+  --train-since TRAIN_SINCE
+                        UTC training start
+  --train-until TRAIN_UNTIL
+                        exclusive training/label availability boundary
+  --validate-until VALIDATE_UNTIL
+                        exclusive future validation boundary
+  --output OUTPUT       local calibration JSON; does not activate it
 
 ```
 

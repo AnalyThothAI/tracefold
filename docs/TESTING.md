@@ -84,6 +84,10 @@ export TRACEFOLD_TEST_RABBITMQ_CONTAINER=tracefold-test-rabbitmq
 
 本地没有声明资源时，某些测试会跳过；必需 CI 与完整 preflight 把缺失必需资源视为失败。跳过不构成该接缝已验证的证明，但不影响继续运行其他纯检查。
 
+### Trading 根修证明分层
+
+纯测试验证真实保证金录制夹具、费用/缓冲/杠杆、单位/年龄/episode、校准泄漏、PIT与配对missing。[claim](../tests/integration/test_trading_claim_recovery.py) 真PG证明续租/取消重领/fencing/checkpoint；[budget](../tests/integration/test_model_budget.py)证明共享endpoint与取消释放。[rootfix](../tests/e2e/test_executor_rootfix.py)真PG加录制形状场所证明拒绝/未知、部分/迟到成交、历史失败隔离、持久fault、未发送flatten恢复；不是真实DEMO。[migration](../tests/integration/test_trading_rootfix_migration.py)验证失败评估/Signal/活跃Plan/两类Fill保留，restore覆盖新run/游标。候选质量采用预声明时间外配对，七天/真实账户证据仍在#746/#760独立验收。
+
 <a id="section-文档与生成物检查"></a>
 ## 04 · 文档与生成物检查
 

@@ -76,6 +76,7 @@ class _Trading:
                 "filled": 0,
             },
             "programs": [],
+            "comparisons": [],
         }
 
 

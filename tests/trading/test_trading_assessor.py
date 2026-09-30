@@ -118,3 +118,49 @@ def test_program_artifact_is_hash_pinned_and_contains_no_lm_endpoint() -> None:
     assert program.lm is None
     with pytest.raises(ValueError, match="trading_program_sha_mismatch"):
         load_program(path, "0" * 64)
+
+
+def test_usage_reads_dspy_nested_provider_tokens() -> None:
+    from tracefold.app.trading_assessor import usage_totals
+
+    assert usage_totals({"lm/a": {"prompt_tokens": 11, "completion_tokens": 5}}) == {
+        "input_tokens": 11,
+        "output_tokens": 5,
+    }
+    assert usage_totals(
+        {
+            "lm/a": {"prompt_tokens": 11, "completion_tokens": 5},
+            "lm/b": {"input_tokens": 3, "output_tokens": 2},
+        }
+    ) == {"input_tokens": 14, "output_tokens": 7}
+    assert usage_totals({}) == {"input_tokens": None, "output_tokens": None}
+
+
+def test_lm15_retry_after_and_request_reference_survive_without_provider_text() -> None:
+    from dspy.lm15 import RateLimitError
+
+    from tracefold.app.trading_assessor import _failure_metadata
+
+    error = RateLimitError(
+        "signed-url-and-secret-must-not-be-stored", status=429, request_id="request-123", retry_after=30
+    )
+
+    class Limited:
+        lm = None
+        calls = 0
+
+        async def acall(self, **_kwargs):
+            self.calls += 1
+            raise error
+
+    program = Limited()
+    result = asyncio.run(TradingAssessor(program=program, lm=object(), timeout_s=1, concurrent=1).assess(_view()))
+    assert program.calls == 1 and result.error_code == "rate_limit"
+    assert result.error_metadata["errors"][0]["retry_after_seconds"] == 30
+    assert result.error_metadata["errors"][0]["provider_request_ref"] == "request-123"
+    assert "signed-url" not in str(result.error_metadata)
+    assert _failure_metadata(
+        RateLimitError(request_id="https://secret.invalid/?token=secret", retry_after=float("nan"))
+    ) == {
+        "error_type": "RateLimitError",
+    }

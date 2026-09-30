@@ -114,7 +114,7 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
     settings = SimpleNamespace(llm=_llm(api_key="request-shape-secret", base_url=base_url))
     endpoint = configured_lm_endpoint(settings, model_name=model)
     # The production LM carries the provider extras to LiteLLM as request kwargs.
-    production = learning_runtime.generative_lm(endpoint, max_tokens=2048, timeout=5.0)
+    production = learning_runtime.generative_lm(endpoint, settings=Settings(), max_tokens=2048, timeout=5.0)
     assert production.kwargs["extra_body"] == expected_extra
     assert "request-shape-secret" not in repr(production.kwargs.get("extra_body"))
     # The same structured-output capability, below the real DSPy JSON adapter, shapes the request.
@@ -340,6 +340,7 @@ def test_generative_lm_states_the_structured_output_capability_of_its_endpoint()
     assert lm.supports_response_schema is False
     prompt_only = learning_runtime.generative_lm(
         configured_lm_endpoint(_news_settings(request={"structured_output": "prompt_json"}), model_name="m"),
+        settings=Settings(),
         max_tokens=10,
         timeout=1.0,
     )

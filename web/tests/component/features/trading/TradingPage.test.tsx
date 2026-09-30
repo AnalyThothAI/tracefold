@@ -61,7 +61,7 @@ describe("TradingPage", () => {
   it("shows the same six policy scores and explicit insufficient data returned by the API", async () => {
     renderTrading("/trading?tab=scoreboard");
     expect(await screen.findByRole("heading", { name: "预测 → 决策 → 纸面 → 执行" })).toBeVisible();
-    const table = screen.getByRole("table");
+    const table = screen.getAllByRole("table")[0];
     expect(table.querySelectorAll("tbody tr")).toHaveLength(6);
     expect(screen.getAllByText("数据不足").length).toBeGreaterThan(0);
     expect(screen.getByText("12")).toBeVisible();
@@ -71,6 +71,8 @@ describe("TradingPage", () => {
   it("shows observed stop-profit rates beside forecast probability bins", async () => {
     const scoreboard = tradingScoreboardFixture();
     scoreboard.programs[0].forecast = {
+      matched_baseline_legs: 30,
+      baseline_coverage: "0.75",
       legs: 40,
       multiclass_brier: "0.42",
       log_loss: "0.6",

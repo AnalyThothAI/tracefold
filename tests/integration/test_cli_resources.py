@@ -91,6 +91,8 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
         "facts_remaining_ms": None,
         "last_full_reconcile_at_ms": None,
         "signed_account": None,
+        "faults": {},
+        "last_error_at_ms": None,
     }
     # #537 PR-4. The CLI and `/api/trading/status` render the one projection, so this is also the
     # HTTP execution block: `execution_readiness_projection` is the only producer either calls, and

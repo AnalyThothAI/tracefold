@@ -12,7 +12,7 @@ from tracefold.trading.operator_control import prepare_operator_intent
 from tracefold.trading.storage.executor import ExecutorStorage
 
 
-def test_executor_ledger_roundtrip(e2e_postgres: str) -> None:
+def test_executor_ledger_roundtrip(executor_postgres: str) -> None:
     now = time.time_ns()
     command_id = "a" * 64
     entry_id = "tf" + "a" * 30
@@ -30,7 +30,7 @@ def test_executor_ledger_roundtrip(e2e_postgres: str) -> None:
         market_key="crypto:perp:ETH:USDT",
         direction="long",
     )
-    with psycopg.connect(e2e_postgres, row_factory=dict_row) as conn:
+    with psycopg.connect(executor_postgres, row_factory=dict_row) as conn:
         db = ExecutorStorage(conn)
         first = db.append_operator_intent(prepared)
         assert db.append_operator_intent(prepared) == first
@@ -58,7 +58,7 @@ def test_executor_ledger_roundtrip(e2e_postgres: str) -> None:
         db.set_plan_status(plan_id=command_id, status="open", now_ns=now, opened_at_ns=now)
 
     # A fresh process reads the same reserved identity and native fill facts.
-    with psycopg.connect(e2e_postgres, row_factory=dict_row) as conn:
+    with psycopg.connect(executor_postgres, row_factory=dict_row) as conn:
         db = ExecutorStorage(conn)
         assert db.plan(command_id)["status"] == "open"
         assert db.active_client_ids("demo-test") == {entry_id}

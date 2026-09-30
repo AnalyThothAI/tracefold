@@ -67,3 +67,14 @@ def test_operator_pause_and_halt_disarm_executor():
     )
     assert paused["entry_block_reason"] == "entries_paused"
     assert halted["entry_block_reason"] == "emergency_halt"
+
+
+def test_persistent_fault_blocks_entries_but_old_error_is_observational():
+    historical = execution_readiness_projection(
+        _execution(), _state(last_error="TimeoutError", faults={}), _control(), now_ns=10000000000
+    )
+    assert historical["entries_armed"] and historical["last_error"] == "TimeoutError"
+    fault = {"plan-1": {"reason": "flatten_exhausted", "at_ns": 9000000000}}
+    current = execution_readiness_projection(_execution(), _state(faults=fault), _control(), now_ns=10000000000)
+    assert not current["entries_armed"] and current["faults"] == fault
+    assert current["entry_block_reason"] == "executor_error"

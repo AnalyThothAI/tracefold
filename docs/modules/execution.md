@@ -1,31 +1,44 @@
-# Execution：DEMO 执行器与场所对账
+# Execution：真实准入、订单恢复与 DEMO 对账
 
-[手册](../README.md) · [Trading Analysis](trading.md) · [运维](../OPERATIONS.md#trading-operations) · [安全边界](../SECURITY.md)
+[手册](../README.md) · [Trading](trading.md) · [运维](../OPERATIONS.md#trading-operations) · [安全](../SECURITY.md)
 
-账户执行由应用镜像中的 `tracefold executor` 进程负责。执行凭据只允许 Binance USD-M DEMO；分析、纸面结果与入场参考价使用 LIVE 行情。记录了请求不代表交易所接受，交易所接受也不代表成交。
+`tracefold executor` 仅持 DEMO 凭据，LIVE 用于研究/参考。PG advisory lock 单例拥有账户槽位，通常每秒心跳、5 秒活跃 Plan 对账、60 秒账户核验；请求、接受、成交与平仓分别保存。
 
-## 输入与持久事实
+## 输入、准入与预留
 
-Analysis 发布的 Signal v4 和本地认证的 operator intent 都以序号读入。执行器为每个输入写入一条 `accepted`、`refused` 或 `expired` disposition，再推进游标。重启时会给缺席期间过期的 Signal 记 `expired`，不静默跳过。
+Signal v4/operator intent 各有游标和唯一 accepted/refused/expired disposition；缺席期间过期也明确记录。自动/手工共用具体 EntryRequest/_enter，手工不伪造 Case/模型身份。
 
-PostgreSQL 保存 `trading_signals`、`trading_operator_intents`、`trading_dispositions`、`trading_plans`、`trading_orders`、`trading_fills`、`trading_fill_attributions` 和对账游标。成交事实只追加；若成交先于订单身份查询返回，之后追加归因行，不修改原生成交。订单行先于外部请求提交。每条腿的 client ID 由账户槽位、入场身份、腿与尝试序号的 SHA-256 确定，为 32 个 Binance 合法字符。订单超时或 503 后只按该 ID 查询；不能用相同 ID 盲目重发入场。
+纯 admit_entry 使用真实 availableBalance、symbol leverage、CROSSED/one-way/single-asset/canTrade、mark/book 时刻、taker fee、未被远端包含的本地预留。数量同时受止损风险、组合名义上限与可用保证金约束，再向下取 MARKET_LOT_SIZE；缺失/过期/不支持模式/最小金额不够具名拒绝，不改模式/升杠杆。
 
-## 生命周期
+max_plans、max_drift_bps、max_spread_pct、fee/price buffer 与14400s stop冷却实际消费。漂移分冻结→当前 LIVE 时间变化和 LIVE→DEMO 基差；冷却仅由终态 Plan 已归因 SL 原生成交证明。
 
-执行器用 PostgreSQL advisory lock 保证账户槽位单例，默认每秒心跳。活跃计划每 5 秒通过签名 REST 核查，整个账户每 60 秒核查。未认领持仓或挂单会暂停新入场；进程停止不会平掉场所持仓。
+短事务原子写 Plan/准入快照/预留/Order/disposition/游标，事务外 POST；下一入场看到持久未决，远端已占保证金不重复扣。−2019 不盲重发。
 
-准入检查包括暂停与紧急停止、已有仓位或普通 / Algo 挂单、并发及杠杆容量、MARKET_LOT_SIZE、最小名义金额、LIVE 参考价漂移和点差。入场使用 DEMO MARKET `RESULT`。终态成交后才一次性挂止损和止盈 Algo 条件单，优先 `closePosition=true`。场所不支持时按实际仓位数量尝试 reduce-only；保护失败时 reduce-only 市价平仓。持有期满、操作员 flatten 和触发保护后的残余仓位也以场所仓位为准执行。
+## 证据与恢复状态
 
-场所显示平仓后撤销剩余保护，再把 Plan 置为终态。成交由 DEMO `userTrades` 和持久 `fromId` 游标读取，订单 ID 关联到 Plan；手续费从原生成交读取。手续费资产若不是 USDT，则不把不同币种直接相减，也不报告已知净收益。终态后的 PnL 证据若未在限时内齐全，标为 `evidence_incomplete`，不会让 Plan 永远保持 open。
+账本含 Signal/intent/disposition/Plan/Order/原生 Fill/只追加 attribution/游标。client ID 从账户/输入/腿/attempt 确定，为32合法字符；POST 前记录 started、精确参数和时刻，receipt 后另记时刻并保留原请求。
 
-## 操作与恢复
+- reserved+not_started+submitted_at=NULL 才是未发送证据；过期入场不提交，外部 flatten 以当前仓位同 ID reduce-only 一次。
+- timeout/−1007/暂态503为 unknown，只查询固定 ID；查询不存在或7秒过去不证明未发送，持续 fence/fault。
+- 明确业务拒绝 rejected，核实零成交 entry_rejected 结算零，不等待计划 quantity 虚构fill。
+- 部分/迟到成交、working/filled/cancelled 按场所证据；终态与收益完整性分别保存。
 
-`tracefold trading issue` 可提交暂停、恢复、紧急停止、手动入场或账户 flatten。命令入账仅表示请求被接受；平仓与撤单须以签名账户读回为准。Flatten 会先撤普通挂单，再按真实仓位发 reduce-only 单，最后撤 Algo 单并验证零仓零挂单。
+## 保护、退出与隔离
 
-上线前应先确认旧执行进程已停、DEMO 仓位和挂单均为零，并保留 `trading_*` 备份。迁移 A 是前向硬切，删除旧执行表，不回填或双读。运行检查使用 `make status`、`make logs`、`tracefold trading status` 及签名场所回执。没有真实账户回执时，测试通过不等于 DEMO 生命周期已验证。
+有真实仓位即管理，不等 entry 终态；先 closePosition SL，部分成交随后撤 entry 余量，再补 TP；有界 fallback 为实际数量 reduce-only。保护失败/到期/flatten/残余仓位均按真实 positionAmt 退出。
 
-## 实现与测试
+保护/退出先于 userTrades 历史同步；Plan/symbol REST失败独立记录并继续其他持仓。账户整体 positions 失败为事实未知，不能假设flat。历史补齐后才结算，不从本地请求推断暴露。
 
-- [执行器](../../tracefold/app/executor.py)、[纯决策与订单身份](../../tracefold/trading/executor/core.py)、[DEMO REST 适配](../../tracefold/integrations/trading/binance.py)
-- [持久账本](../../tracefold/trading/storage/executor.py)、[硬切迁移](../../tracefold/platform/postgres/alembic/versions/20260929_0417_trading_execution_hard_cut.py)
-- [恢复测试](../../tests/e2e/test_executor_recovery.py)、[真 PostgreSQL 账本测试](../../tests/e2e/test_executor_storage.py)
+未解提交/退出耗尽写 faults，暂停入场继续有界对账；heartbeat 不清 faults/last_error。确认订单解决只清对应键，场所flat清该Plan，账户flatten核实零仓/普通单/Algo清命令。外来敞口另由 durable control 暂停，核实后 operator 恢复，不靠重启消除。
+
+## 历史与收益口径
+
+userTrades 按 native symbol/trade ID 去重，晚到身份追加归因。首游标从最早保留意图前60秒起、最多最近七天，bootstrap_since_ns记范围，再用fromId；旧起点未知保留NULL。
+
+fills 分 owned_plan/owned_command/unbound 与command/Plan；历史或未归因不表示无效。记分只连接精确action→Signal→Plan→实际entry fills。UI totals仅已归因Plan成交净收益，含手工/USDT手续费；未覆盖资金费/转账/期初权益/未归因历史，不代表账户权益变化。异币费用/缺成交为未知，有限等待后 evidence_incomplete。
+
+## 操作与证明
+
+trading issue 写OS认证意图，固定request ID/时刻，accepted不代表场所完成；flatten暂停入场、撤普通单、reduce-only、撤Algo，再签名读回，unknown不重发。0419 stopped-writer前向保留账本，非0417/0418硬切；维护核实备份/暴露/持续场所保护，停进程不平仓，PR不授权部署/账户副作用。
+
+[工作流](../../tracefold/app/executor.py)、[纯准入](../../tracefold/trading/executor/core.py)、[REST](../../tracefold/integrations/trading/binance.py)、[账本](../../tracefold/trading/storage/executor.py)、[恢复测试](../../tests/e2e/test_executor_rootfix.py)、[迁移保留](../../tests/integration/test_trading_rootfix_migration.py)。真PG/录制夹具不替代自然SL/TP/到期/拒绝/重启回执与七天覆盖。

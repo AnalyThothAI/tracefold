@@ -16,6 +16,11 @@ NEWS = SRC / "news"
 
 SIGNAL_PATH = (
     "trading/engine/case_view.py",
+    "trading/engine/calibration.py",
+    "trading/engine/episodes.py",
+    "trading/engine/evaluation.py",
+    "app/trading_calibration.py",
+    "app/trading_evaluation.py",
     "trading/engine/features.py",
     "trading/engine/forecast.py",
     "trading/engine/marketdata.py",

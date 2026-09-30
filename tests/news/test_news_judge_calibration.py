@@ -342,7 +342,8 @@ def test_calibration_writes_one_receipt_through_the_configured_endpoint(
         del settings
         return SimpleNamespace(model_name=model_name)
 
-    def generative(endpoint: Any, *, max_tokens: int, timeout: float) -> _JudgeLM:
+    def generative(endpoint: Any, *, settings: Any, max_tokens: int, timeout: float) -> _JudgeLM:
+        assert settings.llm.news_triage_fallback.configured
         built.append((endpoint.model_name, max_tokens, timeout))
         return _JudgeLM(supported=True, covered=[True])
 

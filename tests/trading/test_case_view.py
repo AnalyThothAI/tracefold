@@ -34,3 +34,42 @@ def test_case_view_exposes_aliases_without_identity_hashes_or_runtime_reads() ->
     assert "11.5" in prompt
     assert view.features["perp_return_15m_bps"] == "23.5"
     assert view.base_rates[1].probabilities is None
+
+
+def test_catalyst_projection_reports_missing_conditions_and_keeps_alias_identity() -> None:
+    source = {
+        "claims": [
+            {"ref": "invalid", "fields": "invalid"},
+            {
+                "ref": "valid",
+                "statement": "x" * 241,
+                "fields": {
+                    "subject": "x" * 161,
+                    "conditions": ["x" * 121] * 5,
+                    "quantities": list(range(5)),
+                },
+            },
+        ]
+    }
+    view = build_case_view(
+        case_id="b" * 64,
+        asset_id="crypto:SOL",
+        trigger_kind="catalyst",
+        decided_at_ms=1000,
+        source_fact=source,
+        features={},
+        geometry=LegGeometry(100, 200),
+        half_spread_bps=Decimal(0),
+        base_rates=(BaseRates("long", 0, None), BaseRates("short", 0, None)),
+    )
+    projected = view.model_input["source"]
+    assert projected["claims_omitted"] == 1
+    assert projected["projection_incomplete"]
+    assert projected["claims"][0]["projection_coverage"] == {
+        "statement_truncated": True,
+        "fields_truncated": 1,
+        "conditions_truncated": 4,
+        "conditions_omitted": 1,
+        "quantities_omitted": 1,
+    }
+    assert view.evidence_refs == {"e1": "valid"}

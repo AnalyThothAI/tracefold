@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
-from psycopg import Connection, conninfo, pq
+from psycopg import AsyncConnection, Connection, conninfo, pq
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -123,8 +123,7 @@ def _url_dsn_with_password(dsn: str, password: str) -> str:
     return urlunsplit((parsed.scheme, f"{auth}{host}", parsed.path, parsed.query, parsed.fragment))
 
 
-def connect_postgres(
-    dsn: str,
+def _connection_kwargs(
     *,
     connect_timeout_seconds: float = 5.0,
     application_name: str | None = None,
@@ -133,17 +132,7 @@ def connect_postgres(
     keepalives_idle: int | None = None,
     keepalives_interval: int | None = None,
     keepalives_count: int | None = None,
-) -> Connection[dict[str, Any]]:
-    """Open one connection.
-
-    The keepalive and session-setting parameters mirror `create_pool` exactly. A pooled connection
-    is replaced when it dies; a single long-lived session is not, and the execution runtime holds
-    exactly one of those for the whole life of the process — it is the session whose advisory lock
-    means "this process owns the account slot". Without TCP keepalives a killed container leaves
-    that backend alive on the server, still holding the lock, and the next start fails with
-    `oi_runtime_account_slot_already_owned` until the server notices (#537 D2).
-    """
-
+) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "autocommit": True,
         "connect_timeout": int(connect_timeout_seconds),
@@ -167,7 +156,59 @@ def connect_postgres(
         kwargs["keepalives_interval"] = int(keepalives_interval)
     if keepalives_count is not None:
         kwargs["keepalives_count"] = int(keepalives_count)
-    return Connection.connect(dsn, **kwargs)
+    return kwargs
+
+
+def connect_postgres(
+    dsn: str,
+    *,
+    connect_timeout_seconds: float = 5.0,
+    application_name: str | None = None,
+    session_settings: Mapping[str, str] | None = None,
+    keepalives: bool | None = None,
+    keepalives_idle: int | None = None,
+    keepalives_interval: int | None = None,
+    keepalives_count: int | None = None,
+) -> Connection[dict[str, Any]]:
+    """Open a synchronous autocommit session using the shared connection contract."""
+    return Connection.connect(
+        dsn,
+        **_connection_kwargs(
+            connect_timeout_seconds=connect_timeout_seconds,
+            application_name=application_name,
+            session_settings=session_settings,
+            keepalives=keepalives,
+            keepalives_idle=keepalives_idle,
+            keepalives_interval=keepalives_interval,
+            keepalives_count=keepalives_count,
+        ),
+    )
+
+
+async def connect_postgres_async(
+    dsn: str,
+    *,
+    connect_timeout_seconds: float = 5.0,
+    application_name: str | None = None,
+    session_settings: Mapping[str, str] | None = None,
+    keepalives: bool | None = None,
+    keepalives_idle: int | None = None,
+    keepalives_interval: int | None = None,
+    keepalives_count: int | None = None,
+) -> AsyncConnection[dict[str, Any]]:
+    """Native asynchronous autocommit I/O; cancellation cannot strand a thread-held lock."""
+    return await AsyncConnection.connect(
+        dsn,
+        **_connection_kwargs(
+            connect_timeout_seconds=connect_timeout_seconds,
+            application_name=application_name,
+            session_settings=session_settings,
+            keepalives=keepalives,
+            keepalives_idle=keepalives_idle,
+            keepalives_interval=keepalives_interval,
+            keepalives_count=keepalives_count,
+        ),
+    )
 
 
 @contextmanager
