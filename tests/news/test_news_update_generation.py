@@ -498,10 +498,11 @@ def test_an_unparseable_reading_is_dropped_from_its_claim_and_a_broken_claim_onl
     value = asyncio.run(_analyzer().extract(source, Budget.start(5)))
     [claim] = value.claims
     assert claim.slot == "framework" and claim.citations[0].quote in text
-    assert claim.fields.phase == "unknown" and claim.fields.assets == ()
+    assert claim.fields.phase == "unknown"
+    assert [(asset.symbol, asset.market_type) for asset in claim.fields.assets] == [("UST", "unknown")]
     assert [(q.name, q.value) for q in claim.fields.quantities] == [("双方", "2")]
     assert [(row.slot, row.code) for row in value.discarded_claims] == [("broken", "news_claim_schema_invalid")]
-    assert "news_extraction_reading_discarded" in caplog.text
+    assert "news_extraction_claim_repaired index=0" in caplog.text
 
 
 def test_only_an_answer_whose_every_claim_is_unusable_fails(monkeypatch: pytest.MonkeyPatch) -> None:

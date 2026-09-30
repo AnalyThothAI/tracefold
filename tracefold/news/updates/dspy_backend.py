@@ -7,6 +7,7 @@ native connection's own HTTP timeout is the per-operation budget the App configu
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import re
@@ -17,6 +18,7 @@ from typing import Any, Final
 import dspy  # type: ignore[import-untyped]
 from dspy.adapters.types.decision import Choice, Score  # type: ignore[import-untyped]
 from pydantic import ConfigDict, Field, ValidationError
+from pydantic.json_schema import SkipJsonSchema
 from typesafe_sdk import TypeSafeAPIConnectionError, TypeSafeAPIError, TypeSafeAPIResponseValidationError
 
 from .contracts import (
@@ -69,7 +71,7 @@ from .reader_judgments import (
 from .topics import MAX_TOPICS
 
 log = logging.getLogger("tracefold.news")
-ADAPTER_VERSION: Final = "news_generated_transport_v6"
+ADAPTER_VERSION: Final = "news_generated_transport_v7"
 
 EXTRACTION_INSTRUCTION: Final = """Extract grounded propositions for this Event's task only.
 Each evidence entry contains only segments visible to this task. Task segments
@@ -149,10 +151,15 @@ whether to trade, or which tools to invoke.
 FIELD_DEFINITIONS: Final[dict[str, dict[str, str]]] = {task: dict(OPTIONS[task]) for task in CLAIM_READING_TASKS}
 
 
+# A model docstring is its schema description, which the model reads: explanations for readers of this code
+# stay in comments. The schema is the constrained decoder's grammar, so each untyped alternative that keeps
+# parsing lenient stays out of it (`SkipJsonSchema`): an open object alternative lets every claim leave its
+# enums, types, nesting and required fields (#742). A topic is advertised as a string; any other value a model
+# still writes (a `{"code": ...}` object) parses and is normalized to the code it names.
 class TransportClaim(Exact):
     """The optional topic labels are normalized before strict domain parsing."""
 
-    topics: tuple[Any, ...] = ()
+    topics: tuple[str | SkipJsonSchema[Any], ...] = ()
     slot: str = Field(min_length=1)
     statement: str = Field(min_length=1)
     fields: ClaimFields
@@ -166,25 +173,36 @@ class ExtractionEnvelope(Exact):
 
     model_config = ConfigDict(extra="ignore", frozen=True, allow_inf_nan=False)
 
-    claims: tuple[TransportClaim | dict[str, Any], ...]
-    resolved_questions: tuple[QuestionResolution | dict[str, Any], ...] = ()
-    supports: tuple[SupportDraft | dict[str, Any], ...] = Field(
+    claims: tuple[TransportClaim | SkipJsonSchema[Any], ...]
+    resolved_questions: tuple[QuestionResolution | SkipJsonSchema[Any], ...] = ()
+    supports: tuple[SupportDraft | SkipJsonSchema[Any], ...] = Field(
         default=(), description="Optional current-slot/evidence-ref relationships. Omit uncertain hints."
     )
-    implications: tuple[ImplicationDraft | dict[str, Any], ...] = ()
-    open_questions: tuple[OpenQuestion | dict[str, Any], ...] = ()
+    implications: tuple[ImplicationDraft | SkipJsonSchema[Any], ...] = ()
+    open_questions: tuple[OpenQuestion | SkipJsonSchema[Any], ...] = ()
 
 
-# A generated reading that names no allowed value is dropped from its claim (the claim keeps its statement and
-# citations): an unknown phase, mode or polarity is `unknown`, an unknown content kind is `other`, and a
-# quantity or asset entry that does not parse is left out.
-_READING_DEFAULTS: Final[dict[str, str]] = {
-    "phase": "unknown",
-    "mode": "unknown",
-    "polarity": "unknown",
-    "content_kind": "other",
+# How a generated claim is repaired (#742): only a claim without a statement, a citation, a subject or an action
+# is unusable. A key written one level off (the claim's citations or topics inside `fields`, a field beside
+# them) is put back where the contract names it. A reading that names no allowed value is that reading unknown
+# (a phase the field definitions call `not_applicable` is the contract's None); an entry of a list that does
+# not parse is left out; a null or mistyped optional field takes its default; any other key is ignored.
+_READING_DEFAULTS: Final[dict[tuple[str, ...], str]] = {
+    ("fields", "phase"): "unknown",
+    ("fields", "mode"): "unknown",
+    ("fields", "polarity"): "unknown",
+    ("fields", "content_kind"): "other",
+    ("fields", "assets", "market_type"): "unknown",
 }
-_OPTIONAL_ENTRIES: Final = frozenset({"quantities", "assets"})
+_ENTRY_LISTS: Final = frozenset(
+    {("citations",), ("topics",), ("fields", "conditions"), ("fields", "quantities"), ("fields", "assets")}
+)
+_OPTIONAL_FIELDS: Final = frozenset(
+    {("topics",)} | {("fields", name) for name, field in ClaimFields.model_fields.items() if not field.is_required()}
+)
+_CLAIM_KEYS: Final = frozenset(TransportClaim.model_fields) - {"fields"}
+_FIELD_KEYS: Final = frozenset(ClaimFields.model_fields)
+_DROPPED: Final = object()
 
 
 _REF_FIELDS = frozenset(
@@ -241,50 +259,112 @@ def _discarded_hint(hint: str, index: int, exc: ValidationError | ContractFault)
 
 
 def _transport_claims(rows: list[Any]) -> tuple[list[dict[str, Any]], list[DiscardedClaim]]:
-    """Parse every generated claim on its own; an unusable one is discarded by name with its reason."""
+    """Parse every generated claim on its own; an unusable one is discarded by name with its reason.
 
-    kept: list[dict[str, Any]] = []
+    A slot a kept claim already uses is a restated claim when the statement is the same, and otherwise a
+    distinct claim that gets its position as its slot.
+    """
+
+    kept: dict[str, dict[str, Any]] = {}
     discarded: list[DiscardedClaim] = []
     for index, row in enumerate(rows):
         slot = str(row.get("slot") or f"#{index}") if isinstance(row, dict) else f"#{index}"
         claim = _transport_claim(row, index)
+        if claim is not None and claim.slot in kept and kept[claim.slot]["statement"] != claim.statement:
+            claim = claim.model_copy(update={"slot": f"#{index}"})
         if claim is None:
             discarded.append(DiscardedClaim(slot=slot, code="news_claim_schema_invalid"))
-        elif claim.slot in {row["slot"] for row in kept}:
+        elif claim.slot in kept:
             discarded.append(DiscardedClaim(slot=slot, code="news_duplicate_claim_slot"))
         else:
-            kept.append(claim.model_dump(mode="json"))
+            kept[claim.slot] = claim.model_dump(mode="json")
     for row in discarded:
-        log.warning("news_extraction_claim_discarded", extra={"slot": row.slot, "error_code": row.code})
-    return kept, discarded
+        log.warning("news_extraction_claim_discarded code=%s", row.code)
+    return list(kept.values()), discarded
+
+
+def _errors(errors: list[Any]) -> list[tuple[str, str]]:
+    """Field locations and error types of a generated claim, never generated text.
+
+    Log lines carry them in the message itself; the process log handler does not render `extra`.
+    """
+
+    return [(".".join(map(str, row["loc"])), row["type"]) for row in errors[:8]]
 
 
 def _transport_claim(row: Any, index: int) -> TransportClaim | None:
-    try:
-        return TransportClaim.model_validate(row)
-    except ValidationError as exc:
-        if not isinstance(row, dict) or not isinstance(row.get("fields"), dict):
+    """One generated claim repaired field by field; None when it lacks what makes it a claim."""
+
+    claim = copy.deepcopy(row)
+    repaired: list[Any] = []
+    fields = claim.get("fields") if isinstance(claim, dict) else None
+    if isinstance(fields, dict):
+        for name in sorted((_CLAIM_KEYS & fields.keys()) - claim.keys()):
+            claim[name] = fields.pop(name)
+            repaired.append({"loc": ("fields", name), "type": "misplaced"})
+        for name in sorted((_FIELD_KEYS & claim.keys()) - fields.keys()):
+            fields[name] = claim.pop(name)
+            repaired.append({"loc": (name,), "type": "misplaced"})
+    # One pass repairs every error validation names; the next can only find a citation list left empty.
+    for _ in range(3):
+        try:
+            parsed = TransportClaim.model_validate(claim)
+        except ValidationError as exc:
+            errors = exc.errors(include_input=False, include_url=False)
+            if not isinstance(claim, dict) or not all(_repair(claim, error, index) for error in errors):
+                break
+            for name in _ENTRY_LISTS:
+                parent = _node(claim, name[:-1])
+                if isinstance(parent, dict) and isinstance(parent.get(name[-1]), list):
+                    parent[name[-1]] = [entry for entry in parent[name[-1]] if entry is not _DROPPED]
+            repaired += errors
+            continue
+        if repaired:
+            log.warning("news_extraction_claim_repaired index=%s errors=%s", index, _errors(repaired))
+        return parsed
+    log.warning("news_extraction_claim_schema_invalid index=%s errors=%s", index, _errors(errors))
+    return None
+
+
+def _repair(claim: dict[str, Any], error: Any, index: int) -> bool:
+    """Repair one validation error in place; False when it names what makes the claim a claim."""
+
+    location = tuple(error["loc"])
+    parent = _node(claim, location[:-1])
+    shape = tuple(part for part in location if not isinstance(part, int))
+    entry = next((len(name) for name in _ENTRY_LISTS if location[: len(name)] == name), None)
+    if parent is None:
+        return False
+    if parent is _DROPPED:
+        pass  # inside an entry this pass already leaves out
+    elif error["type"] == "extra_forbidden":
+        del parent[location[-1]]
+    elif shape in _READING_DEFAULTS:
+        not_applicable = shape == ("fields", "phase") and parent[location[-1]] == "not_applicable"
+        parent[location[-1]] = None if not_applicable else _READING_DEFAULTS[shape]
+    elif entry is not None and len(location) > entry:
+        _node(claim, location[:entry])[location[entry]] = _DROPPED
+    elif location in _OPTIONAL_FIELDS:
+        del parent[location[-1]]
+    elif location == ("slot",):
+        claim["slot"] = f"#{index}"
+    else:
+        return False
+    return True
+
+
+def _node(claim: dict[str, Any], location: tuple[Any, ...]) -> Any:
+    """The value at a validation location: `_DROPPED` below an entry already left out, None if absent."""
+
+    node: Any = claim
+    for part in location:
+        if node is _DROPPED:
+            break
+        try:
+            node = node[part]
+        except (KeyError, IndexError, TypeError):
             return None
-        errors = exc.errors(include_input=False, include_url=False)
-    fields = dict(row["fields"])
-    dropped: dict[str, set[int]] = {}
-    for error in errors:
-        location = error["loc"]
-        name = str(location[1]) if len(location) > 1 and location[0] == "fields" else ""
-        if name in _READING_DEFAULTS:
-            fields[name] = _READING_DEFAULTS[name]
-            dropped.setdefault(name, set())
-        elif name in _OPTIONAL_ENTRIES and len(location) > 2 and isinstance(location[2], int):
-            dropped.setdefault(name, set()).add(location[2])
-        else:
-            return None
-    for name in _OPTIONAL_ENTRIES & dropped.keys():
-        fields[name] = [entry for position, entry in enumerate(fields.get(name) or ()) if position not in dropped[name]]
-    log.warning("news_extraction_reading_discarded", extra={"claim_index": index, "fields": sorted(dropped)})
-    try:
-        return TransportClaim.model_validate({**row, "fields": fields})
-    except ValidationError:
-        return None
+    return node
 
 
 def _optional_hints(
@@ -396,13 +476,18 @@ def _finish_reason(response: Any) -> str | None:
     return None
 
 
-def _parse_failure_code(exc: dspy.AdapterParseError, lm: Any, history_before: int) -> str:
+def _truncated(lm: Any, history_before: int) -> bool:
+    """Whether this call's provider answer stopped at its token ceiling."""
     history: Any = getattr(lm, "history", None)
-    if (
+    return bool(
         history is not None
         and len(history) > history_before
         and _finish_reason(history[-1].get("response")) == "length"
-    ):
+    )
+
+
+def _parse_failure_code(exc: dspy.AdapterParseError, lm: Any, history_before: int) -> str:
+    if _truncated(lm, history_before):
         return "news_generation_output_truncated"
     if not str(exc.lm_response).strip():
         return "news_generation_output_empty"
@@ -429,12 +514,15 @@ def _different_route(current: Any, fallback: Any) -> bool:
     return shape(current) != shape(fallback)
 
 
-async def _generate(signature: Any, route: Any, **inputs: Any) -> Any:
+async def _generate(signature: Any, route: Any, *, accept: Callable[[Any], Any] | None = None, **inputs: Any) -> Any:
     """Ask one generative signature on a configured route: the primary LM, then its declared fallback.
 
     A factory returns one LM or an ordered route of them. A transient provider failure
     uses the declared fallback. A malformed response uses it only if the request route
     materially differs; neither path is a second vote. The stage deadline bounds both.
+    An answer the provider cut at its token ceiling is malformed even when the JSON parser
+    repaired it, and so is one that `accept` (the caller's decoder of a prediction) refuses
+    with a ContractFault; only the last route's refusal fails the call.
     """
 
     lms = tuple(route) if isinstance(route, (tuple, list)) else (route,)
@@ -446,7 +534,15 @@ async def _generate(signature: Any, route: Any, **inputs: Any) -> Any:
             # This is the normal generative signature, not a Jev probability signature
             # temporarily bound to a chat model. No global dspy.configure mutation.
             with dspy.context(adapter=dspy.JSONAdapter()):
-                return await dspy.Predict(signature).acall(lm=lm, **inputs)
+                prediction = await dspy.Predict(signature).acall(lm=lm, **inputs)
+            if _truncated(lm, history_before):
+                raise ContractFault("news_generation_output_truncated")
+            return prediction if accept is None else accept(prediction)
+        except ContractFault as exc:
+            log.warning("news_generation_output_unusable code=%s route_index=%s", exc, index)
+            if index + 1 < len(lms) and _different_route(lm, lms[index + 1]):
+                continue
+            raise
         except _GENERATION_TRANSIENT as exc:
             if index + 1 == len(lms):
                 # The LM error class survives into the stored error code: `news_generation_lm_timeout_error`.
@@ -486,6 +582,7 @@ class DspyExtractor:
     def __init__(self, lm_factory: Callable[[], Any], *, model_identity: str, topics: dict[str, str]) -> None:
         self.lm_factory = lm_factory
         self.topics = dict(topics)
+        self._codes = {label: code for code, label in self.topics.items()}
         self.identity = identity(
             "extractor",
             ADAPTER_VERSION,
@@ -499,23 +596,30 @@ class DspyExtractor:
 
     async def extract(self, source: FrozenInput) -> Extraction:
         aliases = _input_aliases(source)
-        result = await _generate(
+        extraction: Extraction = await _generate(
             ExtractSignature.with_instructions(EXTRACTION_INSTRUCTION),
             self.lm_factory(),
+            accept=lambda prediction: self._decode(source, aliases, prediction),
             evidence_json=canonical_json(_references(extraction_input(source), aliases)),
             field_definitions=FIELD_DEFINITIONS,
             topic_codebook=self.topics,
         )
-        envelope = ExtractionEnvelope.model_validate(result.result)
+        return extraction
+
+    def _decode(self, source: FrozenInput, aliases: Mapping[str, str], prediction: Any) -> Extraction:
+        """One generated answer as an Extraction. An answer whose every claim is unusable is malformed, so
+        the route's declared fallback answers before the revision fails."""
+
+        envelope = ExtractionEnvelope.model_validate(prediction.result)
         data = _references(envelope.model_dump(mode="json"), {alias: ref for ref, alias in aliases.items()})
         data["claims"], discarded = _transport_claims(data["claims"])
+        if not data["claims"] and discarded:
+            raise ContractFault(discarded[0].code)
         for index, claim in enumerate(data["claims"]):
-            topics = claim["topics"]
-            if len(topics) > MAX_TOPICS or any(
-                not isinstance(topic, str) or topic not in self.topics for topic in topics
-            ):
-                log.warning("news_optional_topic_discarded", extra={"claim_index": index})
-                claim["topics"] = []
+            codes = list(dict.fromkeys(code for code in map(self._topic, claim["topics"]) if code is not None))
+            if len(codes) != len(claim["topics"]) or len(codes) > MAX_TOPICS:
+                log.warning("news_optional_topic_discarded index=%s generated=%s", index, len(claim["topics"]))
+            claim["topics"] = codes[:MAX_TOPICS]
         slots = {claim["slot"] for claim in data["claims"]}
         data["supports"] = _optional_hints(data["supports"], slots=slots, supplied={row.ref for row in source.evidence})
         targets = {target.ref for target in source.read_targets}
@@ -535,6 +639,16 @@ class DspyExtractor:
         data["resolved_questions"] = resolutions
         data["discarded_claims"] = [row.model_dump(mode="json") for row in discarded]
         return Extraction.model_validate(data)
+
+    def _topic(self, value: Any) -> str | None:
+        """The codebook code a generated topic names: the code or its label, alone or inside an object."""
+
+        for candidate in value.values() if isinstance(value, dict) else (value,):
+            if isinstance(candidate, str):
+                code = candidate if candidate in self.topics else self._codes.get(candidate)
+                if code is not None:
+                    return code
+        return None
 
 
 class DspyCardComposer:

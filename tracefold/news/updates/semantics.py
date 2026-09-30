@@ -8,7 +8,7 @@ import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 from .contracts import (
     Change,
@@ -222,13 +222,26 @@ def validate_extraction(source: FrozenInput, extraction: Extraction) -> None:
             raise ContractFault("news_read_target_not_supplied")
 
 
+# Quotation and emphasis marks a model wraps around a quote (`*HEADLINE*`, `"..."`); never part of what it cites.
+_QUOTE_MARKS: Final = "*_`\"'“”‘’「」『』«»…"
+
+
 def locate_quote(quote: str, texts: Sequence[str]) -> str | None:
-    """The exact source text a generated quote names, letting it differ only in letter case and whitespace.
+    """The exact source text a generated quote names, letting it differ only in letter case, whitespace and the
+    quotation or emphasis marks around it.
 
     Returns the span as it appears in the source, never the generated spelling, so a stored quote is always a
     verbatim substring of its evidence.
     """
 
+    found = _locate(quote, texts)
+    unmarked = quote.strip().strip(_QUOTE_MARKS)
+    if found is None and unmarked and unmarked != quote:
+        found = _locate(unmarked, texts)
+    return found
+
+
+def _locate(quote: str, texts: Sequence[str]) -> str | None:
     for text in texts:
         if quote in text:
             return quote
