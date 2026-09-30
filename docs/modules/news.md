@@ -176,7 +176,7 @@ sequenceDiagram
 
 | 步骤 | 模型承担的工作 | 代码承担的工作 |
 | --- | --- | --- |
-| 抽取与理解 | 同次给出命题、条件、数量、资产角色、时间、引文、`mode`、`phase`、`content_kind`、逐命题主题与证据支撑提示；不比较旧命题 | 逐条检查结构与引文：不可用的读数（如 `300亿` 这类非十进制数量、未知 phase）只从该命题去掉，坏命题丢弃并记原因，其余照常；引文容忍大小写与空白差异，保存来源原文片段 |
+| 抽取与理解 | 同次给出命题、条件、数量、资产角色、时间、引文、`mode`、`phase`、`content_kind`、逐命题主题与证据支撑提示；不比较旧命题 | 发给模型的 schema 是严格的（受约束解码的 grammar 逐条绑定命题），解析是宽松的：写错层级的键（`fields` 里的 citations / topics）放回原处；选项外的读数记为 unknown（phase 为 `not_applicable` 时记为空）；列表里不可解析的条目（如 `300亿` 这类非十进制数量、资产、条件、引文）只去掉该条；null 或类型不符的可选字段取默认值；多余的键忽略；主题按其指名的 codebook 代码保留，只去掉认不出的那一个。只有缺陈述、引文、主语或动作的命题才丢弃并记原因，其余照常；引文容忍大小写、空白与包在外面的引号 / 强调符，保存来源原文片段 |
 | 比较 | 每条新命题与每条当前有效的旧命题逐对判断等价、补充、更正、替代、冲突，以及证据支撑关系；抽取不给关系提示 | 排除已能证明的数字 / 语气矛盾，验证目标 refs 与候选身份；核对更正 / 替代的时间先后；冲突只注释新命题，不吞掉其 catalyst；同一冲突只在首次建立时发布 |
 | 组织 | 提议影响机制与未解问题 | 验证支持关系；区分事实与条件性推论；延续未被显式改变的知识 |
 | 采用 | 不直接写数据库 | 组装 EventUpdate，保存观察，检查 owner / lease / head 后条件采用 |
@@ -201,7 +201,7 @@ sequenceDiagram
 
 提供商失败与内容不确定不同：非最终尝试中，关键关系 / 支撑判断无法取得会进入持久重试；最终尝试允许按契约保存 unresolved / `possible_new`，不能伪造“没有新闻价值”。程序错误和非法核心输出仍是失败。
 
-生成输出具体区分 `news_generation_output_truncated`、`news_generation_output_empty` 与 `news_generation_output_schema_invalid`。已配置的 fallback 只有请求契约有实质差异时才可补答一次；固定契约或引用错误不再消耗相同请求的多轮语义重试。临时限流、超时、服务端和传输错误仍走有界恢复。错误日志记录错误类别与长度，不记录原始模型响应片段。
+生成输出具体区分 `news_generation_output_truncated`、`news_generation_output_empty` 与 `news_generation_output_schema_invalid`。provider 以 `finish_reason=length` 截断的回答即使被 JSON 修复成可解析的对象，也是 `news_generation_output_truncated`；一个抽取回答里没有任何可用命题（全部 `news_claim_schema_invalid`）同样是坏回答。已配置的 fallback 只有请求契约有实质差异时才可补答一次（抽取 fallback 的输出上限更大），只有路由上最后一个回答仍不可用才使修订失败；固定契约或引用错误不再消耗相同请求的多轮语义重试。临时限流、超时、服务端和传输错误仍走有界恢复。错误日志只记录错误类别、长度，以及被修复或不可用命题的字段位置与错误类型（`news_extraction_claim_repaired` / `news_extraction_claim_schema_invalid index=… errors=[(loc, type)]`），不记录原始模型响应片段。
 
 ### 可选补读的边界
 
