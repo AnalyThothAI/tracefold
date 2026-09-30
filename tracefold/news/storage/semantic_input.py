@@ -426,8 +426,7 @@ class SemanticInputStorage:
         """Related Events by the existing bounded candidate retrieval, in its priority order."""
 
         query = query_for(
-            {"event_id": event_id},
-            {},
+            event_id=event_id,
             cutoff=int(now_ms),
             assets=assets,
             task_texts=task_texts,

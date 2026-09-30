@@ -56,23 +56,15 @@ def text_sha(text: str) -> str:
 
 
 def query_for(
-    card: Mapping[str, Any],
-    item: Mapping[str, Any],
     *,
+    event_id: str,
+    task_texts: Sequence[str],
+    source_items: Sequence[Mapping[str, Any]] = (),
     cutoff: int,
     assets: Sequence[MarketAsset] = (),
-    task_texts: Sequence[str] | None = None,
-    source_items: Sequence[Mapping[str, Any]] | None = None,
 ) -> EvidenceQuery:
-    """Query from the actual pending reading scope when supplied, before any new Claim exists."""
-    texts = tuple(
-        dict.fromkeys(
-            text.strip()
-            for text in (task_texts if task_texts is not None else (str(card.get("leader_title") or ""),))
-            if text.strip()
-        )
-    )
-    sources = tuple(source_items) if source_items is not None else (item,)
+    """Query from explicit pending tasks and sources, before any new Claim exists."""
+    texts = tuple(dict.fromkeys(text.strip() for text in task_texts if text.strip()))
     assets = tuple(
         dict.fromkeys(
             (*assets, *(MarketAsset(symbol, "unknown") for text in texts for symbol in source_asset_symbols(text)))
@@ -82,12 +74,14 @@ def query_for(
         :32
     ]
     return EvidenceQuery(
-        event_id=str(card.get("event_id") or ""),
+        event_id=event_id,
         texts=texts,
         source_artifact_ids=tuple(
-            sorted({str(row.get("source_artifact_id")) for row in sources if row.get("source_artifact_id")})
+            sorted({str(row.get("source_artifact_id")) for row in source_items if row.get("source_artifact_id")})
         ),
-        canonical_urls=tuple(sorted({str(row.get("canonical_url")) for row in sources if row.get("canonical_url")})),
+        canonical_urls=tuple(
+            sorted({str(row.get("canonical_url")) for row in source_items if row.get("canonical_url")})
+        ),
         assets=tuple(assets),
         terms=terms,
         cutoff_at_ms=cutoff,

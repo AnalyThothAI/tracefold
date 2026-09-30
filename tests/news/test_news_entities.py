@@ -72,8 +72,7 @@ def test_scoped_provider_tags_need_visible_ticker_or_existing_commodity_evidence
 
 def test_pending_task_text_and_sources_replace_old_leader_retrieval_material() -> None:
     query = query_for(
-        {"event_id": "event", "leader_title": "Old issuer acquisition"},
-        {"source_artifact_id": "old"},
+        event_id="event",
         cutoff=200,
         task_texts=("New issuer product launch", "New issuer product launch"),
         source_items=({"source_artifact_id": "new", "canonical_url": "https://example.org/new"},),
@@ -83,5 +82,5 @@ def test_pending_task_text_and_sources_replace_old_leader_retrieval_material() -
     assert "launch" in query.terms and "acquisition" not in query.terms
     assert query.source_artifact_ids == ("new",)
     assert query.canonical_urls == ("https://example.org/new",)
-    empty = query_for({"leader_title": "Old material"}, {}, cutoff=200, task_texts=())
+    empty = query_for(event_id="event", cutoff=200, task_texts=())
     assert empty.texts == () and empty.terms == ()

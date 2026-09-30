@@ -91,9 +91,14 @@ def test_real_candidate_channels_keep_unknown_and_exclude_known_symbol_conflict(
         repos = repositories_for_connection(conn)
         first = admit(repos, "BTC acquisition agreement announced; approval pending.", record=21, stamp=1000)
         second = admit(repos, "BTC acquisition agreement approved; execution pending.", record=22, stamp=2000)
-        card = repos.news.event_card(second.results[0].event_id)
         item = repos.news.evidence_material([second.item_id])[0]
-        query = query_for(card, item, cutoff=3000, assets=[MarketAsset("BTC", "crypto")])
+        query = query_for(
+            event_id=second.results[0].event_id,
+            task_texts=(item["evidence_text"],),
+            source_items=(item,),
+            cutoff=3000,
+            assets=[MarketAsset("BTC", "crypto")],
+        )
         unknown = repos.news.evidence_candidates(query)
         assert first.item_id in {r["item_id"] for r in shortlist(unknown, query=query)}
         # Explicit-source links are subject to the same identity filter as the other channels.
@@ -155,8 +160,7 @@ def test_real_semantic_candidate_routes_recall_pair_spelling_and_member_topic(po
             (event,),
         )
         query = query_for(
-            {"event_id": "later", "leader_title": "Unrelated old leader"},
-            {},
+            event_id="later",
             cutoff=2000,
             task_texts=("Aster DEX上线$SI，最大5倍杠杆",),
             assets=(MarketAsset("SI", "crypto"),),
@@ -174,8 +178,7 @@ def test_real_semantic_candidate_routes_recall_pair_spelling_and_member_topic(po
             (event, child.item_id),
         )
         member_query = query_for(
-            {"event_id": child.results[0].event_id, "leader_title": "Old acquisition"},
-            {},
+            event_id=child.results[0].event_id,
             cutoff=2000,
             task_texts=("Atlas launches a quantum networking product.",),
         )
@@ -183,8 +186,7 @@ def test_real_semantic_candidate_routes_recall_pair_spelling_and_member_topic(po
         assert event in {row["event_id"] for row in matched}
         assert max(row["score"] for row in matched if row["event_id"] == event) == 1.0
         before_member = query_for(
-            {"event_id": "earlier"},
-            {},
+            event_id="earlier",
             cutoff=1050,
             task_texts=("Atlas launches a quantum networking product.",),
         )
@@ -204,5 +206,5 @@ def test_real_semantic_pair_route_uses_only_the_first_valid_quote_suffix(postgre
             (event, pair),
         )
         for symbol, expected in ((base, True), (partial, False)):
-            query = query_for({"event_id": "later"}, {}, cutoff=2000, task_texts=(f"Aster批准${symbol}独家交易。",))
+            query = query_for(event_id="later", cutoff=2000, task_texts=(f"Aster批准${symbol}独家交易。",))
             assert (event in {row["event_id"] for row in repos.news.evidence_candidates(query)}) is expected

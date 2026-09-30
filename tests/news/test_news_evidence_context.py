@@ -35,14 +35,14 @@ def test_origin_fact_duplicates_do_not_occupy_shortlist_slots():
     )
     for row in rows:
         row["leader_title"] = "Acme acquisition announced"
-    query = query_for({"leader_title": "Acme acquisition approved"}, {}, cutoff=20)
+    query = query_for(event_id="current", task_texts=("Acme acquisition approved",), cutoff=20)
     assert [r["event_id"] for r in shortlist(rows, query=query)] == ["0", "direct"]
 
 
 def test_short_tickers_chinese_terms_and_generic_words():
     query = query_for(
-        {"leader_title": "F announces acquisition; SEI公司收购协议尚待批准"},
-        {},
+        event_id="current",
+        task_texts=("F announces acquisition; SEI公司收购协议尚待批准",),
         cutoff=2,
         assets=(MarketAsset("F", "equity"), MarketAsset("SEI", "crypto")),
     )
@@ -53,7 +53,10 @@ def test_short_tickers_chinese_terms_and_generic_words():
 @pytest.mark.parametrize("reason", ["explicit_origin", "entity_event_terms", "text_similarity"])
 def test_all_channels_reject_typed_collision_even_with_unknown_tag(reason):
     query = query_for(
-        {"leader_title": "SEI acquisition agreement approved"}, {}, cutoff=2, assets=(MarketAsset("SEI", "crypto"),)
+        event_id="current",
+        task_texts=("SEI acquisition agreement approved",),
+        cutoff=2,
+        assets=(MarketAsset("SEI", "crypto"),),
     )
     row = dict(
         event_id="past",
@@ -78,7 +81,10 @@ def test_all_channels_reject_typed_collision_even_with_unknown_tag(reason):
     row["leader_title"] = "Acme Global Corporation announces report"
     assert (
         shortlist(
-            [row], query=query_for({"leader_title": "Acme Global Corporation announces acquisition"}, {}, cutoff=2)
+            [row],
+            query=query_for(
+                event_id="current", task_texts=("Acme Global Corporation announces acquisition",), cutoff=2
+            ),
         )
         == []
     )
@@ -141,5 +147,5 @@ def test_shared_event_nouns_do_not_link_different_subjects():
         created_at_ms=1,
         comparison_fingerprint="other",
     )
-    query = query_for({"leader_title": "Acme acquisition agreement pending"}, {}, cutoff=2)
+    query = query_for(event_id="current", task_texts=("Acme acquisition agreement pending",), cutoff=2)
     assert shortlist([row], query=query) == []
