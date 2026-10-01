@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import re
@@ -10,7 +9,6 @@ import socket
 import time
 from datetime import UTC, datetime
 from http.client import HTTPConnection
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -18,8 +16,8 @@ from tracefold.app.analysis_status import analysis_status_projection
 from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.app.operator_control import persist_operator_intent
 from tracefold.app.repository_session import repositories
-from tracefold.app.trading_replay import replay
 from tracefold.platform.config.loader import load_settings
+from tracefold.platform.postgres.runtime_processes import RuntimeProcesses
 from tracefold.trading.operator_control import (
     OperatorCommandError,
     parse_operator_command,
@@ -52,32 +50,20 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
         return _issue_operator_intent(args, settings=settings)
     if command == "diagnose":
         return _diagnose(args, settings=settings)
-    if command == "replay":
-        try:
-            result = asyncio.run(
-                replay(
-                    settings,
-                    program_file=Path(args.program),
-                    since_ms=_window_clock(args.since),
-                    until_ms=_window_clock(args.until),
-                )
-            )
-        except (ValueError, OSError) as exc:
-            return 2, {"ok": False, "error": str(exc)}
-        return 0, {"ok": True, "data": result}
     with repositories(settings) as repos:
         trading = repos.trading
         if command == "status":
             last_case_at_ms = trading.latest_case_created_at_ms()
             execution = settings.trading.execution
-            analysis_runtime = trading.analysis_runtime(
+            analysis_runtime = repos.runtime.analysis_detail(
                 execution.account_slot,
             )
             execution_status = execution_readiness_projection(
                 execution,
-                trading.state(execution.account_slot),
+                trading.account(execution.account_slot),
                 trading.control(execution.account_slot),
                 now_ns=now_ms * 1_000_000,
+                process=RuntimeProcesses(repos.conn, kind="executor", key=execution.account_slot).read(),
             )
             # The same dict `GET /api/trading/status` publishes. One projection, so an operator who
             # reads the CLI and an operator who reads the desk cannot be told two different things
@@ -161,16 +147,19 @@ def _diagnose(args: Any, *, settings: Any) -> tuple[int, dict[str, Any]]:
                 repos.conn.execute("SET TRANSACTION READ ONLY")
                 repos.conn.execute("SET LOCAL statement_timeout = '3s'")
                 db_head = database_migration_version(repos.conn)
-                state = repos.trading.state(execution.account_slot)
+                state = repos.trading.account(execution.account_slot)
+                process = RuntimeProcesses(repos.conn, kind="executor", key=execution.account_slot).read()
                 control = repos.trading.control(execution.account_slot)
-                plans = repos.trading.active_plans(execution.account_slot)
+                plans = repos.trading.console_open_plans(execution.account_slot)
             read_at_ns = time.time_ns()
             result["database"] = {
                 "started_at_ns": db_started,
                 "completed_at_ns": read_at_ns,
                 "migration_head": db_head,
-                "heartbeat_at_ns": None if state is None else state["heartbeat_at_ns"],
-                "projection": execution_readiness_projection(execution, state, control, now_ns=read_at_ns),
+                "heartbeat_at_ms": None if process is None else process["heartbeat_at_ms"],
+                "projection": execution_readiness_projection(
+                    execution, state, control, now_ns=read_at_ns, process=process
+                ),
                 "open_plans": list(plans[:1000]),
                 "open_plans_truncated": len(plans) > 1000,
             }

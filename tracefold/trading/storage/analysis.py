@@ -1,3 +1,4 @@
+# ruff: noqa: S608 -- SQL composition uses owned constants and bound parameters.
 """Transactional Trading Analysis ledger for frozen LIVE Cases and paired paper legs."""
 
 from __future__ import annotations
@@ -12,11 +13,9 @@ from typing import Any
 from tracefold.trading.engine.forecast import Forecast, PolicyDecision
 from tracefold.trading.engine.paper import PaperLeg
 from tracefold.trading.engine.target import TargetSelection
+from tracefold.trading.storage.case_documents import AssessmentDocument, PaperDocument, PolicyDocument
+from tracefold.trading.storage.case_rows import ACTION_ROWS_SQL, ASSESSMENT_ROWS_SQL, PAPER_ROWS_SQL
 
-ANALYSIS_RUNTIME_SQL = (
-    "SELECT runtime_id,heartbeat_at_ms,active_policy,program_sha,model_name,model_configured,"
-    "publish_signals,config_digest,fault_code FROM trading_analysis_runtime WHERE runtime_id=%s"
-)
 ANALYSIS_CASES_SQL = (
     "SELECT c.case_id,c.trigger_kind,c.asset_id,c.native_symbol,c.created_at_ms,c.state,"
     "c.failure_code,c.decided_at_ms,c.geometry_version,c.view_sha256,c.raw_snapshot_ref "
@@ -26,7 +25,7 @@ ANALYSIS_CASES_SQL = (
 ANALYSIS_CASES_FOR_SOURCE_SQL = (
     "SELECT c.case_id,c.trigger_kind,c.asset_id,c.native_symbol,c.created_at_ms,c.state,"
     "c.failure_code,c.decided_at_ms,c.geometry_version,c.view_sha256,c.raw_snapshot_ref "
-    "FROM trading_cases c JOIN trading_triggers t USING(trigger_id) "
+    "FROM trading_cases c JOIN trading_inputs t ON t.input_id=c.trigger_id "
     "WHERE t.kind='oi' AND t.payload->>'evidence_ref'=%s "
     "AND (%s::text IS NULL OR c.state=%s) "
     "ORDER BY c.created_at_ms DESC,c.case_id DESC LIMIT %s"
@@ -37,19 +36,9 @@ ANALYSIS_CASE_SQL = (
     "geometry_version,stop_bps,tp_bps,half_spread_bps,reference_price,decided_at_ms,failure_code,"
     "updated_at_ms FROM trading_cases WHERE case_id=%s"
 )
-ASSESSMENTS_BY_CASE_SQL = (
-    "SELECT case_id,program_sha,route,status,forecast,drivers,notes,input_tokens,output_tokens,"
-    "started_at_ms,ended_at_ms FROM trading_assessments WHERE case_id=%s ORDER BY program_sha"
-)
-ACTIONS_BY_CASE_SQL = (
-    "SELECT case_id,program_sha,policy_id,policy_version,calibrator_version,action,reason,expected_r,"
-    "publish_status,signal_id,decided_at_ms FROM trading_policy_actions WHERE case_id=%s "
-    "ORDER BY program_sha,policy_id"
-)
-PAPER_BY_CASE_SQL = (
-    "SELECT case_id,side,geometry_version,status,outcome,reason,anchor_at_ms,exit_at_ms,anchor_price,"
-    "exit_price,gross_bps,cost_bps,net_r,labeled_at_ms FROM trading_paper_legs WHERE case_id=%s ORDER BY side"
-)
+ASSESSMENTS_BY_CASE_SQL = "SELECT * FROM (" + ASSESSMENT_ROWS_SQL + ") a WHERE case_id=%s ORDER BY program_sha"
+ACTIONS_BY_CASE_SQL = "SELECT * FROM (" + ACTION_ROWS_SQL + ") a WHERE case_id=%s ORDER BY program_sha,policy_id"
+PAPER_BY_CASE_SQL = "SELECT * FROM (" + PAPER_ROWS_SQL + ") l WHERE case_id=%s ORDER BY side"
 
 
 def _json(value: object) -> str:
@@ -73,22 +62,11 @@ class AnalysisStorage:
         return [
             dict(row)
             for row in self.conn.execute(
-                "SELECT c.case_id,c.native_symbol,c.decided_at_ms,c.stop_bps,c.tp_bps,c.half_spread_bps,"
-                "c.geometry_version FROM trading_cases c WHERE c.geometry_version IS NOT NULL "
-                "AND c.decided_at_ms IS NOT NULL AND c.decided_at_ms + 14400000 + %s <= %s "
-                "AND (SELECT count(*) FROM trading_paper_legs l WHERE l.case_id=c.case_id "
-                "AND l.geometry_version=c.geometry_version)<2 ORDER BY c.decided_at_ms LIMIT %s",
+                "SELECT case_id,native_symbol,decided_at_ms,stop_bps,tp_bps,half_spread_bps,geometry_version "
+                "FROM trading_cases WHERE paper_labeled_at_ms IS NULL AND geometry_version IS NOT NULL "
+                "AND decided_at_ms IS NOT NULL AND decided_at_ms + 14400000 + %s <= %s "
+                "ORDER BY decided_at_ms LIMIT %s",
                 (buffer_ms, now_ms, limit),
-            ).fetchall()
-        ]
-
-    def frozen_cases(self, *, since_ms: int, until_ms: int) -> list[dict[str, Any]]:
-        return [
-            dict(row)
-            for row in self.conn.execute(
-                "SELECT case_id,view FROM trading_cases WHERE view IS NOT NULL "
-                "AND created_at_ms>=%s AND created_at_ms<%s ORDER BY created_at_ms,case_id",
-                (since_ms, until_ms),
             ).fetchall()
         ]
 
@@ -99,29 +77,25 @@ class AnalysisStorage:
         if not 1 <= limit <= 10:
             raise ValueError("source_context_limit_invalid")
         facts = self.conn.execute(
-            "SELECT trigger_id,source_fact_key,kind,payload,first_visible_at_ms "
-            "FROM trading_triggers WHERE selected_asset_id=%s AND trigger_id<>%s "
+            "SELECT input_id AS trigger_id,source_fact_key,kind,payload,first_visible_at_ms "
+            "FROM trading_inputs WHERE selected_asset_id=%s AND input_id<>%s "
             "AND first_visible_at_ms<=%s AND first_visible_at_ms>=%s "
-            "ORDER BY first_visible_at_ms DESC,trigger_id DESC LIMIT %s",
+            "ORDER BY first_visible_at_ms DESC,input_id DESC LIMIT %s",
             (asset_id, exclude_trigger_id, known_at_ms, known_at_ms - 86_400_000, limit),
         ).fetchall()
         if not facts:
             return []
         keys = [row["source_fact_key"] for row in facts]
         amendments = self.conn.execute(
-            "SELECT source_fact_key,content_revision,payload,received_at_ms "
-            "FROM trading_source_amendments WHERE source_fact_key=ANY(%s) AND received_at_ms<=%s "
-            "ORDER BY received_at_ms DESC,update_id DESC",
+            "SELECT source_fact_key,source_revision AS content_revision,payload,received_at_ms "
+            "FROM trading_inputs WHERE kind='source_update' AND source_fact_key=ANY(%s) AND received_at_ms<=%s "
+            "ORDER BY received_at_ms DESC,input_id DESC",
             (keys, known_at_ms),
         ).fetchall()
         by_key: dict[str, list[dict[str, Any]]] = {}
         for row in amendments:
             by_key.setdefault(row["source_fact_key"], []).append(dict(row))
         return [{**dict(row), "amendments": by_key.get(row["source_fact_key"], [])[:3]} for row in facts]
-
-    def analysis_runtime(self, runtime_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute(ANALYSIS_RUNTIME_SQL, (runtime_id,)).fetchone()
-        return None if row is None else dict(row)
 
     def analysis_cases(
         self,
@@ -187,7 +161,7 @@ class AnalysisStorage:
             (f"{kind}|{source_fact_key}|{source_revision}",),
         )
         existing = self.conn.execute(
-            "SELECT trigger_id,payload_sha256 FROM trading_triggers "
+            "SELECT input_id AS trigger_id,payload_sha256 FROM trading_inputs "
             "WHERE kind=%s AND source_fact_key=%s AND source_revision=%s FOR UPDATE",
             (kind, source_fact_key, source_revision),
         ).fetchone()
@@ -196,9 +170,9 @@ class AnalysisStorage:
                 return trigger_id, case_id, "duplicate"
             return trigger_id, case_id, "source_conflict"
         self.conn.execute(
-            "INSERT INTO trading_triggers (trigger_id,kind,source_fact_key,source_revision,payload_sha256,"
+            "INSERT INTO trading_inputs (input_id,kind,source_fact_key,source_revision,payload_sha256,"
             "payload,first_visible_at_ms,source_observed_at_ms,selected_asset_id,target_selection,"
-            "exclusion_reason,created_at_ms) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s::jsonb,%s,%s)",
+            "exclusion_reason,received_at_ms) VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s::jsonb,%s,%s)",
             (
                 trigger_id,
                 kind,
@@ -249,33 +223,31 @@ class AnalysisStorage:
     ) -> str:
         if not affected_claim_refs or not set(retired_claim_refs) <= set(affected_claim_refs):
             raise ValueError("source_amendment_claims_invalid")
+        if sorted(set(payload.get("affected_claim_refs", []))) != sorted(set(affected_claim_refs)) or sorted(
+            set(payload.get("retired_claim_refs", []))
+        ) != sorted(set(retired_claim_refs)):
+            raise ValueError("source_amendment_payload_mismatch")
         self.conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,746))", (f"source|{source_fact_key}",))
         inserted = self.conn.execute(
-            "INSERT INTO trading_source_amendments (update_id,source_fact_key,content_revision,"
-            "affected_claim_refs,retired_claim_refs,payload,payload_sha256,received_at_ms) "
-            "VALUES (%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s) "
-            "ON CONFLICT (update_id) DO NOTHING RETURNING update_id",
-            (
-                update_id,
-                source_fact_key,
-                content_revision,
-                _json(sorted(set(affected_claim_refs))),
-                _json(sorted(set(retired_claim_refs))),
-                _json(payload),
-                payload_sha256,
-                now_ms,
-            ),
+            "INSERT INTO "
+            "trading_inputs(input_id,kind,source_fact_key,source_revision,payload_sha256,payload,received_at_ms) "
+            "VALUES (%s,'source_update',%s,%s,%s,%s::jsonb,%s) ON CONFLICT DO NOTHING RETURNING input_id",
+            (update_id, source_fact_key, content_revision, payload_sha256, _json(payload), now_ms),
         ).fetchone()
         if inserted is not None:
             return "accepted"
         original = self.conn.execute(
-            "SELECT payload_sha256 FROM trading_source_amendments WHERE update_id=%s", (update_id,)
+            "SELECT input_id,payload_sha256 FROM trading_inputs WHERE kind='source_update' "
+            "AND source_fact_key=%s AND source_revision=%s",
+            (source_fact_key, content_revision),
         ).fetchone()
         if original is None:
-            raise RuntimeError("source_amendment_conflict_missing")
-        if original["payload_sha256"] == payload_sha256:
-            return "duplicate"
-        return "source_conflict"
+            raise ValueError("source_amendment_identity_conflict")
+        return (
+            "duplicate"
+            if original["input_id"] == update_id and original["payload_sha256"] == payload_sha256
+            else "source_conflict"
+        )
 
     def claim_case(self, *, now_ms: int, lease_ms: int) -> dict[str, Any] | None:
         if lease_ms <= 0:
@@ -314,7 +286,10 @@ class AnalysisStorage:
 
     def case_trigger(self, case_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
-            "SELECT t.* FROM trading_cases c JOIN trading_triggers t USING(trigger_id) WHERE c.case_id=%s",
+            "SELECT t.input_id AS trigger_id,t.kind,t.source_fact_key,t.source_revision,t.payload_sha256,"
+            "t.payload,t.first_visible_at_ms,t.source_observed_at_ms,t.selected_asset_id,t.target_selection,"
+            "t.exclusion_reason,t.received_at_ms AS created_at_ms FROM trading_cases c JOIN "
+            "trading_inputs t ON t.input_id=c.trigger_id WHERE c.case_id=%s",
             (case_id,),
         ).fetchone()
         return None if row is None else dict(row)
@@ -322,7 +297,7 @@ class AnalysisStorage:
     def publication_source_status(self, *, case_id: str, now_ms: int) -> str | None:
         """Check News correction and later public facts at the final publish fence."""
         identity = self.conn.execute(
-            "SELECT t.source_fact_key FROM trading_cases c JOIN trading_triggers t USING(trigger_id) "
+            "SELECT t.source_fact_key FROM trading_cases c JOIN trading_inputs t ON t.input_id=c.trigger_id "
             "WHERE c.case_id=%s",
             (case_id,),
         ).fetchone()
@@ -333,7 +308,10 @@ class AnalysisStorage:
             (f"source|{identity['source_fact_key']}",),
         )
         original = self.conn.execute(
-            "SELECT t.* FROM trading_cases c JOIN trading_triggers t USING(trigger_id) "
+            "SELECT t.input_id AS trigger_id,t.kind,t.source_fact_key,t.source_revision,t.payload_sha256,"
+            "t.payload,t.first_visible_at_ms,t.source_observed_at_ms,t.selected_asset_id,t.target_selection,"
+            "t.exclusion_reason,t.received_at_ms AS created_at_ms FROM trading_cases c JOIN "
+            "trading_inputs t ON t.input_id=c.trigger_id "
             "WHERE c.case_id=%s FOR SHARE OF c,t",
             (case_id,),
         ).fetchone()
@@ -343,23 +321,23 @@ class AnalysisStorage:
             claims = list(original["payload"].get("claim_refs") or ())
             if claims:
                 correction = self.conn.execute(
-                    "SELECT 1 FROM trading_source_amendments WHERE source_fact_key=%s "
-                    "AND received_at_ms<=%s AND retired_claim_refs ?| %s LIMIT 1",
+                    "SELECT 1 FROM trading_inputs WHERE kind='source_update' AND source_fact_key=%s "
+                    "AND received_at_ms<=%s AND payload->'retired_claim_refs' ?| %s LIMIT 1",
                     (original["source_fact_key"], now_ms, claims),
                 ).fetchone()
                 if correction is not None:
                     return "source_corrected"
                 superseded = self.conn.execute(
-                    "SELECT 1 FROM trading_triggers WHERE kind='catalyst' AND trigger_id<>%s "
-                    "AND created_at_ms<=%s AND payload->'superseded_claim_refs' ?| %s LIMIT 1",
+                    "SELECT 1 FROM trading_inputs WHERE kind='catalyst' AND input_id<>%s "
+                    "AND received_at_ms<=%s AND payload->'superseded_claim_refs' ?| %s LIMIT 1",
                     (original["trigger_id"], now_ms, claims),
                 ).fetchone()
                 if superseded is not None:
                     return "source_superseded"
         else:
             superseded = self.conn.execute(
-                "SELECT 1 FROM trading_triggers WHERE kind='oi' AND source_fact_key=%s "
-                "AND source_revision<>%s AND source_observed_at_ms>%s AND created_at_ms<=%s LIMIT 1",
+                "SELECT 1 FROM trading_inputs WHERE kind='oi' AND source_fact_key=%s "
+                "AND source_revision<>%s AND source_observed_at_ms>%s AND received_at_ms<=%s LIMIT 1",
                 (original["source_fact_key"], original["source_revision"], original["source_observed_at_ms"], now_ms),
             ).fetchone()
             if superseded is not None:
@@ -411,7 +389,7 @@ class AnalysisStorage:
         self, *, trigger_kind: str, known_at_ms: int
     ) -> dict[str, tuple[int, dict[str, Decimal] | None]]:
         rows = self.conn.execute(
-            "SELECT l.side,l.outcome,count(*) AS n FROM trading_paper_legs l "
+            "SELECT l.side,l.outcome,count(*) AS n FROM (" + PAPER_ROWS_SQL + ") l "
             "JOIN trading_cases c USING(case_id) WHERE c.trigger_kind=%s "
             "AND l.status='complete' AND l.labeled_at_ms<%s AND l.exit_at_ms<%s "
             "AND c.created_at_ms>=%s GROUP BY l.side,l.outcome",
@@ -429,7 +407,7 @@ class AnalysisStorage:
             )
         return result
 
-    def record_assessment(
+    def record_forecast(
         self,
         *,
         case_id: str,
@@ -450,55 +428,70 @@ class AnalysisStorage:
                 for side in ("long", "short")
             }
         )
-        drivers = [] if forecast is None else [asdict(item) for item in forecast.drivers]
-        inserted = self.conn.execute(
-            "INSERT INTO trading_assessments (case_id,program_sha,route,status,forecast,drivers,notes,"
-            "input_tokens,output_tokens,started_at_ms,ended_at_ms) "
-            "VALUES (%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s,%s) "
-            "ON CONFLICT(case_id,program_sha) DO NOTHING RETURNING case_id",
-            (
-                case_id,
-                program_sha,
-                route,
-                status,
-                None if value is None else _json(value),
-                _json(drivers),
-                _json(notes),
-                usage.get("input_tokens"),
-                usage.get("output_tokens"),
-                started_at_ms,
-                ended_at_ms,
-            ),
+        document = AssessmentDocument.model_validate(
+            {
+                "route": route,
+                "status": status,
+                "forecast": value,
+                "drivers": [] if forecast is None else [asdict(item) for item in forecast.drivers],
+                "notes": list(notes),
+                "input_tokens": usage.get("input_tokens"),
+                "output_tokens": usage.get("output_tokens"),
+                "started_at_ms": started_at_ms,
+                "ended_at_ms": ended_at_ms,
+            }
+        ).model_dump(mode="json")
+        row = self.conn.execute(
+            "UPDATE trading_cases SET program_sha=%s,assessment=%s::jsonb,policy_decisions='[]'::jsonb "
+            "WHERE case_id=%s AND assessment IS NULL RETURNING case_id",
+            (program_sha, _json(document), case_id),
         ).fetchone()
-        if inserted is None:
+        if row is None:
             prior = self.conn.execute(
-                "SELECT route,status,forecast FROM trading_assessments WHERE case_id=%s AND program_sha=%s",
-                (case_id, program_sha),
+                "SELECT program_sha,assessment FROM trading_cases WHERE case_id=%s", (case_id,)
             ).fetchone()
-            if prior is None or (prior["route"], prior["status"], prior["forecast"]) != (route, status, value):
+            if prior is None or prior["program_sha"] != program_sha or prior["assessment"] != document:
                 raise ValueError("assessment_identity_conflict")
 
     def record_policy_actions(
-        self, *, case_id: str, program_sha: str, decisions: tuple[PolicyDecision, ...], now_ms: int
+        self,
+        *,
+        case_id: str,
+        program_sha: str,
+        decisions: tuple[PolicyDecision, ...],
+        now_ms: int,
     ) -> None:
-        for item in decisions:
-            self.conn.execute(
-                "INSERT INTO trading_policy_actions (case_id,program_sha,policy_id,policy_version,"
-                "calibrator_version,action,reason,expected_r,publish_status,decided_at_ms) "
-                "VALUES (%s,%s,%s,%s,'identity_v1',%s,%s,%s,%s,%s) "
-                "ON CONFLICT(case_id,program_sha,policy_id,policy_version) DO NOTHING",
-                (
-                    case_id,
-                    program_sha,
-                    item.policy_id,
-                    item.version,
-                    item.action,
-                    item.reason,
-                    item.expected_r,
-                    "abstained" if item.action == "abstain" else "not_live",
-                    now_ms,
-                ),
-            )
+        document = [
+            PolicyDocument(
+                policy_id=item.policy_id,
+                policy_version=item.version,
+                calibrator_version="identity_v1",
+                action=item.action,
+                reason=item.reason,
+                expected_r=None if item.expected_r is None else str(item.expected_r),
+                publish_status="abstained" if item.action == "abstain" else "not_live",
+                signal_id=None,
+                decided_at_ms=now_ms,
+            ).model_dump(mode="json")
+            for item in decisions
+        ]
+        row = self.conn.execute(
+            "SELECT policy_decisions FROM trading_cases WHERE case_id=%s AND program_sha=%s FOR UPDATE",
+            (case_id, program_sha),
+        ).fetchone()
+        if row is None:
+            raise ValueError("assessment_identity_conflict")
+        if row["policy_decisions"]:
+
+            def immutable(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                return [{k: v for k, v in item.items() if k not in ("publish_status", "signal_id")} for item in items]
+
+            if immutable(row["policy_decisions"]) != immutable(document):
+                raise ValueError("policy_decision_identity_conflict")
+            return
+        self.conn.execute(
+            "UPDATE trading_cases SET policy_decisions=%s::jsonb WHERE case_id=%s", (_json(document), case_id)
+        )
 
     def set_publication(
         self,
@@ -511,40 +504,61 @@ class AnalysisStorage:
         signal_id: str | None,
     ) -> None:
         row = self.conn.execute(
-            "UPDATE trading_policy_actions SET publish_status=%s,signal_id=%s "
-            "WHERE case_id=%s AND program_sha=%s AND policy_id=%s AND policy_version=%s "
-            "RETURNING case_id",
-            (publish_status, signal_id, case_id, program_sha, policy_id, policy_version),
+            "SELECT policy_decisions FROM trading_cases WHERE case_id=%s AND program_sha=%s FOR UPDATE",
+            (case_id, program_sha),
         ).fetchone()
         if row is None:
             raise ValueError("publication_action_missing")
+        decisions = row["policy_decisions"]
+        for item in decisions:
+            if (item["policy_id"], item["policy_version"]) == (policy_id, policy_version):
+                if item["signal_id"] is not None and (item["signal_id"], item["publish_status"]) != (
+                    signal_id,
+                    publish_status,
+                ):
+                    raise ValueError("publication_identity_conflict")
+                item.update(publish_status=publish_status, signal_id=signal_id)
+                PolicyDocument.model_validate(item)
+                break
+        else:
+            raise ValueError("publication_action_missing")
+        self.conn.execute(
+            "UPDATE trading_cases SET policy_decisions=%s::jsonb WHERE case_id=%s", (_json(decisions), case_id)
+        )
 
     def record_paper_legs(
-        self, *, case_id: str, legs: tuple[PaperLeg, PaperLeg], geometry_version: str, now_ms: int
+        self,
+        *,
+        case_id: str,
+        legs: tuple[PaperLeg, PaperLeg],
+        geometry_version: str,
+        now_ms: int,
     ) -> None:
-        for leg in legs:
-            self.conn.execute(
-                "INSERT INTO trading_paper_legs (case_id,side,geometry_version,status,outcome,reason,anchor_at_ms,"
-                "exit_at_ms,anchor_price,exit_price,gross_bps,cost_bps,net_r,labeled_at_ms) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-                "ON CONFLICT(case_id,side,geometry_version) DO NOTHING",
-                (
-                    case_id,
-                    leg.side,
-                    geometry_version,
-                    leg.status,
-                    leg.outcome,
-                    leg.reason,
-                    leg.anchor_at_ms,
-                    leg.exit_at_ms,
-                    leg.anchor_price,
-                    leg.exit_price,
-                    leg.gross_bps,
-                    leg.cost_bps,
-                    leg.net_r,
-                    now_ms,
-                ),
-            )
+        if {leg.side for leg in legs} != {"long", "short"}:
+            raise ValueError("paper_leg_pair_invalid")
+        document = {
+            leg.side: PaperDocument.model_validate(
+                {
+                    **{k: v for k, v in asdict(leg).items() if k != "side"},
+                    "geometry_version": geometry_version,
+                    "labeled_at_ms": now_ms,
+                    **{
+                        name: None if getattr(leg, name) is None else str(getattr(leg, name))
+                        for name in ("anchor_price", "exit_price", "gross_bps", "cost_bps", "net_r")
+                    },
+                }
+            ).model_dump(mode="json")
+            for leg in legs
+        }
+        row = self.conn.execute(
+            "UPDATE trading_cases SET paper_legs=%s::jsonb,paper_labeled_at_ms=%s WHERE case_id=%s "
+            "AND (geometry_version=%s OR (geometry_version IS NULL AND %s)) AND paper_legs IS NULL RETURNING case_id",
+            (_json(document), now_ms, case_id, geometry_version, all(leg.status == "missing" for leg in legs)),
+        ).fetchone()
+        if row is None:
+            prior = self.conn.execute("SELECT paper_legs FROM trading_cases WHERE case_id=%s", (case_id,)).fetchone()
+            if prior is None or prior["paper_legs"] != document:
+                raise ValueError("paper_leg_identity_conflict")
 
     def finish_case(
         self, *, case_id: str, claim_token: str, status: str, failure_code: str | None, now_ms: int
@@ -556,37 +570,3 @@ class AnalysisStorage:
             (status, failure_code, now_ms, now_ms, case_id, claim_token, now_ms),
         ).fetchone()
         return row is not None
-
-    def heartbeat_analysis_runtime(
-        self,
-        *,
-        runtime_id: str,
-        now_ms: int,
-        active_policy: str,
-        program_sha: str,
-        model_name: str | None,
-        model_configured: bool,
-        publish_signals: bool,
-        config_digest: str,
-        fault_code: str | None,
-    ) -> None:
-        self.conn.execute(
-            "INSERT INTO trading_analysis_runtime (runtime_id,heartbeat_at_ms,active_policy,program_sha,"
-            "model_name,model_configured,publish_signals,config_digest,fault_code) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(runtime_id) DO UPDATE SET "
-            "heartbeat_at_ms=EXCLUDED.heartbeat_at_ms,active_policy=EXCLUDED.active_policy,"
-            "program_sha=EXCLUDED.program_sha,model_name=EXCLUDED.model_name,"
-            "model_configured=EXCLUDED.model_configured,publish_signals=EXCLUDED.publish_signals,"
-            "config_digest=EXCLUDED.config_digest,fault_code=EXCLUDED.fault_code",
-            (
-                runtime_id,
-                now_ms,
-                active_policy,
-                program_sha,
-                model_name,
-                model_configured,
-                publish_signals,
-                config_digest,
-                fault_code,
-            ),
-        )

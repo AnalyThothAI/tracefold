@@ -18,6 +18,7 @@ def analysis_status_projection(
     if (
         settings.trading.enabled
         and runtime is not None
+        and runtime["lifecycle_state"] == "running"
         and now_ms - int(runtime["heartbeat_at_ms"]) <= _HEARTBEAT_STALE_MS
     ):
         state = (

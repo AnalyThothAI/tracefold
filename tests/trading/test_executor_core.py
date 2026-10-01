@@ -13,7 +13,6 @@ from tracefold.trading.executor.core import EntryFacts, PlanFacts, SignalV4, adm
 
 def signal() -> SignalV4:
     return SignalV4(
-        seq=1,
         signal_id="1" * 64,
         decision_id="2" * 64,
         case_id="case-1",

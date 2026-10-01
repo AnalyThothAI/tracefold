@@ -372,17 +372,16 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,diagnose,cases,signals,fills,scoreboard,replay,commands,issue} ...
+                         {status,diagnose,cases,signals,fills,scoreboard,commands,issue} ...
 
 positional arguments:
-  {status,diagnose,cases,signals,fills,scoreboard,replay,commands,issue}
+  {status,diagnose,cases,signals,fills,scoreboard,commands,issue}
     status              show Alpha producer and execution readiness
     diagnose            sample bounded read-only execution evidence
     cases               list Trading cases newest first
     signals             list TradeSignalV4 rows
     fills               list signed DEMO venue fills
     scoreboard          compare all Trading policies on LIVE paper legs
-    replay              assess frozen CaseViews with a candidate DSPy program
     commands            list authenticated OperatorIntentV1 rows
     issue               durably record one local OS-authenticated operator
                         intent
@@ -461,20 +460,6 @@ options:
   --since SINCE      UTC date or ISO timestamp
   --until UNTIL      exclusive UTC date or ISO timestamp
   --program PROGRAM  optional 64-character program sha
-
-```
-
-## `trading replay`
-
-```
-usage: tracefold trading replay [-h] --program PROGRAM --since SINCE
-                                --until UNTIL
-
-options:
-  -h, --help         show this help message and exit
-  --program PROGRAM  candidate DSPy JSON file
-  --since SINCE      UTC date or ISO timestamp
-  --until UNTIL      exclusive UTC date or ISO timestamp
 
 ```
 

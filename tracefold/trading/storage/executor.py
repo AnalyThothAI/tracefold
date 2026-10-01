@@ -8,54 +8,55 @@ from typing import Any, cast
 from tracefold.trading.executor.core import SignalV4
 from tracefold.trading.operator_control import PreparedOperatorIntent
 
-SIGNAL_LEDGER_SQL = "SELECT seq,payload FROM trading_signals WHERE decided_at_ns>=%s ORDER BY seq DESC LIMIT %s"
+SIGNAL_LEDGER_SQL = (
+    "SELECT request FROM trading_entries WHERE source='signal' AND requested_at_ns>=%s "
+    "ORDER BY created_at_ns DESC,entry_id DESC LIMIT %s"
+)
 FILL_LEDGER_SQL = (
-    "SELECT f.environment,f.native_symbol,f.trade_id,a.plan_id,a.client_order_id,"
+    "SELECT f.environment,f.native_symbol,f.trade_id,o.entry_id AS plan_id,f.client_order_id,"
     "f.venue_order_id,f.quantity,f.price,f.realized_pnl,f.fee,f.fee_asset,f.traded_at_ns "
-    "FROM trading_fills f LEFT JOIN trading_fill_attributions a "
-    "ON (a.environment,a.native_symbol,a.trade_id)=(f.environment,f.native_symbol,f.trade_id) "
+    "FROM trading_fills f LEFT JOIN trading_orders o USING(client_order_id) "
     "WHERE f.traded_at_ns>=%s ORDER BY f.traded_at_ns DESC,f.trade_id DESC LIMIT %s"
 )
 OPERATOR_INTENTS_SQL = (
-    "SELECT i.*,d.disposition,d.reason AS disposition_reason,d.decided_at_ns "
-    "FROM trading_operator_intents i LEFT JOIN trading_dispositions d "
-    "ON d.input_kind='intent' AND d.input_id=i.command_id "
-    "WHERE i.requested_at_ns>=%s AND (%s::text IS NULL OR i.action=%s) "
-    "ORDER BY i.seq DESC LIMIT %s"
+    "SELECT command_id,seq,account_slot,action,scope,reason,operator_identity,authentication_identity,"
+    "requested_at_ns,expires_at_ns,payload,disposition,disposition_reason,decided_at_ns "
+    "FROM trading_operator_intents WHERE requested_at_ns>=%s AND (%s::text IS NULL OR action=%s) "
+    "ORDER BY seq DESC LIMIT %s"
 )
 EXECUTION_PLANS_SQL = (
-    "SELECT p.plan_id,p.signal_id,p.command_id,p.account_slot,p.native_symbol,p.side,"
-    "p.quantity,p.stop_bps,p.tp_bps,p.max_hold_s,p.status,p.opened_at_ns,"
-    "p.terminal_at_ns,p.terminal_reason,p.pnl_status,p.realized_pnl,p.fees,p.net_pnl,"
-    "p.updated_at_ns,s.case_id,s.decided_at_ns,s.expires_at_ns,i.requested_at_ns "
-    "FROM trading_plans p "
-    "LEFT JOIN trading_signals s ON s.signal_id=p.signal_id "
-    "LEFT JOIN trading_operator_intents i ON i.command_id=p.command_id "
-    "WHERE p.updated_at_ns>=%s AND (%s::text IS NULL OR s.case_id=%s) "
-    "ORDER BY p.updated_at_ns DESC,p.plan_id DESC LIMIT %s"
+    "SELECT e.entry_id AS plan_id,CASE WHEN e.source='signal' THEN e.entry_id END AS signal_id,"
+    "e.command_id,e.account_slot,e.native_symbol,e.side,e.quantity,e.stop_bps,e.tp_bps,e.max_hold_s,"
+    "e.state AS status,e.opened_at_ns,e.terminal_at_ns,e.terminal_reason,e.pnl_status,e.realized_pnl,"
+    "e.fees,e.net_pnl,e.updated_at_ns,e.case_id,CASE WHEN e.source='signal' THEN "
+    "e.requested_at_ns END AS decided_at_ns,"
+    "CASE WHEN e.source='signal' THEN e.expires_at_ns END AS expires_at_ns,i.requested_at_ns FROM trading_entries e "
+    "LEFT JOIN trading_operator_intents i ON i.command_id=e.command_id "
+    "WHERE e.state IN ('accepted','open','closing','terminal') AND e.updated_at_ns>=%s "
+    "AND (%s::text IS NULL OR e.case_id=%s) ORDER BY e.updated_at_ns DESC,e.entry_id DESC LIMIT %s"
 )
 EXECUTION_REFUSALS_SQL = """
-    SELECT d.input_kind,d.input_id,d.reason,d.decided_at_ns,
-           s.case_id,s.native_symbol,s.payload AS signal_payload,
-           s.decided_at_ns,s.expires_at_ns,i.payload AS intent_payload,
-           i.requested_at_ns,i.action
-    FROM trading_dispositions d
-    LEFT JOIN trading_signals s ON d.input_kind='signal' AND d.input_id=s.signal_id
-    LEFT JOIN trading_operator_intents i ON d.input_kind='intent' AND d.input_id=i.command_id
-    WHERE d.plan_id IS NULL AND d.decided_at_ns>=%s
-      AND (%s::text IS NULL OR s.case_id=%s)
-      AND (d.input_kind='signal' OR i.action='manual_entry')
-    ORDER BY d.decided_at_ns DESC LIMIT %s
+    SELECT input_kind,input_id,reason,decided_at_ns,case_id,native_symbol,signal_payload,
+           expires_at_ns,intent_payload,requested_at_ns,action FROM (
+      SELECT 'signal' AS input_kind,entry_id AS input_id,reason,requested_at_ns AS decided_at_ns,case_id,
+             native_symbol,request AS signal_payload,expires_at_ns,NULL::jsonb AS intent_payload,
+             NULL::bigint AS requested_at_ns,NULL::text AS action,disposed_at_ns
+      FROM trading_entries WHERE source='signal' AND state IN ('refused','expired')
+      UNION ALL
+      SELECT 'intent',command_id,disposition_reason,NULL,NULL,NULL,NULL,NULL,
+             payload,requested_at_ns,action,decided_at_ns
+      FROM trading_operator_intents WHERE action='manual_entry' AND disposition IN ('refused','expired')
+    ) r WHERE disposed_at_ns>=%s AND (%s::text IS NULL OR case_id=%s)
+    ORDER BY disposed_at_ns DESC LIMIT %s
     """
 EXECUTION_ORDERS_SQL = (
-    "SELECT client_order_id,plan_id,leg,attempt,status,error_code,evidence FROM trading_orders "
-    "WHERE plan_id=ANY(%s) ORDER BY plan_id,attempt"
+    "SELECT client_order_id,entry_id AS plan_id,leg,attempt,status,error_code,evidence FROM trading_orders "
+    "WHERE entry_id=ANY(%s) ORDER BY entry_id,attempt"
 )
 EXECUTION_FILLS_SQL = (
-    "SELECT a.plan_id,a.client_order_id,f.quantity,f.price,f.traded_at_ns,f.trade_id "
-    "FROM trading_fill_attributions a JOIN trading_fills f "
-    "ON (f.environment,f.native_symbol,f.trade_id)=(a.environment,a.native_symbol,a.trade_id) "
-    "WHERE a.plan_id=ANY(%s) ORDER BY f.traded_at_ns,f.trade_id"
+    "SELECT o.entry_id AS plan_id,f.client_order_id,f.quantity,f.price,f.traded_at_ns,f.trade_id "
+    "FROM trading_fills f JOIN trading_orders o USING(client_order_id) "
+    "WHERE o.entry_id=ANY(%s) ORDER BY f.traded_at_ns,f.trade_id"
 )
 REALIZED_TOTALS_SQL = """
     SELECT
@@ -70,7 +71,7 @@ REALIZED_TOTALS_SQL = """
       COALESCE(SUM(net_pnl) FILTER (WHERE pnl_status='complete'
           AND terminal_at_ns>=%s AND terminal_at_ns<%s),0) AS net_today,
       COALESCE(SUM(net_pnl) FILTER (WHERE pnl_status='complete'),0) AS net_total
-    FROM trading_plans WHERE account_slot=%s AND status='terminal'
+    FROM trading_entries WHERE account_slot=%s AND state='terminal'
     """
 
 
@@ -110,128 +111,111 @@ class ExecutorStorage:
                 raise ValueError("operator_command_identity_conflict")
         return int(inserted["seq"]), dict(inserted["payload"])
 
-    def heartbeat(self, *, account_slot: str, now_ns: int, error: str | None = None) -> None:
+    def ensure_account(self, account_slot: str) -> None:
         self.conn.execute(
-            """
-            INSERT INTO trading_executor_state(account_slot,environment,heartbeat_at_ns,last_error)
-            VALUES (%s,'DEMO',%s,%s)
-            ON CONFLICT(account_slot) DO UPDATE SET
-              heartbeat_at_ns=EXCLUDED.heartbeat_at_ns,
-              last_error=EXCLUDED.last_error
-            """,
-            (account_slot, now_ns, error),
+            "INSERT INTO trading_accounts(account_slot,environment) VALUES (%s,'DEMO') "
+            "ON CONFLICT(account_slot) DO NOTHING",
+            (account_slot,),
         )
 
-    def state(self, account_slot: str) -> dict[str, Any] | None:
+    def account(self, account_slot: str) -> dict[str, Any] | None:
         return cast(
             dict[str, Any] | None,
-            self.conn.execute("SELECT * FROM trading_executor_state WHERE account_slot=%s", (account_slot,)).fetchone(),
+            self.conn.execute("SELECT * FROM trading_accounts WHERE account_slot=%s", (account_slot,)).fetchone(),
         )
 
     def control(self, account_slot: str) -> dict[str, Any]:
-        row = self.conn.execute("SELECT * FROM trading_control_state WHERE account_slot=%s", (account_slot,)).fetchone()
+        row = self.conn.execute("SELECT * FROM trading_accounts WHERE account_slot=%s", (account_slot,)).fetchone()
         return row or {"entries_paused": True, "emergency_halted": False, "flatten_command_id": None}
 
     def set_control(self, *, account_slot: str, paused: bool, halted: bool, now_ns: int) -> None:
+        self.ensure_account(account_slot)
         self.conn.execute(
-            """
-            INSERT INTO trading_control_state(account_slot,entries_paused,emergency_halted,updated_at_ns)
-            VALUES (%s,%s,%s,%s)
-            ON CONFLICT(account_slot) DO UPDATE SET
-              entries_paused=EXCLUDED.entries_paused,
-              emergency_halted=EXCLUDED.emergency_halted,
-              updated_at_ns=EXCLUDED.updated_at_ns
-            """,
-            (account_slot, paused, halted, now_ns),
+            "UPDATE trading_accounts SET entries_paused=%s,emergency_halted=%s,control_updated_at_ns=%s "
+            "WHERE account_slot=%s",
+            (paused, halted, now_ns, account_slot),
         )
 
     def request_flatten(self, *, account_slot: str, command_id: str, now_ns: int) -> None:
+        self.ensure_account(account_slot)
         self.conn.execute(
-            """
-            INSERT INTO trading_control_state(account_slot,entries_paused,emergency_halted,
-                                              flatten_command_id,updated_at_ns)
-            VALUES (%s,true,false,%s,%s)
-            ON CONFLICT(account_slot) DO UPDATE SET
-              entries_paused=true,flatten_command_id=EXCLUDED.flatten_command_id,
-              updated_at_ns=EXCLUDED.updated_at_ns
-            """,
-            (account_slot, command_id, now_ns),
+            "UPDATE trading_accounts SET entries_paused=true,flatten_command_id=%s,control_updated_at_ns=%s "
+            "WHERE account_slot=%s",
+            (command_id, now_ns, account_slot),
         )
 
     def clear_flatten(self, *, account_slot: str) -> None:
         self.conn.execute(
-            "UPDATE trading_control_state SET flatten_command_id=NULL WHERE account_slot=%s",
+            "UPDATE trading_accounts SET flatten_command_id=NULL WHERE account_slot=%s",
             (account_slot,),
         )
 
-    def append_signal(self, signal: SignalV4) -> int:
-        payload = signal.model_dump(mode="json", exclude={"seq"})
-        packed = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    def append_signal(self, signal: SignalV4) -> str:
+        self.ensure_account(signal.account_slot)
+        payload = signal.model_dump(mode="json")
         inserted = self.conn.execute(
-            """
-            INSERT INTO trading_signals(signal_id,case_id,decision_id,account_slot,native_symbol,
-                                        decided_at_ns,expires_at_ns,payload,created_at_ns)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
-            ON CONFLICT(signal_id) DO NOTHING RETURNING seq,payload
-            """,
+            "INSERT INTO trading_entries(entry_id,source,case_id,account_slot,native_symbol,side,request,"
+            "requested_at_ns,expires_at_ns,created_at_ns,state,updated_at_ns) "
+            "VALUES (%s,'signal',%s,%s,%s,%s,%s::jsonb,%s,%s,%s,'pending',%s) "
+            "ON CONFLICT(entry_id) DO NOTHING RETURNING entry_id",
             (
                 signal.signal_id,
                 signal.case_id,
-                signal.decision_id,
                 signal.account_slot,
                 signal.native_symbol,
+                signal.side,
+                json.dumps(payload),
                 signal.decided_at_ns,
                 signal.expires_at_ns,
-                packed,
+                signal.decided_at_ns,
                 signal.decided_at_ns,
             ),
         ).fetchone()
         if inserted is None:
-            existing = self.conn.execute(
-                "SELECT seq,payload FROM trading_signals WHERE signal_id=%s", (signal.signal_id,)
+            row = self.conn.execute(
+                "SELECT request FROM trading_entries WHERE entry_id=%s", (signal.signal_id,)
             ).fetchone()
-            if existing is None or existing["payload"] != payload:
+            if row is None or row["request"] != payload:
                 raise ValueError("signal_identity_conflict")
-            return int(existing["seq"])
-        return int(inserted["seq"])
+        return signal.signal_id
 
     def next_signal(self, *, account_slot: str) -> SignalV4 | None:
         row = self.conn.execute(
-            """
-            SELECT s.seq,s.payload FROM trading_signals s
-            WHERE s.account_slot=%s AND NOT EXISTS (
-              SELECT 1 FROM trading_dispositions d
-              WHERE d.input_kind='signal' AND d.input_id=s.signal_id
-            ) ORDER BY s.seq LIMIT 1
-            """,
+            "SELECT request FROM trading_entries WHERE account_slot=%s AND state='pending' "
+            "ORDER BY created_at_ns,entry_id LIMIT 1",
             (account_slot,),
         ).fetchone()
-        return (
-            None
-            if row is None
-            else SignalV4.model_validate_json(json.dumps({**row["payload"], "seq": int(row["seq"])}))
-        )
+        return None if row is None else SignalV4.model_validate_json(json.dumps(row["request"]))
 
     def next_intent(self, *, account_slot: str) -> dict[str, Any] | None:
         return cast(
             dict[str, Any] | None,
             self.conn.execute(
-                """
-            SELECT i.* FROM trading_operator_intents i
-            WHERE i.account_slot=%s AND NOT EXISTS (
-              SELECT 1 FROM trading_dispositions d
-              WHERE d.input_kind='intent' AND d.input_id=i.command_id
-            ) ORDER BY i.seq LIMIT 1
-            """,
+                "SELECT * FROM trading_operator_intents WHERE account_slot=%s AND disposition IS NULL "
+                "ORDER BY seq LIMIT 1",
                 (account_slot,),
             ).fetchone(),
         )
 
     def disposition(self, *, kind: str, input_id: str) -> dict[str, Any] | None:
+        if kind == "signal":
+            row = self.conn.execute(
+                "SELECT state,reason,disposed_at_ns FROM trading_entries WHERE entry_id=%s AND state<>'pending'",
+                (input_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "disposition": row["state"] if row["state"] in ("refused", "expired") else "accepted",
+                "reason": row["reason"],
+                "decided_at_ns": row["disposed_at_ns"],
+            }
         return cast(
             dict[str, Any] | None,
             self.conn.execute(
-                "SELECT * FROM trading_dispositions WHERE input_kind=%s AND input_id=%s", (kind, input_id)
+                "SELECT disposition,disposition_reason AS reason,decided_at_ns FROM trading_operator_intents "
+                "WHERE command_id=%s AND disposition IS NOT NULL",
+                (input_id,),
             ).fetchone(),
         )
 
@@ -244,40 +228,39 @@ class ExecutorStorage:
         disposition: str,
         reason: str,
         now_ns: int,
-        plan_id: str | None = None,
     ) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO trading_dispositions(input_kind,input_id,account_slot,disposition,reason,plan_id,decided_at_ns)
-            VALUES (%s,%s,%s,%s,%s,%s,%s)
-            ON CONFLICT(input_kind,input_id) DO NOTHING
-            """,
-            (kind, input_id, account_slot, disposition, reason, plan_id, now_ns),
-        )
+        if kind == "signal":
+            if disposition == "accepted":
+                raise ValueError("accepted_entry_requires_plan")
+            self.conn.execute(
+                "UPDATE trading_entries SET state=%s,reason=%s,disposed_at_ns=%s,updated_at_ns=%s "
+                "WHERE entry_id=%s AND account_slot=%s AND state='pending'",
+                (disposition, reason, now_ns, now_ns, input_id, account_slot),
+            )
+        else:
+            self.conn.execute(
+                "UPDATE trading_operator_intents SET disposition=%s,disposition_reason=%s,decided_at_ns=%s "
+                "WHERE command_id=%s AND account_slot=%s AND disposition IS NULL",
+                (disposition, reason, now_ns, input_id, account_slot),
+            )
         row = self.disposition(kind=kind, input_id=input_id)
-        if row is None or (row["disposition"], row["reason"], row["plan_id"]) != (disposition, reason, plan_id):
+        if row is None or (row["disposition"], row["reason"]) != (disposition, reason):
             raise ValueError("input_disposition_conflict")
 
     def newer_entry_stop_applied(self, *, account_slot: str, seq: int) -> bool:
         return (
             self.conn.execute(
-                """
-            SELECT 1 FROM trading_operator_intents i
-            JOIN trading_dispositions d ON d.input_kind='intent' AND d.input_id=i.command_id
-            WHERE i.account_slot=%s AND i.seq>%s
-              AND i.action IN ('pause_entries','emergency_halt') AND d.disposition='accepted'
-            LIMIT 1
-            """,
+                "SELECT 1 FROM trading_operator_intents WHERE account_slot=%s AND seq>%s "
+                "AND action IN ('pause_entries','emergency_halt') AND disposition='accepted' LIMIT 1",
                 (account_slot, seq),
             ).fetchone()
             is not None
         )
 
-    def create_plan(
+    def accept_entry(
         self,
         *,
-        plan_id: str,
-        signal_id: str | None,
+        entry_id: str,
         command_id: str | None,
         account_slot: str,
         native_symbol: str,
@@ -288,49 +271,76 @@ class ExecutorStorage:
         tp_bps: int,
         max_hold_s: int,
         now_ns: int,
-    ) -> None:
+    ) -> bool:
+        self.ensure_account(account_slot)
+        values = (quantity, reference_price, quantity, reference_price, stop_bps, tp_bps, max_hold_s, now_ns, now_ns)
+        if command_id is None:
+            row = self.conn.execute(
+                "UPDATE trading_entries SET quantity=%s,reference_price=%s,reserved_notional=%s::numeric * %s::numeric,"
+                "stop_bps=%s,tp_bps=%s,max_hold_s=%s,state='accepted',pnl_status='pending',reason='accepted',"
+                "disposed_at_ns=%s,updated_at_ns=%s WHERE entry_id=%s AND account_slot=%s AND native_symbol=%s "
+                "AND side=%s AND state='pending' RETURNING entry_id",
+                (*values, entry_id, account_slot, native_symbol, side),
+            ).fetchone()
+            return row is not None
+        intent = self.conn.execute(
+            "SELECT requested_at_ns,expires_at_ns,payload FROM trading_operator_intents "
+            "WHERE command_id=%s AND account_slot=%s AND action='manual_entry' AND disposition IS NULL FOR UPDATE",
+            (command_id, account_slot),
+        ).fetchone()
+        if intent is None:
+            return False
+        if (
+            entry_id != command_id
+            or intent["payload"]["market_key"] != f"crypto:perp:{native_symbol.removesuffix('USDT')}:USDT"
+            or intent["payload"]["direction"] != side
+        ):
+            raise ValueError("manual_entry_identity_conflict")
         self.conn.execute(
-            """
-            INSERT INTO trading_plans(plan_id,signal_id,command_id,account_slot,environment,native_symbol,
-                                      side,quantity,reference_price,reserved_notional,
-                                      stop_bps,tp_bps,max_hold_s,status,updated_at_ns)
-            VALUES (%s,%s,%s,%s,'DEMO',%s,%s,%s,%s,%s::numeric * %s::numeric,%s,%s,%s,'accepted',%s)
-            """,
+            "INSERT INTO trading_entries(entry_id,source,command_id,account_slot,native_symbol,side,requested_at_ns,"
+            "expires_at_ns,created_at_ns,quantity,reference_price,reserved_notional,stop_bps,tp_bps,max_hold_s,"
+            "state,pnl_status,reason,disposed_at_ns,updated_at_ns) "
+            "VALUES (%s,'manual',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::numeric * %s::numeric,%s,%s,%s,"
+            "'accepted','pending','accepted',%s,%s)",
             (
-                plan_id,
-                signal_id,
+                entry_id,
                 command_id,
                 account_slot,
                 native_symbol,
                 side,
-                quantity,
-                reference_price,
-                quantity,
-                reference_price,
-                stop_bps,
-                tp_bps,
-                max_hold_s,
-                now_ns,
+                intent["requested_at_ns"],
+                intent["expires_at_ns"],
+                intent["requested_at_ns"],
+                *values,
             ),
         )
+        self.record_disposition(
+            kind="intent",
+            input_id=command_id,
+            account_slot=account_slot,
+            disposition="accepted",
+            reason="accepted",
+            now_ns=now_ns,
+        )
+        return True
 
     def reserve_order(
-        self, *, client_id: str, plan_id: str, native_symbol: str, leg: str, attempt: int, now_ns: int
+        self, *, client_id: str, entry_id: str, native_symbol: str, leg: str, attempt: int, now_ns: int
     ) -> dict[str, Any]:
         inserted = self.conn.execute(
             """
-            INSERT INTO trading_orders(client_order_id,plan_id,environment,native_symbol,
+            INSERT INTO trading_orders(client_order_id,entry_id,environment,native_symbol,
                                        leg,attempt,status,updated_at_ns)
             VALUES (%s,%s,'DEMO',%s,%s,%s,'reserved',%s)
-            ON CONFLICT(plan_id,leg,attempt) DO NOTHING RETURNING *
+            ON CONFLICT(entry_id,leg,attempt) DO NOTHING RETURNING *
             """,
-            (client_id, plan_id, native_symbol, leg, attempt, now_ns),
+            (client_id, entry_id, native_symbol, leg, attempt, now_ns),
         ).fetchone()
         row = (
             inserted
             or self.conn.execute(
-                "SELECT * FROM trading_orders WHERE plan_id=%s AND leg=%s AND attempt=%s",
-                (plan_id, leg, attempt),
+                "SELECT * FROM trading_orders WHERE entry_id=%s AND leg=%s AND attempt=%s",
+                (entry_id, leg, attempt),
             ).fetchone()
         )
         if row is None or row["client_order_id"] != client_id:
@@ -412,20 +422,36 @@ class ExecutorStorage:
             ),
         )
 
-    def active_plans(self, account_slot: str) -> list[dict[str, Any]]:
+    def active_entries(self, account_slot: str) -> list[dict[str, Any]]:
         return cast(
             list[dict[str, Any]],
             self.conn.execute(
-                "SELECT * FROM trading_plans WHERE account_slot=%s AND terminal_at_ns IS NULL ORDER BY updated_at_ns",
+                "SELECT * FROM trading_entries WHERE account_slot=%s AND state IN "
+                "('accepted','open','closing') ORDER BY updated_at_ns",
+                (account_slot,),
+            ).fetchall(),
+        )
+
+    def console_open_plans(self, account_slot: str) -> list[dict[str, Any]]:
+        """Keep the diagnostic wire shape while the owned ledger uses entry identities."""
+        return cast(
+            list[dict[str, Any]],
+            self.conn.execute(
+                "SELECT entry_id AS plan_id,CASE WHEN source='signal' THEN entry_id END AS signal_id,"
+                "command_id,account_slot,'DEMO' AS environment,native_symbol,side,quantity,reference_price,"
+                "reserved_notional,stop_bps,tp_bps,max_hold_s,state AS status,opened_at_ns,terminal_at_ns,"
+                "terminal_reason,pnl_status,realized_pnl,fees,net_pnl,pnl_deadline_ns,updated_at_ns "
+                "FROM trading_entries WHERE account_slot=%s AND state IN ('accepted','open','closing') "
+                "ORDER BY updated_at_ns",
                 (account_slot,),
             ).fetchall(),
         )
 
     def active_client_ids(self, account_slot: str) -> set[str]:
         rows = self.conn.execute(
-            "SELECT o.client_order_id FROM trading_orders o LEFT JOIN trading_plans p ON p.plan_id=o.plan_id "
+            "SELECT o.client_order_id FROM trading_orders o LEFT JOIN trading_entries p ON p.entry_id=o.entry_id "
             "LEFT JOIN trading_operator_intents i ON i.command_id=o.command_id "
-            "WHERE (p.account_slot=%s AND p.terminal_at_ns IS NULL) "
+            "WHERE (p.account_slot=%s AND p.state IN ('accepted','open','closing')) "
             "OR (i.account_slot=%s AND o.status IN ('reserved','unknown','submitted','working'))",
             (account_slot, account_slot),
         ).fetchall()
@@ -440,59 +466,55 @@ class ExecutorStorage:
         account_snapshot: dict[str, Any] | None = None,
     ) -> None:
         self.conn.execute(
-            "UPDATE trading_executor_state SET last_full_reconcile_at_ns=%s,unexpected_exposure=%s,"
+            "UPDATE trading_accounts SET last_full_reconcile_at_ns=%s,unexpected_exposure=%s,"
             "account_snapshot=COALESCE(%s::jsonb,account_snapshot) "
             "WHERE account_slot=%s",
             (now_ns, unexpected, None if account_snapshot is None else json.dumps(account_snapshot), account_slot),
         )
 
-    def plans_awaiting_fills(self, account_slot: str) -> list[dict[str, Any]]:
+    def entries_awaiting_fills(self, account_slot: str) -> list[dict[str, Any]]:
         return cast(
             list[dict[str, Any]],
             self.conn.execute(
-                "SELECT * FROM trading_plans WHERE account_slot=%s AND status='terminal' "
+                "SELECT * FROM trading_entries WHERE account_slot=%s AND state='terminal' "
                 "AND pnl_status='pending' ORDER BY terminal_at_ns LIMIT 100",
                 (account_slot,),
             ).fetchall(),
         )
 
-    def plan(self, plan_id: str) -> dict[str, Any] | None:
+    def entry(self, entry_id: str) -> dict[str, Any] | None:
         return cast(
             dict[str, Any] | None,
-            self.conn.execute("SELECT * FROM trading_plans WHERE plan_id=%s", (plan_id,)).fetchone(),
+            self.conn.execute("SELECT * FROM trading_entries WHERE entry_id=%s", (entry_id,)).fetchone(),
         )
 
-    def plan_orders(self, plan_id: str) -> list[dict[str, Any]]:
+    def entry_orders(self, entry_id: str) -> list[dict[str, Any]]:
         return cast(
             list[dict[str, Any]],
             self.conn.execute(
-                "SELECT * FROM trading_orders WHERE plan_id=%s ORDER BY leg,attempt", (plan_id,)
+                "SELECT * FROM trading_orders WHERE entry_id=%s ORDER BY leg,attempt", (entry_id,)
             ).fetchall(),
         )
 
-    def trade_cursor(self, symbol: str) -> int | None:
+    def trade_cursor(self, symbol: str, *, account_slot: str) -> int | None:
         row = self.conn.execute(
-            "SELECT next_trade_id FROM trading_trade_cursors WHERE environment='DEMO' AND native_symbol=%s",
-            (symbol,),
+            "SELECT trade_cursors->%s AS cursor FROM trading_accounts WHERE account_slot=%s", (symbol, account_slot)
         ).fetchone()
-        return None if row is None else int(row["next_trade_id"])
+        return None if row is None or row["cursor"] is None else int(row["cursor"]["next_trade_id"])
 
-    def advance_trade_cursor(self, *, symbol: str, next_id: int, now_ns: int) -> None:
+    def advance_trade_cursor(self, *, account_slot: str, symbol: str, next_id: int, now_ns: int) -> None:
+        self.ensure_account(account_slot)
         self.conn.execute(
-            """
-            INSERT INTO trading_trade_cursors(environment,native_symbol,next_trade_id,checked_at_ns)
-            VALUES ('DEMO',%s,%s,%s)
-            ON CONFLICT(environment,native_symbol) DO UPDATE SET
-              next_trade_id=GREATEST(trading_trade_cursors.next_trade_id,EXCLUDED.next_trade_id),
-              checked_at_ns=EXCLUDED.checked_at_ns
-            """,
-            (symbol, next_id, now_ns),
+            "UPDATE trading_accounts SET trade_cursors=jsonb_set(trade_cursors,ARRAY[%s],"
+            "jsonb_build_object('next_trade_id',GREATEST(COALESCE((trade_cursors->%s->>'next_trade_id')::bigint,0),%s),"
+            "'checked_at_ns',%s)) WHERE account_slot=%s",
+            (symbol, symbol, next_id, now_ns, account_slot),
         )
 
-    def set_plan_status(
+    def set_entry_state(
         self,
         *,
-        plan_id: str,
+        entry_id: str,
         status: str,
         now_ns: int,
         opened_at_ns: int | None = None,
@@ -500,13 +522,13 @@ class ExecutorStorage:
     ) -> None:
         self.conn.execute(
             """
-            UPDATE trading_plans SET status=%s,
+            UPDATE trading_entries SET state=%s,
               opened_at_ns=COALESCE(opened_at_ns,%s),
               terminal_at_ns=CASE WHEN %s='terminal' THEN COALESCE(terminal_at_ns,%s) ELSE terminal_at_ns END,
               terminal_reason=COALESCE(terminal_reason,%s),
               pnl_deadline_ns=CASE WHEN %s='terminal' THEN COALESCE(pnl_deadline_ns,%s) ELSE pnl_deadline_ns END,
               updated_at_ns=%s
-            WHERE plan_id=%s AND (terminal_at_ns IS NULL OR %s='terminal')
+            WHERE entry_id=%s AND (terminal_at_ns IS NULL OR %s='terminal')
             """,
             (
                 status,
@@ -517,7 +539,7 @@ class ExecutorStorage:
                 status,
                 now_ns + 60_000_000_000,
                 now_ns,
-                plan_id,
+                entry_id,
                 status,
             ),
         )
@@ -546,42 +568,32 @@ class ExecutorStorage:
         return inserted is not None
 
     def attribute_unbound_fills(self, *, symbol: str, now_ns: int) -> int:
-        """Bind native trades after order evidence arrives, without mutating fill facts."""
         rows = self.conn.execute(
-            """
-            INSERT INTO trading_fill_attributions(
-                environment,native_symbol,trade_id,plan_id,command_id,client_order_id,attributed_at_ns
-            )
-            SELECT f.environment,f.native_symbol,f.trade_id,o.plan_id,o.command_id,o.client_order_id,%s
-            FROM trading_fills f JOIN trading_orders o
-              ON o.environment=f.environment AND o.native_symbol=f.native_symbol
-             AND o.venue_order_id=f.venue_order_id
-            WHERE f.environment='DEMO' AND f.native_symbol=%s
-            ON CONFLICT(environment,native_symbol,trade_id) DO NOTHING
-            RETURNING trade_id
-            """,
+            "UPDATE trading_fills f SET account_slot=COALESCE(e.account_slot,i.account_slot),"
+            "client_order_id=o.client_order_id,attributed_at_ns=%s FROM trading_orders o "
+            "LEFT JOIN trading_entries e ON e.entry_id=o.entry_id "
+            "LEFT JOIN trading_operator_intents i ON i.command_id=o.command_id "
+            "WHERE o.environment=f.environment AND o.native_symbol=f.native_symbol AND "
+            "o.venue_order_id=f.venue_order_id "
+            "AND f.environment='DEMO' AND f.native_symbol=%s AND f.client_order_id IS NULL RETURNING f.trade_id",
             (now_ns, symbol),
         ).fetchall()
         return len(rows)
 
-    def exit_fill_client_id(self, plan_id: str) -> str | None:
+    def exit_fill_client_id(self, entry_id: str) -> str | None:
         row = self.conn.execute(
-            """
-            SELECT client_order_id FROM trading_fill_attributions
-            WHERE plan_id=%s AND client_order_id IN
-              (SELECT client_order_id FROM trading_orders WHERE plan_id=%s AND leg<>'entry')
-            ORDER BY trade_id DESC LIMIT 1
-            """,
-            (plan_id, plan_id),
+            "SELECT f.client_order_id FROM trading_fills f JOIN trading_orders o USING(client_order_id) "
+            "WHERE o.entry_id=%s AND o.leg<>'entry' ORDER BY f.trade_id DESC LIMIT 1",
+            (entry_id,),
         ).fetchone()
         return None if row is None else str(row["client_order_id"])
 
-    def pending_pnl_plans(self, account_slot: str) -> list[dict[str, Any]]:
+    def pending_pnl_entries(self, account_slot: str) -> list[dict[str, Any]]:
         return cast(
             list[dict[str, Any]],
             self.conn.execute(
                 """
-            SELECT * FROM trading_plans WHERE account_slot=%s AND status='terminal' AND pnl_status='pending'
+            SELECT * FROM trading_entries WHERE account_slot=%s AND state='terminal' AND pnl_status='pending'
             ORDER BY terminal_at_ns LIMIT 100
             """,
                 (account_slot,),
@@ -599,18 +611,16 @@ class ExecutorStorage:
                    COALESCE(BOOL_AND(f.fee_asset='USDT') FILTER (WHERE f.trade_id IS NOT NULL),true)
                        AS fees_in_usdt
             FROM trading_orders o
-            LEFT JOIN trading_fill_attributions a ON a.client_order_id=o.client_order_id
-            LEFT JOIN trading_fills f ON (f.environment,f.native_symbol,f.trade_id)
-              =(a.environment,a.native_symbol,a.trade_id)
-            WHERE o.plan_id=%s GROUP BY o.leg
+            LEFT JOIN trading_fills f ON f.client_order_id=o.client_order_id
+            WHERE o.entry_id=%s GROUP BY o.leg
             """,
-            (plan["plan_id"],),
+            (plan["entry_id"],),
         ).fetchall()
         entry_qty = sum(row["quantity"] for row in rows if row["leg"] == "entry")
         exit_qty = sum(row["quantity"] for row in rows if row["leg"] != "entry")
         entry_order = self.conn.execute(
-            "SELECT status,evidence FROM trading_orders WHERE plan_id=%s AND leg='entry'",
-            (plan["plan_id"],),
+            "SELECT status,evidence FROM trading_orders WHERE entry_id=%s AND leg='entry'",
+            (plan["entry_id"],),
         ).fetchone()
         entry_evidence = {} if entry_order is None else entry_order["evidence"] or {}
         expected_entry = Decimal(str(entry_evidence.get("executedQty", plan["quantity"])))
@@ -628,8 +638,8 @@ class ExecutorStorage:
         fees = sum(row["fee"] for row in rows)
         self.conn.execute(
             """
-            UPDATE trading_plans SET pnl_status=%s,realized_pnl=%s,fees=%s,net_pnl=%s,updated_at_ns=%s
-            WHERE plan_id=%s AND pnl_status='pending'
+            UPDATE trading_entries SET pnl_status=%s,realized_pnl=%s,fees=%s,net_pnl=%s,updated_at_ns=%s
+            WHERE entry_id=%s AND pnl_status='pending'
             """,
             (
                 status,
@@ -637,14 +647,14 @@ class ExecutorStorage:
                 fees if all(row["fees_in_usdt"] for row in rows) else None,
                 realized - fees if complete else None,
                 now_ns,
-                plan["plan_id"],
+                plan["entry_id"],
             ),
         )
         return status
 
     def signal_ledger(self, *, since_ns: int, limit: int) -> list[dict[str, Any]]:
         rows = self.conn.execute(SIGNAL_LEDGER_SQL, (since_ns, limit)).fetchall()
-        return [{**row["payload"], "seq": row["seq"]} for row in rows]
+        return [dict(row["request"]) for row in rows]
 
     def fill_ledger(self, *, since_ns: int, limit: int) -> list[dict[str, Any]]:
         return cast(list[dict[str, Any]], self.conn.execute(FILL_LEDGER_SQL, (since_ns, limit)).fetchall())

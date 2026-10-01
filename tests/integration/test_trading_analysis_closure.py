@@ -8,12 +8,10 @@ import json
 import time
 from dataclasses import asdict
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test, postgres_migration_test_dsn
-from tracefold.app import trading_replay
 from tracefold.app.trading_analysis import AnalysisRunner
 from tracefold.app.trading_assessor import AssessmentResult
 from tracefold.platform.config.models import PostgresConfig, Settings
@@ -105,7 +103,7 @@ def test_case_claim_freeze_paper_and_scoreboard_roundtrip(tmp_path, postgres_clo
                 LegProbabilities(Decimal("0.7"), Decimal("0.2"), Decimal("0.1")),
                 LegProbabilities(Decimal("0.2"), Decimal("0.7"), Decimal("0.1")),
             )
-            trading.record_assessment(
+            trading.record_forecast(
                 case_id=case_id,
                 program_sha="c" * 64,
                 route="fixture-model",
@@ -148,49 +146,7 @@ def test_case_claim_freeze_paper_and_scoreboard_roundtrip(tmp_path, postgres_clo
         assert len(board["programs"]) == 1
         assert len(board["programs"][0]["policies"]) == 6
         assert board["programs"][0]["forecast"]["status"] == "insufficient_data"
-        settings = Settings()
-        settings.storage.postgres = PostgresConfig(
-            dsn=postgres_migration_test_dsn(postgres_clone_dsn), password_file=None
-        )
-        settings.trading.analysis.model_name = "candidate-model"
-        settings.llm.api_key = "fixture-key"
-        settings.llm.base_url = "https://fixture.invalid/v1"
-        cache_calls: list[bool] = []
-
-        def fake_lm(_endpoint, **kwargs):
-            cache_calls.append(kwargs["cache"])
-            return object()
-
-        class FakeAssessor:
-            def __init__(self, **_kwargs):
-                pass
-
-            async def assess(self, _view):
-                return AssessmentResult(forecast, "complete", None, (), {"input_tokens": 1, "output_tokens": 1})
-
-        monkeypatch.setattr(trading_replay, "generative_lm", fake_lm)
-        monkeypatch.setattr(trading_replay, "TradingAssessor", FakeAssessor)
-        artifact = Path(__file__).resolve().parents[2] / "tracefold/trading/programs/forecast_v1.json"
-        result = asyncio.run(
-            trading_replay.replay(settings, program_file=artifact, since_ms=at - 1, until_ms=at + 86_400_000)
-        )
-        assert result["cases"] == result["assessed"] == 1
-        assert cache_calls == [True]
-        first_replay = trading.analysis_case(case_id)
-        assert first_replay is not None
-        assert len(first_replay["policy_actions"]) == 12
-        assert (
-            asyncio.run(
-                trading_replay.replay(settings, program_file=artifact, since_ms=at - 1, until_ms=at + 86_400_000)
-            )
-            == result
-        )
-        second_replay = trading.analysis_case(case_id)
-        assert second_replay is not None
-        assert second_replay["assessments"] == first_replay["assessments"]
-        assert second_replay["policy_actions"] == first_replay["policy_actions"]
-        assert cache_calls == [True, True]
-        assert conn.execute("SELECT count(*) AS n FROM trading_signals").fetchone()["n"] == 0
+        assert conn.execute("SELECT count(*) AS n FROM trading_entries").fetchone()["n"] == 0
     finally:
         conn.close()
 
@@ -215,12 +171,16 @@ def test_public_correction_blocks_the_original_catalyst_before_signal(tmp_path, 
             assert trading.publication_source_status(case_id=case_id, now_ms=at) is None
             assert (
                 trading.receive_source_update(
-                    update_id="correction-1",
+                    update_id="public:correction-1",
                     source_fact_key="event-sol",
                     content_revision="v2",
                     affected_claim_refs=("original-claim",),
                     retired_claim_refs=("original-claim",),
-                    payload={"kind": "source_update"},
+                    payload={
+                        "kind": "source_update",
+                        "affected_claim_refs": ["original-claim"],
+                        "retired_claim_refs": ["original-claim"],
+                    },
                     payload_sha256="b" * 64,
                     now_ms=at + 1_000,
                 )

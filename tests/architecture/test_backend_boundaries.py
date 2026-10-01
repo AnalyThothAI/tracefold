@@ -57,7 +57,7 @@ SQL_TABLE_RE = re.compile(
 )
 PLATFORM_TABLES = {
     "alembic_version",
-    "workers_runtime",
+    "runtime_processes",
 }
 # Existing database adapters that legitimately own SQL without being storage modules. Keep this small:
 # App is the composition seam. New product SQL belongs in its owner's storage family.
@@ -65,7 +65,6 @@ SQL_LOCATION_EXCEPTIONS = frozenset(
     {
         "tracefold/app/cli/commands/db.py",
         "tracefold/app/query_audit.py",
-        "tracefold/app/workers/runtime.py",
     }
 )
 

@@ -30,7 +30,15 @@ P3 先停 Workers，再停 Serve，核实无 News 写者会话。完整备份外
 
 启动前在维护窗口执行 `VACUUM (FULL, ANALYZE) news_events; ANALYZE news_analyses, news_jobs, news_items;`，回收回填旧版本并刷新统计。租约和重试预算保留，未发送唤醒由现有 repair turn 恢复。核对详情版本、head 和待处理任务；回滚恢复已核验备份加旧镜像。生产迁移、维护 VACUUM、HOT 比率与 24 小时性能观测尚未执行。
 
-[P3 迁移测试](../tests/integration/test_p3_migration.py)核对 20 个读取投影及预检回滚；[并发与 GIN 测试](../tests/integration/test_news_p3_semantic_chain.py)证明证据 CAS、Event 串行锁、成员 FK 兼容和 4 万 Event 的索引路径。当前库为 36 张表，P4 再收敛到最终目标。
+[P3 迁移测试](../tests/integration/test_p3_migration.py)核对 20 个读取投影及预检回滚；[并发与 GIN 测试](../tests/integration/test_news_p3_semantic_chain.py)证明证据 CAS、Event 串行锁、成员 FK 兼容和 4 万 Event 的索引路径。P3 阶段库为 36 张表。
+
+`20261001_0424`（#764 P4）从 `0423` 升级为最终 26 张表：17 张 News 表、七张 Trading 表、`runtime_processes` 和 Alembic 版本表。Trading 的输入、case 文档、entry 与账户分别承接事实、持久决定和执行控制；订单和原生成交证据继续保留。
+
+先记录 `trading status` 以及交易所持仓、普通单和 Algo 单；避开接近 max_hold_s 的持仓或进行中的 flatten。先停 Analysis，等待 pending 清零（最长 300 秒），然后停 Executor、Workers 和 Serve，确认没有写者会话。保留完整备份，另以 custom-format `pg_dump` 导出以下 14 张源表：`trading_triggers`、`trading_source_amendments`、`trading_assessments`、`trading_policy_actions`、`trading_paper_legs`、`trading_signals`、`trading_dispositions`、`trading_plans`、`trading_fill_attributions`、`trading_trade_cursors`、`trading_control_state`、`trading_executor_state`、`trading_analysis_runtime`、`workers_runtime`。记录导出文件 sha256，并用 `pg_restore --list` 核验；部署记录包含备份身份、源 head、目标 head 和导出清单。
+
+P4 拒绝未执行 P0、同 case 多个 assessment、输入/动作/计划/处置/成交身份不一致、不完整 paper 对、claim 不一致，以及无法唯一确定游标账户的数据。若 #762 已先合并，应先适配独立 evaluations 账本并保留 replay；本迁移适用于尚未合并该评估账本的源结构。13 组数量、md5 与双向逐行校验全部成功后才删除旧表，日志须有 `p4_verify ok`。未归属历史成交的账户保持 NULL；Analysis 和 Executor 的旧心跳不回填为新进程存活证据。
+
+使用 `make up` 启动匹配镜像后，核对 26 表、pause/halt、pending、case 模型输入与订单身份，确认无重复下单，并在 70 秒内完成账户对账。回滚需要恢复已核验完整备份和旧镜像，数据库恢复不能撤销交易所已经发生的订单。[迁移测试](../tests/integration/test_p4_migration.py)验证带数据的 P0→P4、公开投影等价和预检回滚；[账本测试](../tests/integration/test_p4_trading_ledger.py)验证 pending CAS、同 symbol 拒绝、write-once 与进程存活边界。生产迁移、导出、停机时长与场所对账尚未执行。
 
 <details>
 <summary><strong>本页目录</strong></summary>
@@ -59,7 +67,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20261001_0423`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20261001_0424`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序

@@ -292,8 +292,9 @@ def test_trading_analysis_audit_explains_the_statements_the_routes_execute():
     assert [params for _, params in executed[:7] + executed[9:]] == [params for _, params in audited[:7] + audited[9:]]
     assert executed[7][1] == ([],) and executed[8][1] == ([],)
     assert "WHERE case_id=%s" in audited[2][0]
-    assert "FROM trading_plans p" in audited[5][0]
-    assert "FROM trading_dispositions d" in audited[6][0]
+    assert "FROM trading_entries e" in audited[5][0]
+    assert "FROM trading_entries WHERE source='signal'" in audited[6][0]
+    assert "FROM trading_operator_intents WHERE action='manual_entry'" in audited[6][0]
 
 
 def test_status_audit_explains_the_statements_the_status_route_executes():
@@ -969,7 +970,7 @@ class RecordingStatementConn:
         return []
 
     def fetchone(self):
-        if "FROM trading_triggers" in self.statements[-1][0]:
+        if "FROM trading_inputs" in self.statements[-1][0]:
             return {"n": 0}
         if "AS closed_today" in self.statements[-1][0]:
             return {

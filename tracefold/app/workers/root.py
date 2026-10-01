@@ -25,7 +25,6 @@ from tracefold.app.workers.runtime import (
     CapabilityStates,
     FatalCode,
     LifecycleState,
-    WorkersRuntimeRepository,
 )
 from tracefold.app.workers.task_contract import (
     WORKERS_CONTROL_TASK_NAME,
@@ -43,6 +42,7 @@ from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.client import postgres_health_check
 from tracefold.platform.postgres.migrations import latest_migration_version
+from tracefold.platform.postgres.runtime_processes import RuntimeProcesses
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
 from tracefold.platform.runtime_identity import UNVERSIONED, runtime_identity
 
@@ -708,8 +708,8 @@ def _runtime_begin(
     started_at_ms: int,
 ) -> bool:
     with db.worker_session("workers_runtime_begin", 1.0) as repos:
-        return WorkersRuntimeRepository(repos.conn).begin(
-            runtime_id=runtime_id,
+        return RuntimeProcesses(repos.conn).begin(
+            instance_id=runtime_id,
             runtime_version=runtime_version,
             runtime_revision=runtime_revision,
             image_digest=image_digest,
@@ -725,8 +725,8 @@ def _runtime_transition(
     fatal_code: FatalCode | None,
 ) -> None:
     with db.worker_session("workers_runtime_transition", 1.0) as repos:
-        WorkersRuntimeRepository(repos.conn).transition(
-            runtime_id=runtime_id,
+        RuntimeProcesses(repos.conn).transition(
+            instance_id=runtime_id,
             lifecycle_state=lifecycle_state,
             fatal_code=fatal_code,
             now_ms=_now_ms(),
@@ -735,16 +735,16 @@ def _runtime_transition(
 
 def _runtime_capabilities(db: WorkerDatabase, runtime_id: str, capabilities: Any) -> None:
     with db.worker_session("workers_runtime_capabilities", 1.0) as repos:
-        WorkersRuntimeRepository(repos.conn).set_capabilities(
-            runtime_id=runtime_id,
-            capabilities=capabilities,
+        RuntimeProcesses(repos.conn).set_detail(
+            instance_id=runtime_id,
+            detail={"capabilities": capabilities},
         )
 
 
 def _runtime_heartbeat(db: WorkerDatabase, runtime_id: str, heartbeat_at_ms: int) -> None:
     with db.worker_session("workers_runtime_heartbeat", 1.0) as repos:
-        WorkersRuntimeRepository(repos.conn).heartbeat(
-            runtime_id=runtime_id,
+        RuntimeProcesses(repos.conn).heartbeat(
+            instance_id=runtime_id,
             now_ms=heartbeat_at_ms,
         )
 

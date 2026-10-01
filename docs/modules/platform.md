@@ -172,6 +172,8 @@ News 的展示报价不是执行 tick feed；最新快照不是历史价格证�
 
 `/healthz` 是进程存活问题；`/readyz` 是对应角色的就绪问题；业务状态还必须看能力、工作进度、错误、freshness 与测量时钟。`/metrics` 提供该进程的观测，不代表账户资金真实状态。
 
+平台 [RuntimeProcesses](../../tracefold/platform/postgres/runtime_processes.py) 独占 `runtime_processes` 的读写。Workers 使用 singleton 键，Analysis 和 Executor 使用账户槽位键；每次启动有独立 UUID，旧实例不能更新已接管的行。心跳统一使用毫秒，detail 仅保存进程诊断或能力报告，不承接交易账户、预测和执行事实。App 装配平台与业务仓库，业务存储不读取存活表。
+
 记录 `event_id` / revision / intent / case / entry 等实际身份，以便串联调用。日志不得写完整密钥、DSN 凭据或含密码 proxy URL。恢复和备份执行证据见[运维](../OPERATIONS.md)及[迁移](../MIGRATIONS.md)，不要为了查看文档生成物连接生产数据库。
 
 <a id="section-验证入口"></a>

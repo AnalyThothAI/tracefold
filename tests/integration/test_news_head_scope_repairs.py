@@ -145,7 +145,7 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(n
         assert result == "accepted"
     finally:
         conn.close()
-    assert sql("SELECT count(*) AS n FROM trading_source_amendments")[0]["n"] == 1
+    assert sql("SELECT count(*) AS n FROM trading_inputs WHERE kind='source_update'")[0]["n"] == 1
     assert sql(f"SELECT count(*) AS n FROM ({SEMANTIC_RESULTS_SQL})")[0]["n"] == 1
     # Work still owed follows the repaired head -- pending, or failed and waiting for a retry of exactly that
     # head -- without its budget replenished; completed work stays with the head it completed.

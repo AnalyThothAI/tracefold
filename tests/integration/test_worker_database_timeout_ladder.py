@@ -63,7 +63,7 @@ def test_quote_and_the_signal_lane_progress_while_reaction_holds_the_heavy_gate(
         return read_one(repos)
 
     def lane_turn(repos) -> int:
-        repos.trading.state("default")
+        repos.trading.account("default")
         return 1
 
     def _heavy_session(fn):

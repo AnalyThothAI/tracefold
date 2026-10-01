@@ -149,7 +149,9 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 | `serve` / `workers` / `analysis` | 各自进程入口，不共享一套隐式生命周期 |
 | `db` | migrate、health、audit、query-audit 与运行身份相关操作 |
 | `news` | broker、目录、校准、离线 replay、钱包诊断、why 与精确 retry-work |
-| `trading` | status / diagnose、Case / scoreboard / replay / Signal / fill 查询、本地操作与历史核验 |
+| `trading` | status / diagnose、Case / scoreboard / Signal / fill 查询、本地操作与历史核验 |
+
+P4 的 HTTP 输出保持原有键；CLI 删除 `trading replay`，`trading signals` 不再输出 `seq`，`trading diagnose` 的 `heartbeat_at_ns` 改为 `heartbeat_at_ms`。operator intent 的 seq 保留为命令顺序，消费按待处置状态进行。
 
 `news replay` 在本地重放 provider hits 的准入 / Gate，不调用模型或 broker；它也不代表完整 EventUpdate→通知→交易回放。实际参数和默认值见[生成 CLI 帮助](generated/cli-help.md)，不要把命令名称扩展为未实现能力。
 

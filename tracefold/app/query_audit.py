@@ -11,12 +11,12 @@ from tracefold.platform.postgres.audit import (
     ReadQuerySpec,
     postgres_query_specs,
 )
+from tracefold.platform.postgres.runtime_processes import ANALYSIS_RUNTIME_SQL, workers_runtime_read_query
 from tracefold.trading.storage.analysis import (
     ACTIONS_BY_CASE_SQL,
     ANALYSIS_CASE_SQL,
     ANALYSIS_CASES_FOR_SOURCE_SQL,
     ANALYSIS_CASES_SQL,
-    ANALYSIS_RUNTIME_SQL,
     ASSESSMENTS_BY_CASE_SQL,
     PAPER_BY_CASE_SQL,
 )
@@ -40,8 +40,6 @@ from tracefold.trading.storage.scoreboard import (
     SCOREBOARD_LEGS_SQL,
     SCOREBOARD_TRIGGER_COUNT_SQL,
 )
-
-from .workers.runtime import workers_runtime_read_query
 
 
 class NewsQuerySpecsProvider(Protocol):

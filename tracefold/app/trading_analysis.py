@@ -14,6 +14,7 @@ from decimal import Decimal
 from functools import partial
 from pathlib import Path
 from typing import Any, cast
+from uuid import uuid4
 
 import httpx
 
@@ -26,6 +27,7 @@ from tracefold.app.trading_intake import (
     catalyst_assets,
     public_update,
 )
+from tracefold.platform.postgres.runtime_processes import AnalysisProcessDetail, RuntimeProcesses
 from tracefold.trading.engine.case_view import CaseView, case_view_from_record
 from tracefold.trading.engine.forecast import POLICY_VERSION, PolicyConfig, all_policy_decisions
 from tracefold.trading.engine.marketdata import MarketDataPort, analysis_market_request
@@ -55,6 +57,8 @@ class AnalysisRunner:
         raw_root: Path,
         fault_code: str | None = None,
     ) -> None:
+        self.instance_id = str(uuid4())
+        self._runtime_started = False
         self.settings = settings
         self.market_data = market_data
         self._db_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="analysis-db")
@@ -161,8 +165,14 @@ class AnalysisRunner:
             return "publish_disabled"
         if not execution.enabled or execution.binance.environment != "DEMO":
             return "runtime_unavailable"
-        state = await self._db_async(lambda repos: repos.trading.state(execution.account_slot))
-        if state is None or _clock_ms() * 1_000_000 - int(state["heartbeat_at_ns"]) > 5_000_000_000:
+        running = await self._db_async(
+            lambda repos: RuntimeProcesses(
+                repos.conn,
+                kind="executor",
+                key=execution.account_slot,
+            ).is_running(now_ms=_clock_ms())
+        )
+        if not running:
             return "runtime_unavailable"
         async with httpx.AsyncClient(timeout=5, follow_redirects=False) as client:
             try:
@@ -186,7 +196,6 @@ class AnalysisRunner:
         policy_id = self.settings.trading.analysis.active_policy
         decision_id = _sha((case["case_id"], self.program_sha, policy_id, POLICY_VERSION))
         return SignalV4(
-            seq=1,
             signal_id=_sha((decision_id, "signal_v4")),
             decision_id=decision_id,
             case_id=str(case["case_id"]),
@@ -290,7 +299,7 @@ class AnalysisRunner:
             def settle(repos: Any) -> bool:
                 if not repos.trading.claim_is_current(case_id=case_id, claim_token=token, now_ms=now_ms):
                     return False
-                repos.trading.record_assessment(
+                repos.trading.record_forecast(
                     case_id=case_id,
                     program_sha=self.program_sha,
                     route=self.settings.trading.analysis.model_name or "",
@@ -314,10 +323,10 @@ class AnalysisRunner:
                         publish_status = repos.trading.publication_source_status(case_id=case_id, now_ms=now_ms)
                         if publish_status is None and now_ms >= int(case["root_expires_at_ms"]):
                             publish_status = "signal_expired"
-                        if publish_status is None:
-                            state = repos.trading.state(self.settings.trading.execution.account_slot)
-                            if state is None or now_ms * 1_000_000 - int(state["heartbeat_at_ns"]) > 5_000_000_000:
-                                publish_status = "runtime_unavailable"
+                        if publish_status is None and not RuntimeProcesses(
+                            repos.conn, kind="executor", key=self.settings.trading.execution.account_slot
+                        ).is_running(now_ms=now_ms):
+                            publish_status = "runtime_unavailable"
                         if publish_status is None:
                             signal = self._signal(
                                 {**case, "reference_price": reference_price}, view, live_action.action, now_ms
@@ -436,6 +445,35 @@ class AnalysisRunner:
             )
         return len(rows)
 
+    def _heartbeat(self, repos: Any, now_ms: int) -> None:
+        runtime = RuntimeProcesses(repos.conn, kind="analysis", key=self.settings.trading.execution.account_slot)
+        if not self._runtime_started:
+            if not runtime.begin(instance_id=self.instance_id, started_at_ms=now_ms, now_ms=now_ms):
+                raise RuntimeError("analysis_account_slot_already_owned")
+            runtime.transition(instance_id=self.instance_id, lifecycle_state="running", now_ms=now_ms)
+            self._runtime_started = True
+        detail = AnalysisProcessDetail(
+            active_policy=self.settings.trading.analysis.active_policy,
+            program_sha=self.program_sha,
+            model_name=self.settings.trading.analysis.model_name,
+            model_configured=self.assessor is not None,
+            publish_signals=self.settings.trading.analysis.publish_signals,
+            config_digest=self._config_digest,
+        )
+        runtime.heartbeat(
+            instance_id=self.instance_id,
+            now_ms=now_ms,
+            fault_code=self.fault_code,
+            detail=detail.model_dump(mode="json"),
+        )
+
+    def _stop_runtime(self, repos: Any) -> None:
+        RuntimeProcesses(repos.conn, kind="analysis", key=self.settings.trading.execution.account_slot).transition(
+            instance_id=self.instance_id,
+            lifecycle_state="stopped",
+            now_ms=_clock_ms(),
+        )
+
     async def run(self, stop: asyncio.Event) -> None:
         next_heartbeat = 0
         next_prune = 0
@@ -450,18 +488,7 @@ class AnalysisRunner:
                         next_prune = now_ms + 86_400_000
                     if now_ms >= next_heartbeat:
                         await self._db_async(
-                            lambda repos, now_ms=now_ms: repos.trading.heartbeat_analysis_runtime(
-                                runtime_id=self.settings.trading.execution.account_slot,
-                                now_ms=now_ms,
-                                active_policy=self.settings.trading.analysis.active_policy,
-                                program_sha=self.program_sha,
-                                model_name=self.settings.trading.analysis.model_name,
-                                model_configured=self.assessor is not None,
-                                publish_signals=self.settings.trading.analysis.publish_signals,
-                                config_digest=self._config_digest,
-                                fault_code=self.fault_code,
-                            ),
-                            transaction=True,
+                            lambda repos, now_ms=now_ms: self._heartbeat(repos, now_ms), transaction=True
                         )
                         next_heartbeat = now_ms + 5_000
                     await self.relay_once()
@@ -479,7 +506,12 @@ class AnalysisRunner:
                         if self._label_task is not None:
                             self._label_task.result()
                         self._label_task = asyncio.create_task(self.label_once())
-                except Exception:
+                except Exception as exc:
+                    if isinstance(exc, RuntimeError) and str(exc) in (
+                        "runtime_process_identity_lost",
+                        "analysis_account_slot_already_owned",
+                    ):
+                        raise
                     _LOG.exception("analysis_runner_cycle_failed")
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop.wait(), timeout=1)
@@ -488,4 +520,6 @@ class AnalysisRunner:
                 await asyncio.gather(*self._active, return_exceptions=True)
             if self._label_task is not None:
                 await asyncio.gather(self._label_task, return_exceptions=True)
+            if self._runtime_started:
+                await self._db_async(self._stop_runtime, transaction=True)
             self._db_pool.shutdown(wait=True)

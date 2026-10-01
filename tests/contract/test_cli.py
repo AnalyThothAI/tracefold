@@ -96,16 +96,6 @@ class CliTests(unittest.TestCase):
                 },
             ),
             (
-                ["trading", "replay", "--program", "candidate.json", "--since", "2026-09-01", "--until", "2026-09-08"],
-                {
-                    "command": "trading",
-                    "trading_command": "replay",
-                    "program": "candidate.json",
-                    "since": "2026-09-01",
-                    "until": "2026-09-08",
-                },
-            ),
-            (
                 [
                     "trading",
                     "issue",
@@ -788,6 +778,12 @@ def test_config_reports_a_null_console_public_url_when_the_operator_has_named_no
 
     assert main(["config"], stdout=stdout) == 0
     assert json.loads(stdout.getvalue())["data"]["api"]["public_url"] is None
+
+
+def test_trading_replay_is_retired():
+    with pytest.raises(SystemExit) as result:
+        build_parser().parse_args(["trading", "replay"])
+    assert result.value.code == 2
 
 
 if __name__ == "__main__":

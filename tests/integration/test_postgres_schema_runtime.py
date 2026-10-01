@@ -15,7 +15,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 
 
 def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
-    """After #68 the schema is exactly the News V3 tables plus alembic_version and workers_runtime."""
+    """The schema is exactly the domain registries, platform processes and Alembic version."""
 
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
@@ -65,9 +65,9 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
 
     assert tables == {
         "alembic_version",
-        "workers_runtime",
+        "runtime_processes",
         *NEWS_TABLES,
-        # #104: the Trading bounded context's own five tables. Registered separately from
+        # #764: the Trading bounded context's own seven tables. Registered separately from
         # `NEWS_TABLES` so "exactly these tables" stays a per-capability claim.
         *TRADING_TABLES,
     }
@@ -174,7 +174,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "event_kind, opened_at_ms DESC, event_id DESC" in news_v3_indexes["ix_news_events_kind_opened"]
     # Semantic jobs own rescue selection; published_at_ms is updated by Event primary key.
     assert "ix_news_events_unpublished" not in news_v3_indexes
-    assert version == latest_migration_version() == "20261001_0423"
+    assert version == latest_migration_version() == "20261001_0424"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -199,7 +199,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20261001_0423"
+    assert version == latest_migration_version() == "20261001_0424"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:

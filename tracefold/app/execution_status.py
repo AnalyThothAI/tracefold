@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-_HEARTBEAT_STALE_AFTER_NS = 5_000_000_000
+_HEARTBEAT_STALE_AFTER_MS = 5_000
 _FULL_RECONCILE_STALE_AFTER_NS = 70_000_000_000
 
 
@@ -14,6 +14,7 @@ def execution_readiness_projection(
     control: dict[str, Any] | None,
     *,
     now_ns: int,
+    process: dict[str, Any] | None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "configured_connection": execution.binance.environment or "LIVE",
@@ -35,19 +36,31 @@ def execution_readiness_projection(
     }
     if not execution.enabled or state is None:
         return result
-    heartbeat = int(state["heartbeat_at_ns"])
-    remaining = max(0, heartbeat + _HEARTBEAT_STALE_AFTER_NS - now_ns)
-    alive = remaining > 0
     full_at = state.get("last_full_reconcile_at_ns")
+    paused = True if control is None else bool(control["entries_paused"])
+    halted = False if control is None else bool(control["emergency_halted"])
+    unexpected = bool(state["unexpected_exposure"])
+    result.update(
+        {
+            "connection": "DEMO",
+            "entries_paused": paused,
+            "emergency_halted": halted,
+            "unexpected_exposure": unexpected,
+            "last_full_reconcile_at_ms": None if full_at is None else int(full_at) // 1_000_000,
+            "signed_account": state.get("account_snapshot"),
+        }
+    )
+    if process is None:
+        return result
+    heartbeat = int(process["heartbeat_at_ms"])
+    remaining = max(0, heartbeat + _HEARTBEAT_STALE_AFTER_MS - now_ns // 1_000_000)
+    alive = remaining > 0 and process["lifecycle_state"] == "running"
     reconciled = (
         full_at is not None
         and state.get("account_snapshot") is not None
         and now_ns - int(full_at) <= _FULL_RECONCILE_STALE_AFTER_NS
     )
-    paused = True if control is None else bool(control["entries_paused"])
-    halted = False if control is None else bool(control["emergency_halted"])
-    error = state.get("last_error")
-    unexpected = bool(state["unexpected_exposure"])
+    error = process.get("fault_code")
     armed = alive and reconciled and not paused and not halted and not unexpected and error is None
     reason = (
         "executor_heartbeat_stale"
@@ -66,20 +79,14 @@ def execution_readiness_projection(
     )
     result.update(
         {
-            "connection": "DEMO",
-            "connection_observed_at_ms": heartbeat // 1_000_000,
+            "connection_observed_at_ms": heartbeat,
             "alive": alive,
             "entries_armed": armed,
             "entry_block_reason": reason,
-            "entries_paused": paused,
-            "emergency_halted": halted,
-            "unexpected_exposure": unexpected,
             "last_error": error,
-            "heartbeat_at_ms": heartbeat // 1_000_000,
-            "facts_expire_at_ms": (heartbeat + _HEARTBEAT_STALE_AFTER_NS) // 1_000_000,
-            "facts_remaining_ms": remaining // 1_000_000,
-            "last_full_reconcile_at_ms": None if full_at is None else int(full_at) // 1_000_000,
-            "signed_account": state.get("account_snapshot"),
+            "heartbeat_at_ms": heartbeat,
+            "facts_expire_at_ms": heartbeat + _HEARTBEAT_STALE_AFTER_MS,
+            "facts_remaining_ms": remaining,
         }
     )
     return result

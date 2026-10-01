@@ -12,16 +12,14 @@ flowchart LR
   T --> V
   V --> A[单次 DSPy Predict]
   A --> P[六个 Policy]
-  P --> D[(Assessment / Action)]
+  P --> D[(Case assessment / policy_decisions)]
   D --> S[发布检查]
   S -->|通过| E[DEMO Executor]
   L --> B[两腿三重障碍]
-  B --> F[(Paper legs)]
+  B --> F[(Case paper_legs)]
   D --> Q[记分板]
   F --> Q
   E --> Q
-  V --> X[候选 Program 重放]
-  X --> Q
 ```
 
 ## 摄入与冻结
@@ -30,9 +28,11 @@ flowchart LR
 
 `CasePreparer` 读取 LIVE 永续、现货、BTC 基准 K 线、OI、funding / premium 和盘口。连续 16 根已收盘 1m K 线决定 `leg_geometry_v1`：止损 `ceil(2 × ATR14 / close × 10000)`，限制为 100–1000 bps；止盈 2R；最长持有 4 小时。任何关键输入缺失都具名失败，不从 DEMO 或缺失值制造事实。
 
-每个 Case 只写一次 gzip 原始快照到 `archive/trading-cases/<sha前缀>/<sha>.json.gz`，保留 30 天。PG 的 `trading_cases.view` 保存不可变 CaseView，包括特征、短证据别名、News 类型化字段、同资产近期事实与修订、PIT 基线、双侧几何与点差。模型输入排除 Case ID、绝对时钟和 64 位摘要；原始身份与 cutoff 留在 PG。失败重领与离线 replay 都复用同一 `view`，不重取历史行情。
+每个 Case 只写一次 gzip 原始快照到 `archive/trading-cases/<sha前缀>/<sha>.json.gz`，保留 30 天。PG 的 `trading_cases.view` 保存不可变 CaseView，包括特征、短证据别名、News 类型化字段、同资产近期事实与修订、PIT 基线、双侧几何与点差。模型输入排除 Case ID、绝对时钟和 64 位摘要；原始身份与 cutoff 留在 PG。失败重领复用同一 `view`，不重取历史行情。
 
 PIT 基线按同 trigger_kind × side 取前 14 天已到期、且当时已落库的纸面腿；不足 30 条为空，不补零。历史 CaseView 不随之后修订或基线增长改变。
+
+`trading_inputs` 统一保存 OI、catalyst 与 source update；Case 的 `assessment`、`policy_decisions`、`paper_legs` 保存预测、策略决定和成对标签。文档由 Trading 的类型模型验证，小数存为字符串，读取时恢复 numeric；`record_forecast` 只允许首次写入或内容完全相同的重试。运行状态属于平台 `runtime_processes`，由 App 装配读取，Trading 不拥有或查询进程存活表。
 
 ## 预测、策略和发布
 
@@ -50,13 +50,14 @@ Assessor 一次输出两侧三类概率与最多 12 条证据驱动，Pydantic �
 
 ```bash
 tracefold trading scoreboard --since 2026-09-01 --until 2026-09-08
-tracefold trading replay --program /path/to/candidate.json --since 2026-09-01 --until 2026-09-08
 ```
 
 Replay 只读取已冻结 CaseView，对候选程序打开 DSPy cache，写候选 SHA 的 assessment 与六个动作，不发 Signal、不访问行情或交易所。比较应使用预先登记的同一 Case 窗口；人工修改配置中的 SHA 才晋升。当前没有自动优化器或自动晋升。数据门槛与实验约束见 [Issue #746](https://github.com/AnalyThothAI/tracefold/issues/746)。
 
 ## 接口、迁移与操作
 
-`GET /api/trading/status` 报 Analysis 的程序、模型、故障及执行器状态；`GET /api/trading/cases` 列表或以 `?case_id=<64位hex>` 读取冻结 Case、assessment、策略动作和双腿标签，也可用 `?source_item_id=<OI观察ID>` 查关联 Case；`GET /api/trading/scoreboard` 可指定窗口和程序 SHA；`GET /api/trading/executions` 是场所证据支持的执行投影。CLI 有 `trading status`、`cases`、`scoreboard`、`replay`、`signals`、`fills`。浏览器使用同一 API，不拥有下单权限。
+`GET /api/trading/status` 报 Analysis 的程序、模型、故障及执行器状态；`GET /api/trading/cases` 列表或以 `?case_id=<64位hex>` 读取冻结 Case、assessment、策略动作和双腿标签，也可用 `?source_item_id=<OI观察ID>` 查关联 Case；`GET /api/trading/scoreboard` 可指定窗口和程序 SHA；`GET /api/trading/executions` 是场所证据支持的执行投影。CLI 有 `trading status`、`cases`、`scoreboard`、`signals`、`fills`。浏览器使用同一 API，不拥有下单权限。
 
-迁移 `20260929_0418` 是不可降级的 Analysis 数据硬切：删除旧 Gate、WATCH、ReAct 模型调用与旧 Case 表，重建 LIVE Case / assessment / action / paper 账本；不回填原 DEMO 行情事实。部署前停止 Analysis、确认执行账户仓位 / 普通单 / Algo 单均为零、完成 Trading 全表备份，并确保 `trading_signals` 无旧行。迁移与新镜像应在同一维护窗口完成。执行层迁移 `0417` 和 Demo 操作见 [Execution](execution.md)、[运维](../OPERATIONS.md#trading-operations)。旧 `archive/trading-analysis` 留作已授权的验收期隔离清理，不再写入。
+迁移 `20260929_0418` 是不可降级的 Analysis 数据硬切：删除旧 Gate、WATCH、ReAct 模型调用与旧 Case 表，重建 LIVE Case / assessment / action / paper 账本；不回填原 DEMO 行情事实。部署前停止 Analysis、确认执行账户仓位 / 普通单 / Algo 单均为零、完成 Trading 全表备份，并确保当时的 Signal 表无旧行。迁移与新镜像应在同一维护窗口完成。执行层迁移 `0417` 和 Demo 操作见 [Execution](execution.md)、[运维](../OPERATIONS.md#trading-operations)。旧 `archive/trading-analysis` 留作已授权的验收期隔离清理，不再写入。
+
+`20261001_0424` 在停写维护窗口将当前账本无损收敛，保留冻结模型输入、策略、纸面标签和公开 HTTP 投影。`trading replay` 已删除；候选离线评估需另建带运行身份的评估账本。升级、导出与恢复步骤见 [迁移手册](../MIGRATIONS.md)。
