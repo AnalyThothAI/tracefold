@@ -20,7 +20,7 @@ Task = Literal[
     "support",
     "next_read",
 ]
-QUESTION_VERSION: Final = "news_questions_v3"
+QUESTION_VERSION: Final = "news_questions_v4"
 # The per-claim readings the native backend owns when it is configured.
 CLAIM_READING_TASKS: Final[tuple[Task, ...]] = ("mode", "phase", "content_kind")
 
@@ -105,19 +105,30 @@ OPTIONS: Final[dict[Task, tuple[tuple[str, str], ...]]] = {
             "A concrete proposition none of the above describes, such as a lawsuit filed, a ruling or a settlement.",
         ),
     ),
+    # The core fact is the reader anchor's (notifications/reader.py ANCHOR_QUESTION): the same actor, the same
+    # action or event, and the same object. Reader novelty reads `adds_information` as a detail of a fact the
+    # reader may already hold, so a different fact of the same story must not be one (#770).
     "relation": (
         (
             "equivalent",
             "Same assertion, subject, polarity, period, quantities, conditions and realization; no additional fact.",
         ),
-        ("adds_information", "Adds a condition, parameter or other fact without correcting the earlier report."),
+        (
+            "adds_information",
+            "Reports the same core fact as the previous claim (the same actor, the same action or event, and the "
+            "same object) and adds a detail, figure, condition or context that the previous claim lacks, without "
+            "correcting it; another figure from the same report, release or deal adds to that fact. A restatement "
+            "that adds nothing is equivalent. A different action, venue, instrument, product or separate incident "
+            "in the same story is not adds_information.",
+        ),
         (
             "real_world_change",
-            "Reports an actual new action or state change, including reversal; not a media correction.",
+            "Reports an actual new action or state change of the same core fact, including reversal; not a media "
+            "correction, and not a separate event in the same story.",
         ),
         ("corrects", "Explicitly corrects or retracts an earlier reported assertion."),
         ("conflicts", "Sources make incompatible claims; the material does not establish which is true."),
-        ("unrelated", "Related topic or wording, but a different proposition."),
+        ("unrelated", "A different proposition, even about the same actor, topic or ongoing story."),
         ("unresolved", "Not enough evidence to determine the relationship."),
     ),
     "support": (
