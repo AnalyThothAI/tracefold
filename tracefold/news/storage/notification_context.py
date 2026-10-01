@@ -30,6 +30,7 @@ from ..source_contracts import classify_source_contracts
 from ..updates.assembly import different_listing_assets
 from ..updates.contracts import Claim, EventUpdate
 from ..updates.identity import digest
+from .notification_rows import NOTIFY_JOBS_SQL, UPDATE_RECEIPTS_SQL
 from .semantic_updates import SemanticUpdateStorage
 from .sql_values import _dumps
 
@@ -120,10 +121,10 @@ class NotificationContextStorage:
         """This Event's claims in sends still in flight, and in sends whose outcome is ambiguous."""
 
         rows = self.conn.execute(
-            """
-            SELECT state, claim_refs FROM news_deliveries
+            f"""
+            SELECT state, claim_refs FROM ({UPDATE_RECEIPTS_SQL})
              WHERE event_id = %s AND kind = 'update' AND state IN ('sending', 'ambiguous')
-            """,
+            """,  # noqa: S608 -- only code-owned SQL projections; values stay bound.
             (event_id,),
         ).fetchall()
         return (
@@ -180,7 +181,7 @@ class NotificationContextStorage:
                                SELECT claim ->> 'statement'
                                FROM jsonb_array_elements(COALESCE(d.sent_claims, '[]'::jsonb)) claim
                            ), ' ') AS search_text
-                      FROM news_deliveries d
+                      FROM ({UPDATE_RECEIPTS_SQL}) d
                      WHERE d.kind = 'update' AND d.state = 'sent'
                        AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
                        AND d.body IS NOT NULL AND d.payload_sha256 IS NOT NULL
@@ -374,7 +375,7 @@ class NotificationContextStorage:
             for row in self.conn.execute(
                 f"""
                 SELECT {_RECEIPT_COLUMNS}, d.state, COALESCE(d.sent_claims, '[]'::jsonb) AS historical_claims
-                  FROM news_deliveries d
+                  FROM ({UPDATE_RECEIPTS_SQL}) d
                  WHERE d.kind = 'update'
                    AND d.claim_refs ?| %s::text[]
                    AND (d.state = 'sending'
@@ -568,7 +569,7 @@ class NotificationContextStorage:
         # The port starts a repeatable-read transaction before session configuration or any query.
         # Several reads below must see one MVCC view for the model input and revision.
         work = self.conn.execute(
-            "SELECT content_revision, state, next_attempt_at_ms, updated_at_ms FROM news_notification_work "
+            f"SELECT content_revision, state, next_attempt_at_ms, updated_at_ms FROM ({NOTIFY_JOBS_SQL}) "  # noqa: S608
             "WHERE event_id = %s AND channel = %s",
             (event_id, channel),
         ).fetchone()

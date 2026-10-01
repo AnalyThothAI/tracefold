@@ -39,6 +39,7 @@ from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.semantic import SemanticWorker
 from tracefold.news.storage.judgment_cache import JUDGMENT_CACHE_RETENTION_MS
 from tracefold.news.storage.judgment_store import PgJudgmentCache
+from tracefold.news.storage.notification_rows import NOTIFY_JOBS_SQL
 from tracefold.news.storage.semantic_store import PgSemanticStore, PgSourceReader
 from tracefold.news.storage.semantic_work import SEMANTIC_ATTEMPTS_MAX
 from tracefold.news.updates.contracts import (
@@ -784,7 +785,7 @@ def test_an_input_that_cannot_be_built_fails_only_its_own_work() -> None:
 
 
 def _notification_work() -> dict[str, Any]:
-    return sql("SELECT state, attempts, content_revision FROM news_notification_work WHERE event_id = %s", (EVENT,))[0]
+    return sql(f"SELECT state, attempts, content_revision FROM ({NOTIFY_JOBS_SQL}) WHERE event_id = %s", (EVENT,))[0]
 
 
 def test_only_substantive_changes_open_notification_work_while_unfinished_work_follows_the_head() -> None:
@@ -796,7 +797,7 @@ def test_only_substantive_changes_open_notification_work_while_unfinished_work_f
     )
     first = asyncio.run(store.head(EVENT))
     assert first is not None
-    sql("UPDATE news_notification_work SET attempts = 1 WHERE event_id = %s", (EVENT,))
+    sql("UPDATE news_jobs SET attempts = 1 WHERE job_kind='notify' AND subject_id = %s", (EVENT,))
 
     def restate(source: FrozenInput) -> Extraction:
         return Extraction(

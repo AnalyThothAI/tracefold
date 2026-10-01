@@ -11,7 +11,6 @@ from tracefold.platform.postgres.audit import (
 
 from ..market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS, MARKET_WINDOW_ROW_CAP
 from ..market_review.instrument_storage import SEARCH_EVENT_SYMBOLS_SQL, SEARCH_IDENTITY_SQL
-from ..review.desk import review_read_statements
 from ..source_contracts import MARKET_KINDS
 from .chain_tape import TAPE_STATE_ID, WALLET_ROSTER_ROWS_SQL, WALLET_TAPE_STATE_SQL
 from .collectors import (
@@ -26,7 +25,6 @@ from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_CARD_SQL,
     EDITORIAL_EVENT_SQL,
-    EVENT_FEEDBACK_SQL,
     EVENT_MEMBERS_SQL,
     ITEM_RELATED_COUNT_SQL,
     ITEM_RELATED_EVENTS_SQL,
@@ -34,8 +32,6 @@ from .feed_sql import (
     SOURCE_AUTHORITY_PREDICATE,
     STATUS_DELIVERY_SQL,
     STATUS_FUNNEL_DECISIONS_SQL,
-    STATUS_FUNNEL_REVIEW_RATIOS_SQL,
-    STATUS_FUNNEL_REVIEWS_SQL,
     STATUS_FUNNEL_TOTALS_SQL,
     STATUS_PIPELINE_SQL,
     STATUS_SOURCE_CONTRACTS_SQL,
@@ -247,13 +243,6 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_read_return_amplification=8.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
-        ReadQuerySpec(
-            name="news_event_feedback",
-            sql=EVENT_FEEDBACK_SQL,
-            params=("event",),
-            max_read_return_amplification=8.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
         # #706: the Event detail's EventUpdate plane and its delivery ledger/queue, each by primary key or
         # the `(event_id, ...)` index of its table. The queue has no Event index; it holds only work still
         # owed, which a sent card leaves.
@@ -369,20 +358,6 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_status_funnel_decisions",
             sql=STATUS_FUNNEL_DECISIONS_SQL,
-            params=(day_ago,),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="news_status_funnel_reviews",
-            sql=STATUS_FUNNEL_REVIEWS_SQL,
-            params=(day_ago, day_ago),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="news_status_funnel_review_ratios",
-            sql=STATUS_FUNNEL_REVIEW_RATIOS_SQL,
             params=(day_ago,),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
@@ -634,16 +609,6 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             params=(["BTC"], ["seed"]),
             max_read_return_amplification=8.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
-        *(
-            ReadQuerySpec(
-                name=statement.name,
-                sql=statement.sql,
-                params=statement.params,
-                max_read_return_amplification=20.0,
-                max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-            )
-            for statement in review_read_statements(now_ms=int(now_ms))
         ),
     )
 

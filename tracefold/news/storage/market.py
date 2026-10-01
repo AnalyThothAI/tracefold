@@ -28,6 +28,8 @@ from typing import Any, Final, TypedDict
 
 from ..market_contracts import MARKET_TIMELINE_MAX, MARKET_TRACK_FIELDS, MARKET_WINDOW_ROW_CAP, notification_status
 from ..source_contracts import MARKET_KINDS
+from .notification_jobs import MarketNotificationJobDetail
+from .notification_rows import MARKET_JOBS_SQL, MARKET_NOTIFICATIONS_SQL
 from .sql_values import _dumps
 from .wallet_snapshots import wallet_snapshot
 
@@ -125,7 +127,7 @@ class MarketSourceSummaryRow(TypedDict):
 
 
 # Public observation projection, verified against the pre-cut projection in revision 0421.
-_OBSERVATIONS_SQL = """
+_OBSERVATIONS_SQL = f"""
 SELECT o.observation_id AS item_id, o.kind AS market_kind, o.source_strategy_id, o.parse_status, o.parse_error,
        o.ingest_mode, o.historical, o.title, o.event_at_ms, o.received_at_ms, o.available_at_ms, o.provider,
        o.source_venue, COALESCE(o.raw_instrument, e.token) AS raw_instrument, COALESCE(o.symbol, e.token_symbol) AS
@@ -155,9 +157,9 @@ SELECT o.observation_id AS item_id, o.kind AS market_kind, o.source_strategy_id,
             ELSE 'raw|' || o.kind || '|' || o.observation_id END AS group_key
   FROM news_market_observations o
   LEFT JOIN news_market_wallet_events e ON e.item_id = o.observation_id
-  LEFT JOIN news_market_deliveries d ON d.delivery_key = o.notification_id
-  LEFT JOIN news_market_tracks t ON t.group_key = o.notify_group_key
-"""
+  LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = o.notification_id
+  LEFT JOIN ({MARKET_JOBS_SQL}) t ON t.group_key = o.notify_group_key
+"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 
 _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
     "item_id",
@@ -274,7 +276,7 @@ MARKET_TIMELINE_SQL = f"""
 # The receipt side of the status block, read from the cards themselves rather than from the Items:
 # one card covers many observations, so "how many observations were told about" and "how many cards
 # were sent" are two different questions, and this one asks the second.
-MARKET_DELIVERY_SUMMARY_SQL = """
+MARKET_DELIVERY_SUMMARY_SQL = f"""
     SELECT market_kind,
            count(*) FILTER (WHERE state = 'sent') AS sent,
            count(*) FILTER (WHERE state = 'failed') AS failed,
@@ -282,11 +284,11 @@ MARKET_DELIVERY_SUMMARY_SQL = """
            max(settled_at_ms) FILTER (WHERE state = 'sent') AS last_sent_at_ms,
            max(settled_at_ms) FILTER (WHERE state = 'failed') AS last_failed_at_ms,
            max(settled_at_ms) FILTER (WHERE state = 'unknown') AS last_unknown_at_ms
-      FROM news_market_deliveries
+      FROM ({MARKET_NOTIFICATIONS_SQL})
      WHERE created_at_ms >= %s
        AND created_at_ms < %s
      GROUP BY market_kind
-"""
+"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 
 # Deliberately uncapped. This is the answer to "what arrived", and a capped count would report a
 # ceiling as a fact -- `received = 5000` on a busy window would read as the provider's number. The
@@ -318,9 +320,6 @@ MARKET_SOURCES_SQL = f"""
 # rather than restating it is what makes a new column impossible to add to the dataclass and forget
 # in the INSERT, the VALUES and the conflict update at once.
 _TRACK_COLUMNS: Final[tuple[str, ...]] = MARKET_TRACK_FIELDS
-_TRACK_INSERT = ", ".join(_TRACK_COLUMNS)
-_TRACK_VALUES = ", ".join(f"%({column})s" for column in _TRACK_COLUMNS)
-_TRACK_UPDATE = ",\n      ".join(f"{column} = EXCLUDED.{column}" for column in _TRACK_COLUMNS[1:])
 
 # The loop's take query. `notify_state = 'pending'` is a marker, not a cursor: an Item stays in
 # this answer until the loop has grouped it, whatever order its transaction became visible in.
@@ -330,15 +329,14 @@ MARKET_NOTIFY_BACKLOG_SQL = f"""
      LIMIT %s
 """  # noqa: S608 -- interpolates only this module's own observation projection
 
-MARKET_TRACK_SQL = "SELECT * FROM news_market_tracks WHERE group_key = %s"
+MARKET_TRACK_SQL = f"SELECT * FROM ({MARKET_JOBS_SQL}) WHERE group_key = %s"  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 
-MARKET_TRACK_UPSERT_SQL = f"""
-    INSERT INTO news_market_tracks ({_TRACK_INSERT}, created_at_ms, updated_at_ms)
-    VALUES ({_TRACK_VALUES}, %(now_ms)s, %(now_ms)s)
-    ON CONFLICT (group_key) DO UPDATE SET
-      {_TRACK_UPDATE},
-      updated_at_ms = EXCLUDED.updated_at_ms
-"""  # noqa: S608 -- interpolates only this module's own column identifiers
+MARKET_TRACK_UPSERT_SQL = """
+INSERT INTO news_jobs(job_kind,subject_id,state,next_attempt_at_ms,detail,created_at_ms,updated_at_ms)
+ VALUES ('market_notify',%(group_key)s,%(state)s,%(next_due_at_ms)s,%(detail)s::jsonb,%(now_ms)s,%(now_ms)s)
+ ON CONFLICT(job_kind,subject_id) DO UPDATE SET state=EXCLUDED.state,detail=EXCLUDED.detail,
+ next_attempt_at_ms=EXCLUDED.next_attempt_at_ms,updated_at_ms=EXCLUDED.updated_at_ms
+"""
 
 MARKET_MARK_PROCESSED_SQL = """
     UPDATE news_market_observations
@@ -352,12 +350,12 @@ MARKET_MARK_PROCESSED_SQL = """
 # cards. Neither needs a read-then-write, and a read-then-write is exactly what two processes would
 # interleave.
 MARKET_OPEN_DELIVERY_SQL = """
-    INSERT INTO news_market_deliveries (
-      delivery_key, group_key, market_kind, trigger_reason, trigger_item_id, state,
+    INSERT INTO news_notifications (
+      notification_id, kind, group_key, market_kind, trigger_reason, trigger_observation_id, state,card,covered_count,
       next_attempt_at_ms, created_at_ms, updated_at_ms
-    ) VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s, %s)
+    ) VALUES (%s, 'market', %s, %s, %s, %s, 'pending','{}'::jsonb,0, %s, %s, %s)
     ON CONFLICT DO NOTHING
-    RETURNING delivery_key
+    RETURNING notification_id AS delivery_key
 """
 
 # The lower bound is the group's current alert round, and it is what stops a card from speaking for a
@@ -390,12 +388,12 @@ _DELIVERY_COLUMNS = """
 """
 
 MARKET_DUE_DELIVERY_SQL = f"""
-    SELECT {_DELIVERY_COLUMNS} FROM news_market_deliveries
+    SELECT {_DELIVERY_COLUMNS} FROM ({MARKET_NOTIFICATIONS_SQL}) n
      WHERE state = ANY (ARRAY['pending', 'unavailable'])
        AND next_attempt_at_ms <= %s
        AND (market_kind <> 'wallet' OR EXISTS (
             SELECT 1 FROM news_market_wallet_events e
-             WHERE e.item_id = news_market_deliveries.trigger_item_id))
+             WHERE e.item_id = n.trigger_item_id))
        AND (%s OR market_kind <> 'wallet')
      ORDER BY next_attempt_at_ms, created_at_ms, delivery_key
      LIMIT 1
@@ -403,40 +401,40 @@ MARKET_DUE_DELIVERY_SQL = f"""
 """  # noqa: S608 -- interpolates only this module's own column list
 
 MARKET_DELIVERY_SQL = f"""
-    SELECT {_DELIVERY_COLUMNS} FROM news_market_deliveries WHERE delivery_key = %s
+    SELECT {_DELIVERY_COLUMNS} FROM ({MARKET_NOTIFICATIONS_SQL}) n WHERE delivery_key = %s
 """  # noqa: S608 -- interpolates only this module's own column list
 
 # Stop only unfinished wallet cards. Attempts, frozen cards, receipts and their timestamps are
 # preserved; a policy stop consumes no external attempt and never rewrites a completed outcome.
 MARKET_STOP_WALLET_DELIVERIES_SQL = """
     WITH pending AS (
-        SELECT delivery_key FROM news_market_deliveries
-         WHERE market_kind = 'wallet' AND state = ANY (ARRAY['pending', 'unavailable'])
+        SELECT notification_id FROM news_notifications
+         WHERE kind='market' AND market_kind = 'wallet' AND state = ANY (ARRAY['pending', 'unavailable'])
        AND (market_kind <> 'wallet' OR EXISTS (
             SELECT 1 FROM news_market_wallet_events e
-             WHERE e.item_id = news_market_deliveries.trigger_item_id))
-         ORDER BY next_attempt_at_ms, delivery_key
+             WHERE e.item_id = news_notifications.trigger_observation_id))
+         ORDER BY next_attempt_at_ms, notification_id
          LIMIT %s FOR UPDATE SKIP LOCKED
     )
-    UPDATE news_market_deliveries d
-       SET state = 'failed', error = %s, settled_at_ms = %s, updated_at_ms = %s
-      FROM pending p WHERE d.delivery_key = p.delivery_key
+    UPDATE news_notifications d
+       SET state = 'failed', error_code = %s, settled_at_ms = %s, updated_at_ms = %s
+      FROM pending p WHERE d.kind='market' AND d.notification_id = p.notification_id
     RETURNING d.group_key
 """
 
 # The one un-started card of a group, read from the unique partial index that enforces there is at
 # most one. Asking the index rather than the track's copy of the key is what keeps two processes
 # from each believing they opened the first card.
-MARKET_GROUP_OPEN_DELIVERY_SQL = """
-    SELECT delivery_key FROM news_market_deliveries
+MARKET_GROUP_OPEN_DELIVERY_SQL = f"""
+    SELECT delivery_key FROM ({MARKET_NOTIFICATIONS_SQL})
      WHERE group_key = %s
        AND state = ANY (ARRAY['pending', 'unavailable'])
        AND attempts = 0
-"""
+"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 
 MARKET_DISCARD_DELIVERY_SQL = """
-    DELETE FROM news_market_deliveries
-     WHERE delivery_key = %s
+    DELETE FROM news_notifications
+     WHERE kind='market' AND notification_id = %s
        AND attempts = 0
 """
 
@@ -467,17 +465,17 @@ MARKET_DELIVERY_OBSERVATIONS_SQL = f"""
 # count and the due time -- so a card another process has since claimed, settled and re-queued fails
 # this update instead of spending its second attempt early against a snapshot from the first.
 MARKET_BEGIN_SEND_SQL = """
-    UPDATE news_market_deliveries
+    UPDATE news_notifications
        SET state = 'sending',
            attempts = attempts + 1,
            card = CASE WHEN attempts = 0 THEN %s::jsonb ELSE card END,
            covered_count = CASE WHEN attempts = 0 THEN %s ELSE covered_count END,
            covered_from_ms = CASE WHEN attempts = 0 THEN %s ELSE covered_from_ms END,
            covered_to_ms = CASE WHEN attempts = 0 THEN %s ELSE covered_to_ms END,
-           first_attempt_at_ms = COALESCE(first_attempt_at_ms, %s),
+           attempted_at_ms = COALESCE(attempted_at_ms, %s),
            last_attempt_at_ms = %s,
            updated_at_ms = %s
-     WHERE delivery_key = %s
+     WHERE kind='market' AND notification_id = %s
        AND state = ANY (ARRAY['pending', 'unavailable'])
        AND attempts = %s
        AND next_attempt_at_ms <= %s
@@ -488,11 +486,11 @@ MARKET_BEGIN_SEND_SQL = """
 # evidence this card needs is not committed yet", which is a question about a *first* send, and a
 # card already in flight or already retried has a settle path of its own (#649 §6.2).
 MARKET_DEFER_DELIVERY_SQL = """
-    UPDATE news_market_deliveries
+    UPDATE news_notifications
        SET next_attempt_at_ms = %s,
-           error = %s,
+           error_code = %s,
            updated_at_ms = %s
-     WHERE delivery_key = %s
+     WHERE kind='market' AND notification_id = %s
        AND state = ANY (ARRAY['pending', 'unavailable'])
        AND attempts = 0
 """
@@ -500,95 +498,86 @@ MARKET_DEFER_DELIVERY_SQL = """
 # The track's own next-due time follows the delivery's, so the page's "waiting to be sent, next
 # attempt at" reads one number rather than two that can disagree.
 MARKET_DEFER_TRACK_SQL = """
-    UPDATE news_market_tracks
-       SET next_due_at_ms = %s, pending_reason = %s, updated_at_ms = %s
-     WHERE open_delivery_key = %s
+UPDATE news_jobs SET next_attempt_at_ms=%s,
+ detail=detail||jsonb_build_object('pending_reason',%s::text),updated_at_ms=%s
+ WHERE job_kind='market_notify' AND detail->>'open_delivery_key'=%s
 """
 
 MARKET_SETTLE_DELIVERY_SQL = """
-    UPDATE news_market_deliveries
+    UPDATE news_notifications
        SET state = %s,
            receipt = %s::jsonb,
-           error = %s,
+           error_code = %s,
            next_attempt_at_ms = COALESCE(%s, next_attempt_at_ms),
            settled_at_ms = CASE
              WHEN %s = ANY (ARRAY['sent', 'failed', 'unknown']) THEN %s ELSE NULL END,
            updated_at_ms = %s
-     WHERE delivery_key = %s
+     WHERE kind='market' AND notification_id = %s
        AND state = 'sending'
 """
 
 MARKET_TRACK_ATTEMPT_SQL = """
-    UPDATE news_market_tracks
-       SET anchor_attempt_at_ms = %s,
-           open_delivery_key = CASE WHEN open_delivery_key = %s THEN NULL ELSE open_delivery_key END,
-           next_due_at_ms = NULL,
-           updated_at_ms = %s
-     WHERE group_key = %s
+UPDATE news_jobs SET
+ detail=detail||jsonb_build_object('anchor_attempt_at_ms',%s::bigint,'open_delivery_key',
+   CASE WHEN detail->>'open_delivery_key'=%s THEN NULL ELSE detail->>'open_delivery_key' END),
+ next_attempt_at_ms=NULL,state=CASE WHEN detail->>'open_delivery_key'=%s THEN 'done' ELSE state END,updated_at_ms=%s
+ WHERE job_kind='market_notify' AND subject_id=%s
 """
 
 # What the delivered card ended on, and nothing about the newest observation: by the time a card
 # settles the loop may already have recorded a later one, and a column that mixed the two would move
 # the group's idea of what a reader has been told (#582 §3.1).
 MARKET_TRACK_ANCHOR_SQL = """
-    UPDATE news_market_tracks
-       SET anchor_state = %s,
-           anchor_delivery_key = %s,
-           anchor_oi_change_bps = COALESCE(%s, anchor_oi_change_bps),
-           anchor_direction = COALESCE(%s, anchor_direction),
-           anchor_action = COALESCE(%s, anchor_action),
-           anchor_position_side = COALESCE(%s, anchor_position_side),
-           pending_reason = %s,
-           updated_at_ms = %s
-     WHERE group_key = %s
+UPDATE news_jobs SET detail=detail||jsonb_build_object(
+ 'anchor_state',%s::text,'anchor_delivery_key',%s::text,
+ 'anchor_oi_change_bps',COALESCE(%s::bigint,(detail->>'anchor_oi_change_bps')::bigint),
+ 'anchor_direction',COALESCE(%s::text,detail->>'anchor_direction'),
+ 'anchor_action',COALESCE(%s::text,detail->>'anchor_action'),
+ 'anchor_position_side',COALESCE(%s::text,detail->>'anchor_position_side'),
+ 'pending_reason',%s::text),updated_at_ms=%s WHERE job_kind='market_notify' AND subject_id=%s
 """
 
 MARKET_HOLD_UNAVAILABLE_SQL = """
-    UPDATE news_market_deliveries
-       SET state = 'unavailable', error = %s, updated_at_ms = %s
-     WHERE state = 'pending'
+    UPDATE news_notifications
+       SET state = 'unavailable', error_code = %s, updated_at_ms = %s
+     WHERE kind='market' AND state = 'pending'
        AND next_attempt_at_ms <= %s
        AND (market_kind <> 'wallet' OR EXISTS (
             SELECT 1 FROM news_market_wallet_events e
-             WHERE e.item_id = news_market_deliveries.trigger_item_id))
+             WHERE e.item_id = news_notifications.trigger_observation_id))
 """
 
 MARKET_HELD_EXISTS_SQL = """
-    SELECT 1 FROM news_market_deliveries WHERE state = 'unavailable'
-       AND (market_kind <> 'wallet' OR EXISTS (
-            SELECT 1 FROM news_market_wallet_events e
-             WHERE e.item_id = news_market_deliveries.trigger_item_id))
-     LIMIT 1
+ SELECT 1 FROM news_notifications n WHERE n.kind='market' AND n.state='unavailable'
+ AND (n.market_kind<>'wallet' OR EXISTS(SELECT 1 FROM news_market_wallet_events e
+                                     WHERE e.item_id=n.trigger_observation_id)) LIMIT 1
 """
 
 MARKET_RELEASE_UNAVAILABLE_SQL = """
-    UPDATE news_market_deliveries
-       SET state = 'pending', error = NULL, updated_at_ms = %s
-     WHERE state = 'unavailable'
+    UPDATE news_notifications
+       SET state = 'pending', error_code = NULL, updated_at_ms = %s
+     WHERE kind='market' AND state = 'unavailable'
        AND (market_kind <> 'wallet' OR EXISTS (
             SELECT 1 FROM news_market_wallet_events e
-             WHERE e.item_id = news_market_deliveries.trigger_item_id))
+             WHERE e.item_id = news_notifications.trigger_observation_id))
 """
 
 MARKET_SWEEP_INTERRUPTED_SQL = """
-    UPDATE news_market_deliveries
-       SET state = 'unknown', error = %s, settled_at_ms = %s, updated_at_ms = %s
-     WHERE state = 'sending'
+    UPDATE news_notifications
+       SET state = 'unknown', error_code = %s, settled_at_ms = %s, updated_at_ms = %s
+     WHERE kind='market' AND state = 'sending'
        AND (market_kind <> 'wallet' OR EXISTS (
             SELECT 1 FROM news_market_wallet_events e
-             WHERE e.item_id = news_market_deliveries.trigger_item_id))
-    RETURNING delivery_key, group_key, market_kind
+             WHERE e.item_id = news_notifications.trigger_observation_id))
+    RETURNING notification_id AS delivery_key, group_key, market_kind
 """
 
 MARKET_PRUNE_TRACKS_SQL = """
-    DELETE FROM news_market_tracks
-     WHERE group_key IN (
-       SELECT t.group_key FROM news_market_tracks t
-        WHERE t.last_observed_at_ms < %s
-          AND NOT EXISTS (
-            SELECT 1 FROM news_market_observations i WHERE i.notify_group_key = t.group_key)
-        ORDER BY t.last_observed_at_ms
-        LIMIT %s)
+DELETE FROM news_jobs WHERE job_kind='market_notify' AND subject_id IN (
+ SELECT subject_id FROM news_jobs j WHERE job_kind='market_notify'
+ AND (detail->>'last_observed_at_ms')::bigint<%s
+ AND NOT EXISTS(SELECT 1 FROM news_market_observations i WHERE i.notify_group_key=j.subject_id)
+ ORDER BY (detail->>'last_observed_at_ms')::bigint LIMIT %s FOR UPDATE SKIP LOCKED)
 """
 
 
@@ -745,11 +734,19 @@ class MarketStorage:
         return None if row is None else dict(row)
 
     def market_save_track(self, *, track: Mapping[str, Any], now_ms: int) -> None:
-        """Write one group's alerting state. Never a copy of an observation, only what the rules read."""
-
-        params = {key: track.get(key) for key in _TRACK_COLUMNS}
-        params["now_ms"] = int(now_ms)
-        self.conn.execute(MARKET_TRACK_UPSERT_SQL, params)
+        detail = MarketNotificationJobDetail.model_validate(
+            {key: track.get(key) for key in MARKET_TRACK_FIELDS if key not in ("group_key", "next_due_at_ms")}
+        )
+        self.conn.execute(
+            MARKET_TRACK_UPSERT_SQL,
+            {
+                "group_key": str(track["group_key"]),
+                "next_due_at_ms": track.get("next_due_at_ms"),
+                "state": "pending" if track.get("open_delivery_key") else "done",
+                "detail": detail.model_dump_json(),
+                "now_ms": int(now_ms),
+            },
+        )
 
     def market_mark_processed(self, *, item_ids: Sequence[str], group_key: str) -> int:
         """Record which notification group the loop put these observations in, and that it did."""
@@ -936,7 +933,7 @@ class MarketStorage:
         """
 
         cursor = self.conn.execute(
-            MARKET_TRACK_ATTEMPT_SQL, (int(attempt_at_ms), delivery_key, int(attempt_at_ms), group_key)
+            MARKET_TRACK_ATTEMPT_SQL, (int(attempt_at_ms), delivery_key, delivery_key, int(attempt_at_ms), group_key)
         )
         return bool(cursor.rowcount)
 

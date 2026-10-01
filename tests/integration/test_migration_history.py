@@ -37,7 +37,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20261001_0421"
+HEAD = "20261001_0422"
 PRE_CUT = "20260928_0410"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
@@ -201,6 +201,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20261001_0421",
         "20261001_0420",
         "20261001_0419",
         "20260929_0418",
@@ -373,7 +374,7 @@ def test_notification_terminal_cut_fails_overdue_exhausted_work_and_drops_the_pl
                     "VALUES (%s,'news',repeat('a',64),'pending',%s,%s,100)",
                     (event_id, attempts, due_ms),
                 )
-        command.upgrade(config, HEAD)
+        command.upgrade(config, "20260929_0413")
         rows = conn.execute(
             "SELECT event_id,state,attempts,last_error_code FROM news_notification_work ORDER BY event_id"
         ).fetchall()
@@ -426,7 +427,7 @@ def test_claim_links_are_backfilled_from_every_stored_update_and_reader_decision
             )
             persist_update(conn, first)
             persist_update(conn, raised)
-        command.upgrade(config, HEAD)
+        command.upgrade(config, "20260929_0416")
         rows = conn.execute(
             "SELECT update_ref,current_ref,previous_ref,relation,current_event_id,previous_event_id,asserted_at_ms "
             "FROM news_claim_links ORDER BY current_ref"
@@ -1425,7 +1426,7 @@ def test_the_alert_round_backfill_starts_each_group_at_its_last_send_attempt() -
                     (group_key, attempt_at_ms),
                 )
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260905_0367")
 
         started = {
             str(row["group_key"]): int(row["round_started_at_ms"])
@@ -1470,7 +1471,7 @@ def test_the_unstructured_cut_deletes_that_alerting_state_and_the_two_dead_colum
                     (group_key, family, current_action, group_key),
                 )
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260906_0371")
 
         remaining = {
             str(row["group_key"]): (str(row["family"]), str(row["anchor_action"]))

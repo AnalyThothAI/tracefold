@@ -37,6 +37,7 @@ from tests.support.wallet_net_buy import (
 )
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_notifications import DEFER_BACKOFF_MS, MarketNotificationLoop
+from tracefold.news.storage.notification_rows import MARKET_NOTIFICATIONS_SQL
 
 pytestmark = pytest.mark.integration
 
@@ -57,7 +58,7 @@ def _deliveries(conn: Any) -> list[dict[str, Any]]:
         dict(row)
         for row in conn.execute(
             "SELECT delivery_key, market_kind, state, attempts, next_attempt_at_ms, error"
-            " FROM news_market_deliveries ORDER BY created_at_ms, delivery_key"
+            f" FROM ({MARKET_NOTIFICATIONS_SQL}) ORDER BY created_at_ms, delivery_key"
         ).fetchall()
     ]
 
@@ -257,7 +258,7 @@ def test_a_notification_stage_rejection_reads_as_its_real_reason_not_as_pending(
     asyncio.run(_loop(conn, sender, at_ms=NOW + 2_000).advance())
 
     assert not sender.cards
-    assert conn.execute("SELECT count(*) AS n FROM news_market_deliveries").fetchone()["n"] == 0
+    assert conn.execute(f"SELECT count(*) AS n FROM ({MARKET_NOTIFICATIONS_SQL})").fetchone()["n"] == 0
     repos = repositories_for_connection(conn)
     row = repos.news.wallet_events(
         from_ms=NOW - 3_600_000, to_ms=NOW + 3_600_000, before_at_ms=None, before_id=None, limit=10

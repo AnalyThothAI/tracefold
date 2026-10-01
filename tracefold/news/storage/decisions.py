@@ -9,10 +9,11 @@ from typing import Any
 from ..market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS
 from ..models import TelegramDeliveryReceipt
 from .feed_sql import EDITORIAL_EVENT_SQL
+from .notification_rows import UPDATE_RECEIPTS_SQL
 from .sql_values import _dumps
 
 _STORYLINE_LOCK_NAMESPACE = 0x4E455753  # 'NEWS', distinct from App session-lock namespaces.
-_PUSHED_NEWS_PROJECTION = """
+_PUSHED_NEWS_PROJECTION = f"""
     SELECT d.event_id, d.settled_at_ms AS at_ms,
            COALESCE(d.history_context ->> 'storyline_key', '') AS storyline_key,
            COALESCE(d.history_context ->> 'comparison_title', '') AS comparison_title,
@@ -25,8 +26,8 @@ _PUSHED_NEWS_PROJECTION = """
            COALESCE(d.history_context -> 'assets', '[]'::jsonb) AS assets,
            COALESCE(d.history_context -> 'canonical_assets', '[]'::jsonb) AS canonical_assets
       FROM news_events e
-      JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'update' AND d.state = 'sent'
-"""
+      JOIN ({UPDATE_RECEIPTS_SQL}) d ON d.event_id = e.event_id AND d.kind = 'update' AND d.state = 'sent'
+"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 
 
 # #582 §3.3. The News an OI card's instrument already has, in the two numbers that card prints. Here
@@ -154,7 +155,7 @@ class DecisionStorage:
             return False
         cursor = self.conn.execute(
             """
-            UPDATE news_deliveries
+            UPDATE news_notifications
                SET edit_state = 'editing', pending_card = %s::jsonb,
                    edit_error_code = NULL, edit_attempted_at_ms = %s, edit_settled_at_ms = NULL
              WHERE intent_id = %s AND state = 'sent'
@@ -195,7 +196,7 @@ class DecisionStorage:
             return False
         cursor = self.conn.execute(
             """
-            UPDATE news_deliveries
+            UPDATE news_notifications
                SET pending_card = NULL, receipt = receipt || %s::jsonb,
                    edit_state = 'edited', edit_error_code = NULL, edit_settled_at_ms = %s
              WHERE intent_id = %s AND state = 'sent' AND edit_state = 'editing'
@@ -232,7 +233,7 @@ class DecisionStorage:
             return False
         cursor = self.conn.execute(
             """
-            UPDATE news_deliveries
+            UPDATE news_notifications
                SET edit_state = 'ambiguous', edit_error_code = %s, edit_settled_at_ms = %s
              WHERE intent_id = %s AND state = 'sent' AND edit_state = 'editing'
                AND receipt ->> 'provider' = %s
@@ -255,7 +256,7 @@ class DecisionStorage:
     def terminalize_interrupted_delivery_edits(self, *, now_ms: int) -> int:
         cursor = self.conn.execute(
             """
-            UPDATE news_deliveries
+            UPDATE news_notifications
                SET edit_state = 'ambiguous', edit_error_code = 'edit_ambiguous_after_crash',
                    edit_settled_at_ms = %s
              WHERE edit_state = 'editing'
@@ -267,7 +268,7 @@ class DecisionStorage:
     def terminalize_stale_delivery_edits(self, *, now_ms: int) -> int:
         cursor = self.conn.execute(
             """
-            UPDATE news_deliveries
+            UPDATE news_notifications
                SET edit_state = 'ambiguous', edit_error_code = 'edit_settlement_unavailable',
                    edit_settled_at_ms = %s
              WHERE edit_state = 'editing' AND edit_attempted_at_ms < %s

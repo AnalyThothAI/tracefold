@@ -237,10 +237,10 @@ def test_a_processed_unstructured_record_is_not_alerted_rather_than_merging(conn
         news.market_mark_processed(item_ids=["oi-merging"], group_key=oi_group)
         conn.execute(
             """
-            INSERT INTO news_market_tracks (
-              group_key, market_kind, family, last_observed_at_ms, last_observed_item_id,
-              pending_reason, round_started_at_ms, created_at_ms, updated_at_ms
-            ) VALUES (%s, 'oi', 'oi', %s, 'oi-merging', '', %s, %s, %s)
+            INSERT INTO news_jobs(job_kind,subject_id,state,detail,created_at_ms,updated_at_ms)
+            VALUES ('market_notify',%s,'pending',jsonb_build_object('market_kind','oi','family','oi',
+              'last_observed_at_ms',%s::bigint,'last_observed_item_id','oi-merging','pending_reason','',
+              'round_started_at_ms',%s::bigint),%s,%s)
             """,
             (oi_group, NOW + 1, NOW + 1, NOW, NOW),
         )

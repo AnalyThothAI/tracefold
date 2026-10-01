@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from tracefold.news.notifications.contracts import ClaimDecision, NotificationPlan
+from tracefold.news.storage.notification_jobs import NotificationJobDetail
 from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
     DraftClaim,
@@ -260,9 +261,9 @@ def persist_semantic_work(
 
 def _persist_decision(conn: Any, update: EventUpdate, plan: NotificationPlan, *, now_ms: int) -> None:
     conn.execute(
-        """INSERT INTO news_notification_decisions
-             (decision_ref,event_id,update_ref,channel,input_digest,input_snapshot,plan,origin,created_at_ms)
-           VALUES (%s,%s,%s,'news',%s,%s::jsonb,%s::jsonb,'reader_v2',%s)
+        """INSERT INTO news_notifications(notification_id,kind,origin,event_id,update_ref,input_digest,
+           input_snapshot,plan,decided_at_ms,state,created_at_ms,updated_at_ms)
+           VALUES (%s,'update','reader_v2',%s,%s,%s,%s::jsonb,%s::jsonb,%s,'decided',%s,%s)
            ON CONFLICT DO NOTHING""",
         (
             plan.record_ref,
@@ -272,6 +273,8 @@ def _persist_decision(conn: Any, update: EventUpdate, plan: NotificationPlan, *,
             canonical_json({"reader_identity": plan.reader_identity}),
             canonical_json(plan),
             now_ms,
+            now_ms,
+            now_ms,
         ),
     )
 
@@ -279,42 +282,28 @@ def _persist_decision(conn: Any, update: EventUpdate, plan: NotificationPlan, *,
 def persist_plan(conn: Any, update: EventUpdate, plan: NotificationPlan | None, *, state: str, now_ms: int) -> None:
     if plan is not None:
         _persist_decision(conn, update, plan, now_ms=now_ms)
+    detail = NotificationJobDetail(
+        content_revision=update.content_revision,
+        decision_ref=None if plan is None else plan.record_ref,
+        reader_revision=None if plan is None else plan.reader_revision,
+    )
     conn.execute(
-        """
-        INSERT INTO news_notification_work (
-          event_id, channel, content_revision, state, decision_ref, reader_revision, attempts, next_attempt_at_ms,
-          updated_at_ms
-        ) VALUES (%s, 'news', %s, %s, %s, %s, 0, %s, %s)
-        ON CONFLICT (event_id, channel) DO UPDATE
-          SET content_revision = EXCLUDED.content_revision, state = EXCLUDED.state,
-              decision_ref = EXCLUDED.decision_ref,
-              reader_revision = EXCLUDED.reader_revision, updated_at_ms = EXCLUDED.updated_at_ms
-        """,
-        (
-            update.event_id,
-            update.content_revision,
-            state,
-            plan.record_ref if plan is not None else None,
-            plan.reader_revision if plan is not None else None,
-            now_ms,
-            now_ms,
-        ),
+        """INSERT INTO news_jobs(job_kind,subject_id,state,detail,next_attempt_at_ms,created_at_ms,updated_at_ms)
+           VALUES ('notify',%s,%s,%s::jsonb,%s,%s,%s)
+           ON CONFLICT(job_kind,subject_id) DO UPDATE SET state=EXCLUDED.state,detail=EXCLUDED.detail,
+             updated_at_ms=EXCLUDED.updated_at_ms""",
+        (update.event_id, state, detail.model_dump_json(), now_ms, now_ms, now_ms),
     )
 
 
 def queue_intent(conn: Any, update: EventUpdate, plan: NotificationPlan, *, now_ms: int) -> str:
     _persist_decision(conn, update, plan, now_ms=now_ms)
-    intent_id = plan.intent_id
     conn.execute(
-        """
-        INSERT INTO news_delivery_queue (
-          intent_id, event_id, kind, state, attempts, enqueued_at_ms, next_attempt_at_ms, updated_at_ms,
-          content_revision, claim_refs, plan_key, decision_ref
-        ) VALUES (%s, %s, 'update', 'pending', 0, %s, %s, %s, %s, %s::jsonb, %s, %s)
-        """,
+        """UPDATE news_notifications SET state='pending',intent_id=%s,reserved_at_ms=%s,
+           next_attempt_at_ms=%s,updated_at_ms=%s,content_revision=%s,claim_refs=%s::jsonb,plan_key=%s
+           WHERE notification_id=%s""",
         (
-            intent_id,
-            update.event_id,
+            plan.intent_id,
             now_ms,
             now_ms,
             now_ms,
@@ -324,7 +313,7 @@ def queue_intent(conn: Any, update: EventUpdate, plan: NotificationPlan, *, now_
             plan.record_ref,
         ),
     )
-    return intent_id
+    return plan.intent_id
 
 
 def settle_intent(
@@ -342,15 +331,25 @@ def settle_intent(
 
     _persist_decision(conn, update, plan, now_ms=now_ms)
     intent_id = plan.intent_id
-    conn.execute("DELETE FROM news_delivery_queue WHERE intent_id = %s", (intent_id,))
     conn.execute(
-        """
-        INSERT INTO news_deliveries (
-          intent_id, event_id, kind, state, card, receipt, error_code, attempted_at_ms, settled_at_ms,
-          created_at_ms, content_revision, claim_refs, body, payload_sha256, plan_key, decision_ref, sent_claims
-        ) VALUES (%s, %s, 'update', %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb,
-                  %s, %s, %s, %s, %s::jsonb)
-        """,
+        """WITH
+        source(intent_id,event_id,kind,state,card,receipt,error_code,attempted_at_ms,settled_at_ms,created_at_ms,
+        content_revision,claim_refs,body,payload_sha256,plan_key,decision_ref,sent_claims) AS (VALUES (%s, %s, 'update',
+        %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb,
+                  %s, %s, %s, %s, %s::jsonb))
+INSERT INTO news_notifications(intent_id,event_id,kind,state,card,receipt,error_code,attempted_at_ms,
+        settled_at_ms,created_at_ms,content_revision,claim_refs,plan_key,sent_claims,notification_id,origin,
+        updated_at_ms)
+SELECT s.intent_id::text,s.event_id::text,s.kind::text,s.state::text,s.card::jsonb||jsonb_build_object('body',
+        s.body::text,'payload_sha256',s.payload_sha256::text),s.receipt::jsonb,s.error_code::text,
+        s.attempted_at_ms::bigint,s.settled_at_ms::bigint,s.created_at_ms::bigint,s.content_revision::text,
+        s.claim_refs::jsonb,s.plan_key::boolean,s.sent_claims::jsonb,COALESCE(s.decision_ref::text,s.intent_id::text),
+        'legacy_delivery',s.created_at_ms::bigint FROM source s
+ON CONFLICT(notification_id) DO UPDATE SET intent_id=EXCLUDED.intent_id,state=EXCLUDED.state,card=EXCLUDED.card,
+        receipt=EXCLUDED.receipt,error_code=EXCLUDED.error_code,attempted_at_ms=EXCLUDED.attempted_at_ms,
+        settled_at_ms=EXCLUDED.settled_at_ms,created_at_ms=EXCLUDED.created_at_ms,
+        content_revision=EXCLUDED.content_revision,claim_refs=EXCLUDED.claim_refs,plan_key=EXCLUDED.plan_key,
+        sent_claims=EXCLUDED.sent_claims,updated_at_ms=EXCLUDED.updated_at_ms""",
         (
             intent_id,
             update.event_id,

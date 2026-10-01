@@ -14,6 +14,8 @@ from tracefold.news.events.facts import extract_fact_units
 from tracefold.news.notifications.contracts import FrozenCard
 from tracefold.news.notifications.ports import SendOutcome
 from tracefold.news.storage.head_scope_repairs import audit_scope_rows
+from tracefold.news.storage.notification_jobs import NotificationJobDetail
+from tracefold.news.storage.notification_rows import NOTIFY_JOBS_SQL, UPDATE_RECEIPTS_SQL
 from tracefold.news.storage.notification_store import PgNotificationStore
 from tracefold.news.storage.update_commit import lock_event
 from tracefold.news.updates.identity import digest
@@ -61,23 +63,22 @@ def _seed_numbered_head(notification_state: str = "pending"):
     if notification_state == "done":
         decision_ref = "historical-decision"
         sql(
-            """INSERT INTO news_notification_decisions
-                 (decision_ref,event_id,update_ref,channel,input_snapshot,plan,origin,created_at_ms)
-               VALUES (%s,%s,%s,'news','{}'::jsonb,'{}'::jsonb,'legacy_work_plan',%s)""",
-            (decision_ref, event_id, head.ref, STAMP + 1),
+            """INSERT INTO news_notifications(notification_id,event_id,update_ref,kind,input_snapshot,plan,origin,
+                 decided_at_ms,state,created_at_ms,updated_at_ms)
+               VALUES (%s,%s,%s,'update','{}'::jsonb,'{}'::jsonb,'legacy_work_plan',%s,'decided',%s,%s)""",
+            (decision_ref, event_id, head.ref, STAMP + 1, STAMP + 1, STAMP + 1),
         )
+    detail = NotificationJobDetail(content_revision=head.content_revision, decision_ref=decision_ref)
     sql(
-        """INSERT INTO news_notification_work
-             (event_id,channel,content_revision,state,decision_ref,
-              attempts,last_error_code,next_attempt_at_ms,updated_at_ms)
-           VALUES (%s,'news',%s,%s,%s,%s,%s,%s,%s)""",
+        """INSERT INTO news_jobs(job_kind,subject_id,detail,state,attempts,last_error_code,next_attempt_at_ms,
+           created_at_ms,updated_at_ms) VALUES ('notify',%s,%s::jsonb,%s,%s,%s,%s,%s,%s)""",
         (
             event_id,
-            head.content_revision,
+            detail.model_dump_json(),
             notification_state,
-            decision_ref,
             attempts,
             "news_notification_plan:KeyError" if notification_state == "failed" else None,
+            STAMP + 1,
             STAMP + 1,
             STAMP + 1,
         ),
@@ -151,13 +152,13 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(n
     assert sql("SELECT count(*) AS n FROM news_semantic_observations")[0]["n"] == 1
     # Work still owed follows the repaired head -- pending, or failed and waiting for a retry of exactly that
     # head -- without its budget replenished; completed work stays with the head it completed.
-    assert sql("SELECT content_revision,state,decision_ref FROM news_notification_work")[0] == {
+    assert sql(f"SELECT content_revision,state,decision_ref FROM ({NOTIFY_JOBS_SQL})")[0] == {
         "content_revision": head.content_revision if notification_state == "done" else revision,
         "state": notification_state,
         "decision_ref": decision_ref if notification_state == "done" else None,
     }
     if notification_state == "failed":
-        assert sql("SELECT attempts,last_error_code FROM news_notification_work")[0] == {
+        assert sql(f"SELECT attempts,last_error_code FROM ({NOTIFY_JOBS_SQL})")[0] == {
             "attempts": 3,
             "last_error_code": "news_notification_plan:KeyError",
         }
@@ -168,7 +169,7 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(n
         finally:
             reader.close()
         assert detail is not None and detail["processing"]["notification"] is None
-    assert sql("SELECT count(*) AS n FROM news_deliveries")[0]["n"] == 0
+    assert sql(f"SELECT count(*) AS n FROM ({UPDATE_RECEIPTS_SQL})")[0]["n"] == 0
 
 
 def _prepared_intent(head):
@@ -211,8 +212,8 @@ def test_repair_before_begin_refuses_the_old_frozen_send() -> None:
     revision = _repair(head)
 
     assert asyncio.run(store.atomic_begin_send(lease, card)) == "head_changed"
-    assert sql("SELECT intent_id FROM news_deliveries") == []
-    assert sql("SELECT content_revision,attempts FROM news_notification_work") == [
+    assert sql(f"SELECT intent_id FROM ({UPDATE_RECEIPTS_SQL})") == []
+    assert sql(f"SELECT content_revision,attempts FROM ({NOTIFY_JOBS_SQL})") == [
         {"content_revision": revision, "attempts": 0}
     ]
 
@@ -249,7 +250,7 @@ def test_begin_waiting_for_event_lock_rechecks_head_after_repair_commit() -> Non
             conn.close()
 
     assert asyncio.run(race()) == "head_changed"
-    assert sql("SELECT intent_id FROM news_deliveries") == []
+    assert sql(f"SELECT intent_id FROM ({UPDATE_RECEIPTS_SQL})") == []
 
 
 def test_begin_before_repair_keeps_the_old_send_result_owned_by_its_intent() -> None:
@@ -258,7 +259,7 @@ def test_begin_before_repair_keeps_the_old_send_result_owned_by_its_intent() -> 
     assert asyncio.run(store.atomic_begin_send(lease, card)) == "begun"
     revision = _repair(head)
 
-    assert sql("SELECT state,content_revision FROM news_deliveries") == [
+    assert sql(f"SELECT state,content_revision FROM ({UPDATE_RECEIPTS_SQL})") == [
         {"state": "sending", "content_revision": head.content_revision}
     ]
     result = asyncio.run(
@@ -270,9 +271,9 @@ def test_begin_before_repair_keeps_the_old_send_result_owned_by_its_intent() -> 
         )
     )
     assert result == "sent"
-    assert sql("SELECT state,content_revision FROM news_deliveries") == [
+    assert sql(f"SELECT state,content_revision FROM ({UPDATE_RECEIPTS_SQL})") == [
         {"state": "sent", "content_revision": head.content_revision}
     ]
-    assert sql("SELECT state,content_revision FROM news_notification_work") == [
+    assert sql(f"SELECT state,content_revision FROM ({NOTIFY_JOBS_SQL})") == [
         {"state": "pending", "content_revision": revision}
     ]

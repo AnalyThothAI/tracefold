@@ -31,7 +31,6 @@ from .collectors import STATUS_INGEST_SQL
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_SQL,
-    EVENT_FEEDBACK_SQL,
     EVENT_MEMBERS_SQL,
     ITEM_RELATED_COUNT_SQL,
     ITEM_RELATED_EVENTS_SQL,
@@ -40,8 +39,6 @@ from .feed_sql import (
     SOURCE_AUTHORITY_PREDICATE,
     STATUS_DELIVERY_SQL,
     STATUS_FUNNEL_DECISIONS_SQL,
-    STATUS_FUNNEL_REVIEW_RATIOS_SQL,
-    STATUS_FUNNEL_REVIEWS_SQL,
     STATUS_FUNNEL_TOTALS_SQL,
     STATUS_PIPELINE_SQL,
     STATUS_SOURCE_CONTRACTS_SQL,
@@ -319,19 +316,11 @@ class FeedStorage:
             "timeline": timeline,
             "members": member_rows,
             "deliveries": delivery_rows,
-            "feedback": self._feedback_summary(event_id),
             "evidence_snapshots": snapshots,
             "reader_receipt": ReaderReceipt.from_delivery(
                 _delivery_public(reader_card) if reader_card is not None else None
             ).model_dump(mode="json"),
         }
-
-    def _feedback_summary(self, event_id: str) -> dict[str, Any]:
-        rows = self.conn.execute(
-            EVENT_FEEDBACK_SQL,
-            (event_id,),
-        ).fetchall()
-        return {"feedback_n": len(rows), "latest": dict(rows[0]) if rows else None}
 
     def _source_contracts_24h(self, *, day_ago: int) -> dict[str, dict[str, int]]:
         """One bounded Event cohort, projected into the two editorial source-contract funnels.
@@ -459,29 +448,11 @@ class FeedStorage:
     def _funnel_24h(self, *, day_ago: int) -> dict[str, Any]:
         """One Event cohort and current notification decisions with distinct reviewer facts."""
         decisions = self.conn.execute(STATUS_FUNNEL_DECISIONS_SQL, (day_ago,)).fetchall()
-        reviewed = self.conn.execute(STATUS_FUNNEL_REVIEWS_SQL, (day_ago, day_ago)).fetchone()
-        ratios = self.conn.execute(STATUS_FUNNEL_REVIEW_RATIOS_SQL, (day_ago,)).fetchone()
-        sent_n = int(ratios["sent_n"] or 0) if ratios else 0
-        sent_push_n = int(ratios["sent_push_n"] or 0) if ratios else 0
-        held_n = int(ratios["held_n"] or 0) if ratios else 0
-        held_push_n = int(ratios["held_push_n"] or 0) if ratios else 0
         totals = self.conn.execute(STATUS_FUNNEL_TOTALS_SQL, (day_ago,)).fetchone()
         events = int(totals["events"] or 0) if totals else 0
         admitted = int(totals["admitted"] or 0) if totals else 0
         return {
             "decision_actions_24h": {str(row["action"]): int(row["n"]) for row in decisions},
-            "reviewed_decision_should_push_24h": int(reviewed["decision"] or 0) if reviewed else 0,
-            "reviewed_external_miss_24h": int(reviewed["external"] or 0) if reviewed else 0,
-            "keep_ratio_sent_24h": {
-                "ratio": round(sent_push_n / sent_n, 4) if sent_n else None,
-                "numerator": sent_push_n,
-                "denominator": sent_n,
-            },
-            "missed_ratio_held_24h": {
-                "ratio": round(held_push_n / held_n, 4) if held_n else None,
-                "numerator": held_push_n,
-                "denominator": held_n,
-            },
             "candidate_share_24h": round(admitted / events, 4) if events else None,
             "admitted_24h": admitted,
             "funnel_received_24h": events,

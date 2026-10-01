@@ -114,7 +114,7 @@ def test_five_any_tier_buyers_are_one_episode_one_intent_and_one_card_with_the_t
     run(conn)
     asyncio.run(loop.advance())
     assert len(events(conn)) == 1
-    assert conn.execute("SELECT count(*) AS n FROM news_market_deliveries").fetchone()["n"] == 1
+    assert conn.execute("SELECT count(*) AS n FROM news_notifications WHERE kind='market'").fetchone()["n"] == 1
 
 
 def test_four_addresses_are_not_a_quorum_and_nothing_shorter_can_rescue_them(conn: Any) -> None:
@@ -233,7 +233,7 @@ def test_pending_card_invalidated_by_sale(conn: Any) -> None:
     sender.available = True
     asyncio.run(loop.advance())
     assert not sender.cards
-    row = conn.execute("SELECT state,error FROM news_market_deliveries").fetchone()
+    row = conn.execute("SELECT state,error_code AS error FROM news_notifications WHERE kind='market'").fetchone()
     assert row == {"state": "failed", "error": "invalidated_before_send"}
 
 
@@ -342,7 +342,7 @@ def test_stale_first_attempt_ends_original_intent_and_does_not_retry_same_episod
     sender.available = True
     asyncio.run(MarketNotificationLoop(db=Db(conn), sender=sender, clock=lambda: NOW + 60001).advance())
     assert sender.cards == []
-    assert conn.execute("SELECT state,error FROM news_market_deliveries").fetchone() == {
+    assert conn.execute("SELECT state,error_code AS error FROM news_notifications WHERE kind='market'").fetchone() == {
         "state": "failed",
         "error": "stale_before_send",
     }
@@ -350,7 +350,7 @@ def test_stale_first_attempt_ends_original_intent_and_does_not_retry_same_episod
     run(conn, stamp=NOW + 60002)
     asyncio.run(MarketNotificationLoop(db=Db(conn), sender=sender, clock=lambda: NOW + 60002).advance())
     assert sender.cards == []
-    assert conn.execute("SELECT count(*) AS n FROM news_market_deliveries").fetchone()["n"] == 1
+    assert conn.execute("SELECT count(*) AS n FROM news_notifications WHERE kind='market'").fetchone()["n"] == 1
 
 
 @pytest.mark.parametrize("batch_size", [1, 2, 20])
@@ -453,7 +453,7 @@ def test_crash_after_external_send_before_receipt_is_unknown_after_restart(conn:
     asyncio.run(restarted.start())
     asyncio.run(restarted.advance())
     assert len(sender.cards) == 1
-    assert conn.execute("SELECT state,attempts FROM news_market_deliveries").fetchone() == {
+    assert conn.execute("SELECT state,attempts FROM news_notifications WHERE kind='market'").fetchone() == {
         "state": "unknown",
         "attempts": 1,
     }
@@ -476,7 +476,9 @@ def test_gap_discovered_after_intent_before_detector_cannot_send_old_affirmative
     sender.available = True
     asyncio.run(MarketNotificationLoop(db=Db(conn), sender=sender, clock=lambda: NOW + 2).advance())
     assert sender.cards == []
-    assert conn.execute("SELECT state,error,attempts FROM news_market_deliveries").fetchone() == {
+    assert conn.execute(
+        "SELECT state,error_code AS error,attempts FROM news_notifications WHERE kind='market'"
+    ).fetchone() == {
         "state": "failed",
         "error": "invalidated_before_send",
         "attempts": 0,
@@ -513,7 +515,7 @@ def test_explicit_not_sent_retry_preserves_frozen_snapshot_and_both_channel_seri
     assert events(conn)[0]["send_snapshot"] == original
     assert feishu_card(sender.cards[0]) == feishu_card(sender.cards[1])
     assert _sent_text(sender.cards[0]) == _sent_text(sender.cards[1])
-    assert conn.execute("SELECT count(*) AS n FROM news_market_deliveries").fetchone()["n"] == 1
+    assert conn.execute("SELECT count(*) AS n FROM news_notifications WHERE kind='market'").fetchone()["n"] == 1
 
 
 def test_cutover_rosters_without_monitoring_support_do_not_expand_the_collection_pool(conn: Any) -> None:

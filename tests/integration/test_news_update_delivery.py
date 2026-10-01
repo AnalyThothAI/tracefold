@@ -48,6 +48,12 @@ from tracefold.news.pipeline.notification_sender import NotificationSender
 from tracefold.news.pipeline.send_entry import InitialSendEntry
 from tracefold.news.reader_card import ReaderCard
 from tracefold.news.storage.judgment_store import PgJudgmentCache
+from tracefold.news.storage.notification_rows import (
+    NOTIFICATION_DECISIONS_SQL,
+    NOTIFY_JOBS_SQL,
+    UPDATE_PENDING_SQL,
+    UPDATE_RECEIPTS_SQL,
+)
 from tracefold.news.storage.notification_store import PgNotificationStore
 from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.updates.contracts import (
@@ -209,18 +215,18 @@ def _claim(source: Any, slot: str, *, mode: str = "decision", symbol: str = "X")
 
 
 def _ledger() -> list[dict[str, Any]]:
-    return sql("SELECT * FROM news_deliveries ORDER BY created_at_ms, intent_id")
+    return sql(f"SELECT * FROM ({UPDATE_RECEIPTS_SQL}) ORDER BY created_at_ms, intent_id")
 
 
 def _queue() -> list[dict[str, Any]]:
-    return sql("SELECT intent_id, state, attempts, lease_token, error_code, frozen_card FROM news_delivery_queue")
+    return sql(f"SELECT intent_id, state, attempts, lease_token, error_code, frozen_card FROM ({UPDATE_PENDING_SQL})")
 
 
 def _work() -> dict[str, Any]:
-    return sql("""SELECT w.state,w.attempts,w.next_attempt_at_ms,w.content_revision,w.last_error_code,
+    return sql(f"""SELECT w.state,w.attempts,w.next_attempt_at_ms,w.content_revision,w.last_error_code,
                          d.plan AS plan
-                    FROM news_notification_work w
-                    LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref""")[0]
+                    FROM ({NOTIFY_JOBS_SQL}) w
+                    LEFT JOIN ({NOTIFICATION_DECISIONS_SQL}) d ON d.decision_ref=w.decision_ref""")[0]
 
 
 def test_planner_intent_card_and_send_record_the_exact_frozen_body_and_receipt() -> None:
@@ -678,8 +684,8 @@ def test_only_a_related_receipt_settled_meanwhile_invalidates_a_ready_card(relat
         return {
             row["event_id"]: row
             for row in sql(
-                "SELECT w.event_id,w.state,d.plan FROM news_notification_work w "
-                "LEFT JOIN news_notification_decisions d ON d.decision_ref=w.decision_ref"
+                f"SELECT w.event_id,w.state,d.plan FROM ({NOTIFY_JOBS_SQL}) w "
+                f"LEFT JOIN ({NOTIFICATION_DECISIONS_SQL}) d ON d.decision_ref=w.decision_ref"
             )
         }
 
@@ -749,22 +755,22 @@ def test_the_stage_breakdown_from_adoption_to_the_provider_is_read_back_with_sql
     assert rig.advance() == 1
 
     (row,) = sql(
-        """
+        f"""
         SELECT u.adopted_at_ms,
-               (d.plan #>> '{timings,due_at_ms}')::bigint AS due_at_ms,
-               (d.plan #>> '{timings,started_at_ms}')::bigint AS started_at_ms,
-               (d.plan #>> '{timings,snapshot_ms}')::bigint AS snapshot_ms,
-               (d.plan #>> '{timings,judgment_ms}')::bigint AS judgment_ms,
-               (d.plan #>> '{timings,planned_at_ms}')::bigint AS planned_at_ms,
+               (d.plan #>> '{{timings,due_at_ms}}')::bigint AS due_at_ms,
+               (d.plan #>> '{{timings,started_at_ms}}')::bigint AS started_at_ms,
+               (d.plan #>> '{{timings,snapshot_ms}}')::bigint AS snapshot_ms,
+               (d.plan #>> '{{timings,judgment_ms}}')::bigint AS judgment_ms,
+               (d.plan #>> '{{timings,planned_at_ms}}')::bigint AS planned_at_ms,
                d.created_at_ms AS decided_at_ms,
                jsonb_array_length(d.plan -> 'compared_receipts') AS compared,
-               (x.history_context #>> '{timings,card_started_at_ms}')::bigint AS card_started_at_ms,
-               (x.history_context #>> '{timings,card_finished_at_ms}')::bigint AS card_finished_at_ms,
-               (x.history_context #>> '{timings,ready_at_ms}')::bigint AS ready_at_ms,
-               (x.history_context #>> '{timings,send_slot_wait_ms}')::bigint AS send_slot_wait_ms,
+               (x.history_context #>> '{{timings,card_started_at_ms}}')::bigint AS card_started_at_ms,
+               (x.history_context #>> '{{timings,card_finished_at_ms}}')::bigint AS card_finished_at_ms,
+               (x.history_context #>> '{{timings,ready_at_ms}}')::bigint AS ready_at_ms,
+               (x.history_context #>> '{{timings,send_slot_wait_ms}}')::bigint AS send_slot_wait_ms,
                x.attempted_at_ms, x.settled_at_ms
-          FROM news_deliveries x
-          JOIN news_notification_decisions d ON d.decision_ref = x.decision_ref
+          FROM ({UPDATE_RECEIPTS_SQL}) x
+          JOIN ({NOTIFICATION_DECISIONS_SQL}) d ON d.decision_ref = x.decision_ref
           JOIN news_event_updates u ON u.event_id = x.event_id AND u.content_revision = x.content_revision
         """
     )
@@ -785,7 +791,7 @@ def test_new_program_reuses_extraction_and_keeps_legacy_observation_and_frozen_i
     rig = Rig(Provider(), clock=clock)
     prepared = asyncio.run(rig.notifications.prepare(EVENT, "news"))
     assert prepared.status == "ready" and prepared.card is not None and prepared.lease is not None
-    frozen_before = sql("SELECT * FROM news_delivery_queue WHERE intent_id=%s", (prepared.lease.intent_id,))[0]
+    frozen_before = sql(f"SELECT * FROM ({UPDATE_PENDING_SQL}) WHERE intent_id=%s", (prepared.lease.intent_id,))[0]
 
     retry_event = "event-program-retry"
     seed_event(
@@ -847,5 +853,7 @@ def test_new_program_reuses_extraction_and_keeps_legacy_observation_and_frozen_i
     assert adopted_row["observation_result_id"] == adopted["result_id"]
     assert adopted["result_id"] != legacy_id
     # A deployment identity is no reason to rewrite another Event's exact frozen pending body or intent.
-    assert sql("SELECT * FROM news_delivery_queue WHERE intent_id=%s", (prepared.lease.intent_id,))[0] == frozen_before
+    assert (
+        sql(f"SELECT * FROM ({UPDATE_PENDING_SQL}) WHERE intent_id=%s", (prepared.lease.intent_id,))[0] == frozen_before
+    )
     assert _ledger() == [], "resuming semantic work performs no provider send"

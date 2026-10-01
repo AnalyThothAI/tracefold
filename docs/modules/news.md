@@ -297,7 +297,7 @@ sequenceDiagram
 
 [taxonomy.py](../../tracefold/news/taxonomy.py)保留来源权威类别，例如 `regulatory_filing`、`issuer_first_party`、`reputable_secondary` 与 `unknown`，依据已识别的来源身份。来源权威不是对其引用的第三方说法进行独立核验，更不是交易指令。
 
-当前 EventUpdate 使用 `news_event_update_v2`；0411 已清除退役 v1 所属 Event、旧 verdict / Review / 学习表。当前 ReviewDesk 处理通知决策反馈及外部漏报，不把旧四轴 taxonomy 或旧 Program 的 `fact_kind` 当作新 Claim 契约。
+当前 EventUpdate 使用 `news_event_update_v2`；0411 已清除退役 v1 所属 Event、旧 verdict / Review / 学习表。P2 已移除 ReviewDesk；旧四轴 taxonomy 或旧 Program 的 `fact_kind` 不属于新 Claim 契约。
 
 ### 三层之间的数据契约
 
@@ -346,9 +346,9 @@ sequenceDiagram
 | --- | --- | --- |
 | `news_semantic_work` | wanted/done revision、owner、lease、attempt、due、last outcome，以及 processed/failed read refs；运行状态由这些字段推导 | 当前 owner 完成、暂缓或失败；精确版本恢复不能改来源/旧 head |
 | `news_event_updates` / heads | 不可变内容版本与一个当前 head，没有“已推送”状态 | 采用/修复使用 Event 锁和 head CAS，观察保存与采用分开 |
-| `news_notification_work` | `pending/done/failed` | 当前版本完成或退避；真实失败才计尝试，耗尽后精确恢复 |
-| `news_delivery_queue` | `pending/dead` | 成功或 ambiguous 结算删除 queue row；可重试 not_sent 保留同 intent/payload |
-| `news_deliveries` | `sending/sent/ambiguous/terminal` | sending 后无法证明结果则 ambiguous；它不是可以直接重发的 pending 工作 |
+| `news_jobs`（notify） | `pending/done/failed` | 当前版本完成或退避；真实失败才计尝试，耗尽后精确恢复 |
+| `news_notifications` | `decided/pending/dead` | 不可变判断与可变发送状态在同一行；可重试 not_sent 保留同 intent/payload |
+| `news_notifications` | `sending/sent/ambiguous/terminal` | 原行结算；sending 后无法证明结果则 ambiguous，禁止自动重发 |
 | `SendOutcome` | `sent/not_sent/ambiguous`，provider 边界的规范结果 | 与上面的数据库枚举不同；not_sent 是否重试由证明、retryable 与尝试上限共同决定 |
 
 下面是**恢复过程的概念状态图**，不是完整数据库枚举：
@@ -415,7 +415,7 @@ stateDiagram-v2
 
 **读者判断**是一次请求两道题（[reader.py](../../tracefold/news/notifications/reader.py)），每条命题有自己的冻结 `ReaderInput`：命题字段与可读主题、来源，以及至多 16 条实际已送正文。输入不含未指向某条已送消息的单个 `change` 类型；`EventUpdate.changes` 和持久命题链接仍决定更正、增量与新颖度。
 
-回执召回（[recall.py](../../tracefold/news/notifications/recall.py)）从已送 `news_deliveries` 出发，普通窗口按 `settled_at_ms` 连续覆盖过去 48 小时。发送时将该回执的 `claim_refs` 对应 Claim 冻结到 `news_deliveries.sent_claims`；每条当前命题独立查询这份已送投影：有效语义代表优先，结构与同语言实义词项两路各取最多 32 个候选，确定性融合后可返回 0–16 条。结构路线在截断前按有证身份/明确对象、已知市场的 primary、仅共享主体/背景角色排序；最终融合也让合格正文线索优先于弱背景，组内沿用 RRF 与新近度。弱背景仍可填剩余名额，召回策略版本为 claim_receipts_v3；相关候选不能证明已覆盖。资产保留 `market_type` 和 primary / mentioned 角色，相关检索按 [entities.py](../../tracefold/news/entities.py) 同一组目录/商品/venue/报价对特征扩展；精确 key 与 related 特征分开，SQL 路线和纯函数采用相同规则。地址保持大小写，检索重合不证明同一合约或同一事实。词项路线没有停用词表：英文按同一正则取词，中文取相邻汉字 bigram，一个共享词项只有在同一 48 小时窗口里至多 1% 的已送回执（`LEXICAL_DF_MAX`，至少 1 条）出现时才算证据，同一语言至少 2 个这样的词项才入选，按词项数与新近度排序。文档频率由 SQL 在同一次查询的窗口上计算，并把每条命题的合格词项随路线排名返回；纯函数以传入的候选池为窗口，按同一规则计算。二者不提供无共同实体的通用跨语言语义匹配。共享 SQL 批次和正文缓存，但兄弟命题不共享截断后的列表。缺少历史投影时只可使用真实已送正文的合法词项路径，不借当前 head 补造历史。
+回执召回（[recall.py](../../tracefold/news/notifications/recall.py)）从已送 `news_notifications` 出发，普通窗口按 `settled_at_ms` 连续覆盖过去 48 小时。发送时将该回执的 `claim_refs` 对应 Claim 冻结到 `news_notifications.sent_claims`；每条当前命题独立查询这份已送投影：有效语义代表优先，结构与同语言实义词项两路各取最多 32 个候选，确定性融合后可返回 0–16 条。结构路线在截断前按有证身份/明确对象、已知市场的 primary、仅共享主体/背景角色排序；最终融合也让合格正文线索优先于弱背景，组内沿用 RRF 与新近度。弱背景仍可填剩余名额，召回策略版本为 claim_receipts_v3；相关候选不能证明已覆盖。资产保留 `market_type` 和 primary / mentioned 角色，相关检索按 [entities.py](../../tracefold/news/entities.py) 同一组目录/商品/venue/报价对特征扩展；精确 key 与 related 特征分开，SQL 路线和纯函数采用相同规则。地址保持大小写，检索重合不证明同一合约或同一事实。词项路线没有停用词表：英文按同一正则取词，中文取相邻汉字 bigram，一个共享词项只有在同一 48 小时窗口里至多 1% 的已送回执（`LEXICAL_DF_MAX`，至少 1 条）出现时才算证据，同一语言至少 2 个这样的词项才入选，按词项数与新近度排序。文档频率由 SQL 在同一次查询的窗口上计算，并把每条命题的合格词项随路线排名返回；纯函数以传入的候选池为窗口，按同一规则计算。二者不提供无共同实体的通用跨语言语义匹配。共享 SQL 批次和正文缓存，但兄弟命题不共享截断后的列表。缺少历史投影时只可使用真实已送正文的合法词项路径，不借当前 head 补造历史。
 
 同一 reader context 同时生成模型正文与 revision，由快照、记录计划、开始发送前两处校验复用。正文必须与已送 payload digest 一致；`sending` 不当作已读，`ambiguous` 保留去重保护。召回依据仅选上下文，是否已覆盖仍由持久关系、新颖度和 reader 判断决定。等价比较只用可证明的身份、枚举、同口径数量及少数可解析绝对时段冲突否决模型的 equivalent；同口径数量指同一指标与单位（忽略大小写与首尾空白）、周期可对齐，不要求主体或对象文本一致，主体不同须由 `subject_id` / `object_id` 证明。自由文本差异返回未知，不代表已经证明等价。
 
@@ -573,7 +573,7 @@ T2 的卡片生成失败不应回滚 T2 的知识；T3 更正不会改写 T0 冻
 
 前端通过新闻流与 Event 详情读取这些维度；历史回执按其真实版本展示，不由 UI 合成当前命题。列表计数与卡片成功率、语义采用率的分母不同，不应混算。
 
-代码测试证明状态、身份、引用与副作用边界；真实新闻理解质量仍需独立复核。保留的[ReviewDesk / 校准](review.md)不是自动优化发布系统。
+代码测试证明状态、身份、引用与副作用边界；真实新闻理解质量仍需独立复核。保留的[评审器校准](review.md)不是自动优化发布系统。
 
 [Issue 717 固定窗口与离线回放记录](../reports/issue-717-hourly-comparison-2026-09-27.md)保存 #718 对重复命题、实际发送与延时的历史比较。它不是本手册整理时重新执行的生产测试，也没有测得部署后的模型调用次数与延时改善。
 

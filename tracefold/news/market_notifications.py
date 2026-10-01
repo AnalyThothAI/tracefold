@@ -8,9 +8,9 @@ readable, and no card is ever prepared for it (#582 §3.2).
 
 Two durable states, each with one owner (§5.1):
 
-* `news_market_tracks` answers *when is this group worth interrupting a reader again* -- the last
+* `news_jobs` answers *when is this group worth interrupting a reader again* -- the last
   observation, the anchor the last card actually covered, the round it is in, the next due time.
-* `news_market_deliveries` answers *what happened to one card* -- a stable `delivery_key`, the frozen
+* `news_notifications` answers *what happened to one card* -- a stable `delivery_key`, the frozen
   snapshot, the attempts, the receipt or the error.
 
 Neither is a second copy of the facts. The observations a card covers are the Items that carry its
@@ -120,7 +120,7 @@ CARD_METRIC_LINES_MAX: Final = 4
 # whose observations this process derived rather than received, and which always earns a card,
 # because the rules that produced it already decided that (#572 PR-2).
 MarketFamily = Literal["oi", "liquidation", "smart_money", "wallet", "raw"]
-# What this loop can write. `news_market_deliveries_reason_check` and the API's own Literal still
+# What this loop can write. `news_notifications_reason_check` and the API's own Literal still
 # accept `raw`, because the four cards production sent under that reason are receipts and a receipt
 # is not rewritten by a rule change.
 TriggerReason = Literal["first", "followup", "action_change"]

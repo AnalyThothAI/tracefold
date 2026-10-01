@@ -387,6 +387,10 @@ class JanitorLoop:
                     cutoff_ms=stamp - self.retention_judged_ms, limit=_MARKET_TRACK_PRUNE_BATCH
                 ),
             )
+            await self.cold_db.tx(
+                "news_orphan_job_retention",
+                lambda repos: repos.news.sweep_orphan_jobs(limit=_MARKET_TRACK_PRUNE_BATCH),
+            )
         wall_seconds = max(0.0, time.perf_counter() - started)
         oldest_age_seconds = (
             0.0 if oldest_observed_at_ms is None else max(0.0, (stamp - oldest_observed_at_ms) / 1000.0)

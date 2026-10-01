@@ -11,6 +11,7 @@ from typing import Any, Final, Literal
 from ..notifications.contracts import NEWS_CHANNEL, NOTIFICATION_ATTEMPTS_MAX, NotificationPlan
 from .errors import EventUpdateConflict, IntentLeaseLost
 from .notification_context import NotificationContextStorage
+from .notification_jobs import NotificationJobDetail
 from .sql_values import _dumps
 from .update_commit import lock_event
 
@@ -40,39 +41,40 @@ class NotificationWorkStorage:
     def _record_decision(
         self, event_id: str, plan: NotificationPlan, plan_json: str, *, now_ms: int
     ) -> NotificationPlan:
-        """Insert-only decision; an identical plan is the same row, and the stored one wins."""
-
+        # Validate the same immutable judgment that is persisted.
+        if NotificationPlan.model_validate_json(plan_json) != plan:
+            raise EventUpdateConflict("news_notification_plan_mismatch")
         self.conn.execute(
-            """
-            INSERT INTO news_notification_decisions
-              (decision_ref,event_id,update_ref,channel,input_digest,input_snapshot,plan,origin,created_at_ms)
-            VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,'reader_v2',%s)
-            ON CONFLICT DO NOTHING
-            """,
+            """INSERT INTO news_notifications
+                 (notification_id,kind,origin,event_id,update_ref,input_digest,input_snapshot,plan,
+                  decided_at_ms,state,created_at_ms,updated_at_ms)
+               VALUES (%s,'update','reader_v2',%s,%s,%s,%s::jsonb,%s::jsonb,%s,'decided',%s,%s)
+               ON CONFLICT DO NOTHING""",
             (
                 plan.record_ref,
                 event_id,
                 plan.update_ref,
-                plan.channel,
                 plan.input_digest,
                 _dumps(
                     {
                         "reader_identity": plan.reader_identity,
-                        "compared_receipts": [row.model_dump(mode="json") for row in plan.compared_receipts],
+                        "compared_receipts": [r.model_dump(mode="json") for r in plan.compared_receipts],
                     }
                 ),
                 plan_json,
                 int(now_ms),
+                int(now_ms),
+                int(now_ms),
             ),
         )
         stored = self.conn.execute(
-            "SELECT decision_ref,plan FROM news_notification_decisions WHERE decision_ref = %s",
+            "SELECT notification_id,plan FROM news_notifications WHERE notification_id=%s",
             (plan.record_ref,),
         ).fetchone()
         if stored is None:
             raise EventUpdateConflict("news_notification_decision_missing")
         return NotificationPlan.model_validate(stored["plan"]).model_copy(
-            update={"reader_revision": plan.reader_revision, "decision_ref": str(stored["decision_ref"])}
+            update={"reader_revision": plan.reader_revision, "decision_ref": str(stored["notification_id"])}
         )
 
     def record_notification_plan(
@@ -84,10 +86,8 @@ class NotificationWorkStorage:
         now_ms: int,
         lease_ms: int = INTENT_LEASE_MS,
     ) -> dict[str, Any]:
-        """Record or reuse an immutable decision, CAS head/reader, then reserve its stable intent."""
-
         head = self.conn.execute(
-            "SELECT event_id, content_revision FROM news_event_update_heads WHERE update_ref = %s",
+            "SELECT event_id,content_revision FROM news_event_update_heads WHERE update_ref=%s",
             (plan.update_ref,),
         ).fetchone()
         if head is None:
@@ -95,151 +95,116 @@ class NotificationWorkStorage:
         event_id = str(head["event_id"])
         lock_event(self.conn, event_id)
         head = self.conn.execute(
-            "SELECT event_id,content_revision FROM news_event_update_heads WHERE event_id=%s AND update_ref=%s",
+            "SELECT content_revision FROM news_event_update_heads WHERE event_id=%s AND update_ref=%s",
             (event_id, plan.update_ref),
         ).fetchone()
-        if head is None:
-            return {"status": "head_changed"}
         work = self.conn.execute(
-            """
-            SELECT state, content_revision, attempts FROM news_notification_work
-             WHERE event_id = %s AND channel = %s FOR UPDATE
-            """,
-            (event_id, plan.channel),
+            "SELECT state,attempts,detail FROM news_jobs WHERE job_kind='notify' AND subject_id=%s"
+            " FOR UPDATE SKIP LOCKED",
+            (event_id,),
         ).fetchone()
-        if work is None or work["content_revision"] != head["content_revision"]:
+        if head is None or work is None or work["detail"]["content_revision"] != head["content_revision"]:
             return {"status": "head_changed"}
         if work["state"] != "pending":
             return {"status": "already_settled"}
-        # The judgment is kept before the reader is checked: a plan that loses the race to a related receipt
-        # is asked again with its assessment reused rather than asked from scratch (#742 N10).
         plan = self._record_decision(event_id, plan, plan_json, now_ms=now_ms)
         if self.context.current_reader_revision(event_id, now_ms=now_ms) != plan.reader_revision:
             return {"status": "reader_changed"}
         intent_id = plan.intent_id if plan.action == "notify" else None
         others = self.conn.execute(
-            """
-            SELECT q.intent_id, q.lease_token, q.next_attempt_at_ms
-              FROM news_delivery_queue q
-             WHERE q.event_id = %s AND q.kind = 'update' AND q.state = 'pending'
-               AND q.intent_id IS DISTINCT FROM %s
-               AND NOT EXISTS (SELECT 1 FROM news_deliveries d WHERE d.intent_id = q.intent_id)
-             FOR UPDATE OF q
-            """,
+            """SELECT notification_id,intent_id,lease_token,lease_until_ms FROM news_notifications
+               WHERE event_id=%s AND kind='update' AND state='pending'
+                 AND intent_id IS DISTINCT FROM %s FOR UPDATE""",
             (event_id, intent_id),
         ).fetchall()
         leased = [
-            int(row["next_attempt_at_ms"])
-            for row in others
-            if row["lease_token"] is not None and int(row["next_attempt_at_ms"]) > int(now_ms)
+            int(r["lease_until_ms"])
+            for r in others
+            if r["lease_token"] is not None and int(r["lease_until_ms"]) > now_ms
         ]
         if leased:
-            # Another intent of this Event is still owned. Wait for it rather than poll it: its end wakes this.
             self._postpone_work(event_id, next_at_ms=min(leased))
             return {"status": "overlap"}
-        if others:
-            # Superseded unsent reservations of this Event: retire them, never a frozen send.
-            self.conn.execute(
-                "DELETE FROM news_delivery_queue WHERE intent_id = ANY(%s)",
-                ([str(row["intent_id"]) for row in others],),
-            )
-
-        def recorded(intent: str | None = None, card: Any = None) -> dict[str, Any]:
-            return {
-                "status": "committed",
-                "plan": plan.model_dump(mode="json"),
-                "intent_id": intent,
-                "frozen_card": card,
-            }
-
+        for row in others:
+            self._clear_reservation(str(row["notification_id"]), now_ms=now_ms)
         attempts = int(work["attempts"])
+        result = {"status": "committed", "plan": plan.model_dump(mode="json"), "intent_id": None, "frozen_card": None}
         if plan.action == "no_notification":
             self._settle_work(event_id, plan, state="done", attempts=0, next_at_ms=now_ms, now_ms=now_ms)
-            return recorded()
+            return result
         if plan.action == "unresolved":
             self._wait_work(event_id, plan, attempts=attempts, now_ms=now_ms)
-            return recorded()
-        intent_id = plan.intent_id
-        ledger = self.conn.execute("SELECT state FROM news_deliveries WHERE intent_id = %s", (intent_id,)).fetchone()
-        if ledger is not None:
-            if ledger["state"] == "sending":
+            return result
+        existing = self.conn.execute(
+            "SELECT * FROM news_notifications WHERE intent_id=%s FOR UPDATE",
+            (intent_id,),
+        ).fetchone()
+        if existing and existing["state"] in ("sending", "sent", "ambiguous", "terminal"):
+            if existing["state"] == "sending":
                 self._wait_work(event_id, plan, attempts=attempts, now_ms=now_ms)
             else:
-                # This exact selection already reached its final outcome: the plan is recorded, not resent.
                 self._complete_plan(event_id, plan, attempts=attempts, now_ms=now_ms)
             return {"status": "already_settled"}
-        selected = list(plan.selected_claim_refs)
-        reserved = self.conn.execute(
-            """
-            INSERT INTO news_delivery_queue (
-              intent_id, event_id, kind, state, attempts, enqueued_at_ms, next_attempt_at_ms,
-              last_attempt_at_ms, updated_at_ms, content_revision, claim_refs, plan_key, lease_token, decision_ref
-            ) VALUES (%s, %s, 'update', 'pending', 0, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
-            ON CONFLICT (intent_id) DO NOTHING
-            RETURNING frozen_card
-            """,
+        if existing and existing["state"] == "dead":
+            self._settle_work(
+                event_id,
+                plan,
+                state="failed",
+                attempts=attempts,
+                next_at_ms=now_ms,
+                now_ms=now_ms,
+                error_code=str(existing["error_code"] or "news_delivery_intent_dead"),
+            )
+            return {"status": "already_settled"}
+        if existing and existing["lease_token"] is not None and int(existing["lease_until_ms"]) > now_ms:
+            return {"status": "overlap"}
+        frozen = None if existing is None else existing["card"]
+        if existing and existing["notification_id"] != plan.record_ref:
+            self._clear_reservation(str(existing["notification_id"]), now_ms=now_ms)
+        self.conn.execute(
+            """UPDATE news_notifications SET state='pending',intent_id=%s,content_revision=%s,
+                 claim_refs=%s::jsonb,plan_key=%s,lease_token=%s,lease_until_ms=%s,next_attempt_at_ms=%s,
+                 reserved_at_ms=COALESCE(reserved_at_ms,%s),last_attempt_at_ms=%s,updated_at_ms=%s,
+                 attempts=%s,card=%s::jsonb,card_copy_input_digest=%s,card_copy_document=%s::jsonb,
+                 settlement=%s::jsonb,error_code=%s
+               WHERE notification_id=%s AND state IN ('decided','pending')""",
             (
                 intent_id,
-                event_id,
-                int(now_ms),
-                int(now_ms) + int(lease_ms),
-                int(now_ms),
-                int(now_ms),
                 head["content_revision"],
-                _dumps(selected),
+                _dumps(list(plan.selected_claim_refs)),
                 plan.key,
                 lease_token,
+                now_ms + lease_ms,
+                now_ms + lease_ms,
+                now_ms if existing is None else existing["reserved_at_ms"],
+                now_ms,
+                now_ms,
+                0 if existing is None else existing["attempts"],
+                None if frozen is None else _dumps(frozen),
+                None if existing is None else existing["card_copy_input_digest"],
+                None
+                if existing is None or existing["card_copy_document"] is None
+                else _dumps(existing["card_copy_document"]),
+                None if existing is None or existing["settlement"] is None else _dumps(existing["settlement"]),
+                None if existing is None else existing["error_code"],
                 plan.record_ref,
             ),
-        ).fetchone()
-        frozen_card = None
-        if reserved is None:
-            existing = self.conn.execute(
-                """
-                SELECT state, lease_token, next_attempt_at_ms, frozen_card, error_code
-                  FROM news_delivery_queue WHERE intent_id = %s FOR UPDATE
-                """,
-                (intent_id,),
-            ).fetchone()
-            if existing["state"] == "dead":
-                # This selection already failed as an unsent intent; only an explicit retry revives it.
-                self._settle_work(
-                    event_id,
-                    plan,
-                    state="failed",
-                    attempts=attempts,
-                    next_at_ms=now_ms,
-                    now_ms=now_ms,
-                    error_code=str(existing["error_code"] or "news_delivery_intent_dead"),
-                )
-                return {"status": "already_settled"}
-            if existing["lease_token"] is not None and int(existing["next_attempt_at_ms"]) > int(now_ms):
-                return {"status": "overlap"}
-            # A re-lease sends under the decision just recorded, not the one that first reserved the intent.
-            self.conn.execute(
-                """
-                UPDATE news_delivery_queue
-                   SET lease_token = %s, next_attempt_at_ms = %s, last_attempt_at_ms = %s, updated_at_ms = %s,
-                       decision_ref = %s, plan_key = %s
-                 WHERE intent_id = %s
-                """,
-                (
-                    lease_token,
-                    int(now_ms) + int(lease_ms),
-                    int(now_ms),
-                    int(now_ms),
-                    plan.record_ref,
-                    plan.key,
-                    intent_id,
-                ),
-            )
-            frozen_card = existing["frozen_card"]
-        # The marker stays pending while the reserved intent is in flight. If this turn dies before
-        # the send is settled, the marker comes due after the lease and reclaims the same identity.
-        self._settle_work(
-            event_id, plan, state="pending", attempts=attempts, next_at_ms=int(now_ms) + int(lease_ms), now_ms=now_ms
         )
-        return recorded(intent_id, frozen_card)
+        self._settle_work(
+            event_id, plan, state="pending", attempts=attempts, next_at_ms=now_ms + lease_ms, now_ms=now_ms
+        )
+        result.update(intent_id=intent_id, frozen_card=frozen)
+        return result
+
+    def _clear_reservation(self, notification_id: str, *, now_ms: int) -> None:
+        self.conn.execute(
+            """UPDATE news_notifications SET state='decided',intent_id=NULL,content_revision=NULL,
+                 claim_refs=NULL,plan_key=NULL,attempts=0,next_attempt_at_ms=NULL,lease_token=NULL,lease_until_ms=NULL,
+                 card=NULL,card_copy_input_digest=NULL,card_copy_document=NULL,settlement=NULL,error_code=NULL,
+                 reserved_at_ms=NULL,last_attempt_at_ms=NULL,updated_at_ms=%s
+               WHERE notification_id=%s AND state='pending'""",
+            (now_ms, notification_id),
+        )
 
     def _complete_plan(self, event_id: str, plan: NotificationPlan, *, attempts: int, now_ms: int) -> None:
         # Deferred claims keep the marker waiting for a later turn; otherwise this head is planned.
@@ -264,13 +229,11 @@ class NotificationWorkStorage:
         """
 
         work = self.conn.execute(
-            """
-            SELECT w.attempts, w.state, w.content_revision, w.decision_ref, d.plan
-              FROM news_notification_work w
-              LEFT JOIN news_notification_decisions d ON d.decision_ref = w.decision_ref
-             WHERE w.event_id = %s AND w.channel = %s FOR UPDATE OF w
-            """,
-            (event_id, NEWS_CHANNEL),
+            """SELECT attempts,state,detail->>'content_revision' AS content_revision,
+                      detail->>'decision_ref' AS decision_ref,
+                      (SELECT plan FROM news_notifications WHERE notification_id=detail->>'decision_ref') AS plan
+               FROM news_jobs WHERE job_kind='notify' AND subject_id=%s FOR UPDATE""",
+            (event_id,),
         ).fetchone()
         if work is None or work["state"] != "pending":
             return
@@ -320,34 +283,28 @@ class NotificationWorkStorage:
         now_ms: int,
         error_code: str | None = None,
     ) -> None:
+        detail = NotificationJobDetail(
+            content_revision=self.conn.execute(
+                "SELECT detail->>'content_revision' AS revision FROM news_jobs WHERE job_kind='notify' "
+                " AND subject_id=%s",
+                (event_id,),
+            ).fetchone()["revision"],
+            reader_revision=plan.reader_revision,
+            decision_ref=plan.record_ref,
+        )
         self.conn.execute(
-            """
-            UPDATE news_notification_work
-               SET state = %s, decision_ref = %s, reader_revision = %s, attempts = %s,
-                   last_error_code = CASE WHEN %s = 'done' THEN NULL ELSE COALESCE(%s, last_error_code) END,
-                   next_attempt_at_ms = %s, updated_at_ms = %s
-             WHERE event_id = %s AND channel = %s
-            """,
-            (
-                state,
-                plan.record_ref,
-                plan.reader_revision,
-                attempts,
-                state,
-                error_code,
-                int(next_at_ms),
-                int(now_ms),
-                event_id,
-                plan.channel,
-            ),
+            """UPDATE news_jobs SET state=%s,detail=%s::jsonb,attempts=%s,
+                 last_error_code=CASE WHEN %s='done' THEN NULL ELSE COALESCE(%s,last_error_code) END,
+                 next_attempt_at_ms=%s,updated_at_ms=%s WHERE job_kind='notify' AND subject_id=%s""",
+            (state, detail.model_dump_json(), attempts, state, error_code, next_at_ms, now_ms, event_id),
         )
 
     def _postpone_work(self, event_id: str, *, next_at_ms: int) -> None:
         """Move the Event's pending work to `next_at_ms` without touching its plan, attempts or CAS stamp."""
 
         self.conn.execute(
-            "UPDATE news_notification_work SET next_attempt_at_ms = %s "
-            "WHERE event_id = %s AND channel = %s AND state = 'pending'",
+            "UPDATE news_jobs SET next_attempt_at_ms = %s "
+            "WHERE subject_id = %s AND job_kind = CASE WHEN %s='news' THEN 'notify' END AND state = 'pending'",
             (int(next_at_ms), event_id, NEWS_CHANNEL),
         )
 
@@ -355,8 +312,9 @@ class NotificationWorkStorage:
         """Make the Event's pending work due now, if it was waiting; nothing else about it changes."""
 
         self.conn.execute(
-            "UPDATE news_notification_work SET next_attempt_at_ms = %s "
-            "WHERE event_id = %s AND channel = %s AND state = 'pending' AND next_attempt_at_ms > %s",
+            "UPDATE news_jobs SET next_attempt_at_ms = %s "
+            "WHERE subject_id = %s AND job_kind = CASE WHEN %s='news' THEN 'notify' END "
+            " AND state = 'pending' AND next_attempt_at_ms > %s",
             (int(now_ms), event_id, NEWS_CHANNEL, int(now_ms)),
         )
 
@@ -365,8 +323,9 @@ class NotificationWorkStorage:
 
         updated = self.conn.execute(
             """
-            UPDATE news_notification_work SET state = 'pending', next_attempt_at_ms = %s, updated_at_ms = %s
-             WHERE event_id = %s AND channel = %s AND content_revision = %s AND state <> 'failed'
+            UPDATE news_jobs SET state = 'pending', next_attempt_at_ms = %s, updated_at_ms = %s
+             WHERE subject_id = %s AND job_kind = CASE WHEN %s='news' THEN 'notify' END AND
+        detail->>'content_revision' = %s AND state <> 'failed'
             """,
             (int(next_at_ms), int(now_ms), event_id, NEWS_CHANNEL, expected_content_revision),
         )
@@ -375,14 +334,10 @@ class NotificationWorkStorage:
 
     def lookup_card_copy(self, *, input_digest: str) -> dict[str, Any] | None:
         row = self.conn.execute(
-            """SELECT card_copy_document FROM (
-                SELECT card_copy_document, attempted_at_ms AS stamp FROM news_deliveries
-                 WHERE kind='update' AND card_copy_input_digest=%s AND card_copy_document IS NOT NULL
-                UNION ALL
-                SELECT card_copy_document, updated_at_ms AS stamp FROM news_delivery_queue
-                 WHERE kind='update' AND card_copy_input_digest=%s AND card_copy_document IS NOT NULL
-                ) copies ORDER BY stamp DESC LIMIT 1""",
-            (input_digest, input_digest),
+            """SELECT card_copy_document FROM news_notifications WHERE kind='update'
+               AND card_copy_input_digest=%s AND card_copy_document IS NOT NULL
+               ORDER BY COALESCE(attempted_at_ms,updated_at_ms) DESC LIMIT 1""",
+            (input_digest,),
         ).fetchone()
         return None if row is None else dict(row["card_copy_document"])
 
@@ -393,30 +348,31 @@ class NotificationWorkStorage:
 
         self.conn.execute(
             """
-            UPDATE news_delivery_queue
-               SET frozen_card = %s::jsonb, card_copy_document=%s::jsonb,
+            UPDATE news_notifications
+               SET card = %s::jsonb, card_copy_document=%s::jsonb,
                    card_copy_input_digest=%s, updated_at_ms = %s
              WHERE intent_id = %s AND kind = 'update' AND state = 'pending'
-               AND lease_token = %s AND frozen_card IS NULL
+               AND lease_token = %s AND card IS NULL
             """,
             (card_json, copy_json, input_digest, int(now_ms), intent_id, lease_token),
         )
         row = self.conn.execute(
-            "SELECT lease_token, state, frozen_card FROM news_delivery_queue WHERE intent_id = %s", (intent_id,)
+            "SELECT lease_token, state, card FROM news_notifications WHERE intent_id = %s", (intent_id,)
         ).fetchone()
-        if row is None or row["state"] != "pending" or row["lease_token"] != lease_token or row["frozen_card"] is None:
+        if row is None or row["state"] != "pending" or row["lease_token"] != lease_token or row["card"] is None:
             raise IntentLeaseLost("news_intent_lease_lost")
-        return dict(row["frozen_card"])
+        return dict(row["card"])
 
     def release_unsent_intent(self, *, intent_id: str, lease_token: str, now_ms: int) -> bool:
         identity_row = self.conn.execute(
-            "SELECT event_id FROM news_delivery_queue WHERE intent_id=%s AND kind='update'", (intent_id,)
+            "SELECT event_id FROM news_notifications WHERE intent_id=%s AND kind='update'", (intent_id,)
         ).fetchone()
         if identity_row is None:
             return False
         lock_event(self.conn, str(identity_row["event_id"]))
         row = self.conn.execute(
-            """UPDATE news_delivery_queue SET lease_token=NULL, next_attempt_at_ms=%s, updated_at_ms=%s
+            """UPDATE news_notifications SET lease_token=NULL, lease_until_ms=NULL,
+        next_attempt_at_ms=%s, updated_at_ms=%s
                 WHERE intent_id=%s AND kind='update' AND state='pending' AND lease_token=%s
                 RETURNING event_id,content_revision""",
             (int(now_ms), int(now_ms), intent_id, lease_token),
@@ -446,18 +402,19 @@ class NotificationWorkStorage:
 
         row = self.conn.execute(
             """
-            UPDATE news_delivery_queue
+            UPDATE news_notifications
                SET attempts = CASE WHEN %(retryable)s THEN LEAST(attempts + 1, %(max)s) ELSE %(max)s END,
                    state = CASE WHEN %(retryable)s AND attempts + 1 < %(max)s THEN 'pending' ELSE 'dead' END,
                    settled_at_ms = CASE WHEN %(retryable)s AND attempts + 1 < %(max)s
                                         THEN NULL ELSE %(now)s::bigint END,
                    next_attempt_at_ms = %(now)s::bigint + GREATEST(
                      (%(delays)s::bigint[])[GREATEST(1, LEAST(attempts + 1, %(delay_n)s))], %(retry_after)s::bigint),
-                   lease_token = NULL, error_code = %(code)s, updated_at_ms = %(now)s,
-                   last_settlement = COALESCE(%(settlement)s::jsonb, last_settlement)
-             WHERE intent_id = %(intent)s AND kind = 'update' AND state = 'pending'
+                   lease_token = NULL, lease_until_ms=NULL, error_code = %(code)s, updated_at_ms = %(now)s,
+                   settlement = COALESCE(%(settlement)s::jsonb, settlement)
+             WHERE intent_id = %(intent)s AND kind = 'update'
+               AND (state='pending' OR (state='sending' AND %(settlement)s::jsonb IS NOT NULL))
                AND (%(lease)s::text IS NULL OR lease_token = %(lease)s)
-            RETURNING event_id, state, next_attempt_at_ms, content_revision, decision_ref
+            RETURNING event_id, state, next_attempt_at_ms, content_revision, notification_id AS decision_ref
             """,
             {
                 "retryable": bool(retryable),
@@ -504,7 +461,7 @@ class NotificationWorkStorage:
         """A card failure or a proven unsent preflight: fenced by the lease, never through a `sending` row."""
 
         identity_row = self.conn.execute(
-            "SELECT event_id FROM news_delivery_queue WHERE intent_id=%s AND kind='update'", (intent_id,)
+            "SELECT event_id FROM news_notifications WHERE intent_id=%s AND kind='update'", (intent_id,)
         ).fetchone()
         if identity_row is None:
             return False
@@ -533,15 +490,16 @@ class NotificationWorkStorage:
         lock_event(self.conn, event_id)
         cursor = self.conn.execute(
             """
-            UPDATE news_notification_work
+            UPDATE news_jobs
                SET attempts = LEAST(attempts + 1, %(max)s),
                    state = CASE WHEN attempts + 1 >= %(max)s THEN 'failed' ELSE 'pending' END,
                    last_error_code = %(code)s,
                    next_attempt_at_ms = CASE WHEN attempts + 1 >= %(max)s THEN next_attempt_at_ms
                      ELSE %(now)s::bigint + (%(delays)s::bigint[])[attempts + 1] END,
                    updated_at_ms = GREATEST(%(now)s, updated_at_ms + 1)
-             WHERE event_id = %(event)s AND channel = %(channel)s AND state = 'pending'
-               AND (%(revision)s::text IS NULL OR content_revision = %(revision)s)
+             WHERE subject_id = %(event)s AND job_kind = CASE WHEN %(channel)s='news' THEN 'notify' END AND
+        state = 'pending'
+               AND (%(revision)s::text IS NULL OR detail->>'content_revision' = %(revision)s)
                AND (%(updated)s::bigint IS NULL OR updated_at_ms = %(updated)s)
             """,
             {
@@ -565,9 +523,9 @@ class NotificationWorkStorage:
         lock_event(self.conn, event_id)
         cursor = self.conn.execute(
             """
-            UPDATE news_notification_work SET next_attempt_at_ms = GREATEST(next_attempt_at_ms, %s)
-             WHERE event_id = %s AND channel = %s AND state = 'pending'
-               AND (%s::text IS NULL OR content_revision = %s)
+            UPDATE news_jobs SET next_attempt_at_ms = GREATEST(next_attempt_at_ms, %s)
+             WHERE subject_id = %s AND job_kind = CASE WHEN %s='news' THEN 'notify' END AND state = 'pending'
+               AND (%s::text IS NULL OR detail->>'content_revision' = %s)
             """,
             (
                 int(now_ms) + NOTIFICATION_WAIT_MS,
@@ -582,9 +540,9 @@ class NotificationWorkStorage:
     def pending_notification_event_ids(self, *, channel: str, now_ms: int, limit: int) -> list[str]:
         rows = self.conn.execute(
             """
-            SELECT event_id FROM news_notification_work
-             WHERE channel = %s AND state = 'pending' AND next_attempt_at_ms <= %s
-             ORDER BY next_attempt_at_ms, event_id
+            SELECT subject_id AS event_id FROM news_jobs
+             WHERE job_kind = CASE WHEN %s='news' THEN 'notify' END AND state = 'pending' AND next_attempt_at_ms <= %s
+             ORDER BY next_attempt_at_ms, subject_id
              LIMIT %s
             """,
             (channel, int(now_ms), int(limit)),
@@ -597,9 +555,10 @@ class NotificationWorkStorage:
         lock_event(self.conn, event_id)
         cursor = self.conn.execute(
             """
-            UPDATE news_notification_work
+            UPDATE news_jobs
                SET state = 'pending', attempts = 0, next_attempt_at_ms = %s, updated_at_ms = %s
-             WHERE event_id = %s AND channel = %s AND content_revision = %s AND state = 'failed'
+             WHERE subject_id = %s AND job_kind = CASE WHEN %s='news' THEN 'notify' END AND
+        detail->>'content_revision' = %s AND state = 'failed'
             """,
             (int(now_ms), int(now_ms), event_id, NEWS_CHANNEL, revision),
         )
@@ -607,11 +566,10 @@ class NotificationWorkStorage:
             return False
         self.conn.execute(
             """
-            UPDATE news_delivery_queue q
-               SET state = 'pending', attempts = 0, lease_token = NULL, last_attempt_at_ms = NULL,
+            UPDATE news_notifications q
+               SET state = 'pending', attempts = 0, lease_token = NULL, lease_until_ms=NULL, last_attempt_at_ms = NULL,
                    settled_at_ms = NULL, next_attempt_at_ms = %s, updated_at_ms = %s
              WHERE q.event_id = %s AND q.content_revision = %s AND q.kind = 'update' AND q.state = 'dead'
-               AND NOT EXISTS (SELECT 1 FROM news_deliveries d WHERE d.intent_id = q.intent_id)
             """,
             (int(now_ms), int(now_ms), event_id, revision),
         )

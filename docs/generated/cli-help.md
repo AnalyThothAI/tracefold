@@ -19,8 +19,7 @@ positional arguments:
     config              print effective runtime configuration
     runtime-manifest    print this image and configured News program identity
     db                  database lifecycle commands
-    news                News V3 broker, ReviewDesk, and judge calibration
-                        commands
+    news                News broker and judge calibration commands
     trading             inspect Trading facts and record bounded operator
                         intent
     ops                 maintenance commands
@@ -164,17 +163,16 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,reanalyze,repair-head-scopes,dlq} ...
+                      {bus-check,bus-policy,instruments,learning,replay,wallets,why,retry-work,reanalyze,repair-head-scopes,dlq} ...
 
 positional arguments:
-  {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,reanalyze,repair-head-scopes,dlq}
+  {bus-check,bus-policy,instruments,learning,replay,wallets,why,retry-work,reanalyze,repair-head-scopes,dlq}
     bus-check           declare the News topology and report queue state,
                         effective retry policy, and topology drift
     bus-policy          apply or verify the checked-in RabbitMQ retry/dead-
                         letter policy document
     instruments         instrument universe: snapshot the venues, or inspect
                         what is stored
-    review              ReviewDesk queue, evidence, and append-only judgments
     learning            measure the News card judge against its fixed
                         calibration corpus
     replay              replay a JSON file of provider hits through
@@ -234,97 +232,6 @@ options:
   --symbol SYMBOL       symbol to resolve (action=resolve)
   --days DAYS           look-back (action=unmatched)
   --limit LIMIT         max rows (action=unmatched)
-
-```
-
-## `news review`
-
-```
-usage: tracefold news review [-h] {queue,evidence,submit,external-miss} ...
-
-positional arguments:
-  {queue,evidence,submit,external-miss}
-    queue               open the deterministic operator review queue
-    evidence            show the task-scoped evidence view
-    submit              append feedback for one notification decision
-    external-miss       append an external miss and short feedback
-
-options:
-  -h, --help            show this help message and exit
-
-```
-
-## `news review queue`
-
-```
-usage: tracefold news review queue [-h] [--view {queue,coverage}]
-                                   [--cohort COHORT] [--stratum STRATUM]
-                                   [--task TASK] [--event EVENT]
-                                   [--status {pending,accepted,all}]
-                                   [--hours HOURS] [--limit LIMIT]
-                                   [--cursor CURSOR]
-
-options:
-  -h, --help            show this help message and exit
-  --view {queue,coverage}
-  --cohort COHORT
-  --stratum STRATUM
-  --task TASK
-  --event EVENT
-  --status {pending,accepted,all}
-  --hours HOURS
-  --limit LIMIT
-  --cursor CURSOR
-
-```
-
-## `news review evidence`
-
-```
-usage: tracefold news review evidence [-h] --version VERSION [--source-only]
-                                      task
-
-positional arguments:
-  task
-
-options:
-  -h, --help         show this help message and exit
-  --version VERSION
-  --source-only      show only the pinned TaskRef and source evidence,
-                     excluding the agent answer and reviews
-
-```
-
-## `news review submit`
-
-```
-usage: tracefold news review submit [-h] --version VERSION --file FILE
-                                    --reviewer REVIEWER
-                                    [--idempotency-key IDEMPOTENCY_KEY]
-                                    task
-
-positional arguments:
-  task
-
-options:
-  -h, --help            show this help message and exit
-  --version VERSION
-  --file FILE
-  --reviewer REVIEWER   actual reviewer principal persisted on the review
-  --idempotency-key IDEMPOTENCY_KEY
-
-```
-
-## `news review external-miss`
-
-```
-usage: tracefold news review external-miss [-h] --file FILE
-                                           [--idempotency-key IDEMPOTENCY_KEY]
-
-options:
-  -h, --help            show this help message and exit
-  --file FILE
-  --idempotency-key IDEMPOTENCY_KEY
 
 ```
 

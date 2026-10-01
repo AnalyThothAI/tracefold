@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any, Final
 
+from .notification_rows import MARKET_JOBS_SQL, MARKET_NOTIFICATIONS_SQL
+
 WALLET_FLOW_COVERAGE_SQL: Final = """
     SELECT count(*) AS fills,
            count(DISTINCT tx_hash) AS receipts,
@@ -43,7 +45,7 @@ WALLET_DERIVED_REASONS_SQL: Final = """
      GROUP BY 1 ORDER BY 2 DESC, 1
 """
 
-WALLET_EPISODE_FUNNEL_SQL: Final = """
+WALLET_EPISODE_FUNNEL_SQL: Final = f"""
     SELECT count(*) AS episodes,
            count(*) FILTER (WHERE e.ended_at_ms IS NULL) AS active,
            count(*) FILTER (WHERE e.notification_eligible) AS eligible,
@@ -56,30 +58,30 @@ WALLET_EPISODE_FUNNEL_SQL: Final = """
            count(*) FILTER (WHERE d.state = 'pending') AS pending
       FROM news_market_wallet_events e
       JOIN news_market_observations i ON i.observation_id=e.item_id
-      LEFT JOIN news_market_deliveries d ON d.delivery_key = i.notification_id
+      LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = i.notification_id
      WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
-"""
+"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 
-WALLET_EPISODE_REASONS_SQL: Final = """
+WALLET_EPISODE_REASONS_SQL: Final = f"""
     SELECT COALESCE(NULLIF(t.pending_reason, ''), e.notification_reason, '(none)') AS reason,
            count(*) AS episodes
       FROM news_market_wallet_events e
       JOIN news_market_observations i ON i.observation_id=e.item_id
-      LEFT JOIN news_market_deliveries d ON d.delivery_key = i.notification_id
-      LEFT JOIN news_market_tracks t ON t.group_key = i.notify_group_key
+      LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = i.notification_id
+      LEFT JOIN ({MARKET_JOBS_SQL}) t ON t.group_key = i.notify_group_key
      WHERE e.event_at_ms >= %s AND e.event_at_ms < %s AND d.state IS DISTINCT FROM 'sent'
      GROUP BY 1 ORDER BY 2 DESC, 1
-"""
+"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 
 # The shared send queue, in the order `market_due_delivery` reads it. Every family, because the
 # question this answers is whether one card is holding up the others (#649 §7.2).
-WALLET_SEND_QUEUE_SQL: Final = """
+WALLET_SEND_QUEUE_SQL: Final = f"""
     SELECT delivery_key, market_kind, state, attempts, next_attempt_at_ms, error, created_at_ms
-      FROM news_market_deliveries
+      FROM ({MARKET_NOTIFICATIONS_SQL})
      WHERE state = ANY (ARRAY['pending', 'unavailable'])
      ORDER BY next_attempt_at_ms, created_at_ms, delivery_key
      LIMIT %s
-"""
+"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 
 
 class WalletDiagnosticsStorage:

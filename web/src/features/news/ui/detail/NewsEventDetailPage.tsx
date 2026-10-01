@@ -228,8 +228,6 @@ function EventDocument({
 
       <SymbolNormalization groups={detail.normalization ?? []} />
 
-      <ReviewSummary detail={detail} />
-
       <div className="news-detail-grid">
         <Card
           aria-label="处理时间线"
@@ -303,36 +301,6 @@ function NewsNotificationSummary({ detail }: { detail: NewsEventDetail }) {
           查看处理记录
         </a>
       ) : null}
-    </Card>
-  );
-}
-
-const SHOULD_PUSH_LABELS: Record<string, string> = {
-  must_push: "必须推送",
-  should_push: "应该推送",
-  should_hold: "应该保留",
-  must_hold: "必须拦下",
-  uncertain: "证据不足",
-};
-
-/** The latest current notification decision feedback for this Event. */
-function ReviewSummary({ detail }: { detail: NewsEventDetail }) {
-  const latest = detail.feedback.latest;
-  return (
-    <Card aria-label="人工复盘" hint={`${detail.feedback.feedback_n} 条判断`} title="人工复盘">
-      {latest ? (
-        <div className="news-detail-review-summary">
-          <p>
-            最新结论：<b>{SHOULD_PUSH_LABELS[latest.should_push] || latest.should_push}</b>
-          </p>
-          {latest.note ? <small>{latest.note}</small> : null}
-          <small>
-            {latest.reviewer} · {absoluteTime(latest.created_at_ms)}
-          </small>
-        </div>
-      ) : (
-        <EmptyNote>还没有当前通知决策的人工反馈。</EmptyNote>
-      )}
     </Card>
   );
 }

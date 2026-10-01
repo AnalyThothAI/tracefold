@@ -6,7 +6,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
-from ..notifications.contracts import NEWS_CHANNEL
 from ..updates.contracts import NOTIFICATION_CHANGES, EventUpdate
 from .sql_values import _dumps
 from .trade_projection import TradeProjectionStorage
@@ -151,23 +150,12 @@ def commit_update(
             source_recorded_at_ms=int(payload["semantic_completed_at_ms"]),
         ):
             raise ValueError("news_public_update_conflict")
-    if not any(change.kind in NOTIFICATION_CHANGES for change in update.changes):
-        conn.execute(
-            """UPDATE news_notification_work
-                  SET content_revision=%s,decision_ref=NULL,reader_revision=NULL,
-                      next_attempt_at_ms=LEAST(next_attempt_at_ms,%s)
-                WHERE event_id=%s AND channel=%s AND state IN ('pending','failed')""",
-            (update.content_revision, int(now_ms), event_id, NEWS_CHANNEL),
-        )
-    else:
-        conn.execute(
-            """INSERT INTO news_notification_work
-                 (event_id,channel,content_revision,state,attempts,next_attempt_at_ms,updated_at_ms)
-               VALUES (%s,%s,%s,'pending',0,%s,%s)
-               ON CONFLICT (event_id,channel) DO UPDATE SET
-                 content_revision=EXCLUDED.content_revision,state='pending',attempts=0,
-                 last_error_code=NULL,decision_ref=NULL,reader_revision=NULL,
-                 next_attempt_at_ms=EXCLUDED.next_attempt_at_ms,updated_at_ms=EXCLUDED.updated_at_ms""",
-            (event_id, NEWS_CHANNEL, update.content_revision, int(now_ms), int(now_ms)),
-        )
+    from .notification_jobs import NotificationJobs
+
+    NotificationJobs(conn).open_or_retarget(
+        event_id,
+        update.content_revision,
+        reopen=any(change.kind in NOTIFICATION_CHANGES for change in update.changes),
+        now_ms=now_ms,
+    )
     return True
