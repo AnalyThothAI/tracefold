@@ -16,6 +16,14 @@ P1 停 Serve、Workers、Analysis 后执行。备份外另导出 `news_oi_signal
 
 [P1 迁移测试](../tests/integration/test_p1_migration.py)用 P0 固定市场 JSON 证明分组、详情、时间线不变；[采集器与重放测试](../tests/integration/test_p1_market_collectors.py)覆盖 `xmin`、outbox、成员区间与并发事故。生产导出、恢复彩排、部署后性能与三天写入观测属于上线验收，尚未由这些本地测试证明。
 
+`20261001_0422`（#764 P2）从 `0421` 升级：通知判断、待发送意图、回执与市场卡片统一到 `news_notifications`；通知规划和市场组节奏统一到 `news_jobs`。编辑通知保留 decision / intent / update 身份，原行执行 pending → sending → settled；可重试 not_sent 保留冻结卡片，ambiguous 不自动重发。无 FK 的孤儿事件任务由 janitor 有界清理。
+
+P2 先停 Workers，再停 Serve，核实没有 News 写者会话。完整备份外导出 `news_notification_decisions`、`news_delivery_queue`、`news_deliveries`、`news_notification_work`、`news_market_tracks`、`news_market_deliveries`、`news_notification_feedback`、`news_notification_external_feedback`、`news_external_miss_snapshots`，记录 sha256 并验证归档可读。ReviewDesk 非空、单判断对应多个意图、queue / ledger 冻结字段不一致或 card 的正文与摘要不一致时拒绝升级；六组源投影逐列双向 EXCEPT ALL 与 md5 一致后才删除旧表、视图和函数。日志须包含 `p2_verify ok`。
+
+迁移保留 sending、编辑状态、租约期限与重试预算。恢复时编辑通知 sending 按现有恢复路径结算为 ambiguous，市场 sending 扫描为 unknown；编辑超时也按现有路径结算，禁止将这些记录批量改为 pending。核对详情（删除 feedback）、状态（删除四个复核字段）、市场分组与外部消息身份。回滚恢复已核验备份及旧镜像；备份之后已发生的外部发送仍须逐 intent 对账，不能从数据库恢复推断未发送。
+
+[P2 迁移测试](../tests/integration/test_p2_migration.py)覆盖空库、全部通知与市场状态、冻结载荷、终态不可变、投影不一致拒绝及并发孤儿清理；[发送恢复测试](../tests/integration/test_news_update_delivery.py)覆盖 lease、发送不确定性与崩溃窗口。生产备份恢复彩排、部署和上线观测尚未执行。
+
 <details>
 <summary><strong>本页目录</strong></summary>
 
@@ -43,7 +51,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20261001_0421`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20261001_0422`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序

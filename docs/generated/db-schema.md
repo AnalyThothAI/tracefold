@@ -29,62 +29,6 @@
 | `incidents` | `JSONB` | False | `'[]'::jsonb` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `news_deliveries`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `event_id` | `TEXT` | False | `None` |
-| `kind` | `TEXT` | False | `None` |
-| `state` | `TEXT` | False | `None` |
-| `card` | `JSONB` | False | `'{}'::jsonb` |
-| `receipt` | `JSONB` | True | `None` |
-| `error_code` | `TEXT` | True | `None` |
-| `attempted_at_ms` | `BIGINT` | False | `None` |
-| `settled_at_ms` | `BIGINT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `edit_state` | `TEXT` | True | `None` |
-| `pending_card` | `JSONB` | True | `None` |
-| `edit_error_code` | `TEXT` | True | `None` |
-| `edit_attempted_at_ms` | `BIGINT` | True | `None` |
-| `edit_settled_at_ms` | `BIGINT` | True | `None` |
-| `history_context` | `JSONB` | True | `None` |
-| `intent_id` | `TEXT` | False | `None` |
-| `content_revision` | `TEXT` | True | `None` |
-| `claim_refs` | `JSONB` | True | `None` |
-| `body` | `TEXT` | True | `None` |
-| `payload_sha256` | `TEXT` | True | `None` |
-| `plan_key` | `BOOLEAN` | True | `None` |
-| `decision_ref` | `TEXT` | True | `None` |
-| `card_copy_input_digest` | `TEXT` | True | `None` |
-| `card_copy_document` | `JSONB` | True | `None` |
-| `settlement` | `JSONB` | True | `None` |
-| `sent_claims` | `JSONB` | True | `None` |
-
-## `news_delivery_queue`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `event_id` | `TEXT` | False | `None` |
-| `kind` | `TEXT` | False | `None` |
-| `state` | `TEXT` | False | `'pending'::text` |
-| `attempts` | `INTEGER` | False | `0` |
-| `error_code` | `TEXT` | True | `None` |
-| `enqueued_at_ms` | `BIGINT` | False | `None` |
-| `next_attempt_at_ms` | `BIGINT` | False | `None` |
-| `last_attempt_at_ms` | `BIGINT` | True | `None` |
-| `settled_at_ms` | `BIGINT` | True | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `intent_id` | `TEXT` | False | `None` |
-| `content_revision` | `TEXT` | True | `None` |
-| `claim_refs` | `JSONB` | True | `None` |
-| `plan_key` | `BOOLEAN` | True | `None` |
-| `frozen_card` | `JSONB` | True | `None` |
-| `lease_token` | `TEXT` | True | `None` |
-| `decision_ref` | `TEXT` | True | `None` |
-| `card_copy_input_digest` | `TEXT` | True | `None` |
-| `card_copy_document` | `JSONB` | True | `None` |
-| `last_settlement` | `JSONB` | True | `None` |
-
 ## `news_event_assets`
 
 | Column | Type | Nullable | Default |
@@ -193,22 +137,6 @@
 | `event_kind` | `TEXT` | False | `None` |
 | `source_contract_reason` | `TEXT` | True | `None` |
 
-## `news_external_miss_snapshots`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `snapshot_id` | `TEXT` | False | `None` |
-| `evidence_sha256` | `TEXT` | False | `None` |
-| `source_url` | `TEXT` | False | `None` |
-| `title` | `TEXT` | False | `None` |
-| `body` | `TEXT` | False | `''::text` |
-| `occurred_at_ms` | `BIGINT` | False | `None` |
-| `observed_at_ms` | `BIGINT` | False | `None` |
-| `provenance` | `TEXT` | False | `None` |
-| `snapshot` | `JSONB` | False | `None` |
-| `created_by` | `TEXT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-
 ## `news_head_scope_repairs`
 
 | Column | Type | Nullable | Default |
@@ -267,6 +195,22 @@
 | `evidence_text_sha256` | `TEXT` | True | `None` |
 | `evidence_observed_at_ms` | `BIGINT` | True | `None` |
 
+## `news_jobs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `job_kind` | `TEXT` | False | `None` |
+| `subject_id` | `TEXT` | False | `None` |
+| `state` | `TEXT` | False | `None` |
+| `attempts` | `INTEGER` | False | `0` |
+| `next_attempt_at_ms` | `BIGINT` | True | `None` |
+| `lease_token` | `TEXT` | True | `None` |
+| `lease_until_ms` | `BIGINT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `detail` | `JSONB` | False | `'{}'::jsonb` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_judgment_cache`
 
 | Column | Type | Nullable | Default |
@@ -274,30 +218,6 @@
 | `cache_key` | `TEXT` | False | `None` |
 | `answer` | `JSONB` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
-
-## `news_market_deliveries`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `delivery_key` | `TEXT` | False | `None` |
-| `group_key` | `TEXT` | False | `None` |
-| `market_kind` | `TEXT` | False | `None` |
-| `trigger_reason` | `TEXT` | False | `None` |
-| `trigger_item_id` | `TEXT` | False | `None` |
-| `state` | `TEXT` | False | `None` |
-| `attempts` | `INTEGER` | False | `0` |
-| `covered_count` | `INTEGER` | False | `0` |
-| `covered_from_ms` | `BIGINT` | True | `None` |
-| `covered_to_ms` | `BIGINT` | True | `None` |
-| `card` | `JSONB` | False | `'{}'::jsonb` |
-| `receipt` | `JSONB` | True | `None` |
-| `error` | `TEXT` | True | `None` |
-| `next_attempt_at_ms` | `BIGINT` | False | `None` |
-| `first_attempt_at_ms` | `BIGINT` | True | `None` |
-| `last_attempt_at_ms` | `BIGINT` | True | `None` |
-| `settled_at_ms` | `BIGINT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_market_instruments`
 
@@ -360,39 +280,6 @@
 | `pnl_usd` | `NUMERIC` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `news_market_tracks`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `group_key` | `TEXT` | False | `None` |
-| `market_kind` | `TEXT` | False | `None` |
-| `family` | `TEXT` | False | `None` |
-| `provider` | `TEXT` | True | `None` |
-| `source_venue` | `TEXT` | True | `None` |
-| `venue_known` | `BOOLEAN` | False | `false` |
-| `raw_instrument` | `TEXT` | True | `None` |
-| `symbol` | `TEXT` | True | `None` |
-| `measurement_definition` | `TEXT` | True | `None` |
-| `liquidated_position_side` | `TEXT` | True | `None` |
-| `account_key` | `TEXT` | True | `None` |
-| `account_verified` | `BOOLEAN` | False | `false` |
-| `trader_label` | `TEXT` | True | `None` |
-| `last_observed_at_ms` | `BIGINT` | False | `None` |
-| `last_observed_item_id` | `TEXT` | False | `None` |
-| `anchor_state` | `TEXT` | False | `''::text` |
-| `anchor_delivery_key` | `TEXT` | True | `None` |
-| `anchor_attempt_at_ms` | `BIGINT` | True | `None` |
-| `anchor_oi_change_bps` | `BIGINT` | True | `None` |
-| `anchor_direction` | `TEXT` | True | `None` |
-| `anchor_action` | `TEXT` | True | `None` |
-| `anchor_position_side` | `TEXT` | True | `None` |
-| `open_delivery_key` | `TEXT` | True | `None` |
-| `next_due_at_ms` | `BIGINT` | True | `None` |
-| `pending_reason` | `TEXT` | False | `''::text` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `round_started_at_ms` | `BIGINT` | False | `0` |
 
 ## `news_market_wallet_events`
 
@@ -459,62 +346,54 @@
 | `provider` | `TEXT` | False | `'robinhoodtrenches'::text` |
 | `monitoring_from_ms` | `BIGINT` | True | `None` |
 
-## `news_notification_decisions`
+## `news_notifications`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `decision_ref` | `TEXT` | False | `None` |
-| `event_id` | `TEXT` | False | `None` |
-| `update_ref` | `TEXT` | False | `None` |
-| `channel` | `TEXT` | False | `None` |
+| `notification_id` | `TEXT` | False | `None` |
+| `kind` | `TEXT` | False | `None` |
+| `origin` | `TEXT` | True | `None` |
+| `event_id` | `TEXT` | True | `None` |
+| `group_key` | `TEXT` | True | `None` |
+| `market_kind` | `TEXT` | True | `None` |
+| `trigger_reason` | `TEXT` | True | `None` |
+| `trigger_observation_id` | `TEXT` | True | `None` |
+| `update_ref` | `TEXT` | True | `None` |
 | `input_digest` | `TEXT` | True | `None` |
-| `input_snapshot` | `JSONB` | False | `None` |
-| `plan` | `JSONB` | False | `None` |
-| `origin` | `TEXT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-
-## `news_notification_external_feedback`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `review_id` | `TEXT` | False | `None` |
-| `snapshot_id` | `TEXT` | False | `None` |
-| `reviewer` | `TEXT` | False | `None` |
-| `idempotency_key` | `TEXT` | False | `None` |
-| `request_sha` | `TEXT` | False | `None` |
-| `should_push` | `TEXT` | False | `None` |
-| `note` | `TEXT` | False | `''::text` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-
-## `news_notification_feedback`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `review_id` | `TEXT` | False | `None` |
-| `decision_ref` | `TEXT` | False | `None` |
-| `claim_ref` | `TEXT` | False | `None` |
-| `task_version` | `TEXT` | False | `None` |
-| `reviewer` | `TEXT` | False | `None` |
-| `idempotency_key` | `TEXT` | False | `None` |
-| `request_sha` | `TEXT` | False | `None` |
-| `should_push` | `TEXT` | False | `None` |
-| `note` | `TEXT` | False | `''::text` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-
-## `news_notification_work`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `event_id` | `TEXT` | False | `None` |
-| `channel` | `TEXT` | False | `None` |
-| `content_revision` | `TEXT` | False | `None` |
+| `input_snapshot` | `JSONB` | True | `None` |
+| `plan` | `JSONB` | True | `None` |
+| `decided_at_ms` | `BIGINT` | True | `None` |
 | `state` | `TEXT` | False | `None` |
-| `reader_revision` | `TEXT` | True | `None` |
+| `intent_id` | `TEXT` | True | `None` |
+| `content_revision` | `TEXT` | True | `None` |
+| `claim_refs` | `JSONB` | True | `None` |
+| `plan_key` | `BOOLEAN` | True | `None` |
 | `attempts` | `INTEGER` | False | `0` |
-| `next_attempt_at_ms` | `BIGINT` | False | `None` |
+| `next_attempt_at_ms` | `BIGINT` | True | `None` |
+| `lease_token` | `TEXT` | True | `None` |
+| `lease_until_ms` | `BIGINT` | True | `None` |
+| `card` | `JSONB` | True | `None` |
+| `card_copy_input_digest` | `TEXT` | True | `None` |
+| `card_copy_document` | `JSONB` | True | `None` |
+| `history_context` | `JSONB` | True | `None` |
+| `sent_claims` | `JSONB` | True | `None` |
+| `covered_count` | `INTEGER` | True | `None` |
+| `covered_from_ms` | `BIGINT` | True | `None` |
+| `covered_to_ms` | `BIGINT` | True | `None` |
+| `receipt` | `JSONB` | True | `None` |
+| `settlement` | `JSONB` | True | `None` |
+| `error_code` | `TEXT` | True | `None` |
+| `reserved_at_ms` | `BIGINT` | True | `None` |
+| `last_attempt_at_ms` | `BIGINT` | True | `None` |
+| `attempted_at_ms` | `BIGINT` | True | `None` |
+| `settled_at_ms` | `BIGINT` | True | `None` |
+| `edit_state` | `TEXT` | True | `None` |
+| `pending_card` | `JSONB` | True | `None` |
+| `edit_error_code` | `TEXT` | True | `None` |
+| `edit_attempted_at_ms` | `BIGINT` | True | `None` |
+| `edit_settled_at_ms` | `BIGINT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-| `decision_ref` | `TEXT` | True | `None` |
-| `last_error_code` | `TEXT` | True | `None` |
 
 ## `news_quote_snapshots`
 

@@ -21,10 +21,7 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
         from .news_instruments import _handle_instruments
 
         return _handle_instruments(args)
-    if args.news_command == "review":
-        from .news_review import _handle_review
 
-        return _handle_review(args)
     if args.news_command == "learning":
         from .news_learning import _handle_learning
 

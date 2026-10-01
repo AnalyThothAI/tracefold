@@ -139,7 +139,6 @@ class _FakeNewsRepository:
             ],
             "members": [],
             "deliveries": [],
-            "feedback": {"feedback_n": 0, "latest": None},
             "evidence_snapshots": [],
             "reader_receipt": {
                 "state": "not_received",
@@ -413,7 +412,7 @@ def test_news_exposes_read_routes_and_no_write_route_at_all() -> None:
     }
 
 
-def test_news_schemas_publish_current_event_update_and_feedback_only() -> None:
+def test_news_schemas_publish_current_event_update_without_review_feedback() -> None:
     assert set(feed_schemas.NewsFeedFiltersData.model_fields) == {
         "source_authority",
         "subject_code",
@@ -438,12 +437,11 @@ def test_news_schemas_publish_current_event_update_and_feedback_only() -> None:
         "timeline",
         "members",
         "deliveries",
-        "feedback",
         "evidence_snapshots",
         "reader_receipt",
         "normalization",
     }
-    assert set(event_schemas.NewsEventFeedbackData.model_fields) == {"feedback_n", "latest"}
+    assert not hasattr(event_schemas, "NewsEventFeedbackData")
     assert set(status_schemas.NewsSourceContractStageCountsData.model_fields) == {"received", "parsed", "adopted"}
     assert {"received", "admitted", "adopted", "selected", "delivered"} <= set(
         status_schemas.NewsFunnelData.model_fields
@@ -911,7 +909,7 @@ def test_source_only_event_has_no_synthetic_legacy_judgment(client) -> None:
     data = http.get("/api/news/events/ev-1", params={"token": TOKEN}).json()["data"]
     assert data.get("event_update") is None
     assert data.get("processing") is None
-    assert data["feedback"] == {"feedback_n": 0, "latest": None}
+    assert "feedback" not in data
     assert "legacy_verdict" not in data and "verdicts" not in data
 
 

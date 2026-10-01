@@ -92,8 +92,6 @@ NEWS_TABLES = (
     "news_event_members",
     "news_event_bands",
     "news_event_assets",
-    "news_deliveries",
-    "news_delivery_queue",
     "news_item_revisions",
     "news_semantic_work",
     "news_semantic_checkpoints",
@@ -103,17 +101,12 @@ NEWS_TABLES = (
     "news_event_update_heads",
     "news_claim_links",
     "news_judgment_cache",
-    "news_notification_work",
-    "news_notification_decisions",
-    "news_notification_feedback",
-    "news_notification_external_feedback",
-    "news_external_miss_snapshots",
+    "news_jobs",
+    "news_notifications",
     "news_market_instruments",
     "news_symbol_aliases",
     "news_quote_snapshots",
     "news_trade_events",
-    "news_market_tracks",
-    "news_market_deliveries",
     "news_market_wallet_fills",
     "news_market_wallet_events",
     "news_event_evidence_snapshots",
@@ -496,11 +489,11 @@ class ProjectionValidationAudit:
             ),
             delivery_mismatch AS (
               SELECT count(*)::integer AS count
-              FROM news_deliveries
-              WHERE (state = 'sending' AND settled_at_ms IS NOT NULL)
+              FROM news_notifications
+              WHERE kind='update' AND ( (state = 'sending' AND settled_at_ms IS NOT NULL)
                  OR (state IN ('sent', 'terminal', 'ambiguous') AND settled_at_ms IS NULL)
                  OR (state = 'sent' AND error_code IS NOT NULL)
-                 OR jsonb_typeof(card) <> 'object'
+                 OR jsonb_typeof(card) <> 'object')
             ),
             -- #553 PR-2. The same bounded-model question for the market ledger, plus the two claims
             -- that are only meaningful here: a receipt belongs to `sent` alone -- `unknown` having
@@ -508,21 +501,21 @@ class ProjectionValidationAudit:
             -- at a card that is not there.
             market_delivery_mismatch AS (
               SELECT count(*)::integer AS count
-              FROM news_market_deliveries
-              WHERE (state = 'sending' AND settled_at_ms IS NOT NULL)
+              FROM news_notifications
+              WHERE kind='market' AND ( (state = 'sending' AND settled_at_ms IS NOT NULL)
                  OR (state IN ('sent', 'failed', 'unknown') AND settled_at_ms IS NULL)
-                 OR (state = 'sent' AND error IS NOT NULL)
+                 OR (state = 'sent' AND error_code IS NOT NULL)
                  OR ((state = 'sent') <> (receipt IS NOT NULL))
                  OR (attempts = 0) <> (card = '{}'::jsonb)
-                 OR jsonb_typeof(card) <> 'object'
+                 OR jsonb_typeof(card) <> 'object')
             ),
             market_coverage_mismatch AS (
               SELECT count(*)::integer AS count
               FROM news_market_observations i
               WHERE i.notification_id IS NOT NULL
                 AND NOT EXISTS (
-                  SELECT 1 FROM news_market_deliveries d
-                   WHERE d.delivery_key = i.notification_id)
+                  SELECT 1 FROM news_notifications d
+                   WHERE d.kind='market' AND d.notification_id = i.notification_id)
             )
             SELECT
               (SELECT count FROM ingest_mismatch) AS news_collectors_mismatch,

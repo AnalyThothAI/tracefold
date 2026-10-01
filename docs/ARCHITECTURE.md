@@ -163,7 +163,7 @@ class Trading research;
 | [market_notifications.py](../tracefold/news/market_notifications.py) | OI / 清算 / 大户 / 钱包通知的确定性分支与发送循环 | [市场观察](modules/oi.md) |
 | [news/market_review](../tracefold/news/market_review/) | 标的目录、当前报价与发送时行情 | [行情复盘](modules/market-review.md) |
 | [news/chain_tape](../tracefold/news/chain_tape/) | 名单、回执完整前缀、成交解释、净买入与价格采样 | [钱包](modules/wallets.md) |
-| [news/review](../tracefold/news/review/)、[learning](../tracefold/news/learning/) | ReviewDesk、保留的卡片评审与校准 | [复核](modules/review.md) |
+| [news/learning](../tracefold/news/learning/) | 卡片评审器与固定语料校准 | [复核](modules/review.md) |
 | [trading/engine](../tracefold/trading/engine/) | 类型化目标、LIVE 特征、双腿几何、预测策略与记分纯函数 | [交易研究](modules/trading.md) |
 | [trading/storage](../tracefold/trading/storage/) | Trigger、Case、修订、研究和执行记录 | [交易状态](modules/trading.md) |
 | [app/news_updates.py](../tracefold/app/news_updates.py)、[trading_analysis.py](../tracefold/app/trading_analysis.py) | News 公开更新映射、接收确认及研究调度 | [跨域交接](#handoff) |

@@ -370,21 +370,6 @@ class NewsProcessingData(ExactApiSchema):
     update_error_code: str | None = None
 
 
-class NewsDecisionFeedbackData(ExactApiSchema):
-    review_id: str
-    decision_ref: str
-    claim_ref: str
-    reviewer: str
-    should_push: Literal["must_push", "should_push", "should_hold", "must_hold", "uncertain"]
-    note: str
-    created_at_ms: int
-
-
-class NewsEventFeedbackData(ExactApiSchema):
-    feedback_n: int
-    latest: NewsDecisionFeedbackData | None = None
-
-
 class NewsEventDetailData(ExactApiSchema):
     """Current EventUpdate, source facts, feedback and actual reader receipts."""
 
@@ -395,7 +380,6 @@ class NewsEventDetailData(ExactApiSchema):
     timeline: list[NewsTimelineStepData] = Field(default_factory=list)
     members: list[NewsEventMemberData]
     deliveries: list[NewsDeliveryData]
-    feedback: NewsEventFeedbackData
     evidence_snapshots: list[NewsEvidenceSnapshotData] = Field(default_factory=list)
     reader_receipt: NewsReaderReceiptData
     normalization: list[NewsSymbolNormalizationData] = Field(default_factory=list)

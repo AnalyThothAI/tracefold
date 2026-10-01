@@ -14,7 +14,8 @@ from tests.postgres_test_utils import (
     postgres_migration_test_dsn,
     prepare_test_migration_database,
 )
-from tests.support.news_update_pg import adopted_head, store
+from tests.support.news_event_updates import first_update, persist_update
+from tests.support.news_update_pg import EVENT, seed_event
 from tracefold.platform.postgres.migrations import alembic_config
 
 pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
@@ -33,6 +34,15 @@ def source(postgres_migration_dsn):
     config.attributes["database_url"] = postgres_migration_test_dsn()
     command.upgrade(config, SOURCE)
     return config
+
+
+def historical_head():
+    # Literal predecessor facts: the current runtime now writes the P2 notification tables.
+    seed_event()
+    head = first_update(EVENT)
+    with closing(connect_postgres_test()) as conn, conn.transaction():
+        persist_update(conn, head)
+    return head
 
 
 def roster(conn, *, inconsistent=False):
@@ -59,8 +69,7 @@ def receipt(conn, head):
 
 
 def test_populated_upgrade_preserves_members_fills_cursor_and_sent_claims(source):
-    pg, _, clock = store()
-    head = adopted_head(pg.semantic, clock)
+    head = historical_head()
     with closing(connect_postgres_test()) as conn:
         roster(conn)
         expected = receipt(conn, head)
@@ -120,8 +129,7 @@ def test_populated_upgrade_preserves_members_fills_cursor_and_sent_claims(source
     ],
 )
 def test_upgrade_rejects_invalid_source_and_rolls_back(source, poison, error):
-    pg, _, clock = store()
-    head = adopted_head(pg.semantic, clock)
+    head = historical_head()
     with closing(connect_postgres_test()) as conn:
         if poison == "roster":
             roster(conn, inconsistent=True)
@@ -163,8 +171,7 @@ def test_upgrade_rejects_invalid_source_and_rolls_back(source, poison, error):
 
 
 def test_empty_documents_and_plans_are_rejected_at_target(source):
-    pg, _, clock = store()
-    head = adopted_head(pg.semantic, clock)
+    head = historical_head()
     command.upgrade(source, TARGET)
     with closing(connect_postgres_test()) as conn:
         with pytest.raises(CheckViolation), conn.transaction():

@@ -8,6 +8,7 @@ from typing import Any, Final, cast
 
 from ..chain_tape.contracts import ClassifiedFill
 from ..wallet_contracts import WalletEvent
+from .notification_rows import MARKET_JOBS_SQL, MARKET_NOTIFICATIONS_SQL
 from .sql_values import _dumps
 from .wallet_snapshots import wallet_event_row
 
@@ -78,20 +79,20 @@ WALLET_EVENTS_SQL: Final = f"""
                    d.settled_at_ms, d.attempts
               FROM news_market_wallet_events e
               JOIN news_market_observations i ON i.observation_id = e.item_id
-              LEFT JOIN news_market_deliveries d ON d.delivery_key = i.notification_id
-              LEFT JOIN news_market_tracks t ON t.group_key = i.notify_group_key
+              LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = i.notification_id
+              LEFT JOIN ({MARKET_JOBS_SQL}) t ON t.group_key = i.notify_group_key
              WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
                AND (%s::bigint IS NULL OR (e.event_at_ms,e.item_id) < (%s,%s))
              ORDER BY e.event_at_ms DESC, e.item_id DESC LIMIT %s
         """  # noqa: S608 -- code-owned SQL identifiers.
 
-WALLET_EVENT_TOTALS_SQL: Final = """
+WALLET_EVENT_TOTALS_SQL: Final = f"""
             SELECT count(*) AS total, count(*) FILTER (WHERE e.ended_at_ms IS NULL) AS active,
                    count(*) FILTER (WHERE d.state = 'sent') AS sent
               FROM news_market_wallet_events e JOIN news_market_observations i ON i.observation_id=e.item_id
-              LEFT JOIN news_market_deliveries d ON d.delivery_key = i.notification_id
+              LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = i.notification_id
              WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
-        """
+        """  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 
 WALLET_EVENT_FILLS_SQL: Final = """
             SELECT chain_id, tx_hash, log_index, block_number, block_hash, wallet, token,
@@ -125,14 +126,14 @@ WALLET_MEMBER_EPISODES_SQL: Final = """
              GROUP BY 1
         """
 
-WALLET_NOTIFICATION_FUNNEL_SQL: Final = """
+WALLET_NOTIFICATION_FUNNEL_SQL: Final = f"""
             WITH scoped AS (
                 SELECT d.state AS state, d.delivery_key AS delivery_key,
                        COALESCE(d.error, e.notification_reason, t.pending_reason) AS reason
                   FROM news_market_wallet_events e
                   JOIN news_market_observations i ON i.observation_id = e.item_id
-                  LEFT JOIN news_market_deliveries d ON d.delivery_key = i.notification_id
-                  LEFT JOIN news_market_tracks t ON t.group_key = i.notify_group_key
+                  LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = i.notification_id
+                  LEFT JOIN ({MARKET_JOBS_SQL}) t ON t.group_key = i.notify_group_key
                  WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
             ), leading_reason AS (
                 SELECT reason, count(*) AS n FROM scoped
@@ -144,7 +145,7 @@ WALLET_NOTIFICATION_FUNNEL_SQL: Final = """
                    (SELECT count(*) FROM scoped WHERE state = 'sent') AS sent,
                    (SELECT reason FROM leading_reason) AS unsent_reason,
                    COALESCE((SELECT n FROM leading_reason), 0) AS unsent_reason_count
-        """
+        """  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 
 WALLET_EVENT_SQL: Final = f"""
             SELECT {EVENT_COLUMNS},{NOTIFICATION_PROJECTION},
@@ -152,8 +153,8 @@ WALLET_EVENT_SQL: Final = f"""
                    d.settled_at_ms, d.attempts, d.card AS frozen_card
               FROM news_market_wallet_events e
               JOIN news_market_observations i ON i.observation_id = e.item_id
-              LEFT JOIN news_market_deliveries d ON d.delivery_key = i.notification_id
-              LEFT JOIN news_market_tracks t ON t.group_key = i.notify_group_key
+              LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = i.notification_id
+              LEFT JOIN ({MARKET_JOBS_SQL}) t ON t.group_key = i.notify_group_key
              WHERE e.item_id = %s
         """  # noqa: S608 -- code-owned SQL identifiers.
 
@@ -418,17 +419,18 @@ class WalletEventStorage:
     def wallet_suppress_delivery(self, *, delivery_key: str, reason: str, now_ms: int) -> None:
         self.conn.execute(
             """
-            UPDATE news_market_deliveries SET state = 'failed', error = %s,
+            UPDATE news_notifications SET state = 'failed', error_code = %s,
                    settled_at_ms = %s, updated_at_ms = %s
-             WHERE delivery_key = %s AND state IN ('pending','unavailable') AND attempts = 0
+             WHERE kind='market' AND notification_id = %s AND state IN ('pending','unavailable') AND attempts = 0
         """,
             (reason, now_ms, now_ms, delivery_key),
         )
         self.conn.execute(
             """
-            UPDATE news_market_tracks SET open_delivery_key = NULL, next_due_at_ms = NULL,
-                   pending_reason = %s, updated_at_ms = %s
-             WHERE open_delivery_key = %s
+            UPDATE news_jobs SET state='done', next_attempt_at_ms=NULL,
+                   detail=detail||jsonb_build_object('open_delivery_key',NULL,'pending_reason',%s::text),
+        updated_at_ms=%s
+             WHERE job_kind='market_notify' AND detail->>'open_delivery_key'=%s
         """,
             (reason, now_ms, delivery_key),
         )

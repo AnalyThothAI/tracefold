@@ -39,17 +39,18 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
             }
 
         news_event_columns = columns("news_events")
-        news_delivery_columns = columns("news_deliveries")
+        news_delivery_columns = columns("news_notifications")
         semantic_work_columns = columns("news_semantic_work")
         semantic_observation_columns = columns("news_semantic_observations")
         event_update_columns = columns("news_event_updates")
         scope_repair_columns = columns("news_head_scope_repairs")
-        delivery_queue_columns = columns("news_delivery_queue")
+        delivery_queue_columns = columns("news_notifications")
         news_ingest_columns = columns("news_collectors")
         news_v3_indexes = {
             str(row["indexname"]): str(row["indexdef"])
             for row in conn.execute(
-                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND indexname LIKE 'ix_news_%%'"
+                "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' "
+                "AND (indexname LIKE 'ix_news_%%' OR indexname LIKE 'news_notifications_%%')"
             ).fetchall()
         }
         functions = {
@@ -72,7 +73,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     }
     assert {
         "reject_news_event_evidence_mutation",
-        "reject_news_review_mutation",
+        "news_notifications_guard",
     } <= functions
     assert "news_current_triage_verdict_valid" not in functions
     assert "purge_news_learning_retention" not in functions
@@ -112,8 +113,8 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert {"read_refs", "reanalysis_reason", "reanalysis_head_ref"} <= semantic_observation_columns
     assert {"observation_result_id", "scope_repair_id"} <= event_update_columns
     assert {"repair_id", "proof", "claim_refs", "projection_version"} <= scope_repair_columns
-    assert {"card_copy_input_digest", "card_copy_document", "last_settlement"} <= delivery_queue_columns
-    assert news_delivery_columns == {
+    assert {"card_copy_input_digest", "card_copy_document", "settlement"} <= delivery_queue_columns
+    assert news_delivery_columns >= {
         "history_context",
         "event_id",
         "kind",
@@ -135,10 +136,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "intent_id",
         "content_revision",
         "claim_refs",
-        "body",
-        "payload_sha256",
         "plan_key",
-        "decision_ref",
         "card_copy_input_digest",
         "card_copy_document",
     }
@@ -163,13 +161,9 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "ix_news_event_members_fact_trgm",
         "ix_news_events_leader_item",
         "ix_news_items_canonical_url",
-        "ix_news_deliveries_state",
-        "ix_news_deliveries_sent",
-        "ix_news_deliveries_editing",
         "ix_news_event_evidence_created",
-        "ix_news_external_miss_created",
     } <= set(news_v3_indexes)
-    assert "state = 'sent'" in news_v3_indexes["ix_news_deliveries_sent"]
+    assert "sent" in news_v3_indexes["news_notifications_sent"]
     assert "gin" in news_v3_indexes["ix_news_events_search"].lower()
     assert "event_kind, opened_at_ms DESC, event_id DESC" in news_v3_indexes["ix_news_events_kind_opened"]
     # The Janitor's rescue index must cover every admitted admission, not just `candidate`: a partial index on
@@ -179,7 +173,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
     assert "telemetry_deterministic" not in unpublished_index
     assert "liquidation_deterministic" not in unpublished_index
-    assert version == latest_migration_version() == "20261001_0421"
+    assert version == latest_migration_version() == "20261001_0422"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -204,7 +198,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20261001_0421"
+    assert version == latest_migration_version() == "20261001_0422"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:

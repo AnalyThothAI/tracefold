@@ -60,14 +60,12 @@ PLATFORM_TABLES = {
     "workers_runtime",
 }
 # Existing database adapters that legitimately own SQL without being storage modules. Keep this small:
-# App is the composition seam, ReviewDesk predates the storage package split, and moving it is not part
-# of PostgreSQL governance. New product SQL belongs in its owner's storage family.
+# App is the composition seam. New product SQL belongs in its owner's storage family.
 SQL_LOCATION_EXCEPTIONS = frozenset(
     {
         "tracefold/app/cli/commands/db.py",
         "tracefold/app/query_audit.py",
         "tracefold/app/workers/runtime.py",
-        "tracefold/news/review/desk.py",
     }
 )
 

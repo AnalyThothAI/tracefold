@@ -53,6 +53,19 @@ _RAW_RETENTION_DELETE_SQL = f"""
 class OperationsStorage:
     conn: Any
 
+    def sweep_orphan_jobs(self, *, limit: int) -> int:
+        """Remove one bounded batch of event jobs left behind by fact retention."""
+        rows = self.conn.execute(
+            """DELETE FROM news_jobs WHERE (job_kind,subject_id) IN (
+                 SELECT job_kind,subject_id FROM news_jobs j
+                 WHERE job_kind IN ('notify','semantic')
+                   AND NOT EXISTS (SELECT 1 FROM news_events e WHERE e.event_id=j.subject_id)
+                 ORDER BY job_kind,subject_id LIMIT %s FOR UPDATE SKIP LOCKED
+               ) RETURNING subject_id""",
+            (min(RAW_RETENTION_BATCH_MAX, max(1, limit)),),
+        ).fetchall()
+        return len(rows)
+
     def seed_restore_drill_facts(self, *, current_event_id: str) -> str:
         """Seed the bounded News truth used only by the isolated restore drill."""
 
@@ -172,25 +185,19 @@ class OperationsStorage:
             reader_identity="restore_drill_v1",
             input_digest=digest(decision_input),
         )
+        from .notification_jobs import NotificationJobDetail
+
         self.conn.execute(
-            """INSERT INTO news_notification_decisions
-                 (decision_ref,event_id,update_ref,channel,input_digest,input_snapshot,plan,origin,created_at_ms)
-               VALUES (%s,%s,%s,'news',%s,%s::jsonb,%s::jsonb,'reader_v2',12)""",
+            """INSERT INTO news_jobs(job_kind,subject_id,state,detail,next_attempt_at_ms,created_at_ms,updated_at_ms)
+               VALUES ('notify',%s,'done',%s::jsonb,13,12,13)""",
             (
-                plan.record_ref,
                 current_event_id,
-                update.ref,
-                plan.input_digest,
-                _dumps(decision_input),
-                plan.model_dump_json(),
+                NotificationJobDetail(
+                    content_revision=update.content_revision,
+                    decision_ref=plan.record_ref,
+                    reader_revision=plan.reader_revision,
+                ).model_dump_json(),
             ),
-        )
-        self.conn.execute(
-            """INSERT INTO news_notification_work
-                 (event_id,channel,content_revision,state,decision_ref,reader_revision,
-                  attempts,next_attempt_at_ms,updated_at_ms)
-               VALUES (%s,'news',%s,'done',%s,%s,0,13,13)""",
-            (current_event_id, update.content_revision, plan.record_ref, plan.reader_revision),
         )
         body = "恢复演练 · restore current"
         card = FrozenCard(
@@ -201,19 +208,22 @@ class OperationsStorage:
             payload_sha256=digest(body),
         )
         self.conn.execute(
-            """INSERT INTO news_deliveries
-                 (intent_id,event_id,kind,state,card,attempted_at_ms,settled_at_ms,
-                  created_at_ms,content_revision,claim_refs,body,payload_sha256,plan_key,decision_ref,error_code)
-               VALUES (%s,%s,'update','terminal',%s::jsonb,12,13,12,%s,%s::jsonb,%s,%s,false,%s,'restore_drill')""",
+            """INSERT INTO news_notifications(notification_id,kind,origin,event_id,update_ref,input_digest,
+                 input_snapshot,plan,decided_at_ms,intent_id,state,card,attempted_at_ms,settled_at_ms,created_at_ms,
+                 updated_at_ms,content_revision,claim_refs,plan_key,error_code)
+               VALUES (%s,'update','reader_v2',%s,%s,%s,%s::jsonb,%s::jsonb,12,%s,'terminal',%s::jsonb,
+                       12,13,12,13,%s,%s::jsonb,false,'restore_drill')""",
             (
-                plan.intent_id,
+                plan.record_ref,
                 current_event_id,
+                update.ref,
+                plan.input_digest,
+                _dumps(decision_input),
+                plan.model_dump_json(),
+                plan.intent_id,
                 card.model_dump_json(),
                 update.content_revision,
                 _dumps([claim_ref]),
-                body,
-                card.payload_sha256,
-                plan.record_ref,
             ),
         )
         return str(evidence_snapshot["evidence_sha256"])

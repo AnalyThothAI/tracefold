@@ -944,26 +944,6 @@ export interface components {
             /** Value */
             value: string;
         };
-        /** NewsDecisionFeedbackData */
-        NewsDecisionFeedbackData: {
-            /** Claim Ref */
-            claim_ref: string;
-            /** Created At Ms */
-            created_at_ms: number;
-            /** Decision Ref */
-            decision_ref: string;
-            /** Note */
-            note: string;
-            /** Review Id */
-            review_id: string;
-            /** Reviewer */
-            reviewer: string;
-            /**
-             * Should Push
-             * @enum {string}
-             */
-            should_push: "must_push" | "should_push" | "should_hold" | "must_hold" | "uncertain";
-        };
         /** NewsDeliveryData */
         NewsDeliveryData: {
             /** Attempted At Ms */
@@ -1152,7 +1132,6 @@ export interface components {
             event_update?: components["schemas"]["NewsEventUpdateData"] | null;
             /** Evidence Snapshots */
             evidence_snapshots?: components["schemas"]["NewsEvidenceSnapshotData"][];
-            feedback: components["schemas"]["NewsEventFeedbackData"];
             /** Members */
             members: components["schemas"]["NewsEventMemberData"][];
             /** Normalization */
@@ -1162,12 +1141,6 @@ export interface components {
             reader_receipt: components["schemas"]["NewsReaderReceiptData"];
             /** Timeline */
             timeline?: components["schemas"]["NewsTimelineStepData"][];
-        };
-        /** NewsEventFeedbackData */
-        NewsEventFeedbackData: {
-            /** Feedback N */
-            feedback_n: number;
-            latest?: components["schemas"]["NewsDecisionFeedbackData"] | null;
         };
         /** NewsEventMemberData */
         NewsEventMemberData: {
@@ -2189,8 +2162,6 @@ export interface components {
             judgment_backend?: ("native" | "generated") | null;
             /** Judgment Model */
             judgment_model?: string | null;
-            keep_ratio_sent_24h?: components["schemas"]["NewsReviewRatio24hData"];
-            missed_ratio_held_24h?: components["schemas"]["NewsReviewRatio24hData"];
             /**
              * News Judgment Configured
              * @default false
@@ -2202,16 +2173,6 @@ export interface components {
             reader_judgment_backend?: ("native" | "generated") | null;
             /** Reader Judgment Model */
             reader_judgment_model?: string | null;
-            /**
-             * Reviewed Decision Should Push 24H
-             * @default 0
-             */
-            reviewed_decision_should_push_24h: number;
-            /**
-             * Reviewed External Miss 24H
-             * @default 0
-             */
-            reviewed_external_miss_24h: number;
             /**
              * Selected 24H
              * @default 0
@@ -2483,27 +2444,6 @@ export interface components {
              * @default 0
              */
             unresolved: number;
-        };
-        /**
-         * NewsReviewRatio24hData
-         * @description One daily-audit product ratio with the two numbers it was divided from (#675 §4).
-         *
-         *     The denominator counts accepted review judgments in the window, not cards, so a day nobody audited
-         *     reads as `null` over zero rather than as a perfect or a catastrophic share.
-         */
-        NewsReviewRatio24hData: {
-            /**
-             * Denominator
-             * @default 0
-             */
-            denominator: number;
-            /**
-             * Numerator
-             * @default 0
-             */
-            numerator: number;
-            /** Ratio */
-            ratio?: number | null;
         };
         /** NewsSemanticObservationData */
         NewsSemanticObservationData: {

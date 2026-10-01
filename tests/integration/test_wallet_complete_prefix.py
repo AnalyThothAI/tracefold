@@ -189,7 +189,12 @@ def test_missing_sell_never_creates_false_quorum_and_normal_receipts_reach_one_s
     asyncio.run(notifier.advance())
     asyncio.run(notifier.advance())
     assert len(sender.cards) == 1
-    assert conn.execute("SELECT count(*) AS n FROM news_market_deliveries WHERE state='sent'").fetchone()["n"] == 1
+    assert (
+        conn.execute("SELECT count(*) AS n FROM news_notifications WHERE kind='market' AND state='sent'").fetchone()[
+            "n"
+        ]
+        == 1
+    )
 
 
 @pytest.mark.parametrize("count", [147, 201, 256])

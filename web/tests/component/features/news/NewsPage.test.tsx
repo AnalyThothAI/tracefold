@@ -1033,7 +1033,7 @@ describe("NewsPage", () => {
     expect(
       within(screen.getByRole("region", { name: "同类报道" })).getAllByRole("listitem"),
     ).toHaveLength(2);
-    expect(screen.getByRole("heading", { name: "人工复盘" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "人工复盘" })).not.toBeInTheDocument();
     const technical = screen.getByText(/技术详情/).closest("details")!;
     expect(within(technical).getByText("storyline_key")).toBeInTheDocument();
     expect(within(technical).getByText("message_id", { exact: false })).toBeInTheDocument();

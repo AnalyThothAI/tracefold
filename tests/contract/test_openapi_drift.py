@@ -210,7 +210,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "timeline",
         "members",
         "deliveries",
-        "feedback",
         "evidence_snapshots",
         "reader_receipt",
         "normalization",
@@ -407,7 +406,7 @@ def test_news_feed_contract_exposes_current_bounded_filters() -> None:
     feed_row = schema["components"]["schemas"]["NewsFeedEventData"]["properties"]
     assert "update" in feed_row and "legacy_verdict" not in feed_row
     detail = schema["components"]["schemas"]["NewsEventDetailData"]["properties"]
-    assert "feedback" in detail and "verdicts" not in detail
+    assert "feedback" not in detail and "verdicts" not in detail
     for retired in ("NewsLegacyVerdictData", "NewsVerdictData", "NewsAcceptedReviewData"):
         assert retired not in schema["components"]["schemas"]
 

@@ -27,6 +27,7 @@ from tests.support.news_update_semantic import prior_of
 from tracefold.news.notifications.card import freeze_card
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.storage.errors import SemanticLeaseLost
+from tracefold.news.storage.notification_rows import UPDATE_RECEIPTS_SQL
 from tracefold.news.storage.notification_store import PgNotificationStore
 from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.updates.contracts import Extraction, FrozenInput, PriorClaim, RelationDraft
@@ -173,7 +174,7 @@ def test_cross_event_correction_invalidates_frozen_unsent_card():
     assert asyncio.run(notification_store.atomic_begin_send(lease, card)) == "reader_changed"
     fresh = asyncio.run(notification_store.notification_snapshot(EVENT, "news"))
     assert fresh is not None and fresh.reader.invalidated_claim_refs == (head.claims[0].ref,)
-    assert sql("SELECT count(*) AS n FROM news_deliveries WHERE kind='update'")[0]["n"] == 0
+    assert sql(f"SELECT count(*) AS n FROM ({UPDATE_RECEIPTS_SQL}) WHERE kind='update'")[0]["n"] == 0
 
 
 class FailsFirstUnderstanding(StubAnalyzer):

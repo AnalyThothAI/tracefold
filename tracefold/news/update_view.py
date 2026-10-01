@@ -551,7 +551,7 @@ def notification_view(work: Mapping[str, Any] | None, *, statements: Mapping[str
 
 
 def intent_state(queue: Mapping[str, Any] | None, delivery: Mapping[str, Any] | None) -> str:
-    """The ledger outranks the to-do list: a row in `news_deliveries` says what was actually attempted."""
+    """The ledger outranks the to-do list: a row in `news_notifications` says what was actually attempted."""
 
     if delivery is not None:
         return str(delivery["state"])

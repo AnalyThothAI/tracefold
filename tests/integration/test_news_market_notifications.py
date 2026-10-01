@@ -51,6 +51,7 @@ from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
 from tracefold.news.pipeline.delivery_quotes import read_display_quotes, read_pushed_news
 from tracefold.news.smart_money import parse_smart_money
+from tracefold.news.storage.notification_rows import MARKET_JOBS_SQL, MARKET_NOTIFICATIONS_SQL
 
 pytestmark = pytest.mark.integration
 
@@ -216,7 +217,7 @@ def _rows(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, A
 
 
 def _deliveries(conn: Any) -> list[dict[str, Any]]:
-    return _rows(conn, "SELECT * FROM news_market_deliveries ORDER BY created_at_ms, delivery_key")
+    return _rows(conn, f"SELECT * FROM ({MARKET_NOTIFICATIONS_SQL}) ORDER BY created_at_ms, delivery_key")
 
 
 def _notify_state(conn: Any, item_id: str) -> str | None:
@@ -286,7 +287,7 @@ def test_the_group_turn_commits_its_marker_track_and_intent_together_or_not_at_a
         asyncio.run(_loop(db, _Sender(), clock=_Clock()).advance())
 
     assert _notify_state(conn, "oi-1") == "pending"
-    assert _rows(conn, "SELECT group_key FROM news_market_tracks") == []
+    assert _rows(conn, f"SELECT group_key FROM ({MARKET_JOBS_SQL})") == []
     assert _deliveries(conn) == []
 
 
@@ -463,7 +464,7 @@ def test_a_card_being_sent_is_not_offered_to_another_process(conn: Any) -> None:
         with ThreadPoolExecutor(max_workers=1) as pool:
             holder = pool.submit(lambda: asyncio.run(_loop(first, sender, clock=_Clock()).advance()))
             assert first.holding.wait(10)
-            in_flight = _rows(other, "SELECT state, attempts FROM news_market_deliveries")
+            in_flight = _rows(other, f"SELECT state, attempts FROM ({MARKET_NOTIFICATIONS_SQL})")
             assert in_flight == [{"state": "sending", "attempts": 1}]
 
             asyncio.run(_loop(second, sender, clock=_Clock()).advance())
@@ -856,7 +857,7 @@ def test_a_smart_money_round_sends_a_first_card_a_closing_card_and_no_third(conn
     asyncio.run(_loop(db, sender, clock=clock).advance())
     assert len(sender.cards) == 1
 
-    track = _rows(conn, "SELECT anchor_action, anchor_position_side, round_started_at_ms FROM news_market_tracks")
+    track = _rows(conn, f"SELECT anchor_action, anchor_position_side, round_started_at_ms FROM ({MARKET_JOBS_SQL})")
     assert track == [{"anchor_action": "open", "anchor_position_side": "long", "round_started_at_ms": NOW - 7_200_000}]
 
     # A second open, hours later and still inside the round: the page moves, the reader is not
@@ -865,7 +866,7 @@ def test_a_smart_money_round_sends_a_first_card_a_closing_card_and_no_third(conn
     _wallet_item(conn, "sm-open-2", at_ms=NOW - 3_600_000, action="open", side="long")
     asyncio.run(_loop(db, sender, clock=clock).advance())
     assert len(sender.cards) == 1
-    held = _rows(conn, "SELECT pending_reason FROM news_market_tracks")
+    held = _rows(conn, f"SELECT pending_reason FROM ({MARKET_JOBS_SQL})")
     assert held == [{"pending_reason": REASON_SMART_MONEY_ROUND}]
 
     # The account starts closing. That is the round's one further card.
@@ -889,7 +890,7 @@ def test_a_smart_money_round_sends_a_first_card_a_closing_card_and_no_third(conn
         asyncio.run(_loop(db, sender, clock=clock).advance())
     assert len(sender.cards) == 2
     assert [row["trigger_reason"] for row in _deliveries(conn)] == ["first", "action_change"]
-    assert _rows(conn, "SELECT pending_reason FROM news_market_tracks") == [
+    assert _rows(conn, f"SELECT pending_reason FROM ({MARKET_JOBS_SQL})") == [
         {"pending_reason": REASON_SMART_MONEY_ROUND}
     ]
 
@@ -923,7 +924,7 @@ def test_a_close_that_arrives_before_the_first_card_is_sent_merges_into_it(conn:
     # The card printed both actions, and the anchor now holds the close.
     printed = deliveries[0]["card"]["elements"][0]["content"]
     assert "开多" in printed and "平多" in printed
-    assert _rows(conn, "SELECT anchor_action FROM news_market_tracks") == [{"anchor_action": "close"}]
+    assert _rows(conn, f"SELECT anchor_action FROM ({MARKET_JOBS_SQL})") == [{"anchor_action": "close"}]
 
     # A close after it says nothing new, and no card is issued to repeat it.
     clock.advance(1_000)
@@ -953,7 +954,7 @@ def test_an_unstructured_record_is_processed_and_never_alerted(conn: Any) -> Non
     assert turn.intents == 0
     assert sender.cards == []
     assert _deliveries(conn) == []
-    assert _rows(conn, "SELECT group_key FROM news_market_tracks") == []
+    assert _rows(conn, f"SELECT group_key FROM ({MARKET_JOBS_SQL})") == []
 
     marked = _rows(
         conn,
@@ -1323,7 +1324,7 @@ def test_a_lost_claim_moves_to_the_next_due_card_rather_than_ending_the_turn(con
         def claim_the_first_card_elsewhere() -> None:
             """A real claim by another process, in the window before this turn's own claim."""
 
-            due = _rows(other, "SELECT delivery_key FROM news_market_deliveries ORDER BY created_at_ms LIMIT 1")
+            due = _rows(other, f"SELECT delivery_key FROM ({MARKET_NOTIFICATIONS_SQL}) ORDER BY created_at_ms LIMIT 1")
             lost.append(str(due[0]["delivery_key"]))
             repos = repositories_for_connection(other)
             with repos.transaction():
@@ -1363,9 +1364,7 @@ def test_the_quote_read_changes_no_notification_decision(conn: Any) -> None:
     def replay(*, quotes: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
         connection = connect_postgres_test(read_only=False)
         try:
-            connection.execute(
-                "TRUNCATE news_market_observations, news_items, news_market_tracks, news_market_deliveries CASCADE"
-            )
+            connection.execute("TRUNCATE news_market_observations, news_items, news_jobs, news_notifications CASCADE")
             if quotes:
                 _quotable(connection)
             db = _Db(connection)
@@ -1383,12 +1382,12 @@ def test_the_quote_read_changes_no_notification_decision(conn: Any) -> None:
             decisions = _rows(
                 connection,
                 "SELECT delivery_key, group_key, trigger_reason, trigger_item_id, state, attempts,"
-                " covered_count, next_attempt_at_ms FROM news_market_deliveries ORDER BY delivery_key",
+                f" covered_count, next_attempt_at_ms FROM ({MARKET_NOTIFICATIONS_SQL}) ORDER BY delivery_key",
             )
             tracks = _rows(
                 connection,
                 "SELECT group_key, family, anchor_state, anchor_oi_change_bps, anchor_direction,"
-                " next_due_at_ms, pending_reason FROM news_market_tracks ORDER BY group_key",
+                f" next_due_at_ms, pending_reason FROM ({MARKET_JOBS_SQL}) ORDER BY group_key",
             )
             bodies = sorted(
                 next(element["content"] for element in row["card"]["elements"] if element["tag"] == "markdown")
@@ -1474,7 +1473,7 @@ def test_the_notification_group_is_the_loops_own_record_of_its_decision(conn: An
     detail = repositories_for_connection(conn).news.market_item(item_id="oi-1")
     assert detail is not None
     assert detail["notify_group_key"] == group_identity(_observation_of(detail)).group_key
-    tracks = _rows(conn, "SELECT group_key, family, anchor_state FROM news_market_tracks")
+    tracks = _rows(conn, f"SELECT group_key, family, anchor_state FROM ({MARKET_JOBS_SQL})")
     assert len(tracks) == 1
     assert tracks[0]["family"] == "oi"
     assert tracks[0]["anchor_state"] == "sent"
@@ -1793,10 +1792,8 @@ def test_the_news_read_changes_no_notification_decision(conn: Any) -> None:
     def replay(*, news: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
         connection = connect_postgres_test(read_only=False)
         try:
-            connection.execute(
-                "TRUNCATE news_market_observations, news_items, news_market_tracks, news_market_deliveries CASCADE"
-            )
-            connection.execute("TRUNCATE news_events, news_deliveries CASCADE")
+            connection.execute("TRUNCATE news_market_observations, news_items, news_jobs, news_notifications CASCADE")
+            connection.execute("TRUNCATE news_events, news_notifications CASCADE")
             _news_event(
                 connection,
                 hit_id=582_060,
@@ -1821,12 +1818,12 @@ def test_the_news_read_changes_no_notification_decision(conn: Any) -> None:
             decisions = _rows(
                 connection,
                 "SELECT delivery_key, group_key, trigger_reason, trigger_item_id, state, attempts,"
-                " covered_count, next_attempt_at_ms FROM news_market_deliveries ORDER BY delivery_key",
+                f" covered_count, next_attempt_at_ms FROM ({MARKET_NOTIFICATIONS_SQL}) ORDER BY delivery_key",
             )
             tracks = _rows(
                 connection,
                 "SELECT group_key, family, anchor_state, anchor_oi_change_bps, anchor_direction,"
-                " next_due_at_ms, pending_reason FROM news_market_tracks ORDER BY group_key",
+                f" next_due_at_ms, pending_reason FROM ({MARKET_JOBS_SQL}) ORDER BY group_key",
             )
             bodies = sorted(
                 next(element["content"] for element in row["card"]["elements"] if element["tag"] == "markdown")

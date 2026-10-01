@@ -2167,6 +2167,7 @@ def test_janitor_runs_bounded_raw_batches_in_cold_transactions() -> None:
         # unreadable, so alerting state for a group nobody can read any more goes with them.
         "news_market_retention",
         "news_market_track_retention",
+        "news_orphan_job_retention",
         # #572 PR-1: the wallet tape's own bounded batch, on the same heavy slot and beside the other
         # sweeps rather than as a task of its own.
         "news_chain_tape_retention",

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Final
 
+from .notification_rows import NOTIFICATION_DECISIONS_SQL, NOTIFY_JOBS_SQL, UPDATE_PENDING_SQL, UPDATE_RECEIPTS_SQL
+
 # The adopted head with its insert-only document. One row or none: the head is the Event's CAS target.
 EVENT_UPDATE_HEAD_SQL: Final = """
     SELECT h.event_id, h.content_revision, h.input_revision, h.update_ref, h.adopted_at_ms,
@@ -63,32 +65,32 @@ EVENT_SEMANTIC_OBSERVATIONS_SQL: Final = """
      ORDER BY o.completed_at_ms DESC, o.result_id DESC
      LIMIT 20
 """
-EVENT_NOTIFICATION_WORK_SQL: Final = """
+EVENT_NOTIFICATION_WORK_SQL: Final = f"""
     SELECT w.event_id, w.channel, w.content_revision, w.state, d.plan, d.origin, w.decision_ref,
            w.reader_revision, w.attempts, w.last_error_code, w.next_attempt_at_ms, w.updated_at_ms
-      FROM news_notification_work w
-      LEFT JOIN news_notification_decisions d ON d.decision_ref = w.decision_ref
+      FROM ({NOTIFY_JOBS_SQL}) w
+      LEFT JOIN ({NOTIFICATION_DECISIONS_SQL}) d ON d.decision_ref = w.decision_ref
      WHERE w.event_id = %s AND w.channel = 'news'
-"""
+"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 # Every EventUpdate delivery receipt for one Event.
-EVENT_DELIVERIES_SQL: Final = """
+EVENT_DELIVERIES_SQL: Final = f"""
     SELECT intent_id, kind, state, card, receipt, error_code, attempted_at_ms, settled_at_ms,
            created_at_ms, edit_state, pending_card, edit_error_code, edit_attempted_at_ms,
            edit_settled_at_ms, content_revision, claim_refs, body, payload_sha256, plan_key
-      FROM news_deliveries
+      FROM ({UPDATE_RECEIPTS_SQL})
      WHERE event_id = %s
      ORDER BY created_at_ms, intent_id
-"""
+"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 # Work still owed for one Event. A row leaves this table when its ledger row settles, so what remains
 # is either pending or dead.
-EVENT_DELIVERY_QUEUE_SQL: Final = """
+EVENT_DELIVERY_QUEUE_SQL: Final = f"""
     SELECT intent_id, kind, state, attempts, error_code, enqueued_at_ms, next_attempt_at_ms,
            frozen_card IS NOT NULL AS frozen_card,
            settled_at_ms, content_revision, claim_refs, plan_key
-      FROM news_delivery_queue
+      FROM ({UPDATE_PENDING_SQL})
      WHERE event_id = %s
      ORDER BY enqueued_at_ms, intent_id
-"""
+"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
 
 
 def event_update_head(conn: Any, event_id: str) -> dict[str, Any] | None:

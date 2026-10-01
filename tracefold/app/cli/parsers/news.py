@@ -8,7 +8,7 @@ from tracefold.app.cli.parsers.common import _positive_int
 def add_news_commands(
     subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
-    news = subcommands.add_parser("news", help="News V3 broker, ReviewDesk, and judge calibration commands")
+    news = subcommands.add_parser("news", help="News broker and judge calibration commands")
     news_subcommands = news.add_subparsers(dest="news_command", required=True)
     news_subcommands.add_parser(
         "bus-check",
@@ -27,35 +27,7 @@ def add_news_commands(
     news_instruments.add_argument("--symbol", default="", help="symbol to resolve (action=resolve)")
     news_instruments.add_argument("--days", type=_positive_int, default=7, help="look-back (action=unmatched)")
     news_instruments.add_argument("--limit", type=_positive_int, default=50, help="max rows (action=unmatched)")
-    news_review = news_subcommands.add_parser("review", help="ReviewDesk queue, evidence, and append-only judgments")
-    review_subcommands = news_review.add_subparsers(dest="review_command", required=True)
-    review_queue = review_subcommands.add_parser("queue", help="open the deterministic operator review queue")
-    review_queue.add_argument("--view", choices=("queue", "coverage"), default="queue")
-    review_queue.add_argument("--cohort", default="")
-    review_queue.add_argument("--stratum", default="")
-    review_queue.add_argument("--task", default="")
-    review_queue.add_argument("--event", default="")
-    review_queue.add_argument("--status", choices=("pending", "accepted", "all"), default="pending")
-    review_queue.add_argument("--hours", type=_positive_int, default=24)
-    review_queue.add_argument("--limit", type=_positive_int, default=30)
-    review_queue.add_argument("--cursor", default="")
-    review_evidence = review_subcommands.add_parser("evidence", help="show the task-scoped evidence view")
-    review_evidence.add_argument("task")
-    review_evidence.add_argument("--version", required=True)
-    review_evidence.add_argument(
-        "--source-only",
-        action="store_true",
-        help="show only the pinned TaskRef and source evidence, excluding the agent answer and reviews",
-    )
-    review_submit = review_subcommands.add_parser("submit", help="append feedback for one notification decision")
-    review_submit.add_argument("task")
-    review_submit.add_argument("--version", required=True)
-    review_submit.add_argument("--file", required=True)
-    review_submit.add_argument("--reviewer", required=True, help="actual reviewer principal persisted on the review")
-    review_submit.add_argument("--idempotency-key", default="")
-    review_external = review_subcommands.add_parser("external-miss", help="append an external miss and short feedback")
-    review_external.add_argument("--file", required=True)
-    review_external.add_argument("--idempotency-key", default="")
+
     news_learning = news_subcommands.add_parser(
         "learning", help="measure the News card judge against its fixed calibration corpus"
     )

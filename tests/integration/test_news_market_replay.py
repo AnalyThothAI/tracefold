@@ -49,6 +49,7 @@ from tracefold.news.pipeline.delivery_quotes import read_display_quotes
 from tracefold.news.reader_card import QUOTE_LINE_PREFIX
 from tracefold.news.smart_money import parse_smart_money
 from tracefold.news.source_contracts import MARKET_PROVIDER
+from tracefold.news.storage.notification_rows import MARKET_JOBS_SQL, MARKET_NOTIFICATIONS_SQL
 
 pytestmark = pytest.mark.integration
 
@@ -536,7 +537,7 @@ def replay(postgres_module_clone_dsn: str) -> Iterator[dict[str, _Kind]]:
             asyncio.run(loop.advance())
             next_record = corpus[cursor].at_ms if cursor < len(corpus) else None
             next_due = connection.execute(
-                "SELECT min(next_attempt_at_ms) AS due FROM news_market_deliveries"
+                f"SELECT min(next_attempt_at_ms) AS due FROM ({MARKET_NOTIFICATIONS_SQL})"
                 " WHERE state = ANY (ARRAY['pending', 'unavailable'])"
             ).fetchone()["due"]
             upcoming = [value for value in (next_record, next_due) if value is not None]
@@ -552,14 +553,14 @@ def _report(connection: Any, corpus: list[_Record]) -> dict[str, _Kind]:
     arrivals = {record.item_id: record.at_ms for record in corpus}
     families = {
         str(row["group_key"]): str(row["family"])
-        for row in connection.execute("SELECT group_key, family FROM news_market_tracks").fetchall()
+        for row in connection.execute(f"SELECT group_key, family FROM ({MARKET_JOBS_SQL})").fetchall()
     }
     report: dict[str, _Kind] = {name: _Kind() for name in ("oi", "liquidation", "smart_money", "raw")}
     for row in connection.execute(
         "SELECT i.notify_group_key AS group_key, i.notification_id AS delivery_key,"
         "       COALESCE(i.received_at_ms < t.round_started_at_ms, false) AS round_closed"
         "  FROM news_market_observations i"
-        "  LEFT JOIN news_market_tracks t ON t.group_key = i.notify_group_key"
+        f"  LEFT JOIN ({MARKET_JOBS_SQL}) t ON t.group_key = i.notify_group_key"
         " WHERE i.notify_state = 'processed'"
     ).fetchall():
         # No track row is the unstructured answer, which is exactly how the read model tells it apart
@@ -576,7 +577,7 @@ def _report(connection: Any, corpus: list[_Record]) -> dict[str, _Kind]:
                 entry.still_merging += 1
     for row in connection.execute(
         "SELECT group_key, trigger_reason, trigger_item_id, state, covered_count, first_attempt_at_ms, card"
-        "  FROM news_market_deliveries"
+        f"  FROM ({MARKET_NOTIFICATIONS_SQL})"
     ).fetchall():
         entry = report[families[str(row["group_key"])]]
         setattr(entry, str(row["trigger_reason"]), getattr(entry, str(row["trigger_reason"])) + 1)

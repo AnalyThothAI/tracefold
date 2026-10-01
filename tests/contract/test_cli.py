@@ -170,9 +170,7 @@ class CliTests(unittest.TestCase):
             ["db", "query-audit", "--analyze"],
             ["db", "audit", "--deep"],
             ["ops", "validate-projections"],
-            ["news", "review", "queue", "--event", "ev-1", "--limit", "5"],
             ["news", "dlq", "inspect", "--limit", "5"],
-            ["news", "review", "evidence", "evt.ev-1.1.0123456789abcdef", "--version", "a" * 64],
         ]
 
         parsed = [parser.parse_args(command) for command in commands]
@@ -183,11 +181,11 @@ class CliTests(unittest.TestCase):
         self.assertTrue(parsed[2].analyze)
         self.assertTrue(parsed[3].deep)
         self.assertEqual(parsed[4].ops_command, "validate-projections")
-        self.assertEqual((parsed[5].news_command, parsed[5].review_command), ("review", "queue"))
-        self.assertEqual((parsed[5].event, parsed[5].limit), ("ev-1", 5))
-        self.assertEqual((parsed[6].news_command, parsed[6].dlq_action, parsed[6].limit), ("dlq", "inspect", 5))
-        self.assertEqual((parsed[7].news_command, parsed[7].review_command), ("review", "evidence"))
-        self.assertEqual((parsed[7].task, parsed[7].version), ("evt.ev-1.1.0123456789abcdef", "a" * 64))
+        self.assertEqual((parsed[5].news_command, parsed[5].dlq_action, parsed[5].limit), ("dlq", "inspect", 5))
+
+    def test_news_review_commands_are_retired(self):
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(["news", "review", "queue"])
 
     def test_retired_trading_authority_commands_are_rejected(self):
         parser = build_parser()

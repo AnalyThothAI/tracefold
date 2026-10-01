@@ -287,7 +287,7 @@ def test_a_source_only_event_reads_source_without_update(conn) -> None:
     detail = news.event_detail("source-only")
     assert detail is not None
     assert detail["event_update"] is None and detail["processing"] is None
-    assert detail["feedback"] == {"feedback_n": 0, "latest": None}
+    assert "feedback" not in detail
     assert "event_update" in detail
     assert [step["stage"] for step in detail["timeline"]] == ["received", "gate"]
     assert detail["outcome"]["kind"] == "no_update"
@@ -505,8 +505,8 @@ def test_failed_notification_agrees_in_feed_detail_and_tab_counts(conn) -> None:
     news = repositories_for_connection(conn).news
     with conn.transaction():
         conn.execute(
-            "UPDATE news_notification_work SET state='failed', attempts=3,"
-            " last_error_code='news_notification_plan:KeyError' WHERE event_id='agent-silent'"
+            "UPDATE news_jobs SET state='failed', attempts=3,"
+            " last_error_code='news_notification_plan:KeyError' WHERE job_kind='notify' AND subject_id='agent-silent'"
         )
     # The work's terminal state is its own column, whatever its last decision said.
     detail = news.event_detail("agent-silent")

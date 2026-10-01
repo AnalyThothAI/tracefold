@@ -38,7 +38,6 @@ _NEWS_QUERY_NAMES = (
     "news_event_detail",
     "news_event_asset_projection",
     "news_event_members",
-    "news_event_feedback",
     # #706: the Event detail's EventUpdate plane and its intent ledger/queue.
     "news_event_deliveries",
     "news_event_delivery_queue",
@@ -57,8 +56,6 @@ _NEWS_QUERY_NAMES = (
     "news_status_source_contracts",
     "news_status_delivery",
     "news_status_funnel_decisions",
-    "news_status_funnel_reviews",
-    "news_status_funnel_review_ratios",
     "news_status_funnel_totals",
     "news_quote_snapshot_read",
     # #553: three statements per market list request and four per detail request. The timeline, the
@@ -86,9 +83,6 @@ _NEWS_QUERY_NAMES = (
     # send lane's own 1.5 s budget, which is what makes an unplanned scan visible to a reader.
     "news_market_news_pushed",
     "news_market_news_total",
-    "news_review_decision_queue",
-    "news_review_decision_coverage",
-    "news_review_decision_evidence",
 )
 
 
@@ -149,7 +143,6 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     assert catalog.query_routes["/api/news/events/{event_id}"] == (
         "news_event_detail",
         "news_event_members",
-        "news_event_feedback",
         "news_event_deliveries",
         "news_event_delivery_queue",
         "news_event_semantic_work",
@@ -193,8 +186,6 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_source_contracts",
         "news_status_delivery",
         "news_status_funnel_decisions",
-        "news_status_funnel_reviews",
-        "news_status_funnel_review_ratios",
         "news_status_funnel_totals",
     )
     assert catalog.query_routes["/api/trading/cases"] == (
@@ -335,7 +326,7 @@ def test_status_audit_explains_the_statements_the_status_route_executes():
     assert sorted(executed, key=repr) == sorted(audited, key=repr)
     # Not vacuous: the pipeline read really is the whole status statement, not a count of one table.
     pipeline = queries["news_status_pipeline"].sql
-    assert "news_notification_decisions" in pipeline
+    assert "news_notifications" in pipeline
     assert "percentile_cont(0.95)" in queries["news_status_delivery"].sql
     assert "news_event_evidence_snapshots" in pipeline
     assert queries["news_status_funnel_totals"].sql.count("news_event_evidence_snapshots") == 2
@@ -443,8 +434,6 @@ def test_status_audit_reads_its_sql_from_the_production_module_only():
         "STATUS_SOURCE_CONTRACTS_SQL",
         "STATUS_DELIVERY_SQL",
         "STATUS_FUNNEL_DECISIONS_SQL",
-        "STATUS_FUNNEL_REVIEWS_SQL",
-        "STATUS_FUNNEL_REVIEW_RATIOS_SQL",
         "STATUS_FUNNEL_TOTALS_SQL",
     }
     assert all(

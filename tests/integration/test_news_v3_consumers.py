@@ -35,6 +35,7 @@ from tracefold.news.pipeline.delivery import DelivererLoop
 from tracefold.news.pipeline.delivery_enrichment import DeliveryEnrichment
 from tracefold.news.pipeline.notification_sender import NotificationSender
 from tracefold.news.pipeline.send_entry import InitialSendEntry
+from tracefold.news.storage.notification_rows import UPDATE_RECEIPTS_SQL
 
 pytestmark = pytest.mark.integration
 
@@ -302,10 +303,10 @@ def test_recovery_raw_is_persisted_but_never_wakes_semantics_or_delivery(conn) -
     assert rows and all(row["admission"] == "recovery" and row["published_at_ms"] is None for row in rows)
     event_ids = [row["event_id"] for row in rows]
     downstream = conn.execute(
-        """
+        f"""
         SELECT
           (SELECT count(*) FROM news_semantic_work WHERE event_id = ANY(%s)) AS semantic,
-          (SELECT count(*) FROM news_deliveries WHERE event_id = ANY(%s)) AS deliveries
+          (SELECT count(*) FROM ({UPDATE_RECEIPTS_SQL}) WHERE event_id = ANY(%s)) AS deliveries
         """,
         (event_ids, event_ids),
     ).fetchone()

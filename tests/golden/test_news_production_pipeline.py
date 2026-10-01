@@ -59,7 +59,7 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
     }
     with psycopg.connect(golden_runtime.postgres_dsn, row_factory=dict_row) as conn:
         owed = conn.execute(
-            "SELECT count(*) AS n FROM news_notification_work WHERE event_id = %s AND state = 'pending'",
+            "SELECT count(*) AS n FROM news_jobs WHERE job_kind='notify' AND subject_id = %s AND state = 'pending'",
             (str(event["event_id"]),),
         ).fetchone()
     assert int(owed["n"]) == 0, "a delivered update is no longer owed"
@@ -275,8 +275,8 @@ def test_an_oi_frame_crosses_production_workers_and_reaches_the_market_read(gold
         assert marker["market_notify_state"] == "processed"
         assert marker["market_notify_group_key"] and marker["market_notify_delivery_key"]
         delivery = conn.execute(
-            "SELECT state, trigger_reason, attempts, covered_count, receipt, error"
-            " FROM news_market_deliveries WHERE delivery_key = %s",
+            "SELECT state, trigger_reason, attempts, covered_count, receipt, error_code AS error"
+            " FROM news_notifications WHERE kind='market' AND notification_id = %s",
             (marker["market_notify_delivery_key"],),
         ).fetchone()
         assert (delivery["state"], delivery["trigger_reason"], delivery["attempts"]) == ("sent", "first", 1)

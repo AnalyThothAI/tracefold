@@ -102,16 +102,18 @@ def _summary(conn: Any) -> dict[str, Any]:
                    (SELECT count(*) FROM news_event_evidence_snapshots WHERE event_id = %s) AS evidence_rows,
                    (SELECT max(evidence_sha256) FROM news_event_evidence_snapshots WHERE event_id = %s)
                      AS evidence_sha256,
-                   (SELECT count(*) FROM news_deliveries WHERE event_id = %s AND state = 'terminal')
+                   (SELECT count(*) FROM news_notifications WHERE event_id = %s AND state = 'terminal')
                      AS delivery_rows,
                    (SELECT count(*) FROM news_event_updates WHERE event_id = %s) AS update_rows,
-                   (SELECT count(*) FROM news_notification_decisions WHERE event_id = %s)
+                   (SELECT count(*) FROM news_notifications WHERE origin IN ('reader_v2','editorial_v1') AND
+        event_id = %s)
                      AS decision_rows,
                    (SELECT count(*) FROM trading_cases
                      WHERE case_id = %s AND state = 'complete') AS case_rows,
                    (SELECT max(view_sha256) FROM trading_cases WHERE case_id = %s) AS case_view_sha256,
                    (SELECT count(*) FROM trading_signals
-                     WHERE signal_id = %s AND case_id = %s AND payload ->> 'signal_id' = signal_id) AS signal_rows,
+                     WHERE signal_id = %s AND case_id = %s AND payload ->> 'signal_id' = signal_id) AS
+        signal_rows,
                    (SELECT count(*) FROM trading_operator_intents
                      WHERE command_id = %s AND payload ->> 'command_id' = command_id) AS command_rows,
                    (SELECT count(*) FROM trading_dispositions
@@ -153,11 +155,10 @@ def _smoke(conn: Any) -> dict[str, bool]:
     repos = repositories_for_connection(conn)
     evidence = repos.news.latest_evidence_snapshot(_CURRENT_EVENT_ID)
     delivery = conn.execute(
-        """SELECT d.state,d.kind,d.decision_ref,n.plan,u.document
-             FROM news_deliveries d
-             JOIN news_notification_decisions n ON n.decision_ref=d.decision_ref
-             JOIN news_event_updates u ON u.event_id=n.event_id
-              AND n.update_ref=public.news_identity('update',jsonb_build_array(u.event_id,u.content_revision))
+        """SELECT d.state,d.kind,d.notification_id AS decision_ref,d.plan,u.document
+             FROM news_notifications d
+             JOIN news_event_updates u ON u.event_id=d.event_id
+              AND d.update_ref=public.news_identity('update',jsonb_build_array(u.event_id,u.content_revision))
             WHERE d.event_id=%s AND d.kind='update'""",
         (_CURRENT_EVENT_ID,),
     ).fetchone()

@@ -3,7 +3,7 @@
 Feishu's wire shape is this module's whole subject: the envelope, the header template names, the
 body text, the action button and the note element. It reads a `ReaderCard` and nothing else --
 no Event, no verdict, no observation, no track -- so the two renderers do not know what a
-`wide_screen_mode` is. The frozen snapshot in `news_deliveries.card` / `news_market_deliveries.card`
+`wide_screen_mode` is. The frozen snapshot in `news_notifications.card` / `news_notifications.card`
 records this channel payload.
 
 It lives in `news/` rather than in `integrations/feishu.py` because both the News delivery path and

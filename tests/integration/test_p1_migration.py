@@ -218,8 +218,16 @@ def test_populated_upgrade_preserves_market_json_wallets_and_collectors(source):
         conn.commit()
     command.upgrade(source, TARGET)
     with closing(connect_postgres_test()) as conn:
-        new = [_observation(row) for row in conn.execute(_OBSERVATIONS_SQL).fetchall()]
+        new = [_observation(row) for row in conn.execute((FIXTURES / "p1_market_0421.sql").read_text()).fetchall()]
         assert sorted(old, key=lambda row: row["item_id"]) == sorted(new, key=lambda row: row["item_id"])
+        conn.commit()
+    # Current runtime consumes the fully upgraded schema; verify the exact P1 projection first.
+    command.upgrade(source, "head")
+    with closing(connect_postgres_test()) as conn:
+        assert sorted(old, key=lambda row: row["item_id"]) == sorted(
+            [_observation(row) for row in conn.execute(_OBSERVATIONS_SQL).fetchall()],
+            key=lambda row: row["item_id"],
+        )
         news = repositories_for_connection(conn).news
         expected = json.loads((FIXTURES / "p1_market_public_0420.json").read_text())
         assert public_market(news) == expected
