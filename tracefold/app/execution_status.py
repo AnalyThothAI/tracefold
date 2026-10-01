@@ -34,21 +34,33 @@ def execution_readiness_projection(
         "last_full_reconcile_at_ms": None,
         "signed_account": None,
     }
-    if not execution.enabled or state is None or process is None:
+    if not execution.enabled or state is None:
+        return result
+    full_at = state.get("last_full_reconcile_at_ns")
+    paused = True if control is None else bool(control["entries_paused"])
+    halted = False if control is None else bool(control["emergency_halted"])
+    unexpected = bool(state["unexpected_exposure"])
+    result.update(
+        {
+            "connection": "DEMO",
+            "entries_paused": paused,
+            "emergency_halted": halted,
+            "unexpected_exposure": unexpected,
+            "last_full_reconcile_at_ms": None if full_at is None else int(full_at) // 1_000_000,
+            "signed_account": state.get("account_snapshot"),
+        }
+    )
+    if process is None:
         return result
     heartbeat = int(process["heartbeat_at_ms"])
     remaining = max(0, heartbeat + _HEARTBEAT_STALE_AFTER_MS - now_ns // 1_000_000)
     alive = remaining > 0 and process["lifecycle_state"] == "running"
-    full_at = state.get("last_full_reconcile_at_ns")
     reconciled = (
         full_at is not None
         and state.get("account_snapshot") is not None
         and now_ns - int(full_at) <= _FULL_RECONCILE_STALE_AFTER_NS
     )
-    paused = True if control is None else bool(control["entries_paused"])
-    halted = False if control is None else bool(control["emergency_halted"])
     error = process.get("fault_code")
-    unexpected = bool(state["unexpected_exposure"])
     armed = alive and reconciled and not paused and not halted and not unexpected and error is None
     reason = (
         "executor_heartbeat_stale"
@@ -67,20 +79,14 @@ def execution_readiness_projection(
     )
     result.update(
         {
-            "connection": "DEMO",
             "connection_observed_at_ms": heartbeat,
             "alive": alive,
             "entries_armed": armed,
             "entry_block_reason": reason,
-            "entries_paused": paused,
-            "emergency_halted": halted,
-            "unexpected_exposure": unexpected,
             "last_error": error,
             "heartbeat_at_ms": heartbeat,
             "facts_expire_at_ms": heartbeat + _HEARTBEAT_STALE_AFTER_MS,
             "facts_remaining_ms": remaining,
-            "last_full_reconcile_at_ms": None if full_at is None else int(full_at) // 1_000_000,
-            "signed_account": state.get("account_snapshot"),
         }
     )
     return result

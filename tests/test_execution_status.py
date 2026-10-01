@@ -73,3 +73,19 @@ def test_operator_pause_and_halt_disarm_executor():
     )
     assert paused["entry_block_reason"] == "entries_paused"
     assert halted["entry_block_reason"] == "emergency_halt"
+
+
+def test_account_facts_remain_visible_before_executor_establishes_its_runtime():
+    result = execution_readiness_projection(
+        _execution(),
+        _state(unexpected_exposure=True),
+        _control(entries_paused=True, emergency_halted=True),
+        now_ns=10_000_000_000,
+        process=None,
+    )
+    assert not result["alive"] and not result["entries_armed"]
+    assert result["entry_block_reason"] == "executor_state_missing"
+    assert result["entries_paused"] and result["emergency_halted"] and result["unexpected_exposure"]
+    assert result["signed_account"] == {"observed_at_ns": 9_000_000_000}
+    assert result["last_full_reconcile_at_ms"] == 9_000
+    assert result["heartbeat_at_ms"] is None and result["connection_observed_at_ms"] is None
