@@ -24,7 +24,7 @@ Tracefold 将持续到达的新闻、市场报告和链上回执，整理为可�
 
 | 理解与观察 | 研究与交付 |
 | :--- | :--- |
-| **01　新闻增量理解**<br/>从来源修订中抽取命题与引文，识别复述、补充和更正，形成版本化 EventUpdate。<br/>[News 手册 →](docs/modules/news.md) | **02　有依据的读者通知**<br/>逐命题比较实际已发正文；只为选中内容生成中文卡片，保留真实发送结果。<br/>[通知与回执 →](docs/modules/news.md#notification) |
+| **01　新闻增量理解**<br/>从来源修订中抽取命题与引文，识别复述、补充和更正，形成版本化 EventUpdate。<br/>[News 手册 →](docs/modules/news.md) · [语义链路入门 →](docs/modules/news-semantics-guide.md) | **02　有依据的读者通知**<br/>逐命题比较实际已发正文；只为选中内容生成中文卡片，保留真实发送结果。<br/>[通知与回执 →](docs/modules/news.md#notification) |
 | **03　市场与链上观察**<br/>确定性解析 OI / 清算 / 大户报告；从完整链上回执发现多地址集中净买入。<br/>[市场观察 →](docs/modules/oi.md) · [钱包警报 →](docs/modules/wallets.md) | **04　受限交易研究**<br/>冻结当时可见的证据；通过只读 ReAct 和有限计划菜单，输出 TRADE / NO_TRADE / WATCH。<br/>[Trading 手册 →](docs/modules/trading.md) |
 | **05　行情与复核**<br/>区分当前报价、新闻后价格反应和研究结果；保留版本化复核与评审器校准。<br/>[行情复盘 →](docs/modules/market-review.md) · [复核校准 →](docs/modules/review.md) | **06　独立账户执行**<br/>Nautilus 消费有作用域的 Signal 与操作意图，负责订单、保护、真实成交归属和对账。<br/>[Execution 手册 →](docs/modules/execution.md) |
 
