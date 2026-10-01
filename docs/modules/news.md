@@ -151,7 +151,7 @@ Claim ref 指向一个命题或真实世界中的一次发生。新增支持、�
 
 ### 实体依据与相关召回
 
-来源资产采用来源优先的简单链路：Item 的 provider_metadata.coins 保留原始标签；[semantic_input.py](../../tracefold/news/storage/semantic_input.py) 按 evidence_ref 投影为 FrozenInput.asset_candidates（symbol、market_type、grade），随同一次抽取输入冻结。现有抽取器针对每条命题选择相关候选及 primary/mentioned，不把整篇标签复制给所有命题；接地时只恢复被选中、被引用来源候选的拼写与已知市场，跨来源冲突保留未知。正文明确 ticker、公司或产品名称时允许有限补充，不要求 ticker 字面出现；不从 URL、related prior 或泛主题补资产。空资产、目录未收录或缺行情都不阻止事实采用与通知判断，不新增资产表、实体服务或模型轮次。
+来源资产采用来源优先的简单链路：Item 的 provider_metadata.coins 保留原始标签；[semantic_input.py](../../tracefold/news/storage/semantic_input.py) 按 evidence_ref 投影为 FrozenInput.asset_candidates（symbol、market_type、grade），随同一次抽取输入冻结。现有抽取器针对每条命题选择相关候选及 primary/mentioned，不把整篇标签复制给所有命题；接地时只恢复被选中、被引用来源候选的拼写与已知市场，跨来源冲突保留未知。正文明确 ticker、公司或产品名称时允许有限补充，不要求 ticker 字面出现；不从 URL、related prior 或泛主题补资产。资产只指可交易标的（token、股票、基金、指数、商品或货币对）；地点、航道、国家、政府、武器、项目和组织在没有明确上市标的时不是资产。空资产、目录未收录或缺行情都不阻止事实采用与通知判断，不新增资产表、实体服务或模型轮次。
 
 资产市场词表复用现有 MarketType。历史读取显式把 forex 解释为 fx；旧 fund 没有证明其市场类别，保留为 unknown，不猜 equity。原始来源、已存 Claim/ref、内容版本与真实回执不重写。
 

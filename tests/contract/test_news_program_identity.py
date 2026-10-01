@@ -1,8 +1,9 @@
 """Program identities, with a fixed model identity, and the signature schemas they include.
 
 #765 moved every generative role to the compact JSON adapter (`news_generated_transport_v8`), so the
-extractor, card copy, generated judgment and generated reader identities changed together. The native
-judgment does not use that adapter and keeps its identity; no signature schema changed.
+extractor, card copy, generated judgment and generated reader identities changed together; its asset rule
+(tradable instruments only) changed the extractor instruction as well. The native judgment does not use
+that adapter and keeps its identity; no signature schema changed.
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ def test_program_and_signature_schema_identities_are_pinned() -> None:
         ).identity,
     }
     assert actual == {
-        "extractor": "extractor:e20406d4282ae882fce29ac8b8b30c8a3b1c733aca01d95c7eb3799771db2260",
+        "extractor": "extractor:c51e23b3dcc6717a901346797fa0a53c7485d4db16570d8995ecb71b72137ee6",
         "copy": "news_card_copy:410f061c5d2ead4ecb1011ed64d4895d831266aceb836a446cf5225fc8125876",
         "generated": "generated_judgment:acdaa52b89c67f7f12833369dbbbb1e7609d9a84d01cdc7d916d35cb60906df7",
         "native": "native_judgment:763a95518060a756b572c0163fcb4f35b5fbc556daf46dd9e295cfa71bc08fca",
