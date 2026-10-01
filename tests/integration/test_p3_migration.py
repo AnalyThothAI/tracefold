@@ -17,6 +17,7 @@ from tests.postgres_test_utils import (
 )
 from tests.support.news_event_updates import first_update, raised_update
 from tests.support.news_update_pg import EVENT, STAMP
+from tracefold.news.storage.notification_context import NotificationContextStorage
 from tracefold.news.storage.semantic_rows import (
     ANALYSES_SQL,
     ANALYSIS_HEADS_SQL,
@@ -46,6 +47,11 @@ def source(postgres_migration_dsn):
     seed_event()
     first = first_update(EVENT)
     second = raised_update(first)
+    # The old writer loops in document order and ON CONFLICT keeps the first
+    # relation for the natural link key, even when another change repeats it.
+    second = second.model_copy(
+        update={"changes": (*second.changes, second.changes[-1].model_copy(update={"relation": "conflicts"}))}
+    )
     with closing(connect_postgres_test()) as conn, conn.transaction():
         persist_update(conn, first)
         persist_update(conn, second)
@@ -81,7 +87,7 @@ def source(postgres_migration_dsn):
                 and change.relation in {"equivalent", "adds_information", "real_world_change", "corrects", "conflicts"}
             ):
                 conn.execute(
-                    "INSERT INTO news_claim_links VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    "INSERT INTO news_claim_links VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                     (
                         second.ref,
                         change.current_ref,
@@ -213,6 +219,11 @@ def test_twenty_read_projections_survive_the_populated_cut(source):
             "reloptions"
         ] == ["fillfactor=85"]
         assert conn.execute("SELECT evidence->>'material_sha256' AS sha FROM news_events").fetchone()["sha"]
+        links = conn.execute(CLAIM_LINKS_SQL).fetchall()
+        assert len(links) == 1 and links[0]["relation"] == "real_world_change"
+        reader = NotificationContextStorage(conn, updates=None)
+        recalled = reader._claim_links([links[0]["current_ref"]], as_of_ms=STAMP + 2000)
+        assert len(recalled) == 1 and recalled[0]["relation"] == "real_world_change"
 
 
 @pytest.mark.parametrize(

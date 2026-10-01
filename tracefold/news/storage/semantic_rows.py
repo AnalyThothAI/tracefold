@@ -48,10 +48,12 @@ SELECT e.event_id,v.evidence_version,v.evidence_sha256,v.focus_fact_id,v.created
     evidence_version integer,evidence_sha256 text,focus_fact_id text,created_at_ms bigint)
 """
 CLAIM_LINKS_SQL: Final = """
-SELECT DISTINCT a.update_ref,change->>'current_ref' AS current_ref,change->>'previous_ref' AS previous_ref,
+SELECT DISTINCT ON (a.update_ref,change->>'current_ref',change->>'previous_ref')
+       a.update_ref,change->>'current_ref' AS current_ref,change->>'previous_ref' AS previous_ref,
        change->>'relation' AS relation,a.event_id AS current_event_id,p.event_id AS previous_event_id,
        a.adopted_at_ms AS asserted_at_ms
-  FROM news_analyses a CROSS JOIN LATERAL jsonb_array_elements(a.document->'changes') change
+  FROM news_analyses a CROSS JOIN LATERAL jsonb_array_elements(a.document->'changes')
+       WITH ORDINALITY AS changes(change,position)
   LEFT JOIN LATERAL (
     SELECT prior.event_id FROM news_analyses prior
      WHERE prior.adopted_at_ms<=a.adopted_at_ms
@@ -62,4 +64,5 @@ SELECT DISTINCT a.update_ref,change->>'current_ref' AS current_ref,change->>'pre
  WHERE a.adopted_at_ms IS NOT NULL AND change->>'previous_ref' IS NOT NULL
    AND change->>'previous_ref'<>change->>'current_ref'
    AND change->>'relation' IN ('equivalent','adds_information','real_world_change','corrects','conflicts')
+ ORDER BY a.update_ref,change->>'current_ref',change->>'previous_ref',position
 """

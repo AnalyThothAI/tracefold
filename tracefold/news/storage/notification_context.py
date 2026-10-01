@@ -350,16 +350,19 @@ class NotificationContextStorage:
         if not refs:
             return []
         query = """
-            SELECT DISTINCT a.update_ref,change->>'current_ref' AS current_ref,
+            SELECT DISTINCT ON (a.update_ref,change->>'current_ref',change->>'previous_ref')
+                   a.update_ref,change->>'current_ref' AS current_ref,
                    change->>'previous_ref' AS previous_ref,change->>'relation' AS relation,
                    a.adopted_at_ms AS asserted_at_ms
-              FROM news_analyses a CROSS JOIN LATERAL jsonb_array_elements(a.document->'changes') change
+              FROM news_analyses a CROSS JOIN LATERAL jsonb_array_elements(a.document->'changes')
+                   WITH ORDINALITY AS changes(change,position)
              WHERE a.adopted_at_ms < %s
                AND (jsonb_path_query_array(a.document,'$."changes"[*]."current_ref"') ?| %s
                  OR jsonb_path_query_array(a.document,'$."changes"[*]."previous_ref"') ?| %s)
                AND (change->>'current_ref'=ANY(%s) OR change->>'previous_ref'=ANY(%s))
                AND change->>'previous_ref'<>change->>'current_ref'
                AND change->>'relation' IN ('equivalent','adds_information','real_world_change','corrects','conflicts')
+             ORDER BY a.update_ref,change->>'current_ref',change->>'previous_ref',position
         """
         first = self.conn.execute(query, (as_of_ms, *([list(refs)] * 4))).fetchall()
         reached = sorted({str(row[key]) for row in first for key in ("current_ref", "previous_ref")} - set(refs))

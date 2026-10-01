@@ -67,6 +67,7 @@ DO $$ BEGIN
  IF EXISTS (SELECT 1 FROM news_event_evidence_snapshots s WHERE NOT EXISTS
    (SELECT 1 FROM news_events e WHERE e.event_id=s.event_id)) THEN RAISE NOTICE 'p3_orphan_snapshots'; END IF;
 END $$;
+CREATE INDEX p3_source_bands_event ON news_event_bands(event_id);
 ALTER TABLE news_events SET (fillfactor = 85);
 ALTER TABLE news_items ADD COLUMN revisions jsonb NOT NULL DEFAULT '[]'::jsonb,
   ADD CONSTRAINT news_items_revisions_check CHECK ((jsonb_typeof(revisions) = 'array') IS TRUE);
@@ -111,6 +112,12 @@ SELECT r.repair_id,r.event_id,'scope_repair',u.input_revision,r.recorded_at_ms,
  u.content_revision,u.previous_content_revision,news_identity('update',jsonb_build_array(u.event_id,u.content_revision)),
  u.adopted_at_ms,u.document FROM news_head_scope_repairs r JOIN news_event_updates u ON u.scope_repair_id=r.repair_id;
 CREATE TEMP TABLE p3_material(event_id text PRIMARY KEY,material_sha256 text NOT NULL) ON COMMIT DROP;
+CREATE TEMP TABLE p3_claim_occurrences ON COMMIT DROP AS
+ SELECT a.analysis_id,claim->>'ref' AS claim_ref FROM news_analyses a
+ CROSS JOIN LATERAL jsonb_array_elements(a.document->'claims') claim;
+CREATE INDEX ON p3_claim_occurrences(claim_ref,analysis_id);
+ANALYZE p3_claim_occurrences;
+ANALYZE news_analyses;
 """)
     conn = op.get_bind()
     rows = conn.execute(
@@ -250,20 +257,23 @@ SELECT e.event_id,v.*,'observed'::text AS provenance,true AS release_eligible,
 
 SELECT pg_temp.p3_verify('claim_links',$src$SELECT to_jsonb(l) AS row FROM news_claim_links
  l$src$,$dst$SELECT to_jsonb(l) AS row FROM (
-SELECT DISTINCT a.update_ref,change->>'current_ref' AS current_ref,change->>'previous_ref' AS previous_ref,
+SELECT DISTINCT ON (a.update_ref,change->>'current_ref',change->>'previous_ref')
+       a.update_ref,change->>'current_ref' AS current_ref,change->>'previous_ref' AS previous_ref,
        change->>'relation' AS relation,a.event_id AS current_event_id,p.event_id AS previous_event_id,
        a.adopted_at_ms AS asserted_at_ms
-  FROM news_analyses a CROSS JOIN LATERAL jsonb_array_elements(a.document->'changes') change
+  FROM news_analyses a CROSS JOIN LATERAL jsonb_array_elements(a.document->'changes')
+       WITH ORDINALITY AS changes(change,position)
   LEFT JOIN LATERAL (
     SELECT prior.event_id FROM news_analyses prior
      WHERE prior.adopted_at_ms<=a.adopted_at_ms
-       AND EXISTS (SELECT 1 FROM jsonb_array_elements(prior.document->'claims') claim
-                    WHERE claim->>'ref'=change->>'previous_ref')
+       AND EXISTS (SELECT 1 FROM pg_temp.p3_claim_occurrences claim
+                    WHERE claim.analysis_id=prior.analysis_id AND claim.claim_ref=change->>'previous_ref')
      ORDER BY (prior.event_id=a.event_id) DESC,prior.adopted_at_ms DESC,prior.analysis_id LIMIT 1
   ) p ON true
  WHERE a.adopted_at_ms IS NOT NULL AND change->>'previous_ref' IS NOT NULL
    AND change->>'previous_ref'<>change->>'current_ref'
    AND change->>'relation' IN ('equivalent','adds_information','real_world_change','corrects','conflicts')
+ ORDER BY a.update_ref,change->>'current_ref',change->>'previous_ref',position
 ) l$dst$);
 
 DO $$ BEGIN
