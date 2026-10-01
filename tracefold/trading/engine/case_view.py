@@ -245,7 +245,25 @@ def build_case_view(
     }
     payload = json.dumps(model_input, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if len(payload.encode()) > 16_384:
-        raise ValueError("case_view_prompt_oversized")
+        # Current evidence owns the budget. Remove only the oldest complete
+        # context observations, including their evidence aliases, until it fits.
+        # Small inputs retain their exact existing bytes and omit this metadata.
+        provided = len(context)
+        omitted_refs: list[str] = []
+        while context and len(payload.encode()) > 16_384:
+            removed = context.pop()
+            omitted_refs.insert(0, str(removed["ref"]))
+            evidence[:] = [item for item in evidence if item["ref"] != removed["ref"]]
+            model_input["context_coverage"] = {
+                "provided": provided,
+                "included": len(context),
+                "omitted": len(omitted_refs),
+                "omitted_refs": list(omitted_refs),
+                "reason": "input_budget",
+            }
+            payload = json.dumps(model_input, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if len(payload.encode()) > 16_384:
+            raise ValueError("case_view_prompt_oversized")
     return CaseView(
         case_id,
         asset_id,
