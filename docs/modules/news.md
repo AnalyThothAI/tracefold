@@ -252,9 +252,14 @@ sequenceDiagram
 | 通知模型阶段 | 60 秒 | 计划与卡片生成共享，不把外部发送等待算成同一次模型阶段 |
 | 通知准备在途上限 | `news.push.notification_prepare_limit`，默认 2 | 只限制实际准备任务和就绪结果；进程唯一的发送时隙不占准备位置；快 Event 可先完成 |
 | 生成调用预算常量 | 60 秒 | 具体适配使用的调用边界；不等于端到端保证 |
+| News 生成在途上限 | `news.max_model_concurrent_calls`，默认 4，范围 1–32 | News runtime 内抽取、生成式判断与卡片共用；独立于 Trading Assessor |
 | 采用冲突尝试 | 2 次 | 处理 head 变化，不无条件重做已完成的抽取 |
 
 语义预算见 [updates/service.py](../../tracefold/news/updates/service.py)，通知预算见 [notifications/service.py](../../tracefold/news/notifications/service.py)，模型调用边界见 [adapters/generation.py](../../tracefold/news/adapters/generation.py)。它们是上限，不是实际耗时、服务级别承诺或性能实测。排查延时需要拆开：**入队等待 → DB 领取 → 模型物理调用 → 判断 / 回退 → 采用 → 通知等待 → 发送**。把总耗时都称为“Agent 慢”无法定位根因。
+
+生成并发由 News runtime 装配的一个进程内许可所有者控制，生成式主路由与 fallback 都使用它；原生 Jev、Trading 和独立离线进程不占这个许可。判断批次的至多 3 个并行仍是每组问题的局部限制，不代替 News runtime 的总限额。进程内限额不证明真实 provider 容量已隔离，也不保证 News 在共享后端上的优先级；不同 URL 或 API key 是否拥有独立配额需由实际服务资源证明，见[运维](../OPERATIONS.md#news-retry)。
+
+等待许可计入已有阶段截止时间。容量等待保留 `news_generation_capacity_wait` 原因，但只有该阶段尚未开始任何生成式或原生模型调用的纯本地等待，才不消耗业务尝试：语义存储持久记录原因，仅在租约 owner 仍有效、wanted revision 相同的情况下退还本次领取，不冲销先前 provider 尝试或新修订预算；通知返回容量原因，工作保持 pending，只持久延后下一次尝试，不新增失败或 decision 记录，卡片阶段先释放未发送意图再延后。已完成模型调用后再次排队仍计实际尝试，但不因此记 provider 故障；同批并行中模型调用也被截止取消时，保留 provider 超时 / breaker 分类，不冒充纯等待。直接任务取消保留取消 / 租约恢复语义。
 
 提供商失败与内容不确定不同：非最终尝试中，关键关系 / 支撑判断无法取得会进入持久重试；最终尝试允许按契约保存 unresolved / `possible_new`，不能伪造“没有新闻价值”。程序错误和非法核心输出仍是失败。
 

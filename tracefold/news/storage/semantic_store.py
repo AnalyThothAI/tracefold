@@ -209,7 +209,9 @@ class PgSemanticStore:
             ),
         )
 
-    async def defer_semantic_event(self, lease: SemanticLease, *, reason: str, retry_after_ms: int = 0) -> None:
+    async def defer_semantic_event(
+        self, lease: SemanticLease, *, reason: str, retry_after_ms: int = 0, charge_attempt: bool = True
+    ) -> None:
         now_ms = self.clock()
         await self.db.tx(
             "news_update_defer_event",
@@ -218,6 +220,7 @@ class PgSemanticStore:
                 reason=reason,
                 now_ms=now_ms,
                 retry_after_ms=retry_after_ms,
+                charge_attempt=charge_attempt,
             ),
         )
 

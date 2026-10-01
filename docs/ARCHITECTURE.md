@@ -309,7 +309,7 @@ class Case,Amendment,Decision research;
 
 ### Trading 的具体边界
 
-完整数据流与所有者见 [Trading](modules/trading.md)，资金/恢复见 [Execution](modules/execution.md)。evaluator/run/assessment/action 分别拥有预测合同、评估范围、终态观测和策略事实。episode 控制重复发布，保留全部观察。App ModelBudget 为同 endpoint 的 News/Trading 提供 PG advisory slots；BinanceCatalogue 拥有分环境目录读取。纯核心不依赖这些 I/O，执行器短事务预留、事务外 POST，unknown 只查询、faults 与 heartbeat 独立；CLI/API/UI 共用记分构造器，不新增总线/通用 Agent/代理层。
+完整数据流与所有者见 [Trading](modules/trading.md)，资金/恢复见 [Execution](modules/execution.md)。evaluator/run/assessment/action 分别拥有预测合同、评估范围、终态观测和策略事实。episode 控制重复发布，保留全部观察。News 生成与 Trading 评估分别拥有进程内并发限额，BinanceCatalogue 拥有分环境目录读取。纯核心不依赖这些 I/O，执行器短事务预留、事务外 POST，unknown 只查询、faults 与 heartbeat 独立；CLI/API/UI 共用记分构造器，不新增总线/通用 Agent/代理层。
 
 <a id="section-验证与文档边界"></a>
 ## 08 · 验证与文档边界

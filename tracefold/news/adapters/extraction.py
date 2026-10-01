@@ -11,6 +11,7 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import ConfigDict, Field, ValidationError
 from pydantic.json_schema import SkipJsonSchema
 
+from ..generation_capacity import NewsGenerationCapacity
 from ..updates.contracts import (
     Citation,
     ClaimFields,
@@ -360,8 +361,16 @@ class ExtractSignature(dspy.Signature):  # type: ignore[misc]
 
 
 class DspyExtractor:
-    def __init__(self, lm_factory: Callable[[], Any], *, model_identity: str, topics: dict[str, str]) -> None:
+    def __init__(
+        self,
+        lm_factory: Callable[[], Any],
+        *,
+        model_identity: str,
+        topics: dict[str, str],
+        generation_capacity: NewsGenerationCapacity | None = None,
+    ) -> None:
         self.lm_factory = lm_factory
+        self.generation_capacity = generation_capacity
         self.topics = dict(topics)
         self._codes = {label: code for code, label in self.topics.items()}
         self.identity = identity(
@@ -380,6 +389,7 @@ class DspyExtractor:
         extraction: Extraction = await generation.generate(
             ExtractSignature.with_instructions(EXTRACTION_INSTRUCTION),
             self.lm_factory(),
+            capacity=self.generation_capacity,
             accept=lambda prediction: self._decode(source, aliases, prediction),
             evidence_json=canonical_json(references(extraction_input(source), aliases)),
             field_definitions=FIELD_DEFINITIONS,

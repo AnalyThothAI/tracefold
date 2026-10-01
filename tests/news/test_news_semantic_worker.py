@@ -63,14 +63,18 @@ class FakeStore:
         self.leases = list(leases)
         self.claims: list[str] = []
         self.deferred: list[tuple[str, str]] = []
+        self.charged: list[bool] = []
         self.failed: list[tuple[str, str]] = []
 
     async def claim_semantic_work(self, event_id: str, *, lease_ms: int) -> SemanticLease | None:
         self.claims.append(event_id)
         return self.leases.pop(0) if self.leases else None
 
-    async def defer_semantic_event(self, lease: SemanticLease, *, reason: str, retry_after_ms: int = 0) -> None:
+    async def defer_semantic_event(
+        self, lease: SemanticLease, *, reason: str, retry_after_ms: int = 0, charge_attempt: bool = True
+    ) -> None:
         self.deferred.append((lease.event_id, reason))
+        self.charged.append(charge_attempt)
 
     async def fail_semantic_event(self, lease: SemanticLease, *, error_code: str) -> None:
         self.failed.append((lease.event_id, error_code))
@@ -511,3 +515,67 @@ def test_a_single_lm_is_a_route_of_one(monkeypatch: pytest.MonkeyPatch) -> None:
     with _scripted(monkeypatch, {"only": dspy.LMTransportError("down")}) as asked, pytest.raises(ProviderUnavailable):
         asyncio.run(generation.generate(object(), "only"))
     assert asked == ["only"]
+
+
+@pytest.mark.parametrize("waiting", [True, False], ids=["local-capacity", "provider-call"])
+def test_generation_stage_deadline_only_counts_provider_calls_towards_the_breaker(waiting: bool) -> None:
+    from tracefold.news.generation_capacity import NewsGenerationCapacity, generation_call
+
+    async def run() -> None:
+        capacity = NewsGenerationCapacity(1)
+
+        class DeadlineAgent:
+            async def process(self, lease: SemanticLease, *, final_attempt: bool = True) -> str:
+                async with asyncio.timeout(0.02), capacity.acquire():
+                    with generation_call():
+                        await asyncio.Future()
+                return "adopted"
+
+        store = FakeStore(lease(), lease())
+        db = FakeDb()
+        subject = worker(store, DeadlineAgent(), db=db)
+        if waiting:
+            async with capacity.acquire():
+                await subject.handle(wake())
+                await subject.handle(wake())
+        else:
+            await subject.handle(wake())
+            await subject.handle(wake())
+        assert len(store.deferred) == 2 and store.failed == []
+        if waiting:
+            assert store.deferred == [("ev-1", "news_generation_capacity_wait")] * 2
+            assert store.charged == [False, False]
+            assert not subject.breaker.is_open(NOW)
+            assert db.news.calls == []
+        else:
+            assert store.deferred == [("ev-1", "news_provider_unavailable:TimeoutError")] * 2
+            assert store.charged == [True, True]
+            assert subject.breaker.is_open(NOW)
+            assert db.news.calls == [("open_incident", {"cause_class": PROVIDER_OUTAGE_CAUSE, "now_ms": NOW})]
+
+    asyncio.run(run())
+
+
+def test_successful_call_before_local_admission_wait_keeps_a_semantic_attempt_without_provider_outage() -> None:
+    from tracefold.news.generation_capacity import NewsGenerationCapacity, generation_call
+
+    async def run() -> None:
+        capacity = NewsGenerationCapacity(1)
+
+        class PriorCallAgent:
+            async def process(self, lease: SemanticLease, *, final_attempt: bool = True) -> str:
+                with generation_call():
+                    pass
+                async with asyncio.timeout(0.02), capacity.acquire():
+                    return "adopted"
+
+        store = FakeStore(lease())
+        db = FakeDb()
+        subject = worker(store, PriorCallAgent(), db=db)
+        async with capacity.acquire():
+            await subject.handle(wake())
+        assert store.deferred == [("ev-1", "news_generation_capacity_wait")]
+        assert store.charged == [True]
+        assert db.news.calls == [] and not subject.breaker.is_open(NOW)
+
+    asyncio.run(run())

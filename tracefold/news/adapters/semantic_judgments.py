@@ -10,6 +10,7 @@ from typing import Any, Final
 import dspy  # type: ignore[import-untyped]
 from dspy.adapters.types.decision import Choice  # type: ignore[import-untyped]
 
+from ..generation_capacity import NewsGenerationCapacity
 from ..updates.contracts import Exact
 from ..updates.identity import canonical_json, identity
 from ..updates.judgment import (
@@ -53,8 +54,15 @@ class GeneratedJudgmentSignature(dspy.Signature):  # type: ignore[misc]
 
 
 class GeneratedJudgments:
-    def __init__(self, lm_factory: Callable[[], Any], *, model_identity: str) -> None:
+    def __init__(
+        self,
+        lm_factory: Callable[[], Any],
+        *,
+        model_identity: str,
+        generation_capacity: NewsGenerationCapacity | None = None,
+    ) -> None:
         self.lm_factory = lm_factory
+        self.generation_capacity = generation_capacity
         self.identity = identity(
             "generated_judgment",
             ADAPTER_VERSION,
@@ -72,6 +80,7 @@ class GeneratedJudgments:
         prediction = await generation.generate(
             GeneratedJudgmentSignature.with_instructions(JUDGMENT_INSTRUCTION),
             self.lm_factory(),
+            capacity=self.generation_capacity,
             task=task,
             criteria_json=canonical_json(criteria),
             context_json=context_json or "null",

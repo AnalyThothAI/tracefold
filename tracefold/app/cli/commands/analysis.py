@@ -55,7 +55,6 @@ async def _run(settings: Settings) -> None:
                 endpoint = configured_lm_endpoint(settings, model_name=analysis.model_name)
                 lm = generative_lm(
                     endpoint,
-                    settings=settings,
                     max_tokens=analysis.max_model_output_tokens,
                     timeout=analysis.model_timeout_seconds,
                 )

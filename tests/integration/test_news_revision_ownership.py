@@ -37,6 +37,137 @@ from tracefold.news.updates.service import NewsAgent
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
+def test_local_generation_waits_do_not_exhaust_semantic_work_but_provider_failures_do():
+    seed_event()
+    clock = Clock(STAMP + 10)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
+    for _ in range(5):
+        lease = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
+        assert lease is not None and lease.attempts == 1
+        asyncio.run(pg.defer_semantic_event(lease, reason="news_generation_capacity_wait", charge_attempt=False))
+        row = work(EVENT)
+        assert row["attempts"] == 0
+        assert row["last_outcome"] == row["last_error_code"] == "news_generation_capacity_wait"
+        assert row["failed_read_refs"] == []
+        assert row["lease_token"] is None and row["leased_until_ms"] is None
+        assert row["next_attempt_at_ms"] > clock.now_ms
+        assert asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000)) is None
+        clock.now_ms = row["next_attempt_at_ms"]
+
+    for attempt in range(1, 4):
+        lease = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
+        assert lease is not None and lease.attempts == attempt
+        asyncio.run(pg.defer_semantic_event(lease, reason="news_generation_lm_timeout_error"))
+        row = work(EVENT)
+        assert row["attempts"] == attempt
+        assert row["last_error_code"] == "news_generation_lm_timeout_error"
+        assert row["last_outcome"] == ("failed" if attempt == 3 else "news_generation_lm_timeout_error")
+        clock.now_ms = row["next_attempt_at_ms"]
+    assert row["failed_read_refs"] == [view.read_ref for view in reading_views(lease.source)]
+    assert asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000)) is None
+
+
+def test_semantic_worker_postpones_pure_generation_waits_without_spending_pg_attempts():
+    from tracefold.news.generation_capacity import NewsGenerationCapacity
+    from tracefold.news.pipeline.semantic import SemanticWorker
+
+    seed_event()
+    clock = Clock(STAMP + 10)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
+
+    async def run():
+        capacity = NewsGenerationCapacity(1)
+
+        class WaitingAgent:
+            async def process(self, lease, *, final_attempt=True):
+                async with asyncio.timeout(0.005), capacity.acquire():
+                    raise AssertionError("The occupied News slot must never start a provider call.")
+
+        worker = SemanticWorker(
+            bus=RecordingBus(),
+            db=pg.db,
+            store=pg,
+            agent=WaitingAgent(),
+            concurrency=1,
+            circuit_failures=1,
+            circuit_open_seconds=60,
+            clock=clock,
+        )
+        async with capacity.acquire():
+            for _ in range(5):
+                lease = await pg.claim_semantic_work(EVENT, lease_ms=180_000)
+                assert lease is not None and lease.attempts == 1
+                assert await worker.turn(lease) == "deferred"
+                row = work(EVENT)
+                assert row["attempts"] == 0 and row["last_outcome"] == "news_generation_capacity_wait"
+                assert row["failed_read_refs"] == [] and row["next_attempt_at_ms"] > clock.now_ms
+                assert not worker.breaker.is_open(clock.now_ms)
+                clock.now_ms = row["next_attempt_at_ms"]
+
+    asyncio.run(run())
+
+
+def test_uncharged_wait_refunds_only_the_current_claim_not_prior_provider_attempts():
+    seed_event()
+    clock = Clock(STAMP + 10)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
+    sql("UPDATE news_semantic_work SET attempts=2")
+    lease = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
+    assert lease is not None and lease.attempts == 3
+    asyncio.run(pg.defer_semantic_event(lease, reason="news_generation_capacity_wait", charge_attempt=False))
+    row = work(EVENT)
+    assert row["attempts"] == 2 and row["last_outcome"] == "news_generation_capacity_wait"
+    assert row["failed_read_refs"] == [] and row["next_attempt_at_ms"] > clock.now_ms
+
+    clock.now_ms = row["next_attempt_at_ms"]
+    final = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
+    assert final is not None and final.attempts == 3
+    asyncio.run(pg.defer_semantic_event(final, reason="news_generation_lm_timeout_error"))
+    row = work(EVENT)
+    assert row["attempts"] == 3 and row["last_outcome"] == "failed"
+    assert row["failed_read_refs"] == [view.read_ref for view in reading_views(final.source)]
+
+
+def test_uncharged_old_wait_cannot_refund_or_delay_a_new_revision():
+    seed_event()
+    clock = Clock(STAMP + 10)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
+    old = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
+    assert old is not None and old.attempts == 1
+    add_member_evidence(EVENT, "new-material", "Agency adds a new exemption.", now_ms=clock.now_ms)
+    before = work(EVENT)
+    assert before["wanted_revision"] == 2 and before["attempts"] == 0
+    asyncio.run(
+        pg.defer_semantic_event(
+            old, reason="news_generation_capacity_wait", retry_after_ms=999_000, charge_attempt=False
+        )
+    )
+    after = work(EVENT)
+    assert after["attempts"] == 0 and after["next_attempt_at_ms"] == before["next_attempt_at_ms"]
+    assert after["last_error_code"] is None and after["failed_read_refs"] == []
+    new = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
+    assert new is not None and new.wanted_revision == 2 and new.attempts == 1
+    before = work(EVENT)
+    asyncio.run(pg.defer_semantic_event(old, reason="news_generation_capacity_wait", charge_attempt=False))
+    assert work(EVENT) == before
+
+
+@pytest.mark.parametrize("replacement_owner", [False, True], ids=["expired", "reclaimed"])
+def test_uncharged_wait_cannot_refund_an_expired_or_replaced_owner(replacement_owner):
+    seed_event()
+    clock = Clock(STAMP + 10)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
+    old = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=10))
+    assert old is not None and old.attempts == 1
+    clock.now_ms += 11
+    if replacement_owner:
+        new = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
+        assert new is not None and new.attempts == 2 and new.lease_token != old.lease_token
+    before = work(EVENT)
+    asyncio.run(pg.defer_semantic_event(old, reason="news_generation_capacity_wait", charge_attempt=False))
+    assert work(EVENT) == before
+
+
 @pytest.mark.parametrize("outcome", ["fail", "defer"])
 def test_old_last_attempt_cannot_spend_or_delay_new_revision(outcome):
     seed_event()

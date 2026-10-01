@@ -51,7 +51,7 @@ def _handle_learning_judge_calibration(args: Namespace, settings: Any) -> tuple[
         base_url=source.base_url,
         request_config=source.request,
     )
-    lm = generative_lm(endpoint, settings=settings, max_tokens=JUDGE_MAX_TOKENS, timeout=JUDGE_TIMEOUT_SECONDS)
+    lm = generative_lm(endpoint, max_tokens=JUDGE_MAX_TOKENS, timeout=JUDGE_TIMEOUT_SECONDS)
     judge = CardEvidenceJudge(JudgeEndpoint(lm))
     receipt = run_judge_calibration(judge, load_calibration_cases())
     payload = {**receipt, "receipt_sha256": calibration_receipt_sha256(receipt)}

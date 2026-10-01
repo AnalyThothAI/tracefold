@@ -471,3 +471,48 @@ def test_a_configured_news_judgment_route_opens_its_own_connection_and_changes_t
     assert judged.news_updates.judgment_connection is not None
     assert judged.news_updates.program_identity != plain.news_updates.program_identity
     asyncio.run(judged.news_updates.aclose())
+
+
+def test_worker_generation_admission_uses_its_own_setting_instead_of_event_prefetch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import dspy
+
+    from tests.support.news_update_semantic import update_one
+
+    active = peak = 0
+
+    class Predict:
+        def __init__(self, signature: Any) -> None:
+            del signature
+
+        async def acall(self, **inputs: Any) -> Any:
+            from types import SimpleNamespace
+
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            try:
+                await asyncio.sleep(0.005)
+                return SimpleNamespace(result={"claims": []})
+            finally:
+                active -= 1
+
+    monkeypatch.setattr(dspy, "Predict", Predict)
+    settings = _with_models(tmp_path)
+    settings.news.max_model_concurrent_calls = 1
+    settings.news.triage.concurrency = 4
+    settings.news.push.notification_prepare_limit = 2
+
+    async def run() -> None:
+        wiring = await _wire_news_pipeline_with_stub_bus(settings=settings, capabilities=CapabilityStates())
+        runtime = wiring.news_updates
+        assert runtime is not None
+        assert wiring.pipeline.semantic.concurrency == 4
+        assert wiring.pipeline.deliverer.notification_prepare_limit == 2
+        source, _, _ = update_one()
+        await asyncio.gather(*(runtime.agent.analyzer.extractor.extract(source) for _ in range(3)))
+        await runtime.aclose()
+
+    asyncio.run(run())
+    assert peak == 1 and active == 0

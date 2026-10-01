@@ -85,6 +85,40 @@ class _CaptureEngine:
         return None
 
 
+def test_common_generative_lm_calls_do_not_require_database_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tracefold.app import repository_session
+
+    def no_database(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("A configured model call must not acquire a PostgreSQL connection.")
+
+    monkeypatch.setattr(repository_session, "postgres_connection", no_database)
+    monkeypatch.setattr(repository_session, "async_postgres_connection", no_database)
+    settings = SimpleNamespace(llm=_llm(api_key="fixture", base_url="https://models.test/v1"))
+    endpoint = configured_lm_endpoint(settings, model_name="fixture-model")
+    production = learning_runtime.generative_lm(endpoint, max_tokens=2048, timeout=5.0)
+    engine = _CaptureEngine()
+
+    class AsyncEngine:
+        async def complete(self, request: Request) -> Response:
+            return engine.complete(request)
+
+        async def aclose(self) -> None:
+            return None
+
+    # Replace only the transport owned by DSPy; keep the production LM's request and call path.
+    lm = production.copy(api_key=None, api_base=None, timeout=None, engine=engine, async_engine=AsyncEngine())
+    with dspy.context(adapter=dspy.JSONAdapter()):
+        sync = dspy.Predict(CopySignature)(selected_claims_json="[]", lm=lm)
+
+    async def run() -> Any:
+        with dspy.context(adapter=dspy.JSONAdapter()):
+            return await dspy.Predict(CopySignature).acall(selected_claims_json="[]", lm=lm)
+
+    asynchronous = asyncio.run(run())
+    assert sync.result.headline_zh == asynchronous.result.headline_zh == "标题"
+    assert len(engine.requests) == 2
+
+
 @pytest.mark.parametrize(
     ("model", "base_url", "expected_mode", "expected_format", "expected_extra"),
     [
@@ -114,7 +148,7 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
     settings = SimpleNamespace(llm=_llm(api_key="request-shape-secret", base_url=base_url))
     endpoint = configured_lm_endpoint(settings, model_name=model)
     # The production LM carries the provider extras to LiteLLM as request kwargs.
-    production = learning_runtime.generative_lm(endpoint, settings=Settings(), max_tokens=2048, timeout=5.0)
+    production = learning_runtime.generative_lm(endpoint, max_tokens=2048, timeout=5.0)
     assert production.kwargs["extra_body"] == expected_extra
     assert "request-shape-secret" not in repr(production.kwargs.get("extra_body"))
     # The same structured-output capability, below the real DSPy JSON adapter, shapes the request.
@@ -355,7 +389,6 @@ def test_generative_lm_states_the_structured_output_capability_of_its_endpoint()
     assert lm.supports_response_schema is False
     prompt_only = learning_runtime.generative_lm(
         configured_lm_endpoint(_news_settings(request={"structured_output": "prompt_json"}), model_name="m"),
-        settings=Settings(),
         max_tokens=10,
         timeout=1.0,
     )

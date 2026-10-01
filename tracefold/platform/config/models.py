@@ -246,7 +246,6 @@ class NewsReaderJudgmentConfig(_SystemOneRouteConfig):
 
 
 class LlmConfig(BaseModel):
-    max_shared_concurrent_calls: int = Field(default=2, ge=1, le=32)
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     api_key: str | None = Field(default=None, repr=False)
@@ -559,6 +558,8 @@ class NewsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     enabled: bool = True
+    # Per News runtime, across generated extraction, judgments and card copy; not a provider quota.
+    max_model_concurrent_calls: int = Field(default=4, ge=1, le=32)
     opennews_token: str | None = None
     broker: NewsBrokerSettings = Field(default_factory=NewsBrokerSettings)
     triage: NewsTriageSettings = Field(default_factory=NewsTriageSettings)

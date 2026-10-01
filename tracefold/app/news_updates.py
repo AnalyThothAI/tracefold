@@ -12,6 +12,7 @@ from tracefold.news.adapters.card_copy import DspyCardComposer
 from tracefold.news.adapters.extraction import DspyExtractor
 from tracefold.news.adapters.reader_judge import READER_NATIVE_SECONDS, DspyReaderJudge
 from tracefold.news.adapters.semantic_judgments import GeneratedJudgments, NativeJudgments
+from tracefold.news.generation_capacity import NewsGenerationCapacity
 from tracefold.news.notifications.planner import NotificationPlanner
 from tracefold.news.notifications.ports import NotificationStore
 from tracefold.news.notifications.service import Notifications
@@ -43,6 +44,7 @@ class NewsUpdateRuntime:
     notifications: Notifications
     program_identity: str
     judgment_connection: SystemOneConnection | None
+    generation_capacity: NewsGenerationCapacity
     reader_connection: SystemOneConnection | None = None
 
     async def aclose(self) -> None:
@@ -76,11 +78,19 @@ def _analyzer(
     judgment_model_identity: str,
     news_judgment: NewsJudgmentEndpoint | None,
     native_factory: Callable[[], Any],
+    generation_capacity: NewsGenerationCapacity | None = None,
 ) -> SemanticAnalyzer:
-    generated = GeneratedJudgments(judgment_lm_factory, model_identity=judgment_model_identity)
+    generated = GeneratedJudgments(
+        judgment_lm_factory, model_identity=judgment_model_identity, generation_capacity=generation_capacity
+    )
     native = None if news_judgment is None else NativeJudgments(native_factory, model_identity=news_judgment.identity)
     judgments = NewsJudgments(generated=generated, native=native, cache=relation_cache)
-    extractor = DspyExtractor(extraction_lm_factory, model_identity=extraction_model_identity, topics=dict(CODEBOOK))
+    extractor = DspyExtractor(
+        extraction_lm_factory,
+        model_identity=extraction_model_identity,
+        topics=dict(CODEBOOK),
+        generation_capacity=generation_capacity,
+    )
     return SemanticAnalyzer(extractor, judgments, topics=CODEBOOK)
 
 
@@ -149,6 +159,7 @@ def compose_reader_judge(
     generated_model_identity: str,
     reader_judgment: NewsJudgmentEndpoint | None = None,
     after_native_call: Callable[[SystemOneReceipt], Awaitable[None]] | None = None,
+    generation_capacity: NewsGenerationCapacity | None = None,
 ) -> tuple[DspyReaderJudge, SystemOneConnection | None]:
     """The notification decision layer's reader judge (#742): its own System One route, else generative only.
 
@@ -157,7 +168,14 @@ def compose_reader_judge(
     """
 
     if reader_judgment is None:
-        return DspyReaderJudge(generated_lm_factory, generated_model_identity=generated_model_identity), None
+        return (
+            DspyReaderJudge(
+                generated_lm_factory,
+                generated_model_identity=generated_model_identity,
+                generation_capacity=generation_capacity,
+            ),
+            None,
+        )
     connection = SystemOneConnection(
         base_url=reader_judgment.base_url,
         api_key=reader_judgment.api_key,
@@ -173,6 +191,7 @@ def compose_reader_judge(
         generated_model_identity=generated_model_identity,
         native_lm_factory=bind,
         native_model_identity=reader_judgment.identity,
+        generation_capacity=generation_capacity,
     )
     return judge, connection
 
@@ -192,6 +211,7 @@ def compose_news_updates(
     news_reader_judgment: NewsJudgmentEndpoint | None = None,
     after_native_call: Callable[[SystemOneReceipt], Awaitable[None]] | None = None,
     source_reader: ExistingSourceReader | None = None,
+    max_model_concurrent_calls: int = 4,
 ) -> NewsUpdateRuntime:
     """Construct objects only. Does not query models, PG, exchanges or providers.
 
@@ -203,6 +223,7 @@ def compose_news_updates(
     relay, so nothing here reads the public outbox.
     """
 
+    generation_capacity = NewsGenerationCapacity(max_model_concurrent_calls)
     connection = None
     native_factory: Callable[[], Any] = _unbound
     if news_judgment is not None:
@@ -229,6 +250,7 @@ def compose_news_updates(
         judgment_model_identity=judgment_model_identity,
         news_judgment=news_judgment,
         native_factory=native_factory,
+        generation_capacity=generation_capacity,
     )
     program_identity = _program_identity(analyzer)
     # The notification decision layer's own route; its answers are cached apart, keyed by its identity.
@@ -237,6 +259,7 @@ def compose_news_updates(
         generated_model_identity=judgment_model_identity,
         reader_judgment=news_reader_judgment,
         after_native_call=after_native_call,
+        generation_capacity=generation_capacity,
     )
     return NewsUpdateRuntime(
         agent=NewsAgent(semantic_store, analyzer, program_identity=program_identity, source_reader=source_reader),
@@ -245,9 +268,12 @@ def compose_news_updates(
         notifications=Notifications(
             notification_store,
             NotificationPlanner(reader_judge, relation_cache),
-            DspyCardComposer(card_lm_factory, model_identity=card_model_identity),
+            DspyCardComposer(
+                card_lm_factory, model_identity=card_model_identity, generation_capacity=generation_capacity
+            ),
         ),
         program_identity=program_identity,
         judgment_connection=connection,
+        generation_capacity=generation_capacity,
         reader_connection=reader_connection,
     )

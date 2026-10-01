@@ -192,17 +192,37 @@ class SemanticWorkStorage:
             raise SemanticLeaseLost("news_semantic_lease_lost")
         return dict(row)
 
-    def defer_semantic_event(self, *, lease: SemanticLease, reason: str, now_ms: int, retry_after_ms: int = 0) -> bool:
-        """Settle only this input's retry budget; newer evidence remains due."""
+    def defer_semantic_event(
+        self,
+        *,
+        lease: SemanticLease,
+        reason: str,
+        now_ms: int,
+        retry_after_ms: int = 0,
+        charge_attempt: bool = True,
+    ) -> bool:
+        """Settle this input; a local admission wait before any model call refunds only its claim."""
         return self._end_semantic_attempt(
-            lease, reason=reason, now_ms=now_ms, retry_after_ms=retry_after_ms, failed=False
+            lease,
+            reason=reason,
+            now_ms=now_ms,
+            retry_after_ms=retry_after_ms,
+            failed=False,
+            charge_attempt=charge_attempt,
         )
 
     def fail_semantic_event(self, *, lease: SemanticLease, error_code: str, now_ms: int) -> bool:
         return self._end_semantic_attempt(lease, reason=error_code, now_ms=now_ms, failed=True)
 
     def _end_semantic_attempt(
-        self, lease: SemanticLease, *, reason: str, now_ms: int, failed: bool, retry_after_ms: int = 0
+        self,
+        lease: SemanticLease,
+        *,
+        reason: str,
+        now_ms: int,
+        failed: bool,
+        retry_after_ms: int = 0,
+        charge_attempt: bool = True,
     ) -> bool:
         """Settle one attempt. A revision that ends failed keeps its real attempt count and quarantines the
         task reads it was given: later revisions read only newer material, and the failed reads stay listed
@@ -212,10 +232,17 @@ class SemanticWorkStorage:
             row = self.require_semantic_owner(lease, now_ms=now_ms)
         except SemanticLeaseLost:
             return False
+        revision = int(row["wanted_revision"])
+        if revision < lease.wanted_revision:
+            return False
+        newer = revision > lease.wanted_revision
         attempts = int(row["attempts"])
+        if not charge_attempt and not newer:
+            # The owner lock above fences the claim. Arriving evidence resets a different
+            # revision's budget; an old waiter must never refund that new revision.
+            attempts = max(0, attempts - 1)
         failed = failed or attempts >= SEMANTIC_ATTEMPTS_MAX
         quarantined = [view.read_ref for view in reading_views(lease.source)] if failed else []
-        newer = int(row["wanted_revision"]) > lease.wanted_revision
         if newer:
             self.conn.execute(
                 "UPDATE news_semantic_work SET lease_token=NULL, leased_until_ms=NULL,"
@@ -225,11 +252,12 @@ class SemanticWorkStorage:
             )
         else:
             self.conn.execute(
-                "UPDATE news_semantic_work SET lease_token=NULL, leased_until_ms=NULL, last_outcome=%s,"
+                "UPDATE news_semantic_work SET lease_token=NULL, leased_until_ms=NULL, attempts=%s, last_outcome=%s,"
                 " last_error_code=%s, next_attempt_at_ms=%s, updated_at_ms=%s,"
                 " failed_read_refs=ARRAY(SELECT DISTINCT ref FROM unnest(failed_read_refs || %s::text[]) AS ref)"
                 " WHERE event_id=%s",
                 (
+                    attempts,
                     "failed" if failed else reason,
                     reason,
                     int(now_ms) + max(retry_after_ms, _retry_delay(SEMANTIC_RETRY_MS, attempts)),

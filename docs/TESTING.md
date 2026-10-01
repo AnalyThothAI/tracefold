@@ -86,7 +86,9 @@ export TRACEFOLD_TEST_RABBITMQ_CONTAINER=tracefold-test-rabbitmq
 
 ### Trading 根修证明分层
 
-纯测试验证真实保证金录制夹具、费用/缓冲/杠杆、单位/年龄/episode、校准泄漏、PIT与配对missing。[claim](../tests/integration/test_trading_claim_recovery.py) 真PG证明续租/取消重领/fencing/checkpoint；[budget](../tests/integration/test_model_budget.py)证明共享endpoint与取消释放。[rootfix](../tests/e2e/test_executor_rootfix.py)真PG加录制形状场所证明拒绝/未知、部分/迟到成交、历史失败隔离、持久fault、未发送flatten恢复；不是真实DEMO。[migration](../tests/integration/test_trading_rootfix_migration.py)验证失败评估/Signal/活跃Plan/两类Fill保留，restore覆盖新run/游标；真实PG另外证明COPY成功与失败均复原临时函数search_path、保留已有显式设置。候选质量采用预声明时间外配对，七天/真实账户证据仍在#746/#760独立验收。
+纯测试验证真实保证金录制夹具、费用/缓冲/杠杆、单位/年龄/episode、校准泄漏、PIT与配对missing。[claim](../tests/integration/test_trading_claim_recovery.py) 真PG证明续租/取消重领/fencing/checkpoint。[rootfix](../tests/e2e/test_executor_rootfix.py)真PG加录制形状场所证明拒绝/未知、部分/迟到成交、历史失败隔离、持久fault、未发送flatten恢复；不是真实DEMO。[migration](../tests/integration/test_trading_rootfix_migration.py)验证失败评估/Signal/活跃Plan/两类Fill保留，restore覆盖新run/游标；真实PG另外证明COPY成功与失败均复原临时函数search_path、保留已有显式设置。候选质量采用预声明时间外配对，七天/真实账户证据仍在#746/#760独立验收。
+
+[News 生成容量测试](../tests/news/test_news_generation_capacity.py)证明单个 runtime 的并发上限、主 / fallback 共用、取消释放与混合并行归因；[语义 Worker](../tests/news/test_news_semantic_worker.py)和[通知阶段](../tests/news/test_news_notification_turns.py)测试证明只有整阶段零模型调用的纯等待不消耗尝试，已有调用仍计尝试、调用中的 provider timeout 保留其分类。[修订所有权](../tests/integration/test_news_revision_ownership.py)以真 PG 验证等待不耗尽工作、只退还当前 claim，以及先前失败、新修订、失效 / 被替换 owner 的预算不被改写。Trading 容量 / 截止测试证明自身领取和评估边界。这些测试不调用真实模型，不证明 provider 总容量、429 改善或共享后端的 News 服务优先级。
 
 <a id="section-文档与生成物检查"></a>
 ## 04 · 文档与生成物检查

@@ -12,6 +12,11 @@ from typing import Final
 
 from ..bus import DeferError, TransientError
 from ..clock import clock_ms
+from ..generation_capacity import (
+    GENERATION_CAPACITY_WAIT,
+    generation_capacity_wait_before_call,
+    generation_stage,
+)
 from ..updates.contracts import EventUpdate
 from ..updates.identity import identity
 from ..updates.judgment import Budget, ContractFault, error_code
@@ -96,8 +101,17 @@ class Notifications:
             snapshot_ms = _elapsed_ms(started)
             # The stage deadline surfaces here as TimeoutError, so an expired plan is recorded like any
             # other failed one instead of leaving its work due again at once.
-            async with asyncio.timeout(budget.remaining()):
-                plan = await self.planner.plan(snapshot.update, snapshot.reader, budget, now_ms=self.clock())
+            with generation_stage() as planning:
+                async with asyncio.timeout(budget.remaining()):
+                    plan = await self.planner.plan(snapshot.update, snapshot.reader, budget, now_ms=self.clock())
+            if planning.started_calls == 0 and any(
+                row.reader is not None
+                and row.reader.judgment is not None
+                and row.reader.judgment.error_code == GENERATION_CAPACITY_WAIT
+                for row in plan.claim_decisions
+            ):
+                await self.store.postpone_notification(event_id, channel, snapshot.update.content_revision)
+                return NotificationTurn("plan_failed", update=snapshot.update, error_code=GENERATION_CAPACITY_WAIT)
             timings = plan.timings or PlanTimings()
             plan = plan.model_copy(
                 update={
@@ -125,13 +139,18 @@ class Notifications:
             raise
         except Exception as exc:
             code = error_code(exc, default="news_notification_plan")
-            await self.store.defer_notification(
-                event_id,
-                channel,
-                None if snapshot is None else snapshot.update.content_revision,
-                None if snapshot is None else snapshot.work_updated_at_ms,
-                error_code=code,
-            )
+            if generation_capacity_wait_before_call(exc):
+                await self.store.postpone_notification(
+                    event_id, channel, None if snapshot is None else snapshot.update.content_revision
+                )
+            else:
+                await self.store.defer_notification(
+                    event_id,
+                    channel,
+                    None if snapshot is None else snapshot.update.content_revision,
+                    None if snapshot is None else snapshot.work_updated_at_ms,
+                    error_code=code,
+                )
             return NotificationTurn(
                 "plan_failed", update=None if snapshot is None else snapshot.update, error_code=code
             )
@@ -146,7 +165,8 @@ class Notifications:
         if card is None:
             card_started_at_ms = self.clock()
             try:
-                card = await self._card(lease, snapshot.update, budget)
+                with generation_stage():
+                    card = await self._card(lease, snapshot.update, budget)
             except asyncio.CancelledError:
                 await self._release_unsent(lease)
                 raise
@@ -154,7 +174,11 @@ class Notifications:
                 raise
             except Exception as exc:
                 code = error_code(exc, default="news_card")
-                await self.store.record_unsent_failure(lease, error_code=code, retryable=True)
+                if generation_capacity_wait_before_call(exc):
+                    await self._release_unsent(lease)
+                    await self.store.postpone_notification(event_id, channel, snapshot.update.content_revision)
+                else:
+                    await self.store.record_unsent_failure(lease, error_code=code, retryable=True)
                 return NotificationTurn("card_failed", update=snapshot.update, lease=lease, error_code=code)
             card_finished_at_ms = self.clock()
         return NotificationTurn(

@@ -540,3 +540,87 @@ def test_shared_provider_slot_is_held_until_editorial_receipt_settlement() -> No
         await entry.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("part", ["plan", "card"])
+def test_generation_admission_before_any_call_postpones_without_charging_work_or_intent(part: str) -> None:
+    from tests.support.news_update_semantic import MemoryCache
+    from tracefold.news.adapters.card_copy import DspyCardComposer
+    from tracefold.news.adapters.reader_judge import DspyReaderJudge
+    from tracefold.news.generation_capacity import NewsGenerationCapacity
+    from tracefold.news.notifications.planner import NotificationPlanner
+
+    async def run() -> None:
+        update = nvda_update()
+        store = Store(update)
+        capacity = NewsGenerationCapacity(1)
+        planner = (
+            NotificationPlanner(
+                DspyReaderJudge(lambda: "fixture", generated_model_identity="fixture", generation_capacity=capacity),
+                MemoryCache(),
+            )
+            if part == "plan"
+            else Planner()
+        )
+        composer = (
+            DspyCardComposer(lambda: "fixture", model_identity="fixture", generation_capacity=capacity)
+            if part == "card"
+            else Composer()
+        )
+        notifications = Notifications(store, planner, composer, clock=lambda: 1, stage_seconds=0.02)
+        async with capacity.acquire():
+            result = await notifications.prepare(update.event_id, "news")
+        assert result.status == ("plan_failed" if part == "plan" else "card_failed")
+        assert result.error_code == "news_generation_capacity_wait"
+        assert "defer_notification" not in store.names() and "unsent_failure" not in store.names()
+        assert store.names() == (
+            ["postpone_notification"] if part == "plan" else ["record_plan", "release_unsent", "postpone_notification"]
+        )
+
+    asyncio.run(run())
+
+
+def test_native_call_before_generated_admission_wait_keeps_the_planning_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import dspy
+
+    from tests.support.news_update_semantic import MemoryCache
+    from tracefold.news.adapters.reader_judge import DspyReaderJudge
+    from tracefold.news.generation_capacity import NewsGenerationCapacity
+    from tracefold.news.notifications.planner import NotificationPlanner
+
+    calls: list[str] = []
+
+    class Predict:
+        def __init__(self, signature: Any) -> None:
+            del signature
+
+        async def acall(self, *, lm: str, **inputs: Any) -> None:
+            calls.append(lm)
+            raise ProviderUnavailable("news_reader_native_unavailable")
+
+    monkeypatch.setattr(dspy, "Predict", Predict)
+
+    async def run() -> None:
+        update = nvda_update()
+        store = Store(update)
+        capacity = NewsGenerationCapacity(1)
+        planner = NotificationPlanner(
+            DspyReaderJudge(
+                lambda: "generated",
+                generated_model_identity="fixture",
+                native_lm_factory=lambda: "native",
+                native_model_identity="native-fixture",
+                generation_capacity=capacity,
+            ),
+            MemoryCache(),
+        )
+        notifications = Notifications(store, planner, Composer(), clock=lambda: 1, stage_seconds=0.02)
+        async with capacity.acquire():
+            await notifications.prepare(update.event_id, "news")
+        assert calls and set(calls) == {"native"}
+        assert "postpone_notification" not in store.names()
+        assert store.names() in (["record_plan"], ["defer_notification"])
+
+    asyncio.run(run())

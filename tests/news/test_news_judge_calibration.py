@@ -336,17 +336,27 @@ def test_calibration_without_an_endpoint_is_an_error_not_a_receipt() -> None:
 def test_calibration_writes_one_receipt_through_the_configured_endpoint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    from tracefold.app import learning_runtime, repository_session
+    from tracefold.app.llm import ConfiguredLMEndpoint
+
     built: list[tuple[str, int, float]] = []
+    production_lm = learning_runtime.generative_lm
+    scripted = _JudgeLM(supported=True, covered=[True])
 
-    def configured(settings: Any, *, model_name: str, **_: Any) -> Any:
-        del settings
-        return SimpleNamespace(model_name=model_name)
+    def no_database(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("Offline judge calibration must not access PostgreSQL.")
 
-    def generative(endpoint: Any, *, settings: Any, max_tokens: int, timeout: float) -> _JudgeLM:
+    def configured(settings: Any, *, model_name: str, **_: Any) -> ConfiguredLMEndpoint:
         assert settings.llm.news_triage_fallback.configured
-        built.append((endpoint.model_name, max_tokens, timeout))
-        return _JudgeLM(supported=True, covered=[True])
+        return ConfiguredLMEndpoint(model_name, "fixture", "https://judge.example/v1", {})
 
+    def generative(endpoint: Any, *, max_tokens: int, timeout: float) -> dspy.LM:
+        built.append((endpoint.model_name, max_tokens, timeout))
+        lm = production_lm(endpoint, max_tokens=max_tokens, timeout=timeout)
+        return lm.copy(api_key=None, api_base=None, timeout=None, engine=_Engine(scripted))
+
+    monkeypatch.setattr(repository_session, "postgres_connection", no_database)
+    monkeypatch.setattr(repository_session, "async_postgres_connection", no_database)
     monkeypatch.setattr("tracefold.app.llm.configured_lm_endpoint", configured)
     monkeypatch.setattr("tracefold.app.learning_runtime.generative_lm", generative)
     out = tmp_path / "receipts" / "judge.json"

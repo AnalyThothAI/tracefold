@@ -9,6 +9,7 @@ from collections.abc import Coroutine, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal, Protocol
 
+from ..generation_capacity import GENERATION_CAPACITY_WAIT, generation_capacity_wait_timed_out
 from .contracts import Exact
 from .identity import identity
 
@@ -183,6 +184,8 @@ _ERROR_CODE = re.compile(r"^[a-z0-9_:.]{1,160}$")
 
 def error_code(exc: BaseException, *, default: str) -> str:
     """Keep a bounded code; never persist arbitrary provider/library exception text."""
+    if generation_capacity_wait_timed_out(exc):
+        return GENERATION_CAPACITY_WAIT
     text = str(exc)
     return text if _ERROR_CODE.fullmatch(text) else f"{default}:{type(exc).__name__}"
 

@@ -37,7 +37,6 @@ flowchart TB
 | Trading engine | 特征/几何/episode/Policy/校准/记分纯函数；不读 DB/HTTP/settings |
 | Trading storage | SQL、约束、短事务与查询投影 |
 | BinanceCatalogue | 分 LIVE/DEMO 的有界目录缓存与读取截止；不代替持久事实 |
-| App ModelBudget | 按实际 endpoint 的跨进程 PG advisory slots，News/Trading 共用 |
 
 保留具体工作流，不增加通用 Agent 框架、事件总线或代理 Facade；CLI/API/UI 共享查询和记分构造器。
 
@@ -65,9 +64,9 @@ PG view 不可变；gzip 在 `archive/trading-cases/<sha前缀>/<sha>.json.gz` �
 
 endpoint URL/密钥不进入公开 evaluator；相同 evaluator 在线重启复用 run。模型/预测合同变化产生新 evaluator，仅重算策略产生 policies run。legacy 缺失参数继续 unknown。
 
-领取数绑定本进程容量，续租与写入按 owner token fence；失权/取消不能写赢家或 Signal。成功输出先持久 checkpoint，重领复用而不再问 LM。News/Trading LM 共用 `llm.max_shared_concurrent_calls` 的 endpoint slots，连接关闭释放；保护/退出不依赖模型容量。
+领取数绑定本进程 `trading.analysis.max_model_concurrent_calls` 容量，续租与写入按 owner token fence；失权/取消不能写赢家或 Signal。成功输出先持久 checkpoint，重领复用而不再问 LM。Trading Assessor 的并发限额只约束本进程，不占 News 的生成许可；保护/退出不依赖模型容量。
 
-Assessor 校验概率与最多 12 条引用驱动；具名失败 parse/truncated/schema/provider/timeout/rate_limit。暂态最多一次有限重试，Retry-After 放不进截止则不重试。保存非秘密状态/request reference/Retry-After/时长与规范化 usage，未知 NULL。provider 时长含共享预算等待，不能当纯生成延迟。
+Assessor 校验概率与最多 12 条引用驱动；具名失败 parse/truncated/schema/provider/timeout/rate_limit。暂态最多一次有限重试，Retry-After 放不进截止则不重试。保存非秘密状态/request reference/Retry-After/时长与规范化 usage，未知 NULL。排队时长单列；provider 时长覆盖评估、解析与有限重试，不能当纯生成延迟。
 
 ## 策略、校准与发布
 
@@ -92,4 +91,4 @@ tracefold trading calibrate --source-run <run_id> --train-since 2026-09-01 --tra
 
 Policies replay 复用指定 run 输出，零 LM；inference 关闭 cache，隔离新输出。同 run 再执行复用终态，新 tag 明确新评估；均不发 Signal、不访问交易所或补取行情。
 
-0419 前向保留 Case/失败评估/Signal/活跃 Plan/Fill，补齐身份和准入，不重复历史硬切。接口见 [契约](../CONTRACTS.md)，维护见 [迁移](../MIGRATIONS.md)。工程证明：[claim](../../tests/integration/test_trading_claim_recovery.py)、[identity](../../tests/trading/test_evaluation_identity.py)、[calibration](../../tests/trading/test_calibration.py)、[budget](../../tests/integration/test_model_budget.py)。[760](https://github.com/AnalyThothAI/tracefold/issues/760)/[746](https://github.com/AnalyThothAI/tracefold/issues/746) 现场证据不能由 Mock 替代。
+0419 前向保留 Case/失败评估/Signal/活跃 Plan/Fill，补齐身份和准入，不重复历史硬切。接口见 [契约](../CONTRACTS.md)，维护见 [迁移](../MIGRATIONS.md)。工程证明：[claim](../../tests/integration/test_trading_claim_recovery.py)、[identity](../../tests/trading/test_evaluation_identity.py)、[calibration](../../tests/trading/test_calibration.py)。[760](https://github.com/AnalyThothAI/tracefold/issues/760)/[746](https://github.com/AnalyThothAI/tracefold/issues/746) 现场证据不能由 Mock 替代。

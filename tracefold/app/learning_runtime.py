@@ -9,7 +9,7 @@ progression slot.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Final
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
@@ -17,7 +17,6 @@ import dspy  # type: ignore[import-untyped]
 from loguru import logger
 
 from tracefold.app.llm import ConfiguredLMEndpoint, StructuredOutputMode, configured_lm_endpoint
-from tracefold.app.model_budget import ModelBudget
 from tracefold.app.news_updates import NewsJudgmentEndpoint, news_program_identity
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.updates.service import GENERATION_CALL_SECONDS
@@ -42,29 +41,9 @@ class GenerativeLM(dspy.LM):
     model name cannot answer that truthfully, so the endpoint configuration does.
     """
 
-    def __init__(
-        self,
-        model: str,
-        *,
-        structured_output: StructuredOutputMode,
-        budget: ModelBudget | None = None,
-        **kwargs: Any,
-    ) -> None:
+    def __init__(self, model: str, *, structured_output: StructuredOutputMode, **kwargs: Any) -> None:
         self._structured_output = structured_output
-        self.budget = budget
         super().__init__(model, **kwargs)
-
-    async def acall(self, prompt: Any = None, *, messages: Any = None, **kwargs: Any) -> Any:
-        if self.budget is None:
-            return await super().acall(prompt, messages=messages, **kwargs)
-        async with self.budget.acquire_async():
-            return await super().acall(prompt, messages=messages, **kwargs)
-
-    def __call__(self, prompt: Any = None, *, messages: Any = None, **kwargs: Any) -> Any:
-        if self.budget is None:
-            return super().__call__(prompt, messages=messages, **kwargs)
-        with self.budget.acquire():
-            return super().__call__(prompt, messages=messages, **kwargs)
 
     @property
     def supported_params(self) -> set[str]:
@@ -76,7 +55,7 @@ class GenerativeLM(dspy.LM):
 
 
 def generative_lm(
-    endpoint: ConfiguredLMEndpoint, *, settings: Any, max_tokens: int, timeout: float, cache: bool = False
+    endpoint: ConfiguredLMEndpoint, *, max_tokens: int, timeout: float, cache: bool = False
 ) -> GenerativeLM:
     """One configured generative endpoint; offline replay may enable DSPy cache."""
 
@@ -92,12 +71,7 @@ def generative_lm(
     }
     if endpoint.temperature is not None:
         request["temperature"] = float(endpoint.temperature)
-    return GenerativeLM(
-        str(endpoint.model_name),
-        structured_output=endpoint.structured_output,
-        budget=ModelBudget(settings, resource=_canonical_endpoint_sha256(endpoint.api_base), timeout_s=timeout),
-        **request,
-    )
+    return GenerativeLM(str(endpoint.model_name), structured_output=endpoint.structured_output, **request)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +82,6 @@ class NewsModelRoute:
     primary: ConfiguredLMEndpoint
     fallback: ConfiguredLMEndpoint | None
     max_tokens: int
-    budget_owner: Any = field(repr=False, compare=False)
     fallback_max_tokens: int | None = None
 
     @property
@@ -127,18 +100,11 @@ class NewsModelRoute:
         )
 
     def lms(self) -> tuple[GenerativeLM, ...]:
-        primary = generative_lm(
-            self.primary, settings=self.budget_owner, max_tokens=self.max_tokens, timeout=GENERATION_TIMEOUT_SECONDS
-        )
+        primary = generative_lm(self.primary, max_tokens=self.max_tokens, timeout=GENERATION_TIMEOUT_SECONDS)
         if self.fallback is None:
             return (primary,)
         ceiling = self.fallback_max_tokens or self.max_tokens
-        return (
-            primary,
-            generative_lm(
-                self.fallback, settings=self.budget_owner, max_tokens=ceiling, timeout=GENERATION_TIMEOUT_SECONDS
-            ),
-        )
+        return (primary, generative_lm(self.fallback, max_tokens=ceiling, timeout=GENERATION_TIMEOUT_SECONDS))
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,13 +193,10 @@ def compose_news_models(settings: Any) -> NewsRuntimeModels | None:
             extraction_primary,
             extraction_fallback,
             EXTRACTION_MAX_TOKENS,
-            budget_owner=settings,
             fallback_max_tokens=EXTRACTION_FALLBACK_MAX_TOKENS,
         ),
-        judgment=NewsModelRoute(
-            "judgment", extraction_primary, extraction_fallback, JUDGMENT_MAX_TOKENS, budget_owner=settings
-        ),
-        card=NewsModelRoute("card", card_primary, card_fallback, CARD_MAX_TOKENS, budget_owner=settings),
+        judgment=NewsModelRoute("judgment", extraction_primary, extraction_fallback, JUDGMENT_MAX_TOKENS),
+        card=NewsModelRoute("card", card_primary, card_fallback, CARD_MAX_TOKENS),
         news_judgment=news_judgment,
         availability=availability,
     )

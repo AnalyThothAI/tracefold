@@ -15,6 +15,11 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Final, Literal, Protocol
 
 from ..bus import Q_TRIAGE, BusMessage, DeferError, PermanentError, TransientError, now_ms
+from ..generation_capacity import (
+    generation_capacity_wait_before_call,
+    generation_capacity_wait_timed_out,
+    generation_stage,
+)
 from ..storage.errors import EventUpdateConflict, SemanticLeaseLost
 from ..storage.semantic_work import SEMANTIC_ATTEMPTS_MAX
 from ..telemetry import NewsWorkSemantics
@@ -42,7 +47,9 @@ class SemanticAgent(Protocol):
 class SemanticWorkStore(Protocol):
     async def claim_semantic_work(self, event_id: str, *, lease_ms: int) -> SemanticLease | None: ...
 
-    async def defer_semantic_event(self, lease: SemanticLease, *, reason: str, retry_after_ms: int = 0) -> None: ...
+    async def defer_semantic_event(
+        self, lease: SemanticLease, *, reason: str, retry_after_ms: int = 0, charge_attempt: bool = True
+    ) -> None: ...
 
     async def fail_semantic_event(self, lease: SemanticLease, *, error_code: str) -> None: ...
 
@@ -143,7 +150,8 @@ class SemanticWorker:
             raise RuntimeError("news_semantic_agent_missing")
         final_attempt = lease.attempts >= SEMANTIC_ATTEMPTS_MAX
         try:
-            outcome = await agent.process(lease, final_attempt=final_attempt)
+            with generation_stage():
+                outcome = await agent.process(lease, final_attempt=final_attempt)
         except SemanticLeaseLost:
             return "newer_head"
         except (asyncio.CancelledError, TransientError, DeferError):
@@ -151,8 +159,13 @@ class SemanticWorker:
             # The lease expires on its own and the repair turn wakes the still-pending work.
             raise
         except (ProviderUnavailable, TimeoutError) as exc:
-            await self.store.defer_semantic_event(lease, reason=error_code(exc, default="news_provider_unavailable"))
-            await self._provider_failed()
+            await self.store.defer_semantic_event(
+                lease,
+                reason=error_code(exc, default="news_provider_unavailable"),
+                charge_attempt=not generation_capacity_wait_before_call(exc),
+            )
+            if not generation_capacity_wait_timed_out(exc):
+                await self._provider_failed()
             return "deferred"
         except ContractFault as exc:
             # Reference/program faults cannot improve through another identical request.

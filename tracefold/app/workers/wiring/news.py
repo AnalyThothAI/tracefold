@@ -323,6 +323,7 @@ def _news_updates_or_fault(
             news_judgment=models.news_judgment,
             news_reader_judgment=news_reader_judgment_endpoint(settings),
             source_reader=PgSourceReader(news_db),
+            max_model_concurrent_calls=settings.news.max_model_concurrent_calls,
         )
     except SHARED_RESOURCE_FAILURES:
         raise

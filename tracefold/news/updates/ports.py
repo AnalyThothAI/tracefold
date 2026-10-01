@@ -73,7 +73,9 @@ class SemanticStore(Protocol):
 
     async def finish_semantic_work(self, work_id: str, *, lease: SemanticLease, reason: str) -> None: ...
 
-    async def defer_semantic_event(self, lease: SemanticLease, *, reason: str, retry_after_ms: int = 0) -> None: ...
+    async def defer_semantic_event(
+        self, lease: SemanticLease, *, reason: str, retry_after_ms: int = 0, charge_attempt: bool = True
+    ) -> None: ...
 
     async def reserve_extra_read(self, lineage_id: str, target_ref: str) -> bool:
         """Atomic one-read budget for the entire lineage, durable across retries."""

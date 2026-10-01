@@ -125,7 +125,7 @@ def generated(monkeypatch: pytest.MonkeyPatch, reply: Any) -> list[dict[str, Any
 
     calls: list[dict[str, Any]] = []
 
-    async def answer(signature: Any, route: Any, *, accept: Any = None, **inputs: Any) -> Any:
+    async def answer(signature: Any, route: Any, *, capacity: Any = None, accept: Any = None, **inputs: Any) -> Any:
         calls.append(inputs)
         value = reply(inputs) if callable(reply) else reply
         prediction = SimpleNamespace(result=signature.output_fields["result"].annotation.model_validate(value))

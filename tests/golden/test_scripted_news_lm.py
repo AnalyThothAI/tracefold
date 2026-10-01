@@ -55,9 +55,7 @@ def test_scripted_provider_runs_through_the_production_dspy_projection() -> None
     source = FrozenInput(event_id="golden-event", revision=1, lineage_id="golden-line", evidence=(evidence,))
 
     def factory():
-        return scripted_generative_lm(
-            SimpleNamespace(model_name="golden-model"), settings=None, max_tokens=1000, timeout=30
-        )
+        return scripted_generative_lm(SimpleNamespace(model_name="golden-model"), max_tokens=1000, timeout=30)
 
     extracted = asyncio.run(DspyExtractor(factory, model_identity="golden-model", topics={}).extract(source))
     assert len(extracted.claims) == 1

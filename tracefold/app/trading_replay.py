@@ -67,7 +67,6 @@ async def replay(
             endpoint = configured_lm_endpoint(settings, model_name=settings.trading.analysis.model_name)
             lm = generative_lm(
                 endpoint,
-                settings=settings,
                 max_tokens=settings.trading.analysis.max_model_output_tokens,
                 timeout=settings.trading.analysis.model_timeout_seconds,
                 cache=False,

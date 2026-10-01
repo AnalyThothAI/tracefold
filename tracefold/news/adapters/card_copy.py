@@ -7,6 +7,7 @@ from typing import Any, Final
 
 import dspy  # type: ignore[import-untyped]
 
+from ..generation_capacity import NewsGenerationCapacity
 from ..notifications.card import card_copy_material
 from ..notifications.contracts import CardCopy, ReaderRepairContext
 from ..updates.contracts import Claim, Source
@@ -46,8 +47,15 @@ class CopySignature(dspy.Signature):  # type: ignore[misc]
 
 
 class DspyCardComposer:
-    def __init__(self, lm_factory: Callable[[], Any], *, model_identity: str) -> None:
+    def __init__(
+        self,
+        lm_factory: Callable[[], Any],
+        *,
+        model_identity: str,
+        generation_capacity: NewsGenerationCapacity | None = None,
+    ) -> None:
         self.lm_factory = lm_factory
+        self.generation_capacity = generation_capacity
         self.identity = identity(
             "news_card_copy", ADAPTER_VERSION, CARD_INSTRUCTION, CopySignature.model_json_schema(), model_identity
         )
@@ -66,6 +74,7 @@ class DspyCardComposer:
         prediction = await generation.generate(
             CopySignature.with_instructions(CARD_INSTRUCTION),
             self.lm_factory(),
+            capacity=self.generation_capacity,
             selected_claims_json=canonical_json(selected),
         )
         copy = CardCopy.model_validate(prediction.result)

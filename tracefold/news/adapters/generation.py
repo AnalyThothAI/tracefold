@@ -5,11 +5,13 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable, Mapping
+from contextlib import nullcontext
 from typing import Any, Final
 
 import dspy  # type: ignore[import-untyped]
 from typesafe_sdk import TypeSafeAPIConnectionError, TypeSafeAPIError, TypeSafeAPIResponseValidationError
 
+from ..generation_capacity import NewsGenerationCapacity, generation_call
 from ..updates.judgment import ConfigurationFault, ContractFault, ProviderUnavailable
 
 log = logging.getLogger("tracefold.news")
@@ -100,7 +102,14 @@ def _different_route(current: Any, fallback: Any) -> bool:
     return shape(current) != shape(fallback)
 
 
-async def generate(signature: Any, route: Any, *, accept: Callable[[Any], Any] | None = None, **inputs: Any) -> Any:
+async def generate(
+    signature: Any,
+    route: Any,
+    *,
+    capacity: NewsGenerationCapacity | None = None,
+    accept: Callable[[Any], Any] | None = None,
+    **inputs: Any,
+) -> Any:
     """Ask one generative signature on a configured route: the primary LM, then its declared fallback.
 
     A factory returns one LM or an ordered route of them. A transient provider failure
@@ -119,8 +128,9 @@ async def generate(signature: Any, route: Any, *, accept: Callable[[Any], Any] |
         try:
             # This is the normal generative signature, not a Jev probability signature
             # temporarily bound to a chat model. No global dspy.configure mutation.
-            with dspy.context(adapter=dspy.JSONAdapter()):
-                prediction = await dspy.Predict(signature).acall(lm=lm, **inputs)
+            async with capacity.acquire() if capacity is not None else nullcontext():
+                with generation_call(), dspy.context(adapter=dspy.JSONAdapter()):
+                    prediction = await dspy.Predict(signature).acall(lm=lm, **inputs)
             if _truncated(lm, history_before):
                 raise ContractFault("news_generation_output_truncated")
             return prediction if accept is None else accept(prediction)
@@ -167,7 +177,8 @@ async def native_predict(signature: Any, lm: Any, *, code: str, **inputs: Any) -
     """
 
     try:
-        return await dspy.Predict(signature).acall(lm=lm, **inputs)
+        with generation_call():
+            return await dspy.Predict(signature).acall(lm=lm, **inputs)
     except TypeSafeAPIResponseValidationError as exc:
         # A successful status with an unusable body; the SDK types it as an API error.
         raise ProviderUnavailable(f"{code}_response_invalid") from exc

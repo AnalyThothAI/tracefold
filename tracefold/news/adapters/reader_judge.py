@@ -12,6 +12,7 @@ import dspy  # type: ignore[import-untyped]
 from dspy.adapters.types.decision import Choice, Score  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
+from ..generation_capacity import NewsGenerationCapacity
 from ..notifications.reader import (
     ANCHOR_QUESTION,
     IMPORTANCE_LEVELS,
@@ -112,12 +113,14 @@ class DspyReaderJudge:
         native_lm_factory: Callable[[], Any] | None = None,
         native_model_identity: str | None = None,
         native_operation_seconds: float = READER_NATIVE_SECONDS,
+        generation_capacity: NewsGenerationCapacity | None = None,
     ) -> None:
         if (native_lm_factory is None) != (native_model_identity is None):
             raise ValueError("news_reader_native_route_incomplete")
         if native_operation_seconds <= 0:
             raise ValueError("news_reader_native_seconds_invalid")
         self.generated_lm_factory = generated_lm_factory
+        self.generation_capacity = generation_capacity
         self.native_lm_factory = native_lm_factory
         self.native_operation_seconds = native_operation_seconds
         self.native_identity = (
@@ -145,7 +148,9 @@ class DspyReaderJudge:
         remaining = budget.remaining()
         try:
             async with asyncio.timeout(remaining):
-                prediction = await generation.generate(signature, self.generated_lm_factory(), **inputs)
+                prediction = await generation.generate(
+                    signature, self.generated_lm_factory(), capacity=self.generation_capacity, **inputs
+                )
             return self._available("generated", prediction, reader, served_model=None)
         except (ProviderUnavailable, ContractFault, TimeoutError) as exc:
             return ReaderJudgment(status="unavailable", error_code=_fault_code(exc))

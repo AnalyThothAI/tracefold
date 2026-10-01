@@ -150,7 +150,9 @@ CaseView v2 保留标的/原生单位/相对年龄/覆盖/episode；evaluator/ru
 
 `news replay` 在本地重放 provider hits 的准入 / Gate，不调用模型或 broker；它也不代表完整 EventUpdate→通知→交易回放。实际参数和默认值见[生成 CLI 帮助](generated/cli-help.md)，不要把命令名称扩展为未实现能力。
 
-Trading replay 默认 policies/source-run，复用输出零LM；inference/program才隔离新推理并关cache，均不发布/访问交易所，同run幂等、tag区分新评估。calibrate声明训练/未来验证，仅写候选，不启用。llm.max_shared_concurrent_calls为同实际endpoint跨进程总slots，各owner配置须一致。
+Trading replay 默认 policies/source-run，复用输出零LM；inference/program才隔离新推理并关cache，均不发布/访问交易所，同run幂等、tag区分新评估。calibrate声明训练/未来验证，仅写候选，不启用。
+
+`news.max_model_concurrent_calls` 默认 4，范围 1–32，约束单个 News runtime 的生成式模型调用；`trading.analysis.max_model_concurrent_calls` 约束单个 Assessor，并作为在线领取容量的上限。两者不共用 PostgreSQL 模型许可，离线学习与 Trading replay 也不占用线上 News 的进程内许可。它们不是 provider 的跨进程配额或 News 的服务优先级保证；真实共享容量与隔离依据见[模型运维](OPERATIONS.md#news-retry)。
 
 未知配置 key 按 Settings 拒绝。`llm.news_reader_judgment` 是通知决策层独用的 System One 路由，密钥只能以 `api_key_file` 引用配置目录下的私有文件（固定为初始化创建、只挂载给 Workers 的 `news_reader_judgment_api_key`；空文件等于未配置），`config` 与 `/api/news/status` 只报告是否配置、模型和作答后端。密钥放在配置允许的位置 / 文件，不能通过 `llm.request.extra_body` 注入 transport-owned 字段或秘密。业务配置只有 `TRACEFOLD_HOME/config.yaml`，默认 `~/.tracefold/config.yaml`；Compose 可读取 `.env` 持久化项目、路径和端口，但 Settings 不把它作为业务字段回退。
 
