@@ -1,5 +1,5 @@
-"""The extraction schema a constrained decoder is asked to follow, how a generated claim is repaired, and the
-route an unusable answer takes.
+"""The extraction schema and answer layout a constrained decoder is asked to follow, how a generated claim is
+repaired, and the route an unusable answer takes.
 
 Production 2026-09-29/30 (#742): the per-claim `TransportClaim | dict` envelope advertised an open object per
 claim, so qwen's json_schema grammar stopped binding claims. 27 revisions failed as `news_claim_schema_invalid`
@@ -14,12 +14,19 @@ import asyncio
 import json
 from typing import Any
 
+import dspy  # type: ignore[import-untyped]
 import pytest
 from dspy.lm15 import Message, Response, Usage  # type: ignore[import-untyped]
 
 from tests.support.news_update_semantic import MemoryCache, TaskBackend, material
 from tests.support.scripted_lm import ScriptedLM
-from tracefold.news.adapters.extraction import DspyExtractor
+from tracefold.news.adapters.extraction import (
+    EXTRACTION_INSTRUCTION,
+    FIELD_DEFINITIONS,
+    DspyExtractor,
+    ExtractSignature,
+)
+from tracefold.news.adapters.generation import CompactJSONAdapter
 from tracefold.news.artifact_identity import canonical_json
 from tracefold.news.updates.contracts import Extraction, FrozenInput
 from tracefold.news.updates.judgment import Budget, ContractFault, NewsJudgments
@@ -104,6 +111,34 @@ def test_the_constrained_extraction_schema_binds_every_claim_while_parsing_stays
     # Parsing is still per claim: the claim without a citation is named, its sibling kept.
     assert [claim.slot for claim in value.claims] == ["ok"]
     assert [(row.slot, row.code) for row in value.discarded_claims] == [("broken", "news_claim_schema_invalid")]
+
+
+def test_the_answer_is_shown_and_asked_for_as_one_compact_json_line() -> None:
+    """#765: DSPy's JSON adapter shows the output skeleton and demos with indent=2, and the model copied it."""
+
+    signature = ExtractSignature.with_instructions(EXTRACTION_INSTRUCTION)
+    inputs = {"evidence_json": "{}", "field_definitions": FIELD_DEFINITIONS, "topic_codebook": dict(CODEBOOK)}
+    demo = {**inputs, **_answer(_claim("s1"))}
+    plain = dspy.JSONAdapter().format(signature, demos=[demo], inputs=inputs)
+    compact = CompactJSONAdapter().format(signature, demos=[demo], inputs=inputs)
+    outputs = "Outputs will be a JSON object with the following fields.\n\n"
+    (plain_head, plain_tail), (head, tail) = (row[0]["content"].split(outputs) for row in (plain, compact))
+    plain_skeleton, plain_end = json.JSONDecoder().raw_decode(plain_tail)
+    skeleton, end = json.JSONDecoder().raw_decode(tail)
+    assert "\n  " in plain_tail[:plain_end] and "\n" not in tail[:end]
+    assert skeleton == plain_skeleton and tail[end:] == plain_tail[plain_end:]
+    # The demo answer is compact too; the input structure and every input message are formatted as before.
+    assert "\n" not in compact[2]["content"] and json.loads(compact[2]["content"]) == json.loads(plain[2]["content"])
+    assert head == plain_head and compact[1] == plain[1]
+    assert compact[-1]["content"] == (
+        f"{plain[-1]['content']} Write the JSON compactly on one line, without indentation or line breaks."
+    )
+    # The production route sends that prompt, and the server still enforces the schema.
+    primary = ScriptedLM([_answer(_claim("s1"))], model="scripted/primary")
+    asyncio.run(_extractor(primary).extract(_source()))
+    assert f"{outputs}{tail[:end]}\n" in primary.requests[0].system
+    assert primary.requests[0].messages[-1].parts[-1].text.endswith("without indentation or line breaks.")
+    assert "ExtractionEnvelope" in _response_schema(primary)["$defs"]
 
 
 # ---------------------------------------------------------------- repairs, one rule each, on replayed shapes
