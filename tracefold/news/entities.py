@@ -7,6 +7,7 @@ establish that two actors, contracts or propositions are equal and never enter C
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Final, Literal
 
@@ -105,6 +106,17 @@ def asset_features(symbol: str, market_type: str, *, basis_ref: str = "asset_fie
 def asset_retrieval_symbols(symbol: str, market_type: str) -> frozenset[str]:
     """All candidate spellings, including exact tags; overlap proves relevance, never equality."""
     return frozenset(feature.key.identifier for feature in asset_features(symbol, market_type))
+
+
+def stored_asset_codes(symbols: Iterable[str]) -> tuple[str, ...]:
+    """Stored asset codes that relate to these retrieval symbols: each symbol, and each catalogue alias that
+    resolves to one of them.
+
+    `news_event_assets.retrieval_symbol` holds the tag's normalised spelling without alias resolution, so the
+    alias table is expanded here, on the query side; a changed seed needs no backfill.
+    """
+    wanted = set(symbols)
+    return tuple(sorted(wanted | {alias for alias, target in RELATED_ASSET_ALIASES.items() if target in wanted}))
 
 
 def commodity_name_patterns(symbol: str) -> tuple[str, ...]:

@@ -178,6 +178,23 @@ flowchart TB
 
 这套纯特征同时进入抽取前的 [evidence.py](../../tracefold/news/evidence.py) 与 [storage/evidence.py](../../tracefold/news/storage/evidence.py) 查询，以及通知侧 [notifications/recall.py](../../tracefold/news/notifications/recall.py) 与 [storage/notification_context.py](../../tracefold/news/storage/notification_context.py)。扩大召回后仍逐对比较实际命题，不能凭特征交集直接判 equivalent/known，也不能让相关背景自动提高新动作的推送门槛。
 
+<a id="related-recall"></a>
+#### 抽取前的关联召回：有界、由索引驱动
+
+语义领取在同一事务里组装冻结输入，其中关联召回从待处理任务的文本、来源与资产出发，在 30 天窗口内找相关 Event。三个通道各自先经索引取出有界的 Event id，只对这批候选计算分数、按来源与事实去重、截断，从不对窗口内每个 Event 逐行求值：
+
+| 通道 | 候选来源 | 上限与排序 |
+| --- | --- | --- |
+| explicit（优先级 0） | 来源 artifact id 与 URL → `news_items` 的 artifact / `canonical_url` 索引 → Event leader 索引 | 最新 64 个，去重后按分数取 8 |
+| entity（优先级 1） | 资产检索符号 → `news_event_assets` 的生成列 `retrieval_symbol` / `retrieval_pair_base` 索引；按创建时间从新到旧逐个核对 leader 与 Event 词项，够 64 个即停 | 去重后按分数取 24 |
+| similarity（优先级 2） | 成员事实（含 leader 事实）GIN 三元组索引，用前两段不超过 600 字的任务文本探测；命中只是候选，通道条件仍按截止时可见的标题与成员事实精确判定 | 按分数取 64，去重后取 32 |
+
+`retrieval_symbol` 与 `retrieval_pair_base` 由数据库按 #761 的逐行规则写入时生成（去首尾空白与 `$`、地址保持原样、大写、去 `XYZ-` 与 venue `前缀:`；crypto / unknown 标签按 USDT、USDC、FDUSD、TUSD、BUSD、USD 取第一个报价后缀的基础符号）。目录别名不落列，由查询侧展开（`stored_asset_codes`），改种子不需要回填。分数仍是任一任务文本与标题或任一成员事实的最大三元组相似度；长文本只在其上界可能超过短文本最好分时才计算，结果与逐个计算相同。
+
+similarity 的探测文本有界：一次 GIN 探测在生产副本上约 20–150 ms，而相似度达到 0.3 要求两段文本三元组数量相近，超过 600 字的任务文本几乎不可能与事实相近，因此只探测前两段短文本，所有文本仍完整参与评分。对 131 个真实召回输入，explicit 与 entity 的候选集合与 #761 的窗口全扫完全一致，similarity 保留其 207 行中的 203 行、没有新增；召回 p50 约 90 ms、p95 约 0.27 s、最大约 0.45 s（4 路并发同样），远低于 News lane 默认 3 s 的 statement timeout（领取事务自 #774 起为 15 s）。该语句不在服务端预编译（`prepare=False`）：最佳计划取决于绑定的数组，缓存的通用计划实测慢 10–20 倍。[召回规模测试](../../tests/integration/test_news_recall_bounds.py)按生产规模播种窗口，用 EXPLAIN ANALYZE 约束计划不扫全表、Event 读取数不随窗口增长，并以 #761 的逐行规则为基准核对生成列。
+
+读取输入时若仍遇 statement timeout 或取消，领取在 savepoint 里只回滚这次读取：尝试照常计数并按 15 s / 60 s / 300 s 退避、释放租约、记录 `news_semantic_input_timeout`，耗尽后进入可见失败；领取、输入与所记录的阅读范围仍同笔提交，一次尝试只读到一份一致输入。排查见[语义失败](../OPERATIONS.md#语义失败)。
+
 原始市场报告走单独的 `admit_market_item`：保存 Item 与解析结果，不创建伪 Event，不走编辑型 Gate / MinHash / 语义链路。
 
 <a id="agent"></a>

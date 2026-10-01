@@ -86,6 +86,7 @@ ERROR_CODE_ZH: Final[dict[str, str]] = {
     "news_event_input_missing": "事件缺少可读来源",
     "news_reanalysis_read_scope_changed": "重读范围已变化",
     "news_semantic_attempts_exhausted_after_lease": "语义处理中断且尝试已耗尽",
+    "news_semantic_input_timeout": "语义输入读取超时",
     "news_provider_unavailable:TimeoutError": "语义处理超时",
 }
 

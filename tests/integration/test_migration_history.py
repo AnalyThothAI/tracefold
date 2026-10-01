@@ -37,7 +37,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260929_0418"
+HEAD = "20261001_0419"
 PRE_CUT = "20260928_0410"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
@@ -201,6 +201,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260929_0418",
         "20260929_0417",
         "20260929_0416",
         "20260929_0415",
@@ -513,6 +514,76 @@ def test_execution_hard_cut_retires_old_tables_and_is_forward_only() -> None:
         conn.close()
     with pytest.raises(RuntimeError, match="Irreversible #746 Analysis hard cut"):
         command.downgrade(config, "20260929_0417")
+    assert _stamped_revision() == HEAD
+
+
+def test_recall_retrieval_codes_are_generated_for_existing_assets_and_the_revision_reverses() -> None:
+    """#771 `20261001_0419`: asset rows already stored get their retrieval codes from the rewrite; downgrade
+    restores the 0418 shape with every row intact."""
+
+    config = _config()
+    _empty_the_schema()
+    command.upgrade(config, "20260929_0418")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute(
+            "INSERT INTO news_items (item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms,"
+            " first_ingest_mode, created_at_ms, updated_at_ms)"
+            " VALUES ('it-1', 'opennews', 'k-1', 't', 1, 1, 'live', 1, 1)"
+        )
+        conn.execute(
+            "INSERT INTO news_events (event_id, leader_item_id, dedupe_family, comparison_fingerprint,"
+            " comparison_title, leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, admission, ingest_mode,"
+            " created_at_ms, updated_at_ms, focus_fact_id, focus_fact_method, event_kind)"
+            " VALUES ('ev-1', 'it-1', 'news', 'fp', 't', 't', 1, 1, 2, 'candidate', 'live', 1, 1, 'f', 'whole_item',"
+            " 'news')"
+        )
+        conn.execute(
+            "INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms)"
+            " VALUES ('xyz-siusdt', 'ev-1', NULL, 1), (' $btc ', 'ev-1', 'crypto', 1), ('SIUSDT', 'ev-1', 'equity', 1)"
+        )
+    finally:
+        conn.close()
+
+    command.upgrade(config, "20261001_0419")
+    conn = connect_postgres_test(read_only=True)
+    try:
+        rows = conn.execute(
+            "SELECT symbol, retrieval_symbol, retrieval_pair_base FROM news_event_assets ORDER BY symbol"
+        ).fetchall()
+        assert [tuple(row.values()) for row in rows] == [
+            (" $btc ", "BTC", None),
+            ("SIUSDT", "SIUSDT", None),
+            ("xyz-siusdt", "SIUSDT", "SI"),
+        ]
+        indexes = {
+            "ix_news_event_assets_retrieval_symbol",
+            "ix_news_event_assets_retrieval_pair_base",
+            "ix_news_items_canonical_url",
+            "ix_news_events_leader_item",
+            "ix_news_event_members_fact_trgm",
+        }
+        assert all(conn.execute("SELECT to_regclass(%s) AS i", (name,)).fetchone()["i"] for name in indexes)
+        assert conn.execute("SELECT to_regclass('ix_news_events_evidence_title') AS i").fetchone()["i"] is None
+    finally:
+        conn.close()
+
+    command.downgrade(config, "20260929_0418")
+    conn = connect_postgres_test(read_only=True)
+    try:
+        assert conn.execute("SELECT to_regclass('ix_news_events_evidence_title') AS i").fetchone()["i"]
+        columns = {
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'news_event_assets'"
+            ).fetchall()
+        }
+        assert columns == {"symbol", "event_id", "market_type", "opened_at_ms"}
+        assert conn.execute("SELECT to_regproc('news_asset_retrieval_symbol') AS f").fetchone()["f"] is None
+        assert conn.execute("SELECT count(*) AS n FROM news_event_assets").fetchone()["n"] == 3
+    finally:
+        conn.close()
+    command.upgrade(config, HEAD)
     assert _stamped_revision() == HEAD
 
 

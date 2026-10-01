@@ -9,6 +9,8 @@ import logging
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final
 
+from psycopg.errors import QueryCanceled
+
 from ..updates.contracts import SemanticLease
 from ..updates.identity import identity
 from ..updates.judgment import error_code
@@ -28,6 +30,9 @@ SEMANTIC_RETRY_MS: Final = (15_000, 60_000, 300_000)
 
 
 SEMANTIC_WAKE_STALE_MS: Final = 15_000
+
+
+SEMANTIC_INPUT_TIMEOUT: Final = "news_semantic_input_timeout"
 
 
 EXTRA_READ_OUTCOMES: Final = frozenset({"attached", "no_material", "unavailable_or_budget_exhausted"})
@@ -146,6 +151,11 @@ class SemanticWorkStorage:
         The frozen input is read in the same transaction. When the stored material cannot form one (a missing
         body, a changed reanalysis scope, an undecodable head or source), only this revision fails, visibly and
         with its code; the consumer and every other Event keep running.
+
+        The read runs under a savepoint. A statement timeout or cancel while reading rolls back the read only:
+        the spent attempt, its backoff and `news_semantic_input_timeout` commit with the claim, so a slow input
+        can never return the work to "never tried" and be woken again at once (#771). The claim, the input and
+        the reads it records still commit together, so one attempt reads one consistent input.
         """
 
         row = self.conn.execute(
@@ -164,7 +174,12 @@ class SemanticWorkStorage:
         if row is None:
             return None
         try:
-            source = frozen_input(event_id, input.semantic_input_material(event_id, now_ms=now_ms))
+            with self.conn.transaction():
+                material = input.semantic_input_material(event_id, now_ms=now_ms)
+            source = frozen_input(event_id, material)
+        except QueryCanceled:
+            self._input_timed_out(event_id, attempts=int(row["attempts"]), now_ms=now_ms)
+            return None
         except (LookupError, ValueError) as exc:
             # EventUpdateConflict and pydantic's ValidationError are ValueErrors.
             code = error_code(exc, default="news_semantic_input_invalid")
@@ -181,6 +196,25 @@ class SemanticWorkStorage:
             ([view.read_ref for view in reading_views(source)], event_id),
         )
         return SemanticLease(source=source, lease_token=str(row["lease_token"]), attempts=int(row["attempts"]))
+
+    def _input_timed_out(self, event_id: str, *, attempts: int, now_ms: int) -> None:
+        """Settle a claimed attempt whose input read was cancelled: counted, backed off and visible, and failed
+        once the attempts are spent. It was given no input, so it records and quarantines no reads."""
+
+        exhausted = attempts >= SEMANTIC_ATTEMPTS_MAX
+        log.warning("news semantic input timed out event_id=%s attempts=%s exhausted=%s", event_id, attempts, exhausted)
+        self.conn.execute(
+            "UPDATE news_semantic_work SET lease_token=NULL, leased_until_ms=NULL, last_outcome=%s,"
+            " last_error_code=%s, next_attempt_at_ms=%s, attempt_read_refs='{}', updated_at_ms=%s"
+            " WHERE event_id=%s",
+            (
+                "failed" if exhausted else SEMANTIC_INPUT_TIMEOUT,
+                SEMANTIC_INPUT_TIMEOUT,
+                int(now_ms) + _retry_delay(SEMANTIC_RETRY_MS, attempts),
+                int(now_ms),
+                event_id,
+            ),
+        )
 
     def require_semantic_owner(self, lease: SemanticLease, *, now_ms: int) -> Mapping[str, Any]:
         row = self.conn.execute(
