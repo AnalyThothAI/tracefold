@@ -7,6 +7,7 @@ from tracefold.news.evidence import (
     shortlist,
 )
 from tracefold.news.models import MarketAsset
+from tracefold.news.storage.evidence import CANDIDATE_TEXT_MAX, background_parameters
 
 
 def test_origin_fact_duplicates_do_not_occupy_shortlist_slots():
@@ -149,3 +150,15 @@ def test_shared_event_nouns_do_not_link_different_subjects():
     )
     query = query_for(event_id="current", task_texts=("Acme acquisition agreement pending",), cutoff=2)
     assert shortlist([row], query=query) == []
+
+
+def test_bound_trigram_texts_are_title_sized_while_terms_keep_the_whole_body():
+    body = "Acme acquisition agreement announced. " + "Background detail. " * 60 + "Regulatory approval pending."
+    short = "Acme acquisition approved"
+    query = query_for(event_id="current", task_texts=(body, short), cutoff=2)
+
+    assert len(body) > CANDIDATE_TEXT_MAX
+    assert background_parameters(query)["texts"] == [body[:CANDIDATE_TEXT_MAX], short]
+    # Only the trigram comparison is capped: the query, its terms and its assets still read the whole body.
+    assert query.texts == (body, short)
+    assert "regulatory" in query.terms

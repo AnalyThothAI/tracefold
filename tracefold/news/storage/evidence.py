@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Final
 
 from psycopg.types.json import Jsonb
 
 from ..entities import ADDRESS_PATTERN, CRYPTO_QUOTE_SUFFIXES, RELATED_ASSET_ALIASES, asset_retrieval_symbols
 from ..evidence import CANDIDATE_MAX, ENTITY_MAX, RELATION_MAX, SIMILAR_MAX, EvidenceQuery
+
+# The trigram channels compare each task text with title-sized `comparison_title` / member `fact_text`
+# values, so the bound text is title-sized too. `similarity()` and `%` over a whole body cost body
+# length x window rows and never reach the 0.3 threshold against a title anyway (0.11 measured for the
+# same story); the full texts still drive terms and assets in `query_for`.
+CANDIDATE_TEXT_MAX: Final = 400
 
 ITEM_MATERIAL_COLUMNS = """item_id, source_artifact_id, canonical_url, reporting_origin, published_at_ms,
     provider_params_available_at_ms, provider_params_sha256, evidence_text, evidence_text_sha256"""
@@ -147,7 +153,7 @@ def background_parameters(query: EvidenceQuery) -> dict[str, Any]:
         since=query.cutoff_at_ms - query.window_ms,
         artifacts=list(query.source_artifact_ids),
         urls=list(query.canonical_urls),
-        texts=list(query.texts),
+        texts=[text[:CANDIDATE_TEXT_MAX] for text in query.texts],
         symbols=sorted(
             {symbol for asset in query.assets for symbol in asset_retrieval_symbols(asset.symbol, asset.market_type)}
         ),
