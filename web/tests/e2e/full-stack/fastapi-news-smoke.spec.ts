@@ -185,7 +185,8 @@ test("research reads a persisted net-buy episode and links OI to its frozen deci
   await expect(rows.first()).toContainText("6,000");
   await rows.first().getByRole("link").click();
   await expect(page.getByRole("region", { name: "事件详情" })).toBeVisible();
-  await expect(page.getByText("观察后价格变化 10%")).toBeVisible();
+  await expect(page.getByText("观察后价格变化", { exact: false })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "原始交易时间线" })).toBeVisible();
   expect(new URL(page.url()).searchParams.get("episode")).toBeTruthy();
   await page.reload();
   await expect(page.getByRole("region", { name: "事件详情" })).toBeVisible();
