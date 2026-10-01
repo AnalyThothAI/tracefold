@@ -26,7 +26,7 @@ from ..updates.contracts import (
     SourceAssetCandidate,
 )
 from ..updates.identity import identity
-from ..updates.projection import extraction_scopes, item_text, reading_view, reading_views
+from ..updates.projection import ReadingView, extraction_scopes, item_text, reading_view, reading_views
 from .errors import EventUpdateConflict
 from .evidence import EvidenceStorage
 
@@ -189,12 +189,49 @@ def _related_prior(
     return tuple(row for _, row in sorted(candidates, key=lambda pair: pair[0])[:RELATED_PRIOR_CLAIMS_MAX])
 
 
+_VisibleMaterial = tuple[str, tuple[tuple[int, int, str], ...]]
+
+
+def _visible_material(row: Evidence, view: ReadingView) -> _VisibleMaterial:
+    """What extraction is shown of one source: its body and this Event's reading range over it."""
+
+    return row.text, tuple((span.start, span.end, span.role) for span in view.spans)
+
+
+def _unread(complete: Sequence[Evidence], views: Sequence[ReadingView], completed: set[str]) -> tuple[Evidence, ...]:
+    """Pending task reads, one per visible material, in snapshot order.
+
+    A copy, whether another provider record or a revision that changed only provenance, is no new input once
+    identical material was read (or failed) or is already pending ahead of it: verbatim copies are not
+    independent confirmation, and source asset candidates do not tell copies apart. A record's own body change
+    is always read, a return to one of its earlier bodies included.
+    """
+
+    seen = {
+        _visible_material(row, view) for row, view in zip(complete, views, strict=True) if view.read_ref in completed
+    }
+    previous: dict[str, _VisibleMaterial] = {}
+    unread = []
+    for row, view in zip(complete, views, strict=True):
+        key = _visible_material(row, view)
+        record = row.source.record_id
+        changed = record is not None and previous.get(record, key) != key
+        if record is not None:
+            previous[record] = key
+        if view.read_ref in completed or (key in seen and not changed):
+            continue
+        seen.add(key)
+        unread.append(row)
+    return tuple(unread)
+
+
 def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
     """Assemble the frozen semantic input from one consistent read.
 
     Evidence contains task reads not yet recorded for this Event: newly joined members, changed task
     scopes, later bodies of an existing Item, or a bounded optional read. The complete snapshot is
-    read consistently before comparing read refs. Prior claims are this Event's adopted head claims plus
+    read consistently before comparing read refs; a copy of material already read or pending is not
+    read again (`_unread`). Prior claims are this Event's adopted head claims plus
     a bounded set of related Events' head claims recalled by existing candidate retrieval. Assembly carries unaffected
     head claims, citations and relationships forward. Read targets are related Events' stored leader
     Items. Cashtags can retrieve candidates but do not resolve the claim's actor identity.
@@ -242,13 +279,13 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
     completed = set((work or {}).get("processed_read_refs") or ()) | set((work or {}).get("failed_read_refs") or ())
     requested_read = (work or {}).get("reanalysis_read_ref")
     views = tuple(reading_view(event_id, row, all_scopes, all_candidates.get(row.ref, ())) for row in complete)
-    unique = tuple(
-        row
-        for row, view in zip(complete, views, strict=True)
-        if (view.read_ref == requested_read if requested_read is not None else view.read_ref not in completed)
-    )
-    if requested_read is not None and not unique:
-        raise EventUpdateConflict("news_reanalysis_read_scope_changed")
+    if requested_read is None:
+        unique = _unread(complete, views, completed)
+    else:
+        # An exact reanalysis reads the one named view, even when identical material was read before.
+        unique = tuple(row for row, view in zip(complete, views, strict=True) if view.read_ref == requested_read)
+        if not unique:
+            raise EventUpdateConflict("news_reanalysis_read_scope_changed")
     selected = {row.ref for row in unique}
     scopes = tuple(scope for scope in all_scopes if scope.evidence_ref in selected)
     selected_views = tuple(view for view in views if view.evidence_ref in selected)
