@@ -89,6 +89,8 @@
 | `event_id` | `TEXT` | False | `None` |
 | `market_type` | `TEXT` | True | `None` |
 | `opened_at_ms` | `BIGINT` | False | `None` |
+| `retrieval_symbol` | `TEXT` | True | `None` |
+| `retrieval_pair_base` | `TEXT` | True | `None` |
 
 ## `news_event_bands`
 

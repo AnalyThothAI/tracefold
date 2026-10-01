@@ -25,6 +25,13 @@ RELATION_MAX: Final = 8
 ENTITY_MAX: Final = 24
 SIMILAR_MAX: Final = 32
 CANDIDATE_MAX: Final = 64
+# Similarity candidates come from the member-fact trigram index (#771). One probe costs 20-150 ms on the
+# production copy, and a text reaches the 0.3 trigram threshold only against a fact of comparable length (no
+# task text longer than 531 characters produced a match there). So the channel probes with the first two task
+# texts of at most 600 characters; every task text still scores every candidate in full. Against the
+# window-wide scan on 131 captured production queries: 203 of its 207 similarity rows, none added.
+SIMILARITY_PROBE_TEXTS_MAX: Final = 2
+SIMILARITY_PROBE_CHARS_MAX: Final = 600
 
 
 class Exact(BaseModel):

@@ -96,6 +96,8 @@ docker compose exec -T workers tracefold news retry-work \
 
 以失败结束的修订（含 Janitor 结算的崩溃最终尝试）会把该次尝试实际送入的任务范围记为隔离（`failed_read_refs`，尝试所读范围在领取时记入 `attempt_read_refs`）：之后该 Event 的新成员只读新材料，不再被同一份坏材料拖累。`retry-work --kind semantic` 清空隔离、重新送入全部隔离材料；只想重读其中一段时，用下节的 `news reanalyze` 按精确修订指定该 `read_ref`。构建冻结输入本身失败（来源缺失、重读范围已变、head 无法解码）只让该 Event 的工作失败，错误码可见，不再让语义消费者故障。
 
+领取时读取输入（含[关联召回](modules/news.md#related-recall)）遇到 statement timeout 或取消，记为 `news_semantic_input_timeout`：该次尝试照常计数，租约释放，`next_attempt_at_ms` 按 15 s / 60 s / 300 s 退避，唤醒修复在到期前不会再领取；第三次仍超时则进入上面的可见失败（`last_outcome=failed`），不隔离任何阅读范围，因为这次尝试没有拿到输入。召回查询在生产副本上 p95 约 0.27 s、最大约 0.45 s，远低于 News lane 默认 3 s 的 statement timeout（领取事务同样使用该默认预算）；这个错误码成片出现说明召回或数据库本身变慢，先看 PostgreSQL 日志里被取消的语句和 `pg_stat_statements`，修复后用 `retry-work` 恢复对应修订，不要靠调大超时或拓宽 News DB 通道掩盖。#771 之前该超时会整笔回滚领取，尝试不计数、不退避也不留错误码，唤醒随即再次领取，持续占满 News DB 通道并表现为成片的 `DeferError db_admission_timeout`。
+
 ### 已完成或已失败工作的定向重读
 
 先从 Event 详情或 `news why EVENT_ID` 取得当前 wanted/head，再用 `tracefold news reanalyze --event EVENT_ID --wanted WANTED_REVISION --head HEAD_REVISION` 预览 wanted/done、是否失败及错误码、head 和各来源任务 `read_ref` 清单（`completed` 为已处理，`failed` 为已隔离）。没有 head 时 `--head none`。目标修订必须已完成或已失败。核对原文与确切漏读范围后，用清单中的 wanted、head、read 值提交定向处理修订：

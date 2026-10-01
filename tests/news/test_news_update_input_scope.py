@@ -129,14 +129,22 @@ def test_member_scopes_preserve_whole_sources_and_do_not_scope_other_members(mon
 
 def test_exact_member_recovers_its_own_numbered_scope_without_a_focus_snapshot() -> None:
     body = BODY + "\n（以上内容仅供参考，不构成投资建议）"
+    # An exact member shares the fact, not necessarily every byte: a byte-identical copy is no new read (#770).
+    reposted = BODY + "\n（转载自交易所公告，以上内容仅供参考，不构成投资建议）"
     leader = extract_fact_units(item_id="digest", raw_text=body, fallback_title="Digest")[0]
-    exact = extract_fact_units(item_id="copy", raw_text=body, fallback_title="Digest")[0]
+    exact = extract_fact_units(item_id="copy", raw_text=reposted, fallback_title="Digest")[0]
     assert leader.fact_id != exact.fact_id and leader.text == exact.text
     data = input_material()
     data["item_ids"] = ["digest", "copy"]
     data["items"] = [
         {**data["items"][0], "title": "Digest", "evidence_text": body},
-        {**data["items"][0], "item_id": "copy", "source_item_key": "copy", "title": "Digest", "evidence_text": body},
+        {
+            **data["items"][0],
+            "item_id": "copy",
+            "source_item_key": "copy",
+            "title": "Digest",
+            "evidence_text": reposted,
+        },
     ]
     data["members"] = [
         {"item_id": "digest", "fact_id": leader.fact_id, "fact_text": leader.text},
@@ -148,8 +156,8 @@ def test_exact_member_recovers_its_own_numbered_scope_without_a_focus_snapshot()
     source = frozen_input("near-event", data)
     assert len(source.evidence) == len(source.extraction_scopes) == 2
     assert {scope.fact_id for scope in source.extraction_scopes} == {leader.fact_id, exact.fact_id}
-    for item, view in zip(source.evidence, reading_views(source), strict=True):
-        assert item.text == body
+    for item, view, text in zip(source.evidence, reading_views(source), (body, reposted), strict=True):
+        assert item.text == text
         assert view.mode == "scoped"
         shown = " ".join(span.text for span in view.spans)
         assert "Exchange suspends $NEAR withdrawals" in shown
@@ -706,3 +714,186 @@ def test_a_strategy_resend_changes_the_snapshot_but_is_no_semantic_material() ->
         {"card": card, "members": [revised], "latest": latest}, event_id="event", now_ms=3, focus_fact=None
     )
     assert body["semantic_changed"]
+
+
+# ---------------------------------------------------------------- #770 verbatim copies
+
+
+COPY_BODY = "Exchange suspends $NEAR withdrawals after a wallet incident."
+
+
+def copies(*records: str) -> dict[str, Any]:
+    """One body delivered as several provider records: other origin, other publication time."""
+
+    return {
+        "item_ids": list(records),
+        "items": [
+            {
+                "item_id": record,
+                "source_id": "opennews",
+                "source_item_key": record,
+                "source_artifact_id": "x:2105443679905235344",
+                "reporting_origin": f"origin-{index}",
+                "published_at_ms": 100 + index * 1_000,
+                "observed_at_ms": 100 + index * 1_000,
+                "evidence_text": COPY_BODY,
+                "evidence_text_sha256": "same-body",
+            }
+            for index, record in enumerate(records)
+        ],
+        "members": [{"item_id": record, "fact_id": f"fact-{record}", "fact_text": COPY_BODY} for record in records],
+        "fact_scopes": {f"fact-{record}": {"method": "whole_item"} for record in records},
+    }
+
+
+def read_refs(source: FrozenInput) -> list[str]:
+    return [view.read_ref for view in reading_views(source)]
+
+
+class SettlingStore:
+    """The semantic store port for a turn that must settle without extraction, judgment or adoption."""
+
+    def __init__(self) -> None:
+        self.observations: list[Any] = []
+        self.finished: list[str] = []
+
+    async def save_observation(self, observation):
+        self.observations.append(observation)
+        return observation
+
+    async def finish_semantic_work(self, work_id, *, lease, reason):
+        assert work_id == self.observations[-1].work_id
+        self.finished.append(reason)
+
+    def __getattr__(self, name):
+        raise AssertionError(f"no {name} for an input with no new evidence")
+
+
+def test_a_verbatim_copy_of_adopted_material_settles_its_revision_without_any_model_call(monkeypatch) -> None:
+    from tests.support.news_update_semantic import MemoryCache, TaskBackend
+    from tracefold.news.updates.contracts import SemanticLease
+    from tracefold.news.updates.judgment import NewsJudgments
+    from tracefold.news.updates.semantics import SemanticAnalyzer
+    from tracefold.news.updates.service import NewsAgent
+
+    first = frozen_input("event", copies("4280747"))
+    assert len(first.evidence) == 1
+    head = assemble_update(first, Extraction(claims=(draft(first.evidence[0]),)), None, adopted_at_ms=200)
+    assert head is not None
+    data = copies("4280747", "4280749")
+    data["head"] = head.model_dump(mode="json")
+    data["work"] = {"wanted_revision": 2, "lineage_id": "l2", "processed_read_refs": read_refs(first)}
+    source = frozen_input("event", data)
+    assert source.evidence == () and source.extraction_scopes == () and source.asset_candidates == {}
+    assert [row.claim.ref for row in source.own_prior] == [claim.ref for claim in head.claims]
+
+    calls = generated(monkeypatch, {"claims": []})
+    backend, cache, store = TaskBackend({}), MemoryCache(), SettlingStore()
+    analyzer = SemanticAnalyzer(
+        DspyExtractor(lambda: None, model_identity="test", topics={}),
+        NewsJudgments(generated=backend, cache=cache),
+        topics=(),
+    )
+    agent = NewsAgent(cast(Any, store), analyzer, program_identity="p", clock=lambda: 300)
+    lease = SemanticLease(source=source, lease_token="lease", attempts=1)
+    assert asyncio.run(agent.process(lease)) == "unchanged"
+    assert calls == [] and backend.calls == [] and cache.reads == []
+    assert store.finished == ["no_new_evidence"]
+    # The copy's own task read is never recorded; the next revision recognises it again from the same refs.
+    assert store.observations[0].read_refs == () and store.observations[0].input_revision == 2
+
+
+def test_identical_pending_copies_freeze_only_the_first_and_its_own_source_tags() -> None:
+    data = copies("4280747", "4280749")
+    # Provider tags do not tell copies apart (#770: asset binding may tolerate error).
+    data["members"][1]["provider_metadata"] = {"coins": [{"symbol": "NEAR", "market_type": "crypto"}]}
+    source = frozen_input("event", data)
+    assert [row.source.record_id for row in source.evidence] == ["4280747"]
+    assert source.asset_candidates == {}
+    data["item_ids"].reverse()
+    assert [row.source.record_id for row in frozen_input("event", data).evidence] == ["4280749"]
+
+
+def test_an_origin_only_revision_is_not_read_again_but_a_body_change_and_its_return_are() -> None:
+    data = copies("4280747")
+    first = frozen_input("event", data)
+
+    def revision(sha: str, sequence: int, text: str, origin: str) -> dict[str, Any]:
+        at_ms = 5_000 * sequence
+        return {
+            "item_id": "4280747",
+            "revision_sha256": sha,
+            "revision_sequence": sequence,
+            "evidence_text": text,
+            "reporting_origin": origin,
+            "canonical_url": f"https://example.org/{sha}",
+            "published_at_ms": at_ms,
+            "received_at_ms": at_ms,
+        }
+
+    data["revisions"] = [revision("origin-only", 1, COPY_BODY, "Associated Press")]
+    data["work"] = {"wanted_revision": 2, "lineage_id": "l2", "processed_read_refs": read_refs(first)}
+    assert frozen_input("event", data).evidence == ()
+    data["revisions"] += [
+        revision("changed", 2, "Exchange resumes $NEAR withdrawals.", "Associated Press"),
+        revision("reverted", 3, COPY_BODY, "Associated Press"),
+        revision("reverted-origin", 4, COPY_BODY, "Reuters"),
+    ]
+    # The record's own change is read, and so is its return to the body read first; a following
+    # origin-only revision of that returned body is not.
+    source = frozen_input("event", data)
+    assert [row.source.artifact_revision for row in source.evidence] == ["changed", "reverted"]
+
+
+def test_identical_text_over_another_reading_scope_is_read_and_the_same_scope_is_not() -> None:
+    data = input_material()
+    data["item_ids"] = ["digest", "copy"]
+    data["items"] = [data["items"][0], {**data["items"][0], "item_id": "copy", "source_item_key": "copy"}]
+    data["members"] = [
+        {"item_id": "digest", "fact_id": "near", "fact_text": "Exchange suspends $NEAR withdrawals."},
+        {"item_id": "copy", "fact_id": "beta", "fact_text": "Beta announces earnings."},
+    ]
+    data["fact_scopes"] = {"near": {"method": "explicit_numbered"}, "beta": {"method": "explicit_numbered"}}
+    source = frozen_input("event", data)
+    assert [row.source.record_id for row in source.evidence] == ["digest", "copy"]
+    assert source.evidence[0].text == source.evidence[1].text == BODY
+    shown = [" ".join(span.text for span in view.spans if span.role == "task") for view in reading_views(source)]
+    assert "Exchange suspends" in shown[0] and "Beta announces" in shown[1]
+    data["members"][1] = {
+        "item_id": "copy",
+        "fact_id": "near-copy",
+        "fact_text": "Exchange suspends $NEAR withdrawals.",
+    }
+    data["fact_scopes"]["near-copy"] = {"method": "explicit_numbered"}
+    assert [row.source.record_id for row in frozen_input("event", data).evidence] == ["digest"]
+
+
+def test_an_exact_reanalysis_reads_the_named_view_even_when_identical_material_was_read() -> None:
+    from tracefold.news.storage.semantic_input import item_evidence
+
+    data = copies("4280747", "4280749")
+    original, copy = (item_evidence(item) for item in data["items"])
+    assert original is not None and copy is not None
+    read = reading_view("event", original, ()).read_ref
+    data["work"] = {"wanted_revision": 2, "lineage_id": "repair", "processed_read_refs": [read]}
+    assert frozen_input("event", data).evidence == ()
+    for named, expected in ((read, original), (reading_view("event", copy, ()).read_ref, copy)):
+        data["work"]["reanalysis_read_ref"] = named
+        assert frozen_input("event", data).evidence == (expected,)
+
+
+def test_a_quarantined_read_also_keeps_its_verbatim_copy_out_of_later_revisions() -> None:
+    first = frozen_input("event", copies("4280747"))
+    data = copies("4280747", "4280749")
+    data["work"] = {
+        "wanted_revision": 2,
+        "lineage_id": "l2",
+        "processed_read_refs": [],
+        "failed_read_refs": read_refs(first),
+    }
+    assert frozen_input("event", data).evidence == ()
+    data["item_ids"].append("followup")
+    data["items"].append(
+        {**data["items"][0], "item_id": "followup", "evidence_text": "Only the NEAR network is affected."}
+    )
+    assert [row.source.record_id for row in frozen_input("event", data).evidence] == ["followup"]

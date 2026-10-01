@@ -1119,9 +1119,11 @@ def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pyte
 
 def test_status_names_the_configured_news_judgment_route(monkeypatch: pytest.MonkeyPatch) -> None:
     jev = {"api_key": "jev-key", "base_url": "https://openrouter.ai/api", "model": "jev-1.13"}
-    for llm, backend, judgment_model in (
-        ({}, "generated", "shared-model"),
-        ({"news_judgment": jev}, "native", "jev-1.13"),
+    for llm, backend, judgment_model, reader_judgment_model in (
+        ({}, "generated", "shared-model", "shared-model"),
+        ({"news_judgment": jev}, "native", "jev-1.13", "shared-model"),
+        # #770: the generative judgments, the reader judgment's included, ask their own model name.
+        ({"news_triage_judgment_model": "shared-model:judge"}, "generated", "shared-model:judge", "shared-model:judge"),
     ):
         settings = Settings.model_validate(
             {
@@ -1144,7 +1146,10 @@ def test_status_names_the_configured_news_judgment_route(monkeypatch: pytest.Mon
         pipeline = response.json()["data"]["pipeline"]
         assert pipeline["judgment_backend"] == backend
         assert pipeline["judgment_model"] == judgment_model
+        assert pipeline["reader_judgment_backend"] == "generated"
+        assert pipeline["reader_judgment_model"] == reader_judgment_model
         assert pipeline["news_judgment_configured"] is (backend == "native")
+        assert pipeline["extraction_model"] == "shared-model"
         assert pipeline["card_model"] == "shared-model" and pipeline["card_dedicated"] is False
         assert len(pipeline["news_program_identity"]) > 20
         assert "jev-key" not in response.text and "triage-key" not in response.text

@@ -178,6 +178,23 @@ flowchart TB
 
 这套纯特征同时进入抽取前的 [evidence.py](../../tracefold/news/evidence.py) 与 [storage/evidence.py](../../tracefold/news/storage/evidence.py) 查询，以及通知侧 [notifications/recall.py](../../tracefold/news/notifications/recall.py) 与 [storage/notification_context.py](../../tracefold/news/storage/notification_context.py)。扩大召回后仍逐对比较实际命题，不能凭特征交集直接判 equivalent/known，也不能让相关背景自动提高新动作的推送门槛。
 
+<a id="related-recall"></a>
+#### 抽取前的关联召回：有界、由索引驱动
+
+语义领取在同一事务里组装冻结输入，其中关联召回从待处理任务的文本、来源与资产出发，在 30 天窗口内找相关 Event。三个通道各自先经索引取出有界的 Event id，只对这批候选计算分数、按来源与事实去重、截断，从不对窗口内每个 Event 逐行求值：
+
+| 通道 | 候选来源 | 上限与排序 |
+| --- | --- | --- |
+| explicit（优先级 0） | 来源 artifact id 与 URL → `news_items` 的 artifact / `canonical_url` 索引 → Event leader 索引 | 最新 64 个，去重后按分数取 8 |
+| entity（优先级 1） | 资产检索符号 → `news_event_assets` 的生成列 `retrieval_symbol` / `retrieval_pair_base` 索引；按创建时间从新到旧逐个核对 leader 与 Event 词项，够 64 个即停 | 去重后按分数取 24 |
+| similarity（优先级 2） | 成员事实（含 leader 事实）GIN 三元组索引，用前两段不超过 600 字的任务文本探测；命中只是候选，通道条件仍按截止时可见的标题与成员事实精确判定 | 按分数取 64，去重后取 32 |
+
+`retrieval_symbol` 与 `retrieval_pair_base` 由数据库按 #761 的逐行规则写入时生成（去首尾空白与 `$`、地址保持原样、大写、去 `XYZ-` 与 venue `前缀:`；crypto / unknown 标签按 USDT、USDC、FDUSD、TUSD、BUSD、USD 取第一个报价后缀的基础符号）。目录别名不落列，由查询侧展开（`stored_asset_codes`），改种子不需要回填。分数仍是任一任务文本与标题或任一成员事实的最大三元组相似度；长文本只在其上界可能超过短文本最好分时才计算，结果与逐个计算相同。
+
+similarity 的探测文本有界：一次 GIN 探测在生产副本上约 20–150 ms，而相似度达到 0.3 要求两段文本三元组数量相近，超过 600 字的任务文本几乎不可能与事实相近，因此只探测前两段短文本，所有文本仍完整参与评分。对 131 个真实召回输入，explicit 与 entity 的候选集合与 #761 的窗口全扫完全一致，similarity 保留其 207 行中的 203 行、没有新增；召回 p50 约 90 ms、p95 约 0.27 s、最大约 0.45 s（4 路并发同样），远低于 News lane 默认 3 s 的 statement timeout，领取事务同样使用该默认预算。该语句不在服务端预编译（`prepare=False`）：最佳计划取决于绑定的数组，缓存的通用计划实测慢 10–20 倍。[召回规模测试](../../tests/integration/test_news_recall_bounds.py)按生产规模播种窗口，用 EXPLAIN ANALYZE 约束计划不扫全表、Event 读取数不随窗口增长，并以 #761 的逐行规则为基准核对生成列。
+
+读取输入时若仍遇 statement timeout 或取消，领取在 savepoint 里只回滚这次读取：尝试照常计数并按 15 s / 60 s / 300 s 退避、释放租约、记录 `news_semantic_input_timeout`，耗尽后进入可见失败；领取、输入与所记录的阅读范围仍同笔提交，一次尝试只读到一份一致输入。排查见[语义失败](../OPERATIONS.md#语义失败)。
+
 原始市场报告走单独的 `admit_market_item`：保存 Item 与解析结果，不创建伪 Event，不走编辑型 Gate / MinHash / 语义链路。
 
 <a id="agent"></a>
@@ -223,7 +240,7 @@ sequenceDiagram
 
 ### 冻结输入与增量范围
 
-`FrozenInput` 绑定 Event、输入修订、证据范围、prior claims、候选关系和来源时钟；工作身份另外绑定 analyzer 身份，观察身份另外绑定语义 program 身份。prior claims 只取**当前有效**命题（未被更正退休、未被真实变化替代），先本 Event，后召回的相关 Event；“当前有效”只由 `EventUpdate.current_claims` 一处推导。输入身份 `input_sha` 只含本 Event 的命题：相关 Event 再次采用不改变身份，重试复用已保存的抽取，只重问比较（答案按内容缓存）；相关 Event 的命题也不进入抽取输入。每个来源的当前 Event 阅读范围产生 `read_ref`，由任务边界、实际片段、非空来源资产候选和投影版本决定。先构造阅读视图再比较已处理的 `processed_read_refs` 与已隔离的 `failed_read_refs`；同一来源新增范围或条件仍需处理，重投相同任务不重算。旧命题用于比较与延续，不是每次把全部历史成员重新抽取。
+`FrozenInput` 绑定 Event、输入修订、证据范围、prior claims、候选关系和来源时钟；工作身份另外绑定 analyzer 身份，观察身份另外绑定语义 program 身份。prior claims 只取**当前有效**命题（未被更正退休、未被真实变化替代），先本 Event，后召回的相关 Event；“当前有效”只由 `EventUpdate.current_claims` 一处推导。输入身份 `input_sha` 只含本 Event 的命题：相关 Event 再次采用不改变身份，重试复用已保存的抽取，只重问比较（答案按内容缓存）；相关 Event 的命题也不进入抽取输入。每个来源的当前 Event 阅读范围产生 `read_ref`，由任务边界、实际片段、非空来源资产候选和投影版本决定。先构造阅读视图再比较已处理的 `processed_read_refs` 与已隔离的 `failed_read_refs`；同一来源新增范围或条件仍需处理，重投相同任务不重算。正文与本 Event 阅读范围都相同即为同一可见材料：另一条供应商记录或只改来源 / 链接的修订，若与已读、已隔离或排在前面的待读材料相同，就不再送入抽取，只有快照成员保留它；逐字转载不是独立证实，来源资产候选也不区分拷贝。同一记录自身的正文变化（包括回到较早的正文）仍会读取；精确 `news reanalyze` 仍按指名的 `read_ref` 重读，其清单对同一可见材料只列第一份。旧命题用于比较与延续，不是每次把全部历史成员重新抽取。
 
 “读过但没有命题”的材料也必须记入任务级处理身份。否则同一段空内容会不断进入下一轮。没有新证据或没有实质变化，可以推进 done，而不制造新的内容版本；首个版本没有命题时不采纳 EventUpdate。以失败结束的修订把它读过的范围隔离，之后的新成员只读新材料。对已完成或已失败、确认需要重读的 Event，使用精确 wanted/head/read 身份的 `news reanalyze`；它不伪造来源修订或自动重发历史通知。
 
@@ -243,6 +260,8 @@ sequenceDiagram
 关系以**同一核心事实**为界，说法与读者锚点题（[reader.py](../../tracefold/news/notifications/reader.py) 的 `ANCHOR_QUESTION`）一致：同一行为者、同一动作或事件、同一对象。`adds_information`（补充）只表示在同一核心事实上多出旧命题没有的细节、数字、条件或背景，且不更正它；同一份报告、发布或交易里的另一个数字也算补充，没有新增内容的复述是 `equivalent`。同一故事里的另一个动作、场所、标的、产品或另一起事件不是补充，即使主体、话题相同也判 `unrelated`。`real_world_change` 同样限于该核心事实本身的实际变化（含撤销），不是同一故事里的新事件。通知侧把补充读作读者可能已有事实的增量，通常要达到 KEY_CUT 才推送，所以过宽的补充会把新事实压成信息流（#770）。题目文本变化时 `QUESTION_VERSION` 一起升级（当前 `news_questions_v4`），旧版本的缓存答案不再复用；已写入的旧链接不改写：新颖度只把链接连到 48 小时窗口内的回执，旧链接两天后自然不再起作用。
 
 可选原生判断通过 DSPy 的有限输出类型连接 Jev / System One。未配置该后端时使用生成式判断；已成功缓存的答案不再找另一个模型投票。一组问题的缓存读取是一条 SQL，每个批次的写入是一条 SQL；批次有界并行（至多 3 个），一个批次响应不可用只让它自己的问题不可得，不连累其他批次或整个修订。选项标签按大小写与分隔符规范化，无法识别的标签只让该条不可得。失败回退、批次与缓存身份由 [judgment.py](../../tracefold/news/updates/judgment.py)及 [模型适配](../../tracefold/news/adapters/)控制。
+
+生成式判断（含读者判断的生成式回退）默认与抽取共用 `llm.news_triage_model`；可选 `llm.news_triage_judgment_model` 让它们在同一 endpoint、密钥与请求配置下改问另一个模型名，例如代理以温度 0 提供的同权重确定性变体（#770 重放：温度 0.7 下同一关系问题重问约 14–21% 翻转，温度 0 约 3%）。抽取、卡片文案和 fallback 不变；判断路由 identity 跟随实际所问的模型，program identity 与判断缓存键随之变化，未设置时都与原来相同。
 
 ### 模型到底调用几次，为什么有延时
 

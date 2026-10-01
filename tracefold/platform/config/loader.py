@@ -64,6 +64,9 @@ llm:
   api_key:
   base_url:
   news_triage_model:
+  # Optional model name the semantic judgments ask on this same endpoint, e.g. a deterministic
+  # (temperature 0) variant a proxy serves. Unset: they ask news_triage_model.
+  news_triage_judgment_model:
   request:
     send_temperature:
     temperature: 0

@@ -49,7 +49,7 @@ Platform 提供物理基础设施，Integrations 对接外部系统，App 装配
 
 [paths.py](../../tracefold/platform/paths.py)解析 `TRACEFOLD_HOME`，默认 `~/.tracefold`；[loader.py](../../tracefold/platform/config/loader.py)读取其中的 `config.yaml`，由 [models.py](../../tracefold/platform/config/models.py)校验。Compose 的可选 `.env` 只承载项目名、宿主机目录与端口等部署参数，不替代业务 Settings，也不形成两份 YAML 的隐式合并。
 
-模型 endpoint 的 `api_key`、`base_url`、`model` 是完整配置组；主 News 路由保留 `news_triage_model` 字段名。News 的 `news_judgment` 独立配置；`news_reader_judgment` 是通知决策层独用的 System One 路由，密钥只接受配置目录下的私有 `api_key_file`（默认 `news_reader_judgment_api_key`），不借用其他路由。Trading 已删除旧 Jev 路由，预测使用独立的 Analysis model 与版本化 Program。
+模型 endpoint 的 `api_key`、`base_url`、`model` 是完整配置组；主 News 路由保留 `news_triage_model` 字段名；可选 `news_triage_judgment_model` 只改变同一 endpoint 上语义判断所问的模型名。News 的 `news_judgment` 独立配置；`news_reader_judgment` 是通知决策层独用的 System One 路由，密钥只接受配置目录下的私有 `api_key_file`（默认 `news_reader_judgment_api_key`），不借用其他路由。Trading 已删除旧 Jev 路由，预测使用独立的 Analysis model 与版本化 Program。
 
 未知字段显式报错；去掉旧字段必须按完整 YAML 路径修改，不能做缩进无关的批量文本替换。`tracefold init` 负责初始化与文件权限，不替升级自动解释所有历史配置。
 

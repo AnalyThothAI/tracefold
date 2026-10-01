@@ -2312,8 +2312,10 @@ def test_exact_digest_member_has_its_own_scope_without_focus_snapshot() -> None:
     seed_event(text=body, title="Daily digest")
     leader_item = f"it-{EVENT}"
     exact_item = f"{leader_item}-exact"
+    # An exact member shares the fact, not necessarily every byte; a byte-identical copy is no new read (#770).
+    reposted = body.replace("（以上内容", "（转载自交易所公告，以上内容")
     leader_fact = extract_fact_units(item_id=leader_item, raw_text=body, fallback_title="Daily digest")[0]
-    exact_fact = extract_fact_units(item_id=exact_item, raw_text=body, fallback_title="Daily digest")[0]
+    exact_fact = extract_fact_units(item_id=exact_item, raw_text=reposted, fallback_title="Daily digest")[0]
     sql(
         """
         INSERT INTO news_items (
@@ -2325,10 +2327,10 @@ def test_exact_digest_member_has_its_own_scope_without_focus_snapshot() -> None:
         SELECT %s, source_id, %s, title, raw_first_line, description, canonical_url,
                reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
                first_ingest_mode, trace_id, created_at_ms, updated_at_ms, %s,
-               evidence_text, evidence_text_sha256
+               %s, evidence_text_sha256
           FROM news_items WHERE item_id=%s
         """,
-        (exact_item, exact_item, exact_item, leader_item),
+        (exact_item, exact_item, exact_item, reposted, leader_item),
     )
     sql("DELETE FROM news_event_members WHERE event_id=%s", (EVENT,))
     for item_id, fact, match_kind in (

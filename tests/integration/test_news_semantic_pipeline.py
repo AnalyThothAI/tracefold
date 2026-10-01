@@ -124,31 +124,85 @@ def test_a_body_revision_of_one_provider_record_is_new_evidence_and_new_semantic
     assert work(event_id)["wanted_revision"] == 2 and len(bus.wakes()) == 2
 
 
-def test_an_attribution_only_revision_is_new_evidence_with_the_new_source() -> None:
+def test_an_attribution_only_revision_is_recorded_but_its_unchanged_body_is_not_read_again() -> None:
+    # #770: the same body over the same reading range is material this Event already read. The new attribution
+    # stays a stored revision in the snapshot; its semantic revision settles without a model call.
     bus = RecordingBus()
     deduper = DeduperConsumer(bus=bus, db=ThreadedDb(), watchlist_symbols=frozenset({"BTC"}))
     asyncio.run(deduper.handle(raw(7051, TITLE, stamp=STAMP, source="Reuters")))
     event_id = event_of(7051)
     clock = Clock(STAMP + 5_000)
     store = PgSemanticStore(ThreadedDb(), clock=clock)
-    agent = NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock)
+    analyzer = StubAnalyzer()
+    agent = NewsAgent(store, analyzer, program_identity="p", clock=clock)
     assert asyncio.run(run_agent(agent, event_id)) == "adopted"
     first = asyncio.run(store.head(event_id))
     assert first is not None
+    read = work(event_id)["processed_read_refs"]
 
     asyncio.run(deduper.handle(raw(7051, TITLE, stamp=STAMP + 10_000, source="Associated Press")))
     assert work(event_id)["wanted_revision"] == 2
     assert bus.wakes() == [f"event:{event_id}:1", f"event:{event_id}:2"]
-    source = asyncio.run(store.input_for(event_id))
-    assert len(source.evidence) == 1
-    assert source.evidence[0].text == first.evidence[0].text
-    assert source.evidence[0].source.origin_id == "associated press"
-    assert source.evidence[0].ref != first.evidence[0].ref
-    assert source.evidence[0].source.first_available_at_ms == STAMP + 10_000
-    assert {row.claim.ref for row in source.prior} == {claim.ref for claim in first.claims}
+    revision = sql("SELECT revision_sha256, evidence_text, reporting_origin FROM news_item_revisions")
+    assert len(revision) == 1 and revision[0]["evidence_text"] == first.evidence[0].text
+    assert revision[0]["reporting_origin"] != "Reuters"
+    member = snapshots(event_id)[-1]["snapshot"]["members"][0]
+    assert member["evidence_revisions"] == [revision[0]["revision_sha256"]]
+    lease = asyncio.run(store.claim_semantic_work(event_id, lease_ms=180_000))
+    assert lease is not None and lease.source.revision == 2 and lease.source.evidence == ()
+    assert {row.claim.ref for row in lease.source.prior} == {claim.ref for claim in first.claims}
+    assert asyncio.run(agent.process(lease)) == "unchanged"
+    assert analyzer.extract_calls == 1
+    row = work(event_id)
+    assert row["done_revision"] == row["wanted_revision"] == 2 and row["last_outcome"] == "no_new_evidence"
+    assert row["processed_read_refs"] == read
+    assert asyncio.run(store.head(event_id)) == first
 
     asyncio.run(deduper.handle(raw(7051, TITLE, stamp=STAMP + 20_000, source="Associated Press")))
     assert work(event_id)["wanted_revision"] == 2
+
+
+def test_a_verbatim_copy_from_another_provider_record_settles_without_a_model_call() -> None:
+    # #770: tweet x:2105443679905235344 arrived as OpenNews records 4280747 and 4280749 one second apart and
+    # the second copy re-ran extraction and every judgment. It is still a member and still wakes a revision;
+    # that revision reads nothing, records no read and leaves no pending work.
+    bus = RecordingBus()
+    deduper = DeduperConsumer(bus=bus, db=ThreadedDb(), watchlist_symbols=frozenset({"BTC"}))
+    body = f"{TITLE}<br/>Officials say the order takes effect in October."
+    link = "https://x.com/i/status/2105443679905235344"
+    asyncio.run(deduper.handle(raw(4280747, body, stamp=STAMP, link=link)))
+    event_id = event_of(4280747)
+    clock = Clock(STAMP + 500)
+    store = PgSemanticStore(ThreadedDb(), clock=clock)
+    analyzer = StubAnalyzer()
+    agent = NewsAgent(store, analyzer, program_identity="p", clock=clock)
+    assert asyncio.run(run_agent(agent, event_id)) == "adopted"
+    first = asyncio.run(store.head(event_id))
+    read = work(event_id)["processed_read_refs"]
+    assert first is not None and len(read) == 1
+
+    asyncio.run(deduper.handle(raw(4280749, body, stamp=STAMP + 1_000, link=link)))
+    assert event_of(4280749) == event_id
+    assert work(event_id)["wanted_revision"] == 2
+    assert bus.wakes() == [f"event:{event_id}:1", f"event:{event_id}:2"]
+    lease = asyncio.run(store.claim_semantic_work(event_id, lease_ms=180_000))
+    assert lease is not None and lease.source.revision == 2 and lease.source.evidence == ()
+    assert work(event_id)["attempt_read_refs"] == []
+    assert asyncio.run(agent.process(lease)) == "unchanged"
+    assert analyzer.extract_calls == 1
+    row = work(event_id)
+    assert row["done_revision"] == row["wanted_revision"] == 2 and row["last_outcome"] == "no_new_evidence"
+    assert row["processed_read_refs"] == read and row["attempts"] == 0
+    observation = sql("SELECT read_refs FROM news_semantic_observations WHERE input_revision = 2")
+    assert observation == [{"read_refs": []}]
+    assert asyncio.run(store.head(event_id)) == first
+    assert asyncio.run(store.claim_semantic_work(event_id, lease_ms=180_000)) is None
+
+    # New material in a later revision is read alone; the copy is recognised again, not re-read.
+    clock.now_ms = STAMP + 2_000
+    add_member_evidence(event_id, "new-material", "Agency adds a new exemption.", now_ms=clock.now_ms)
+    later = asyncio.run(store.claim_semantic_work(event_id, lease_ms=180_000))
+    assert later is not None and [item.text for item in later.source.evidence] == ["Agency adds a new exemption."]
 
 
 def test_a_near_match_joins_as_a_member_and_wakes_semantics_instead_of_settling() -> None:

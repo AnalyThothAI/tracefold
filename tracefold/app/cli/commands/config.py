@@ -96,6 +96,8 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                         "configured": model_availability.configured,
                         "extraction_model": model_availability.extraction_model,
                         "extraction_fallback_model": model_availability.extraction_fallback_model,
+                        # The generative judgments' model on the extraction endpoint (#770).
+                        "generated_judgment_model": model_availability.generated_judgment_model,
                         "card_model": model_availability.card_model,
                         "card_dedicated": model_availability.card_dedicated,
                         "card_fallback_model": model_availability.card_fallback_model,
