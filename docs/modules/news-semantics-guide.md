@@ -8,7 +8,7 @@
 | :--- | :--- |
 | **适合谁** | 第一次接触 News 语义链路，或需要回答“为什么推了 / 没推 / 推了两次”的开发者 |
 | **样本** | Event `5487eae1`（Lido 官方推文，两份同文拷贝），以及同一事故的前一个 Event `bf9af021` 和后一个 Event `63cedb41` |
-| **代码版本** | 机制按 main `2f5c6cd45` 描述 |
+| **代码版本** | 机制按当前实现描述，含 #764 P2/P3 的存储收敛；原走读基线为 main `2f5c6cd45` |
 | **权威规则** | [News 手册](news.md)；精确恢复见[运维指南](../OPERATIONS.md#news-retry) |
 
 > [!NOTE]
@@ -167,7 +167,7 @@ flowchart TB
 
 1. **比较串**：只取标题，即首个至少有 3 个词的块，不读正文。依次做 NFKC、繁转简、去来源前缀和 URL，再把数字规范成 `usd_82000`、`pct_5`、`num_1500000000` 这样的形式，最后 casefold（[identity.py](../../tracefold/news/events/identity.py)）。
 2. **词元**：单词 unigram 集合，中文取相邻汉字 bigram；约 50 词的停用表加 10 组动词别名，没有词干化，也没有 IDF。少于 3 个词元的标题不参与近似匹配。
-3. **MinHash / LSH**：128 个固定种子的哈希函数，32 band × 4 row，每个 Event 在 `news_event_bands` 写 32 行（[minhash.py](../../tracefold/news/events/minhash.py)）。
+3. **MinHash / LSH**：128 个固定种子的哈希函数，32 band × 4 row，每个 Event 在 `news_events.dedupe_bands` 保存 32 个 band 身份，由 GIN 索引查候选（[minhash.py](../../tracefold/news/events/minhash.py)）。
 4. **判定顺序**：幂等重放 → `exact`（同 family、同标题指纹）→ 同一 X 制品且同指纹（7 天内）→ `near`（LSH 候选按开启时间从早到晚取前 25 个，要求**精确** Jaccard ≥ 0.55；两边的 ticker 集合或数字集合都非空且互不相交时否决）→ 都不中则开新 Event（`leader`）。
 5. **窗口**：按 dedupe family 划分，general 12 h、filing 72 h、disaster 6 h、market telemetry 2 h，从 leader 发布时间起算，不滑动。
 
@@ -199,7 +199,7 @@ S 曲线的拐点约在 0.42，低于判定阈值 0.55：LSH 负责高召回，�
 <a id="section-证据快照与语义工作"></a>
 ## 04 · 证据快照与语义工作
 
-每次准入之后，第二个短事务按版本 CAS 追加一份不可变的 `news_event_evidence_snapshots`。只有**语义材料**变化时，才会执行 `news_semantic_work.wanted_revision += 1`，并在提交后唤醒 `news.triage`。语义材料由 [`semantic_material`](../../tracefold/news/storage/events.py) 定义：focus fact、焦点来源 `leader_item_id`、接地资产，以及成员的 {item_id, fact_id, fact_text, evidence_revisions}。唤醒丢失只会带来延迟：Janitor 每 60 s 重新唤醒超过 15 s 仍未领取的工作。
+每次准入之后，第二个短事务在 Event 行锁下按版本 CAS 追加 `news_events.evidence.versions` 的版本、摘要、焦点和时钟；阅读正文从 Item、成员和修订事实重建。只有**语义材料**变化时，才会增加 `news_jobs` 中 semantic 工作的 `detail.wanted_revision`，并在提交后唤醒 `news.triage`。语义材料由 [`semantic_material`](../../tracefold/news/storage/events.py) 定义：focus fact、焦点来源 `leader_item_id`、接地资产，以及成员的 {item_id, fact_id, fact_text, evidence_revisions}。唤醒丢失只会带来延迟：Janitor 每 60 s 重新唤醒超过 15 s 仍未领取的工作。
 
 **为什么同文拷贝也会请求新修订。** 有两个原因叠加，至今都没有变：
 
@@ -347,7 +347,7 @@ prior 里的相关 Event 命题来自一条有界的召回查询（[storage/evid
 - **时间序守卫**：较晚到达的旧报道不能更正或替代比它更新的命题，否则降级为 `unresolved`。
 - **内容身份**：`content_sha = digest(claims, retired, evidence_relations, state)`，`content_revision = digest(content_sha, previous_revision)` 形成链；`content_sha` 不变就不产生新的 EventUpdate。当前有效命题只由 `EventUpdate.current_claims` 一处推导。
 
-采用由 [`commit_update`](../../tracefold/news/storage/update_commit.py) 在 Event 级 advisory 锁下（lock_timeout 2.5 s）用**一个短事务**完成：head CAS（失败时 NewsAgent 最多重试 2 次，只补算缺失的关系，不重做抽取），插入不可变 EventUpdate，把每个带前驱的比较写成只追加的 `news_claim_links`，更新 head，写公开 outbox。只有变更属于 `new_fact`、`possible_new`、`parameter_change`、`phase_change`、`scope_change`、`correction`、`conflict` 时，才新建或重置通知工作。
+采用由 [`commit_update`](../../tracefold/news/storage/update_commit.py) 在 Event 的 `FOR NO KEY UPDATE` 行锁下（lock_timeout 2.5 s）用**一个短事务**完成：head CAS（失败时 NewsAgent 最多重试 2 次，只补算缺失的关系，不重做抽取），将理解结果所在的 `news_analyses` 一次性采纳为不可变 document，再更新 `current_analysis_id` 并写公开 outbox。每个带前驱的比较保存在 document.changes，按两端 ref 读取。只有变更属于 `new_fact`、`possible_new`、`parameter_change`、`phase_change`、`scope_change`、`correction`、`conflict` 时，才新建或重置通知工作。
 
 **样本**：
 

@@ -6,7 +6,9 @@ outside it, and the adopted PostgreSQL head remains the authority.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
+
+from pydantic import Field
 
 from .contracts import EventUpdate, Evidence, Exact, Extraction, FrozenInput, PublicUpdate, ReadTarget, SemanticLease
 
@@ -24,6 +26,7 @@ class SemanticObservation(Exact):
     input_sha256: str
     program_identity: str
     completed_at_ms: int
+    input_manifest: dict[str, Any] = Field(default_factory=dict)
     understanding: Extraction
     read_refs: tuple[str, ...]
     reanalysis_reason: str | None = None

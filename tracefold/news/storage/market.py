@@ -159,7 +159,7 @@ SELECT o.observation_id AS item_id, o.kind AS market_kind, o.source_strategy_id,
   LEFT JOIN news_market_wallet_events e ON e.item_id = o.observation_id
   LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = o.notification_id
   LEFT JOIN ({MARKET_JOBS_SQL}) t ON t.group_key = o.notify_group_key
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 
 _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
     "item_id",
@@ -288,7 +288,7 @@ MARKET_DELIVERY_SUMMARY_SQL = f"""
      WHERE created_at_ms >= %s
        AND created_at_ms < %s
      GROUP BY market_kind
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 
 # Deliberately uncapped. This is the answer to "what arrived", and a capped count would report a
 # ceiling as a fact -- `received = 5000` on a busy window would read as the provider's number. The
@@ -329,7 +329,7 @@ MARKET_NOTIFY_BACKLOG_SQL = f"""
      LIMIT %s
 """  # noqa: S608 -- interpolates only this module's own observation projection
 
-MARKET_TRACK_SQL = f"SELECT * FROM ({MARKET_JOBS_SQL}) WHERE group_key = %s"  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+MARKET_TRACK_SQL = f"SELECT * FROM ({MARKET_JOBS_SQL}) WHERE group_key = %s"  # noqa: S608 -- fixed SQL; bound values.
 
 MARKET_TRACK_UPSERT_SQL = """
 INSERT INTO news_jobs(job_kind,subject_id,state,next_attempt_at_ms,detail,created_at_ms,updated_at_ms)
@@ -430,7 +430,7 @@ MARKET_GROUP_OPEN_DELIVERY_SQL = f"""
      WHERE group_key = %s
        AND state = ANY (ARRAY['pending', 'unavailable'])
        AND attempts = 0
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 
 MARKET_DISCARD_DELIVERY_SQL = """
     DELETE FROM news_notifications

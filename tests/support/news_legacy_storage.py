@@ -230,7 +230,9 @@ def _persist_triage_verdict(
     final_decision: str = "push",
     throttled_by: str | None = None,
 ) -> None:
-    evidence = repos.news.latest_evidence_snapshot(event_id)
+    from tests.fixtures.news_semantic_0422 import latest_evidence
+
+    evidence = latest_evidence(repos.news.conn, event_id)
     assert evidence is not None
     verdict = TriageVerdict(
         novelty="new_fact",

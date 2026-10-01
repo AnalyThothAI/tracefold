@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -83,6 +84,7 @@ class PgSemanticStore:
                 program_identity=observation.program_identity,
                 completed_at_ms=observation.completed_at_ms,
                 understanding_json=understanding,
+                input_manifest_json=json.dumps(observation.input_manifest),
                 read_refs=observation.read_refs,
                 reanalysis_reason=observation.reanalysis_reason,
                 reanalysis_head_ref=observation.reanalysis_head_ref,
@@ -97,6 +99,7 @@ class PgSemanticStore:
             program_identity=str(row["program_identity"]),
             completed_at_ms=int(row["completed_at_ms"]),
             understanding=Extraction.model_validate(row["understanding"]),
+            input_manifest=dict(row["input_manifest"]),
             read_refs=tuple(row["read_refs"]),
             reanalysis_reason=row["reanalysis_reason"],
             reanalysis_head_ref=row["reanalysis_head_ref"],

@@ -159,6 +159,12 @@ class NewsAgent:
             program_identity=self.program_identity,
             completed_at_ms=completed_at_ms,
             understanding=understood,
+            input_manifest={
+                "lineage_id": source.lineage_id,
+                "evidence": [{"ref": e.ref, "source": e.source.model_dump(mode="json")} for e in source.evidence],
+                "read_refs": [view.read_ref for view in reading_views(source)],
+                "prior_claim_refs": [row.claim.ref for row in source.prior],
+            },
             read_refs=tuple(view.read_ref for view in reading_views(source)),
             reanalysis_reason=source.reanalysis_reason,
             reanalysis_head_ref=source.reanalysis_head_ref,

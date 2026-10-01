@@ -8,13 +8,14 @@ from contextlib import closing
 import pytest
 from alembic import command
 
+from tests.fixtures.news_semantic_0422 import persist_update, seed_event
 from tests.postgres_test_utils import (
     connect_postgres_test,
     postgres_migration_test_dsn,
     prepare_test_migration_database,
 )
-from tests.support.news_event_updates import first_update, notify_plan, persist_update
-from tests.support.news_update_pg import STAMP, seed_event
+from tests.support.news_event_updates import first_update, notify_plan
+from tests.support.news_update_pg import STAMP
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.notifications.contracts import FrozenCard
 from tracefold.news.updates.identity import digest

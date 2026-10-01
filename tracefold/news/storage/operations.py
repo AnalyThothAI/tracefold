@@ -19,14 +19,14 @@ _RAW_RETENTION_PRESERVATION_SQL = """
               JOIN news_events e ON e.event_id = m.event_id
              WHERE m.item_id = i.item_id
                AND e.opened_at_ms >= %s
-               AND EXISTS (SELECT 1 FROM news_event_updates u WHERE u.event_id = e.event_id)
+               AND e.current_analysis_id IS NOT NULL
           )
           AND NOT EXISTS (
             SELECT 1
               FROM news_events e2
              WHERE e2.leader_item_id = i.item_id
                AND e2.opened_at_ms >= %s
-               AND EXISTS (SELECT 1 FROM news_event_updates u WHERE u.event_id = e2.event_id)
+               AND e2.current_analysis_id IS NOT NULL
           )
         )
       )
@@ -149,30 +149,21 @@ class OperationsStorage:
             raise RuntimeError("postgres_restore_drill_update_missing")
         claim_ref = update.claims[0].ref
         self.conn.execute(
-            """INSERT INTO news_semantic_observations
-                 (result_id,work_id,event_id,input_revision,input_sha256,program_identity,
-                  completed_at_ms,understanding,evidence_refs)
-               VALUES (%s,%s,%s,1,%s,'restore_drill_v1',12,%s::jsonb,%s)""",
+            """INSERT INTO news_analyses(analysis_id,event_id,origin,input_revision,completed_at_ms,
+                 work_id,input_sha256,program_identity,understanding,content_revision,update_ref,adopted_at_ms,document)
+               VALUES
+ ('restore-result',%s,'semantic',1,12,'restore-work',%s,'restore_drill_v1',%s::jsonb,%s,%s,12,%s::jsonb)""",
             (
-                "restore-result",
-                "restore-work",
                 current_event_id,
                 digest(frozen),
-                _dumps(extraction.model_dump(mode="json")),
-                [material.ref],
+                extraction.model_dump_json(),
+                update.content_revision,
+                update.ref,
+                update.model_dump_json(),
             ),
         )
         self.conn.execute(
-            """INSERT INTO news_event_updates
-                 (event_id,content_revision,input_revision,adopted_at_ms,observation_result_id,document)
-               VALUES (%s,%s,1,12,'restore-result',%s::jsonb)""",
-            (current_event_id, update.content_revision, update.model_dump_json()),
-        )
-        self.conn.execute(
-            """INSERT INTO news_event_update_heads
-                 (event_id,content_revision,input_revision,update_ref,adopted_at_ms)
-               VALUES (%s,%s,1,%s,12)""",
-            (current_event_id, update.content_revision, update.ref),
+            "UPDATE news_events SET current_analysis_id='restore-result' WHERE event_id=%s", (current_event_id,)
         )
         decision_input = {"reader_identity": "restore_drill_v1", "compared_receipts": [], "fixture": "restore_drill"}
         plan = NotificationPlan(
@@ -235,17 +226,10 @@ class OperationsStorage:
         cursor = self.conn.execute(
             """
             WITH expired AS MATERIALIZED (
-              SELECT band_index, band_key, event_id
-                FROM news_event_bands
-               WHERE expires_at_ms < %s
-               ORDER BY expires_at_ms, band_index, band_key, event_id
-               LIMIT %s
+              SELECT event_id FROM news_events WHERE expires_at_ms<%s AND dedupe_bands<>'{}'::text[]
+               ORDER BY expires_at_ms,event_id LIMIT %s FOR NO KEY UPDATE SKIP LOCKED
             )
-            DELETE FROM news_event_bands band
-             USING expired
-             WHERE band.band_index = expired.band_index
-               AND band.band_key = expired.band_key
-               AND band.event_id = expired.event_id
+            UPDATE news_events e SET dedupe_bands='{}'::text[] FROM expired WHERE e.event_id=expired.event_id
             """,
             (int(now_ms), size),
         )

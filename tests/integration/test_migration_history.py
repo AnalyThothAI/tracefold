@@ -37,7 +37,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20261001_0422"
+HEAD = "20261001_0423"
 PRE_CUT = "20260928_0410"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
@@ -201,6 +201,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20261001_0422",
         "20261001_0421",
         "20261001_0420",
         "20261001_0419",
@@ -400,7 +401,8 @@ def test_notification_terminal_cut_fails_overdue_exhausted_work_and_drops_the_pl
 def test_claim_links_are_backfilled_from_every_stored_update_and_reader_decisions_are_accepted() -> None:
     """#742 0416: every stored change that compares a claim with an earlier one becomes a claim link."""
 
-    from tests.support.news_event_updates import first_update, persist_update, raised_update
+    from tests.fixtures.news_semantic_0422 import persist_update
+    from tests.support.news_event_updates import first_update, raised_update
 
     config = _config()
     _empty_the_schema()
@@ -1600,7 +1602,7 @@ def _seed_admitted_event(conn: Any, text: str, *, record: int = 664, at_ms: int 
     wrote at those revisions: an Item, an admitted Event, its leader membership and a v3 snapshot.
     """
 
-    from tests.postgres_test_utils import seed_current_news_evidence
+    from tests.fixtures.news_semantic_0422 import seed_evidence
 
     item_id = f"item-{record}"
     event_id = f"event-{record}"
@@ -1644,7 +1646,7 @@ def _seed_admitted_event(conn: Any, text: str, *, record: int = 664, at_ms: int 
         """,
         (event_id, item_id, at_ms, f"fact-{record}", text),
     )
-    seed_current_news_evidence(conn)
+    seed_evidence(conn)
     return event_id
 
 
@@ -1664,10 +1666,11 @@ def _persist_pre_v3_verdict(
     canonical digests the CHECK recomputes are built here from the same `canonical_sha` the worker used.
     """
 
+    from tests.fixtures.news_semantic_0422 import latest_evidence
     from tracefold.news.artifact_identity import canonical_sha
     from tracefold.news.taxonomy import IPTC_CODEBOOK_SHA256
 
-    evidence = repos.news.latest_evidence_snapshot(event_id)
+    evidence = latest_evidence(repos.news.conn, event_id)
     assert evidence is not None
     verdict = {
         "novelty": "new_fact",
@@ -2225,7 +2228,7 @@ def test_retired_event_update_v1_is_removed_at_the_hard_cut() -> None:
                                         'event_id','event-old','content_revision',repeat('b',64),
                                         'input_revision',1,'previous_content_revision',NULL))"""
             )
-        command.upgrade(config, HEAD)
+        command.upgrade(config, "20260928_0411")
         assert [row["event_id"] for row in conn.execute("SELECT event_id FROM news_events")] == ["event-current"]
         assert {row["item_id"] for row in conn.execute("SELECT item_id FROM news_items")} == {
             "item-old",
@@ -2237,5 +2240,7 @@ def test_retired_event_update_v1_is_removed_at_the_hard_cut() -> None:
         ).fetchone()
         assert check is not None and "news_event_update_v2" in check["definition"]
         assert "news_event_update_v1" not in check["definition"]
+        command.upgrade(config, HEAD)
+        assert conn.execute("SELECT count(*) AS n FROM news_analyses").fetchone()["n"] == 0
     finally:
         conn.close()

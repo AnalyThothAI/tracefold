@@ -9,13 +9,14 @@ import pytest
 from alembic import command
 from psycopg.errors import CheckViolation
 
+from tests.fixtures.news_semantic_0422 import persist_update, seed_event
 from tests.postgres_test_utils import (
     connect_postgres_test,
     postgres_migration_test_dsn,
     prepare_test_migration_database,
 )
-from tests.support.news_event_updates import first_update, persist_update
-from tests.support.news_update_pg import EVENT, seed_event
+from tests.support.news_event_updates import first_update
+from tests.support.news_update_pg import EVENT
 from tracefold.platform.postgres.migrations import alembic_config
 
 pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]

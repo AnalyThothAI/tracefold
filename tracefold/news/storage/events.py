@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
+from types import SimpleNamespace
 from typing import Any, cast
 
 # S608 exemptions below interpolate only code-owned limits/admission literals; provider values stay bound.
@@ -12,27 +13,14 @@ from ..opennews import source_artifact_identity
 from ..source_contracts import EventKind
 from .feed_sql import CURRENT_EVENT_CARD_SQL, EDITORIAL_EVENT_CARD_SQL
 from .sql_values import _dumps
+from .update_commit import lock_event
 
 BAND_CANDIDATES_SQL = """
-            WITH hits AS (
-              SELECT DISTINCT b.event_id
-                FROM news_event_bands b
-                JOIN unnest(%s::smallint[], %s::text[]) AS q(band_index, band_key)
-                  ON q.band_index = b.band_index AND q.band_key = b.band_key
-               WHERE b.dedupe_family = %s AND b.expires_at_ms > %s
-            )
-            SELECT e.event_id, e.comparison_title, e.leader_title, e.opened_at_ms, e.grounded_assets
-              FROM news_events e JOIN hits ON hits.event_id = e.event_id
-             WHERE e.event_kind = %s AND e.admission = ANY(%s)
-               AND (
-                 SELECT s.provenance = 'observed'
-                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-                   FROM news_event_evidence_snapshots s
-                  WHERE s.event_id = e.event_id
-                  ORDER BY s.evidence_version DESC LIMIT 1
-               )
-             ORDER BY e.opened_at_ms ASC
-             LIMIT 25
+WITH hits AS MATERIALIZED (SELECT event_id FROM news_events WHERE dedupe_bands && %s::text[])
+SELECT e.event_id,e.comparison_title,e.leader_title,e.opened_at_ms,e.grounded_assets
+  FROM hits JOIN news_events e USING(event_id)
+ WHERE e.dedupe_family=%s AND e.expires_at_ms>%s AND e.event_kind=%s AND e.admission=ANY(%s)
+   AND e.evidence_version IS NOT NULL ORDER BY e.opened_at_ms LIMIT 25
 """
 
 
@@ -95,10 +83,6 @@ def prepare_evidence_snapshot(
             "leader_item_id",
             "dedupe_family",
             "event_kind",
-            # Still projected: `news_event_evidence_current_contract_check` names the card's keys
-            # exactly, and every stored snapshot carries this one. It is `NULL` on every Event this
-            # code can now open, because only market frames ever had a reason and they open none.
-            "source_contract_reason",
             "comparison_fingerprint",
             "comparison_title",
             "opened_at_ms",
@@ -161,6 +145,7 @@ def prepare_evidence_snapshot(
     }
     serialized = _dumps(snapshot)
     evidence_sha = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    material_sha = hashlib.sha256(_dumps(semantic_material(snapshot)).encode()).hexdigest()
     previous_version = None if latest is None else int(latest["evidence_version"])
     return {
         "event_id": event_id,
@@ -169,7 +154,8 @@ def prepare_evidence_snapshot(
         "evidence_version": 1 if previous_version is None else previous_version + 1,
         "focus_fact_id": str(focus["fact_id"]),
         "evidence_sha256": evidence_sha,
-        "semantic_changed": not previous or semantic_material(previous) != semantic_material(snapshot),
+        "material_sha256": material_sha,
+        "semantic_changed": latest is None or latest.get("material_sha256") != material_sha,
         "snapshot_json": serialized,
         "now_ms": int(now_ms),
     }
@@ -361,17 +347,14 @@ class EventStorage:
         ).hexdigest()
         item = self.conn.execute(
             "SELECT evidence_text_sha256, reporting_origin, canonical_url, source_artifact_id, "
-            "provider_params, observed_at_ms, evidence_observed_at_ms "
+            "provider_params, observed_at_ms, evidence_observed_at_ms,revisions "
             "FROM news_items WHERE item_id=%s FOR UPDATE",
             (item_id,),
         ).fetchone()
         if item is None or not item["provider_params"]:
             return False
-        latest = self.conn.execute(
-            "SELECT revision_sha256, content_sha256, revision_sequence FROM news_item_revisions "
-            "WHERE item_id=%s ORDER BY revision_sequence DESC LIMIT 1",
-            (item_id,),
-        ).fetchone()
+        revisions = list(item["revisions"])
+        latest = revisions[-1] if revisions else None
         original_sha = hashlib.sha256(
             _dumps(
                 (
@@ -396,36 +379,26 @@ class EventStorage:
             return False
         if received_at_ms == int(item["observed_at_ms"]) and content_sha256 == original_sha:
             return False
-        if self.conn.execute(
-            "SELECT 1 FROM news_item_revisions WHERE item_id=%s AND received_at_ms=%s AND content_sha256=%s",
-            (item_id, int(received_at_ms), content_sha256),
-        ).fetchone():
+        if any(r["received_at_ms"] == received_at_ms and r["content_sha256"] == content_sha256 for r in revisions):
             return False
         previous = original_sha if latest is None else str(latest["revision_sha256"])
         revision_sha256 = hashlib.sha256(_dumps((previous, content_sha256, int(received_at_ms))).encode()).hexdigest()
-        self.conn.execute(
-            """
-            INSERT INTO news_item_revisions (
-              item_id, revision_sha256, content_sha256, previous_revision_sha256, revision_sequence,
-              evidence_text, provider_params, reporting_origin, canonical_url, source_artifact_id,
-              published_at_ms, received_at_ms
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s)
-            """,
-            (
-                item_id,
-                revision_sha256,
-                content_sha256,
-                previous,
-                1 if latest is None else int(latest["revision_sequence"]) + 1,
-                evidence_text,
-                provider_params_json,
-                reporting_origin,
-                canonical_url,
-                source_artifact_id,
-                int(published_at_ms),
-                int(received_at_ms),
-            ),
+        revisions.append(
+            {
+                "revision_sha256": revision_sha256,
+                "content_sha256": content_sha256,
+                "previous_revision_sha256": previous,
+                "revision_sequence": len(revisions) + 1,
+                "evidence_text": evidence_text,
+                "provider_params": __import__("json").loads(provider_params_json),
+                "reporting_origin": reporting_origin,
+                "canonical_url": canonical_url,
+                "source_artifact_id": source_artifact_id,
+                "published_at_ms": int(published_at_ms),
+                "received_at_ms": int(received_at_ms),
+            }
         )
+        self.conn.execute("UPDATE news_items SET revisions=%s::jsonb WHERE item_id=%s", (_dumps(revisions), item_id))
         return True
 
     def item_event_ids(self, item_id: str) -> list[str]:
@@ -477,13 +450,7 @@ class EventStorage:
              WHERE i.source_artifact_id = %s AND i.item_id <> %s
                AND e.dedupe_family = %s AND e.event_kind = %s AND e.comparison_fingerprint = %s
                AND e.opened_at_ms >= %s
-               AND (
-                 SELECT s.provenance = 'observed'
-                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-                   FROM news_event_evidence_snapshots s
-                  WHERE s.event_id = e.event_id
-                  ORDER BY s.evidence_version DESC LIMIT 1
-               )
+               AND e.evidence_version IS NOT NULL
                AND e.admission = ANY(%s)
              ORDER BY e.opened_at_ms ASC LIMIT 1
             """,
@@ -514,13 +481,7 @@ class EventStorage:
               FROM news_events e
              WHERE e.dedupe_family = %s AND e.event_kind = %s AND e.admission = ANY(%s)
                AND e.comparison_fingerprint = %s AND e.expires_at_ms > %s
-               AND (
-                 SELECT s.provenance = 'observed'
-                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-                   FROM news_event_evidence_snapshots s
-                  WHERE s.event_id = e.event_id
-                  ORDER BY s.evidence_version DESC LIMIT 1
-               )
+               AND e.evidence_version IS NOT NULL
              ORDER BY opened_at_ms ASC LIMIT 1
             """,
             (dedupe_family, event_kind, joinable_admissions(ingest_mode), fingerprint, int(now_ms)),
@@ -542,8 +503,7 @@ class EventStorage:
         rows = self.conn.execute(
             BAND_CANDIDATES_SQL,
             (
-                [p[0] for p in pairs],
-                [p[1] for p in pairs],
+                [f"{index}:{key}" for index, key in pairs],
                 dedupe_family,
                 int(now_ms),
                 event_kind,
@@ -595,10 +555,10 @@ class EventStorage:
               focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method, focus_span_start, focus_span_end,
               opened_at_ms, last_member_at_ms, expires_at_ms, member_count, admission, queue_priority,
               provider_score_max, engine_type, asset_class, grounded_assets, watchlist_hits, macro_lexicon,
-              storyline_key, context_line, ingest_mode, trace_id, created_at_ms, updated_at_ms
+              storyline_key, context_line, ingest_mode, trace_id, created_at_ms, updated_at_ms,dedupe_bands
             ) VALUES (
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s, %s, %s,
-              %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s
+              %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s, %s,%s::text[]
             )
             """,
             (
@@ -632,6 +592,7 @@ class EventStorage:
                 trace_id,
                 int(now_ms),
                 int(now_ms),
+                [f"{index}:{key}" for index, key in enumerate(band_keys)],
             ),
         )
         self.conn.execute(
@@ -642,16 +603,6 @@ class EventStorage:
             """,
             (event_id, leader_item_id, int(opened_at_ms), focus_fact_id, focus_fact_text),
         )
-        if band_keys:
-            self.conn.execute(
-                """
-                INSERT INTO news_event_bands (band_index, band_key, event_id, dedupe_family, expires_at_ms)
-                SELECT q.band_index, q.band_key, %s, %s, %s
-                  FROM unnest(%s::smallint[], %s::text[]) AS q(band_index, band_key)
-                ON CONFLICT DO NOTHING
-                """,
-                (event_id, dedupe_family, int(expires_at_ms), list(range(len(band_keys))), list(band_keys)),
-            )
         for symbol in grounded_assets:
             self.conn.execute(
                 """
@@ -736,128 +687,131 @@ class EventStorage:
         return self.append_prepared_evidence_snapshot(prepared)
 
     def evidence_snapshot_material(self, *, event_id: str, focus_item_id: str | None) -> dict[str, Any]:
-        """Load the primitive rows needed to build one immutable snapshot."""
+        """Read live source facts and the compact evidence CAS state."""
+        material = self._live_evidence_material(event_id)
+        state = self.conn.execute(
+            "SELECT evidence_version,evidence FROM news_events WHERE event_id=%s", (event_id,)
+        ).fetchone()
+        if state is None:
+            raise ValueError("news_event_missing")
+        latest = None if state["evidence"] is None else self._reconstruct_evidence(material, state)
+        focus_source = None
+        if focus_item_id is not None:
+            focus_source = self._focus_source(focus_item_id)
+        return {**material, "latest": latest, "focus_item_id": focus_item_id, "focus_source": focus_source}
 
+    def _focus_source(self, item_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            """SELECT item_id AS leader_item_id,canonical_url AS leader_url,reporting_origin,
+                      provider_metadata,provenance,published_at_ms AS leader_published_at_ms,raw_first_line
+                 FROM news_items WHERE item_id=%s""",
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("news_event_evidence_focus_item_missing")
+        return dict(row)
+
+    def _live_evidence_material(self, event_id: str) -> dict[str, Any]:
         card = self._current_event_card(event_id)
         if card is None:
             raise ValueError("news_event_missing")
-        members = [
-            dict(row)
-            for row in self.conn.execute(
-                """
-            SELECT m.item_id, m.fact_id, m.fact_text, m.joined_at_ms, m.match_kind, m.jaccard_estimate,
-                   i.reporting_origin, i.canonical_url, i.provider_metadata, i.provenance,
-                   COALESCE((
-                     SELECT jsonb_agg(r.revision_sha256 ORDER BY r.revision_sequence)
-                       FROM news_item_revisions r WHERE r.item_id = m.item_id
-                   ), '[]'::jsonb) AS evidence_revisions
-              FROM news_event_members m
-              JOIN news_items i ON i.item_id = m.item_id
-             WHERE m.event_id = %s
-             ORDER BY m.joined_at_ms, m.item_id, m.fact_id
-            """,
-                (event_id,),
-            ).fetchall()
-        ]
-        latest = self.conn.execute(
-            """
-            SELECT evidence_version, evidence_sha256, focus_fact_id, snapshot, provenance, release_eligible,
-                   created_at_ms
-              FROM news_event_evidence_snapshots
-             WHERE event_id = %s ORDER BY evidence_version DESC LIMIT 1
-            """,
+        rows = self.conn.execute(
+            """SELECT m.item_id,m.fact_id,m.fact_text,m.joined_at_ms,m.match_kind,m.jaccard_estimate,
+                      i.reporting_origin,i.canonical_url,i.provider_metadata,i.provenance,
+                      jsonb_path_query_array(i.revisions,'$[*].revision_sha256') AS evidence_revisions
+                 FROM news_event_members m JOIN news_items i USING(item_id) WHERE m.event_id=%s
+                ORDER BY m.joined_at_ms,m.item_id,m.fact_id""",
             (event_id,),
-        ).fetchone()
-        latest_value = None if latest is None else dict(latest)
-        if latest is not None and (
-            str(latest["provenance"]) != "observed"
-            or str(dict(latest["snapshot"] or {}).get("schema_version") or "") != "news_event_evidence_v3"
-        ):
-            raise ValueError("news_event_evidence_contract_invalid")
-        focus_source = None
-        if focus_item_id is not None:
-            source = self.conn.execute(
-                """
-                SELECT item_id AS leader_item_id, canonical_url AS leader_url, reporting_origin,
-                       provider_metadata, provenance, published_at_ms AS leader_published_at_ms, raw_first_line
-                  FROM news_items WHERE item_id = %s
-                """,
-                (focus_item_id,),
-            ).fetchone()
-            if source is None:
-                raise ValueError("news_event_evidence_focus_item_missing")
-            focus_source = dict(source)
+        ).fetchall()
+        return {"card": card, "members": [dict(row) for row in rows]}
+
+    def _reconstruct_evidence(self, material: Mapping[str, Any], state: Mapping[str, Any]) -> dict[str, Any]:
+        evidence = state["evidence"]
+        version = dict(evidence["versions"][-1])
+        focus = evidence["fact_scopes"][version["focus_fact_id"]]
+        source = self._focus_source(str(evidence["focus_item_id"]))
+        prepared = prepare_evidence_snapshot(
+            {**material, "latest": None, "focus_item_id": evidence["focus_item_id"], "focus_source": source},
+            event_id=str(material["card"]["event_id"]),
+            now_ms=version["created_at_ms"],
+            focus_fact=SimpleNamespace(**focus),
+        )
+        import json
+
         return {
-            "card": card,
-            "members": members,
-            "latest": latest_value,
-            "focus_item_id": focus_item_id,
-            "focus_source": focus_source,
+            **version,
+            "event_id": material["card"]["event_id"],
+            "provenance": "observed",
+            "release_eligible": True,
+            "snapshot": json.loads(prepared["snapshot_json"]),
+            "material_sha256": evidence["material_sha256"],
         }
 
     def append_prepared_evidence_snapshot(self, prepared: Mapping[str, Any]) -> dict[str, Any]:
-        """Compare-and-append already serialized snapshot bytes."""
+        """Append version metadata under the Event lock and the version/digest CAS."""
+        import json
 
         event_id = str(prepared["event_id"])
-        self.conn.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 0))",
-            (event_id,),
-        )
-        current = self.conn.execute(
-            "SELECT evidence_version, evidence_sha256, focus_fact_id, snapshot, provenance, release_eligible, "
-            "created_at_ms FROM news_event_evidence_snapshots WHERE event_id = %s "
-            "ORDER BY evidence_version DESC LIMIT 1",
-            (event_id,),
-        ).fetchone()
-        expected = (prepared.get("previous_version"), prepared.get("previous_sha256"))
-        actual = (
-            (None, None) if current is None else (int(current["evidence_version"]), str(current["evidence_sha256"]))
-        )
-        if actual != expected:
-            raise RuntimeError("news_event_evidence_snapshot_changed")
-        if current is not None and str(current["evidence_sha256"]) == str(prepared["evidence_sha256"]):
-            return dict(current)
+        lock_event(self.conn, event_id)
         row = self.conn.execute(
-            """
-            INSERT INTO news_event_evidence_snapshots (
-              event_id, evidence_version, focus_fact_id, evidence_sha256,
-              provenance, release_eligible, snapshot, created_at_ms
-            ) VALUES (%s, %s, %s, %s, 'observed', true, %s::jsonb, %s)
-            RETURNING evidence_version, evidence_sha256, focus_fact_id, snapshot, provenance, release_eligible,
-                      created_at_ms
-            """,
-            (
-                event_id,
-                int(prepared["evidence_version"]),
-                str(prepared["focus_fact_id"]),
-                str(prepared["evidence_sha256"]),
-                str(prepared["snapshot_json"]),
-                int(prepared["now_ms"]),
-            ),
+            "SELECT evidence_version,evidence FROM news_events WHERE event_id=%s", (event_id,)
         ).fetchone()
         if row is None:
-            raise RuntimeError("news_event_evidence_insert_failed")
-        return dict(row)
+            raise ValueError("news_event_missing")
+        state = {} if row["evidence"] is None else dict(row["evidence"])
+        versions = list(state.get("versions") or ())
+        latest = None if not versions else versions[-1]
+        actual = (None, None) if latest is None else (row["evidence_version"], latest["evidence_sha256"])
+        if actual != (prepared.get("previous_version"), prepared.get("previous_sha256")):
+            raise RuntimeError("news_event_evidence_snapshot_changed")
+        if latest is not None and latest["evidence_sha256"] == prepared["evidence_sha256"]:
+            return {
+                **latest,
+                "event_id": event_id,
+                "snapshot": json.loads(prepared["snapshot_json"]),
+                "provenance": "observed",
+                "release_eligible": True,
+                "material_sha256": state["material_sha256"],
+            }
+        document = json.loads(str(prepared["snapshot_json"]))
+        fact_scopes = dict(state.get("fact_scopes") or {})
+        fact_scopes.setdefault(str(prepared["focus_fact_id"]), document["focus_fact"])
+        version = {
+            "evidence_version": int(prepared["evidence_version"]),
+            "evidence_sha256": str(prepared["evidence_sha256"]),
+            "focus_fact_id": str(prepared["focus_fact_id"]),
+            "created_at_ms": int(prepared["now_ms"]),
+        }
+        versions.append(version)
+        state = {
+            "material_sha256": prepared["material_sha256"],
+            "focus_item_id": document["card"]["leader_item_id"],
+            "fact_scopes": fact_scopes,
+            "versions": versions,
+        }
+        self.conn.execute(
+            "UPDATE news_events SET evidence_version=%s,evidence=%s::jsonb WHERE event_id=%s",
+            (version["evidence_version"], _dumps(state), event_id),
+        )
+        return {
+            **version,
+            "event_id": event_id,
+            "snapshot": document,
+            "provenance": "observed",
+            "release_eligible": True,
+            "material_sha256": state["material_sha256"],
+        }
 
     def latest_evidence_snapshot(self, event_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
-            """
-            SELECT evidence.event_id, evidence.evidence_version, evidence.focus_fact_id,
-                   evidence.evidence_sha256, evidence.provenance, evidence.release_eligible,
-                   evidence.snapshot, evidence.created_at_ms
-              FROM news_event_evidence_snapshots evidence
-              JOIN news_events event ON event.event_id = evidence.event_id
-             WHERE evidence.event_id = %s
-               AND evidence.provenance = 'observed'
-               AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-             ORDER BY evidence.evidence_version DESC LIMIT 1
-            """,
-            (event_id,),
+            "SELECT evidence_version,evidence FROM news_events WHERE event_id=%s", (event_id,)
         ).fetchone()
-        return dict(row) if row else None
+        if row is None or row["evidence"] is None:
+            return None
+        return self._reconstruct_evidence(self._live_evidence_material(event_id), row)
 
     def event_card(self, event_id: str) -> dict[str, Any] | None:
-        """The exact latest immutable evidence card the SemanticJudge may read."""
+        """Reconstruct the current evidence card and its stored version identity."""
 
         evidence = self.latest_evidence_snapshot(event_id)
         if evidence is None:

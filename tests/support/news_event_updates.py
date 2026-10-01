@@ -25,7 +25,7 @@ from tracefold.news.updates.contracts import (
     Source,
     SupportDraft,
 )
-from tracefold.news.updates.identity import canonical_json, digest
+from tracefold.news.updates.identity import canonical_json, digest, identity
 
 STAMP = 1_790_405_000_000
 TARIFF_TOPIC = "medtop:20000384"
@@ -185,41 +185,60 @@ def persist_update(conn: Any, update: EventUpdate, *, completed_at_ms: int | Non
     result_id = f"result:{update.event_id}:{update.content_revision[:12]}"
     completed = int(completed_at_ms if completed_at_ms is not None else update.adopted_at_ms)
     conn.execute(
-        """
-        INSERT INTO news_semantic_observations (
-          result_id, work_id, event_id, input_revision, input_sha256, program_identity, completed_at_ms,
-          understanding
-        ) VALUES (%s, %s, %s, %s, %s, 'news_updates:test-program', %s, '{}'::jsonb)
-        """,
-        (result_id, f"work:{update.event_id}", update.event_id, update.input_revision, "a" * 64, completed),
-    )
-    conn.execute(
-        """
-        INSERT INTO news_event_updates (
-          event_id, content_revision, input_revision, previous_content_revision, adopted_at_ms,
-          observation_result_id, document
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb)
-        """,
+        """INSERT INTO news_analyses(analysis_id,origin,work_id,event_id,input_revision,input_sha256,program_identity,
+             completed_at_ms,understanding,content_revision,previous_content_revision,update_ref,adopted_at_ms,document)
+           VALUES (%s,'semantic',%s,%s,%s,%s,'news_updates:test-program',%s,'{}',%s,%s,%s,%s,%s::jsonb)""",
         (
-            update.event_id,
-            update.content_revision,
-            update.input_revision,
-            update.previous_content_revision,
-            update.adopted_at_ms,
             result_id,
+            f"work:{update.event_id}",
+            update.event_id,
+            update.input_revision,
+            "a" * 64,
+            completed,
+            update.content_revision,
+            update.previous_content_revision,
+            update.ref,
+            update.adopted_at_ms,
             canonical_json(update),
         ),
     )
+    conn.execute("UPDATE news_events SET current_analysis_id=%s WHERE event_id=%s", (result_id, update.event_id))
+    return result_id
+
+
+def persist_analysis_document(
+    conn: Any,
+    document: dict[str, Any],
+    *,
+    adopted_at_ms: int,
+    completed_at_ms: int | None = None,
+    head: bool = True,
+) -> str:
+    """Seed a controlled adopted analysis, including partial documents used by SQL projection tests."""
+    event_id = str(document["event_id"])
+    revision = str(document["content_revision"])
+    result_id = f"fixture:{event_id}:{revision}"
     conn.execute(
-        """
-        INSERT INTO news_event_update_heads (event_id, content_revision, input_revision, update_ref, adopted_at_ms)
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (event_id) DO UPDATE
-          SET content_revision = EXCLUDED.content_revision, input_revision = EXCLUDED.input_revision,
-              update_ref = EXCLUDED.update_ref, adopted_at_ms = EXCLUDED.adopted_at_ms
-        """,
-        (update.event_id, update.content_revision, update.input_revision, update.ref, update.adopted_at_ms),
+        """INSERT INTO news_analyses(analysis_id,event_id,origin,input_revision,completed_at_ms,work_id,
+             input_sha256,program_identity,understanding,content_revision,previous_content_revision,
+             update_ref,adopted_at_ms,document)
+           VALUES (%s,%s,'semantic',%s,%s,%s,%s,'projection-fixture','{}',%s,%s,%s,%s,%s::jsonb)""",
+        (
+            result_id,
+            event_id,
+            int(document.get("input_revision", 1)),
+            adopted_at_ms if completed_at_ms is None else completed_at_ms,
+            result_id,
+            digest(document),
+            revision,
+            document.get("previous_content_revision"),
+            identity("update", event_id, revision),
+            adopted_at_ms,
+            canonical_json(document),
+        ),
     )
+    if head:
+        conn.execute("UPDATE news_events SET current_analysis_id=%s WHERE event_id=%s", (result_id, event_id))
     return result_id
 
 
@@ -234,28 +253,18 @@ def persist_semantic_work(
     last_outcome: str | None = None,
     last_error_code: str | None = None,
 ) -> None:
+    from tracefold.news.storage.semantic_jobs import SemanticJobDetail
+
+    detail = SemanticJobDetail(
+        wanted_revision=wanted, done_revision=done, lineage_id=f"{event_id}:lineage", last_outcome=last_outcome
+    )
+    state = "done" if (done or 0) >= wanted else "failed" if last_outcome == "failed" else "pending"
     conn.execute(
-        """
-        INSERT INTO news_semantic_work (
-          event_id, wanted_revision, done_revision, lineage_id, attempts, next_attempt_at_ms,
-          last_outcome, last_error_code, updated_at_ms
-        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (event_id) DO UPDATE
-          SET wanted_revision = EXCLUDED.wanted_revision, done_revision = EXCLUDED.done_revision,
-              attempts = EXCLUDED.attempts, last_outcome = EXCLUDED.last_outcome,
-              last_error_code = EXCLUDED.last_error_code, updated_at_ms = EXCLUDED.updated_at_ms
-        """,
-        (
-            event_id,
-            wanted,
-            done,
-            f"{event_id}:lineage",
-            attempts,
-            now_ms,
-            last_outcome,
-            last_error_code,
-            now_ms,
-        ),
+        """INSERT INTO news_jobs(job_kind,subject_id,state,attempts,next_attempt_at_ms,detail,last_error_code,
+             created_at_ms,updated_at_ms) VALUES ('semantic',%s,%s,%s,%s,%s::jsonb,%s,%s,%s)
+           ON CONFLICT(job_kind,subject_id) DO UPDATE SET state=EXCLUDED.state,attempts=EXCLUDED.attempts,
+             detail=EXCLUDED.detail,last_error_code=EXCLUDED.last_error_code,updated_at_ms=EXCLUDED.updated_at_ms""",
+        (event_id, state, attempts, now_ms, detail.model_dump_json(), last_error_code, now_ms, now_ms),
     )
 
 

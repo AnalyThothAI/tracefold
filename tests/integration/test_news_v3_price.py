@@ -6,12 +6,12 @@ retention cascade, and the shape of the bounded review aggregates over the actua
 
 from __future__ import annotations
 
-import json
 from decimal import Decimal
 
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_event_updates import persist_analysis_document
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import (
@@ -40,7 +40,6 @@ def _clean(conn):
         "news_quote_snapshots",
         "news_market_observations",
         "news_event_assets",
-        "news_semantic_observations",
         "news_events",
         "news_items",
         "news_market_instruments",
@@ -117,7 +116,6 @@ def _event(
             (symbol, event_id, opened_at_ms),
         )
     revision = "a" * 64
-    result_id = f"result:{event_id}"
     document = {
         "schema_version": "news_event_update_v2",
         "event_id": event_id,
@@ -135,24 +133,7 @@ def _event(
             }
         ],
     }
-    conn.execute(
-        """INSERT INTO news_semantic_observations
-             (result_id,work_id,event_id,input_revision,input_sha256,program_identity,completed_at_ms,understanding)
-           VALUES (%s,%s,%s,1,%s,'price-fixture',%s,'{}'::jsonb)""",
-        (result_id, result_id, event_id, revision, opened_at_ms),
-    )
-    conn.execute(
-        """INSERT INTO news_event_updates
-             (event_id,content_revision,input_revision,adopted_at_ms,observation_result_id,document)
-           VALUES (%s,%s,1,%s,%s,%s::jsonb)""",
-        (event_id, revision, opened_at_ms, result_id, json.dumps(document)),
-    )
-    conn.execute(
-        """INSERT INTO news_event_update_heads
-             (event_id,content_revision,input_revision,update_ref,adopted_at_ms)
-           VALUES (%s,%s,1,news_identity('update',jsonb_build_array(%s::text,%s::text)),%s)""",
-        (event_id, revision, event_id, revision, opened_at_ms),
-    )
+    persist_analysis_document(conn, document, adopted_at_ms=opened_at_ms)
     conn.commit()
 
 

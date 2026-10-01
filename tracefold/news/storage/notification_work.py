@@ -12,6 +12,7 @@ from ..notifications.contracts import NEWS_CHANNEL, NOTIFICATION_ATTEMPTS_MAX, N
 from .errors import EventUpdateConflict, IntentLeaseLost
 from .notification_context import NotificationContextStorage
 from .notification_jobs import NotificationJobDetail
+from .semantic_rows import ANALYSIS_HEADS_SQL
 from .sql_values import _dumps
 from .update_commit import lock_event
 
@@ -87,7 +88,7 @@ class NotificationWorkStorage:
         lease_ms: int = INTENT_LEASE_MS,
     ) -> dict[str, Any]:
         head = self.conn.execute(
-            "SELECT event_id,content_revision FROM news_event_update_heads WHERE update_ref=%s",
+            f"SELECT event_id,content_revision FROM ({ANALYSIS_HEADS_SQL}) WHERE update_ref=%s",  # noqa: S608 -- fixed SQL; bound values.
             (plan.update_ref,),
         ).fetchone()
         if head is None:
@@ -95,7 +96,7 @@ class NotificationWorkStorage:
         event_id = str(head["event_id"])
         lock_event(self.conn, event_id)
         head = self.conn.execute(
-            "SELECT content_revision FROM news_event_update_heads WHERE event_id=%s AND update_ref=%s",
+            f"SELECT content_revision FROM ({ANALYSIS_HEADS_SQL}) WHERE event_id=%s AND update_ref=%s",  # noqa: S608 -- fixed SQL; bound values.
             (event_id, plan.update_ref),
         ).fetchone()
         work = self.conn.execute(

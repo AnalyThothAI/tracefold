@@ -55,6 +55,7 @@ from tracefold.news.storage.notification_rows import (
     UPDATE_RECEIPTS_SQL,
 )
 from tracefold.news.storage.notification_store import PgNotificationStore
+from tracefold.news.storage.semantic_rows import ANALYSES_SQL, SEMANTIC_JOBS_SQL, SEMANTIC_RESULTS_SQL
 from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.updates.contracts import (
     Asset,
@@ -771,7 +772,7 @@ def test_the_stage_breakdown_from_adoption_to_the_provider_is_read_back_with_sql
                x.attempted_at_ms, x.settled_at_ms
           FROM ({UPDATE_RECEIPTS_SQL}) x
           JOIN ({NOTIFICATION_DECISIONS_SQL}) d ON d.decision_ref = x.decision_ref
-          JOIN news_event_updates u ON u.event_id = x.event_id AND u.content_revision = x.content_revision
+          JOIN ({ANALYSES_SQL}) u ON u.event_id = x.event_id AND u.content_revision = x.content_revision
         """
     )
     assert all(value is not None for value in row.values()), row
@@ -823,22 +824,22 @@ def test_new_program_reuses_extraction_and_keeps_legacy_observation_and_frozen_i
             read_refs=tuple(view.read_ref for view in reading_views(source)),
         )
         await pg.save_observation(legacy)
-        legacy_before = sql("SELECT * FROM news_semantic_observations WHERE result_id=%s", (legacy.result_id,))[0]
+        legacy_before = sql(f"SELECT * FROM ({SEMANTIC_RESULTS_SQL}) WHERE result_id=%s", (legacy.result_id,))[0]
         await pg.defer_semantic_event(lease, reason="resume_after_program_change")
-        clock.now_ms = sql("SELECT next_attempt_at_ms FROM news_semantic_work WHERE event_id=%s", (retry_event,))[0][
-            "next_attempt_at_ms"
-        ]
+        clock.now_ms = sql(f"SELECT next_attempt_at_ms FROM ({SEMANTIC_JOBS_SQL}) WHERE event_id=%s", (retry_event,))[
+            0
+        ]["next_attempt_at_ms"]
         subject = agent(pg, clock, analyzer)
         subject.program_identity = "program-after-refactor"
         assert await run_agent(subject, retry_event) == "adopted"
         assert analyzer.extract_calls == 0, "the same analyzer/input work must reuse its saved extraction"
         assert (
-            sql("SELECT * FROM news_semantic_observations WHERE result_id=%s", (legacy.result_id,))[0] == legacy_before
+            sql(f"SELECT * FROM ({SEMANTIC_RESULTS_SQL}) WHERE result_id=%s", (legacy.result_id,))[0] == legacy_before
         )
         return legacy.result_id, work_id
 
     legacy_id, work_id = asyncio.run(resume())
-    observations = sql("SELECT * FROM news_semantic_observations WHERE event_id=%s", (retry_event,))
+    observations = sql(f"SELECT * FROM ({SEMANTIC_RESULTS_SQL}) WHERE event_id=%s", (retry_event,))
     assert len(observations) == 2
     assert {row["work_id"] for row in observations} == {work_id}
     assert {row["program_identity"] for row in observations} == {"program-before-refactor", "program-after-refactor"}
@@ -847,7 +848,7 @@ def test_new_program_reuses_extraction_and_keeps_legacy_observation_and_frozen_i
     head = asyncio.run(pg.head(retry_event))
     assert head is not None
     adopted_row = sql(
-        "SELECT observation_result_id FROM news_event_updates WHERE event_id=%s AND content_revision=%s",
+        f"SELECT observation_result_id FROM ({ANALYSES_SQL}) WHERE event_id=%s AND content_revision=%s",
         (retry_event, head.content_revision),
     )[0]
     assert adopted_row["observation_result_id"] == adopted["result_id"]

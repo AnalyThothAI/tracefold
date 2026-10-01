@@ -12,6 +12,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_current_delivery import seed_delivery
+from tests.support.news_event_updates import persist_analysis_document
 from tests.support.news_reader import PushAll
 from tests.support.news_recall_window import (
     PROBE_RECEIPT,
@@ -42,6 +43,7 @@ from tests.support.news_update_pg import (
     run_agent,
     save_card,
     seed_event,
+    set_semantic_job,
     sql,
     store,
     trade_rows,
@@ -70,6 +72,13 @@ from tracefold.news.storage.notification_rows import (
     UPDATE_RECEIPTS_SQL,
 )
 from tracefold.news.storage.semantic_input import frozen_input
+from tracefold.news.storage.semantic_rows import (
+    ANALYSES_SQL,
+    ANALYSIS_HEADS_SQL,
+    CLAIM_LINKS_SQL,
+    SEMANTIC_JOBS_SQL,
+    SEMANTIC_RESULTS_SQL,
+)
 from tracefold.news.updates.contracts import (
     Asset,
     Citation,
@@ -95,7 +104,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_d
 def head_claim(claim_ref: str, *, statement: str | None = None, **fields: Any) -> dict[str, Any]:
     """The adopted head's claim document under another ref, with `statement` and `fields` replaced."""
 
-    document = sql("SELECT document FROM news_event_updates WHERE event_id = %s", (EVENT,))[0]["document"]
+    document = sql(f"SELECT document FROM ({ANALYSES_SQL}) WHERE event_id = %s", (EVENT,))[0]["document"]
     claim = copy.deepcopy(document["claims"][0])
     claim["ref"] = claim_ref
     claim["fields"].update(fields)
@@ -109,7 +118,7 @@ def seed_update_version(
 ) -> None:
     """An adopted version of another Event carrying exactly `claims`; `head` also makes it that Event's head."""
 
-    source = sql("SELECT document, observation_result_id FROM news_event_updates WHERE event_id = %s", (EVENT,))[0]
+    source = sql(f"SELECT document, observation_result_id FROM ({ANALYSES_SQL}) WHERE event_id = %s", (EVENT,))[0]
     document = {
         **source["document"],
         "event_id": event_id,
@@ -117,22 +126,11 @@ def seed_update_version(
         "previous_content_revision": None,
         "claims": claims,
     }
-    sql(
-        """INSERT INTO news_event_updates
-             (event_id, content_revision, input_revision, previous_content_revision,
-              adopted_at_ms, observation_result_id, document)
-           VALUES (%s, %s, 1, NULL, %s, %s, %s::jsonb)""",
-        (event_id, content_revision, STAMP - 10_000, source["observation_result_id"], json.dumps(document)),
-    )
-    if head:
-        sql(
-            """INSERT INTO news_event_update_heads
-                 (event_id, content_revision, input_revision, update_ref, adopted_at_ms)
-               VALUES (%s, %s, 1, %s, %s)
-               ON CONFLICT (event_id) DO UPDATE SET content_revision = EXCLUDED.content_revision,
-                 update_ref = EXCLUDED.update_ref, adopted_at_ms = EXCLUDED.adopted_at_ms""",
-            (event_id, content_revision, identity("update", event_id, content_revision), STAMP - 10_000),
-        )
+
+    def persist(repos):
+        return persist_analysis_document(repos.conn, document, adopted_at_ms=STAMP - 10_000, head=head)
+
+    ThreadedDb()._run("seed-analysis", persist)
 
 
 def seed_sent_claim_projection(event_id: str, *, content_revision: str, claim_ref: str, related: bool = True) -> None:
@@ -149,11 +147,11 @@ def seed_sent_claim_projection(event_id: str, *, content_revision: str, claim_re
 
 def freeze_receipt(intent_id: str) -> None:
     sql(
-        """UPDATE news_notifications d SET sent_claims=(
+        f"""UPDATE news_notifications d SET sent_claims=(
              SELECT COALESCE(jsonb_agg(claim), '[]'::jsonb)
              FROM jsonb_array_elements(u.document->'claims') claim
              WHERE d.claim_refs ? (claim->>'ref'))
-           FROM news_event_updates u WHERE d.intent_id=%s
+           FROM ({ANALYSES_SQL}) u WHERE d.intent_id=%s
              AND u.event_id=d.event_id AND u.content_revision=d.content_revision""",
         (intent_id,),
     )
@@ -236,7 +234,7 @@ ON CONFLICT(notification_id) DO UPDATE SET intent_id=EXCLUDED.intent_id,state=EX
 
 
 def test_text_digest_matches_the_python_identity() -> None:
-    for body in ('标题\n\n第一行 "引号" \\ tab\t', "é combining", "emoji 🚀  "):
+    for body in ('标题\n\n第一行 "引号" \\ tab\t', "é combining", "emoji 🚀"):
         assert sql("SELECT news_text_digest(%s) AS sha", (body,))[0]["sha"] == digest(body)
 
 
@@ -256,7 +254,7 @@ def test_agent_turn_adopts_once_with_public_row_and_pending_notification() -> No
     assert asyncio.run(run_agent(agent(pg.semantic, clock, analyzer), EVENT)) == "adopted"
     head = asyncio.run(pg.semantic.head(EVENT))
     assert head is not None and head.input_revision == 1
-    work = sql("SELECT wanted_revision, done_revision, lease_token, last_outcome FROM news_semantic_work")[0]
+    work = sql(f"SELECT wanted_revision, done_revision, lease_token, last_outcome FROM ({SEMANTIC_JOBS_SQL})")[0]
     assert work == {"wanted_revision": 1, "done_revision": 1, "lease_token": None, "last_outcome": "adopted"}
     rows = trade_rows()
     assert [(row["kind"], row["source_fact_key"], row["source_revision"]) for row in rows] == [
@@ -274,7 +272,7 @@ def test_agent_turn_adopts_once_with_public_row_and_pending_notification() -> No
     # A replay of the same work reuses its checkpoints and adopts nothing new.
     assert asyncio.run(run_agent(agent(pg.semantic, clock, analyzer), EVENT)) == "unchanged"
     assert analyzer.extract_calls == 1
-    assert sql("SELECT count(*) AS n FROM news_event_updates")[0]["n"] == 1
+    assert sql(f"SELECT count(*) AS n FROM ({ANALYSES_SQL})")[0]["n"] == 1
     assert len(trade_rows()) == 1
     assert "news_update_adopt" in db.names
 
@@ -331,7 +329,7 @@ def test_two_adopters_of_one_head_adopt_exactly_once() -> None:
         return [adopted for adopted, _update in results]
 
     assert sorted(asyncio.run(race())) == [False, True]
-    assert sql("SELECT count(*) AS n FROM news_event_updates")[0]["n"] == 1
+    assert sql(f"SELECT count(*) AS n FROM ({ANALYSES_SQL})")[0]["n"] == 1
     head = asyncio.run(pg.semantic.head(EVENT))
     assert head is not None
     assert [row["source_revision"] for row in trade_rows()] == [head.content_revision]
@@ -363,7 +361,7 @@ def test_adoption_never_downgrades_the_input_revision() -> None:
     )
     with pytest.raises(EventUpdateConflict, match="news_update_input_revision_downgrade"):
         asyncio.run(adopt_next(pg.semantic, update, older, extraction_for(older), work_id="work-old"))
-    assert sql("SELECT input_revision FROM news_event_update_heads")[0]["input_revision"] == 2
+    assert sql(f"SELECT input_revision FROM ({ANALYSIS_HEADS_SQL})")[0]["input_revision"] == 2
 
 
 def test_possible_new_is_adopted_and_marked_for_notification_without_a_public_row() -> None:
@@ -410,7 +408,8 @@ def test_claim_links_outlive_the_revision_that_asserted_them_and_are_read_from_b
     adopted, first = asyncio.run(adopt_next(pg.semantic, None, first_source, linked))
     assert adopted
     rows = sql(
-        "SELECT update_ref,current_ref,previous_ref,relation,current_event_id,previous_event_id FROM news_claim_links"
+        "SELECT update_ref,current_ref,previous_ref,relation,current_event_id,previous_event_id "
+        f"FROM ({CLAIM_LINKS_SQL})"
     )
     assert rows == [
         {
@@ -438,7 +437,7 @@ def test_claim_links_outlive_the_revision_that_asserted_them_and_are_read_from_b
     )
     adopted, second = asyncio.run(adopt_next(pg.semantic, first, second_source, corrected))
     assert adopted and all(change.previous_ref != other.claim.ref for change in second.changes)
-    assert len(sql("SELECT 1 FROM news_claim_links")) == 2
+    assert len(sql(f"SELECT 1 FROM ({CLAIM_LINKS_SQL})")) == 2
     own = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
     theirs = asyncio.run(pg.notifications.notification_snapshot("ev-other", "news"))
     assert own is not None and theirs is not None
@@ -519,9 +518,8 @@ def test_semantic_status_separates_runnable_deferred_and_exhausted() -> None:
         0,
         0,
     )
-    sql("UPDATE news_semantic_work SET next_attempt_at_ms=%s", (now_ms + 60_000,))
-    assert (status()["semantic_pending"], status()["semantic_deferred"]) == (0, 1)
-    sql("UPDATE news_semantic_work SET attempts=3,last_outcome='failed',last_error_code='output_truncated'")
+    set_semantic_job(None, next_attempt_at_ms=now_ms + 60_000)
+    set_semantic_job(None, attempts=3, last_outcome="failed", last_error_code="output_truncated")
     assert (status()["semantic_pending"], status()["semantic_deferred"], status()["semantic_failed_exhausted"]) == (
         0,
         0,
@@ -587,15 +585,15 @@ def test_empty_extraction_records_the_task_read_and_does_not_loop_on_the_same_so
     assert asyncio.run(run_agent(agent(pg.semantic, clock, analyzer), EVENT)) == "unchanged"
     assert asyncio.run(pg.semantic.head(EVENT)) is None
     assert sql(f"SELECT count(*) AS n FROM ({NOTIFY_JOBS_SQL}) WHERE event_id=%s", (EVENT,))[0]["n"] == 0
-    first = sql("SELECT processed_read_refs,done_revision FROM news_semantic_work WHERE event_id=%s", (EVENT,))[0]
+    first = sql(f"SELECT processed_read_refs,done_revision FROM ({SEMANTIC_JOBS_SQL}) WHERE event_id=%s", (EVENT,))[0]
     assert len(first["processed_read_refs"]) == 1 and first["done_revision"] == 1
-    observed = sql("SELECT read_refs FROM news_semantic_observations WHERE event_id=%s", (EVENT,))[0]
+    observed = sql(f"SELECT read_refs FROM ({SEMANTIC_RESULTS_SQL}) WHERE event_id=%s", (EVENT,))[0]
     assert observed["read_refs"] == first["processed_read_refs"]
 
-    sql("UPDATE news_semantic_work SET wanted_revision=2 WHERE event_id=%s", (EVENT,))
+    set_semantic_job(EVENT, wanted_revision=2)
     assert asyncio.run(run_agent(agent(pg.semantic, clock, analyzer), EVENT)) == "unchanged"
     assert analyzer.extract_calls == 1
-    second = sql("SELECT processed_read_refs,done_revision FROM news_semantic_work WHERE event_id=%s", (EVENT,))[0]
+    second = sql(f"SELECT processed_read_refs,done_revision FROM ({SEMANTIC_JOBS_SQL}) WHERE event_id=%s", (EVENT,))[0]
     assert second == {"processed_read_refs": first["processed_read_refs"], "done_revision": 2}
 
 
@@ -615,7 +613,7 @@ def test_semantic_work_is_leased_bounded_and_reopened_by_a_new_revision() -> Non
     clock.now_ms += 10 * 60_000
     assert asyncio.run(pg.semantic.claim_semantic_work(EVENT, lease_ms=30_000)) is None
     assert asyncio.run(pg.semantic.pending_semantic_events(10)) == ()
-    row = sql("SELECT attempts, last_outcome, last_error_code FROM news_semantic_work")[0]
+    row = sql(f"SELECT attempts, last_outcome, last_error_code FROM ({SEMANTIC_JOBS_SQL})")[0]
     assert row == {"attempts": 3, "last_outcome": "failed", "last_error_code": "provider_unavailable"}
 
     conn = connect_postgres_test(read_only=False)
@@ -628,7 +626,7 @@ def test_semantic_work_is_leased_bounded_and_reopened_by_a_new_revision() -> Non
         conn.close()
     assert revision == 2
     # A new revision is new work: the failed outcome, its code and the spent attempts belong to the old one.
-    row = sql("SELECT attempts, last_outcome, last_error_code FROM news_semantic_work")[0]
+    row = sql(f"SELECT attempts, last_outcome, last_error_code FROM ({SEMANTIC_JOBS_SQL})")[0]
     assert row == {"attempts": 0, "last_outcome": None, "last_error_code": None}
     assert asyncio.run(pg.semantic.pending_semantic_events(10)) == (EVENT,)
     conn = connect_postgres_test(read_only=False)
@@ -664,7 +662,7 @@ def test_one_optional_read_per_lineage_and_its_attached_input() -> None:
     assert attached.revision == 2 and attached.lineage_id == source.lineage_id
     assert attached.evidence == (read,) and attached.focus_claim_refs == (head.claims[0].ref,)
     assert [row.claim.ref for row in attached.prior] == [head.claims[0].ref]
-    assert sql("SELECT extra_read_state FROM news_semantic_work")[0]["extra_read_state"] == "attached"
+    assert sql(f"SELECT extra_read_state FROM ({SEMANTIC_JOBS_SQL})")[0]["extra_read_state"] == "attached"
     assert not asyncio.run(pg.semantic.reserve_extra_read(source.lineage_id, "target-3"))
 
 
@@ -1542,7 +1540,7 @@ def test_sql_asset_route_reads_legacy_markets_like_claim_validation() -> None:
     # The canonical read is a projection; adopted legacy JSON remains untouched.
     assert sql(
         "SELECT document->'claims'->0->'fields'->'assets'->0->>'market_type' AS market "
-        "FROM news_event_updates WHERE event_id='legacy-market:forex'"
+        f"FROM ({ANALYSES_SQL}) WHERE event_id='legacy-market:forex'"
     ) == [{"market": "forex"}]
 
 
@@ -1691,14 +1689,9 @@ def test_reader_filters_old_listing_links_using_the_receipts_sent_claim_version(
         (identity("update", "older-assertion"), "corrects", head.adopted_at_ms - 1),
         (head.ref, relation, head.adopted_at_ms),
     ):
-        sql(
-            """INSERT INTO news_claim_links
-                 (update_ref,current_ref,previous_ref,relation,current_event_id,previous_event_id,asserted_at_ms)
-               VALUES (%s,%s,%s,%s,%s,'old-listing',%s)""",
-            (update_ref, current_ref, previous_ref, asserted_relation, EVENT, asserted_at),
-        )
+        seed_claim_link(update_ref, current_ref, previous_ref, asserted_relation, EVENT, asserted_at)
     clock.now_ms += 1000
-    ledger_before = sql("SELECT * FROM news_claim_links ORDER BY asserted_at_ms")
+    ledger_before = sql(f"SELECT * FROM ({CLAIM_LINKS_SQL}) ORDER BY asserted_at_ms")
     with monkeypatch.context() as legacy:
         legacy.setattr("tracefold.news.storage.notification_context.different_listing_assets", lambda *_: False)
         old_material = reader_material(db, clock)
@@ -1731,7 +1724,7 @@ def test_reader_filters_old_listing_links_using_the_receipts_sent_claim_version(
     assert [Claim.model_validate(claim).ref for claim in linked_row["historical_claims"]] == (
         [] if missing_projection else [previous_ref]
     )
-    assert sql("SELECT * FROM news_claim_links ORDER BY asserted_at_ms") == ledger_before
+    assert sql(f"SELECT * FROM ({CLAIM_LINKS_SQL}) ORDER BY asserted_at_ms") == ledger_before
 
 
 def test_gold_claim_recalls_its_history_through_the_real_sql_routes() -> None:
@@ -1763,17 +1756,13 @@ def test_gold_claim_recalls_its_history_through_the_real_sql_routes() -> None:
     filler = gold_window_filler(fixture)
     seed_window_receipts(filler)
     for number, link in enumerate(fixture["links"]):
-        sql(
-            """INSERT INTO news_claim_links
-                 (update_ref, current_ref, previous_ref, relation, current_event_id, asserted_at_ms)
-               VALUES (%s, %s, %s, %s, 'gold-links', %s)""",
-            (
-                f"update:fixture-{number}",
-                link["current_ref"],
-                link["previous_ref"],
-                link["relation"],
-                link["asserted_at_ms"],
-            ),
+        seed_claim_link(
+            f"update:fixture-{number}",
+            link["current_ref"],
+            link["previous_ref"],
+            link["relation"],
+            "gold-links",
+            link["asserted_at_ms"],
         )
     head = EventUpdate.model_validate(fixture["update"])
     state = asyncio.run(
@@ -2179,13 +2168,11 @@ def test_an_orphaned_sending_row_is_held_ambiguous_and_its_plan_completes() -> N
 def test_final_semantic_crash_is_settled_only_after_lease_expiry_and_retries_exact_version() -> None:
     pg, db, clock = store()
     head = adopted_head(pg.semantic, clock)
-    facts = sql("SELECT document FROM news_event_updates")
+    facts = sql(f"SELECT document FROM ({ANALYSES_SQL})")
     outbox = trade_rows()
-    checkpoints = sql("SELECT * FROM news_semantic_checkpoints")
-    sql(
-        "UPDATE news_semantic_work SET wanted_revision=2, attempts=3, lease_token='last', "
-        "leased_until_ms=%s, last_outcome=NULL",
-        (clock() + 1000,),
+    checkpoints = sql("SELECT * FROM news_judgment_cache WHERE cache_key LIKE 'semantic_checkpoint:%'")
+    set_semantic_job(
+        None, wanted_revision=2, attempts=3, lease_token="last", leased_until_ms=clock() + 1000, last_outcome=None
     )
 
     def settle(r):
@@ -2194,7 +2181,7 @@ def test_final_semantic_crash_is_settled_only_after_lease_expiry_and_retries_exa
     assert asyncio.run(db.tx("janitor", settle)) == 0
     clock.now_ms += 1001
     assert asyncio.run(db.tx("janitor", settle)) == 1
-    failed = sql("SELECT last_outcome,last_error_code,lease_token FROM news_semantic_work")[0]
+    failed = sql(f"SELECT last_outcome,last_error_code,lease_token FROM ({SEMANTIC_JOBS_SQL})")[0]
     assert failed == {
         "last_outcome": "failed",
         "last_error_code": "news_semantic_attempts_exhausted_after_lease",
@@ -2213,11 +2200,14 @@ def test_final_semantic_crash_is_settled_only_after_lease_expiry_and_retries_exa
             )
             is expected
         )
-    work = sql("SELECT attempts,done_revision,last_outcome,last_error_code FROM news_semantic_work")[0]
+    work = sql(f"SELECT attempts,done_revision,last_outcome,last_error_code FROM ({SEMANTIC_JOBS_SQL})")[0]
     assert work["attempts"] == 0 and work["done_revision"] == 1 and work["last_outcome"] is None
     assert work["last_error_code"] == failed["last_error_code"]
-    assert sql("SELECT document FROM news_event_updates") == facts
-    assert trade_rows() == outbox and sql("SELECT * FROM news_semantic_checkpoints") == checkpoints
+    assert sql(f"SELECT document FROM ({ANALYSES_SQL})") == facts
+    assert (
+        trade_rows() == outbox
+        and sql("SELECT * FROM news_judgment_cache WHERE cache_key LIKE 'semantic_checkpoint:%'") == checkpoints
+    )
     assert asyncio.run(pg.semantic.head(EVENT)) == head
 
 
@@ -2236,7 +2226,7 @@ def test_notification_retry_revives_the_failed_unsent_intent_and_never_reopens_a
         "state": "failed",
         "last_error_code": "bad_copy",
     }
-    facts, outbox = sql("SELECT document FROM news_event_updates"), trade_rows()
+    facts, outbox = sql(f"SELECT document FROM ({ANALYSES_SQL})"), trade_rows()
 
     def retry(r):
         return r.news.notification_work.retry_failed_revision(
@@ -2258,7 +2248,7 @@ def test_notification_retry_revives_the_failed_unsent_intent_and_never_reopens_a
     sent = sql(f"SELECT * FROM ({UPDATE_RECEIPTS_SQL})")
     assert not asyncio.run(db.tx("retry", retry))
     assert sql(f"SELECT * FROM ({UPDATE_RECEIPTS_SQL})") == sent
-    assert sql("SELECT document FROM news_event_updates") == facts and trade_rows() == outbox
+    assert sql(f"SELECT document FROM ({ANALYSES_SQL})") == facts and trade_rows() == outbox
 
 
 @pytest.mark.parametrize("state", ["sending", "ambiguous", "terminal"])
@@ -2332,11 +2322,11 @@ def test_targeted_reanalysis_reuses_work_and_preserves_adopted_head() -> None:
     assert result == "unchanged"
     assert asyncio.run(pg.semantic.head(EVENT)) == head
     observations = sql(
-        "SELECT read_refs,reanalysis_reason,reanalysis_head_ref FROM news_semantic_observations ORDER BY input_revision"
+        f"SELECT read_refs,reanalysis_reason,reanalysis_head_ref FROM ({SEMANTIC_RESULTS_SQL}) ORDER BY input_revision"
     )
     assert observations[-1]["read_refs"] == [read_ref]
     assert observations[-1]["reanalysis_head_ref"] == head.ref
-    assert sql("SELECT reanalysis_read_ref,done_revision FROM news_semantic_work")[0] == {
+    assert sql(f"SELECT reanalysis_read_ref,done_revision FROM ({SEMANTIC_JOBS_SQL})")[0] == {
         "reanalysis_read_ref": None,
         "done_revision": 2,
     }
@@ -2448,3 +2438,39 @@ def test_exact_digest_member_has_its_own_scope_without_focus_snapshot() -> None:
         assert "Agency suspends withdrawals" in shown
         assert "不构成投资建议" in shown
         assert "Beta releases earnings" not in shown
+
+
+def seed_claim_link(
+    update_ref: str, current_ref: str, previous_ref: str, relation: str, event_id: str, at_ms: int
+) -> None:
+    if not sql("SELECT 1 FROM news_events WHERE event_id=%s", (event_id,)):
+        seed_event(event_id, fingerprint=event_id, at_ms=at_ms)
+    document = {
+        "event_id": event_id,
+        "content_revision": digest(update_ref),
+        "input_revision": 1,
+        "claims": [],
+        "changes": [{"current_ref": current_ref, "previous_ref": previous_ref, "relation": relation}],
+    }
+
+    def persist(repos):
+        conn = repos.conn
+        result_id = "link-fixture:" + digest(update_ref)
+        conn.execute(
+            """INSERT INTO news_analyses(analysis_id,event_id,origin,input_revision,completed_at_ms,work_id,
+                 input_sha256,program_identity,understanding,content_revision,update_ref,adopted_at_ms,document)
+               VALUES (%s,%s,'semantic',1,%s,%s,%s,'link-fixture','{}',%s,%s,%s,%s::jsonb)""",
+            (
+                result_id,
+                event_id,
+                at_ms,
+                result_id,
+                digest(document),
+                document["content_revision"],
+                update_ref,
+                at_ms,
+                json.dumps(document),
+            ),
+        )
+
+    ThreadedDb()._run("seed-claim-link", persist)

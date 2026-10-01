@@ -328,8 +328,8 @@ def test_status_audit_explains_the_statements_the_status_route_executes():
     pipeline = queries["news_status_pipeline"].sql
     assert "news_notifications" in pipeline
     assert "percentile_cont(0.95)" in queries["news_status_delivery"].sql
-    assert "news_event_evidence_snapshots" in pipeline
-    assert queries["news_status_funnel_totals"].sql.count("news_event_evidence_snapshots") == 2
+    assert "news_events" in pipeline
+    assert "news_events" in queries["news_status_funnel_totals"].sql
 
 
 def test_the_oi_cards_news_read_is_audited_as_the_statements_the_port_executes():
@@ -472,7 +472,7 @@ def test_news_audit_plans_the_statements_the_deduper_reaction_and_detail_reads_e
     assert audited["news_band_lookup"] == events.BAND_CANDIDATES_SQL
     # Not vacuous about the drift that motivated this: the audited member read returns the whole card.
     assert "i.canonical_url" in audited["news_event_members"]
-    assert "news_event_evidence_snapshots" in audited["news_band_lookup"]
+    assert "e.evidence_version IS NOT NULL" in audited["news_band_lookup"]
 
     # And the constants are the ones the production methods execute, by AST rather than by text.
     assert "EVENT_MEMBERS_SQL" in _executed_constants(FeedStorage, "event_detail")

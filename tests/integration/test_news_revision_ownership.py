@@ -21,6 +21,7 @@ from tests.support.news_update_pg import (
     run_agent,
     save_card,
     seed_event,
+    set_semantic_job,
     sql,
 )
 from tests.support.news_update_semantic import prior_of
@@ -29,6 +30,7 @@ from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.storage.errors import SemanticLeaseLost
 from tracefold.news.storage.notification_rows import UPDATE_RECEIPTS_SQL
 from tracefold.news.storage.notification_store import PgNotificationStore
+from tracefold.news.storage.semantic_rows import ITEM_REVISIONS_SQL, SEMANTIC_RESULTS_SQL
 from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.updates.contracts import Extraction, FrozenInput, PriorClaim, RelationDraft
 from tracefold.news.updates.judgment import ProviderUnavailable
@@ -43,7 +45,7 @@ def test_old_last_attempt_cannot_spend_or_delay_new_revision(outcome):
     seed_event()
     clock = Clock(STAMP + 10)
     pg = PgSemanticStore(ThreadedDb(), clock=clock)
-    sql("UPDATE news_semantic_work SET attempts=2")
+    set_semantic_job(None, attempts=2)
     old = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
     assert old is not None and old.attempts == 3 and old.source.revision == 1
     add_member_evidence(EVENT, "new-material", "Agency adds a new exemption.", now_ms=clock.now_ms)
@@ -90,7 +92,7 @@ def test_old_adopt_and_finish_cannot_clear_a_replacement_owner():
     with pytest.raises(SemanticLeaseLost):
         asyncio.run(agent.process(old))
     assert work(EVENT)["lease_token"] == new.lease_token
-    observation = sql("SELECT work_id FROM news_semantic_observations")[0]
+    observation = sql(f"SELECT work_id FROM ({SEMANTIC_RESULTS_SQL})")[0]
     with pytest.raises(SemanticLeaseLost):
         asyncio.run(pg.finish_semantic_work(observation["work_id"], lease=old, reason="late"))
     assert work(EVENT)["lease_token"] == new.lease_token
@@ -121,7 +123,7 @@ def test_same_record_reversal_reaches_frozen_input_and_old_envelope_replay_is_in
         )
     rows = sql(
         "SELECT revision_sha256,content_sha256,previous_revision_sha256,revision_sequence "
-        "FROM news_item_revisions ORDER BY revision_sequence"
+        f"FROM ({ITEM_REVISIONS_SQL}) ORDER BY revision_sequence"
     )
     assert len(rows) == len(sequence) - 1
     assert [r["revision_sequence"] for r in rows] == list(range(1, len(sequence)))
@@ -136,7 +138,7 @@ def test_same_record_reversal_reaches_frozen_input_and_old_envelope_replay_is_in
     clock.now_ms += 1000
     asyncio.run(consumer.handle(raw(888, texts[sequence[-1]], stamp=clock.now_ms)))  # Current content re-observed.
     assert work(event)["wanted_revision"] == before
-    assert sql("SELECT count(*) AS n FROM news_item_revisions")[0]["n"] == len(sequence) - 1
+    assert sql(f"SELECT count(*) AS n FROM ({ITEM_REVISIONS_SQL})")[0]["n"] == len(sequence) - 1
 
 
 def test_cross_event_correction_invalidates_frozen_unsent_card():
@@ -263,7 +265,7 @@ def test_a_crashed_final_attempt_quarantines_exactly_the_reads_it_was_given():
     seed_event()
     clock = Clock(STAMP + 10)
     pg = PgSemanticStore(ThreadedDb(), clock=clock)
-    sql("UPDATE news_semantic_work SET attempts=2")
+    set_semantic_job(None, attempts=2)
     crashed = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=10))
     assert crashed is not None and crashed.attempts == 3
     given = [view.read_ref for view in reading_views(crashed.source)]

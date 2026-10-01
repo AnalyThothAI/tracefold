@@ -1233,9 +1233,9 @@ async def publish_semantic_wake(
     )
 
     def _mark(repos: Any) -> None:
-        repos.news.semantic_work.mark_semantic_work_published(event_id=event_id, revision=revision, now_ms=stamp)
         # The Event's first handoff time; later wakes keep it.
         repos.news.mark_event_published(event_id=event_id, now_ms=stamp)
+        repos.news.semantic_work.mark_semantic_work_published(event_id=event_id, revision=revision, now_ms=stamp)
 
     try:
         await db.tx("news_semantic_wake_mark", _mark, timeout_seconds=1.0)

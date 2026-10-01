@@ -26,6 +26,7 @@ from tests.support.news_update_pg import (
     draft,
     run_agent,
     seed_event,
+    set_semantic_job,
     sql,
 )
 from tests.support.scripted_lm import ScriptedLM
@@ -40,6 +41,7 @@ from tracefold.news.pipeline.semantic import SemanticWorker
 from tracefold.news.storage.judgment_cache import JUDGMENT_CACHE_RETENTION_MS
 from tracefold.news.storage.judgment_store import PgJudgmentCache
 from tracefold.news.storage.notification_rows import NOTIFY_JOBS_SQL
+from tracefold.news.storage.semantic_rows import ITEM_REVISIONS_SQL, SEMANTIC_RESULTS_SQL
 from tracefold.news.storage.semantic_store import PgSemanticStore, PgSourceReader
 from tracefold.news.storage.semantic_work import SEMANTIC_ATTEMPTS_MAX
 from tracefold.news.updates.contracts import (
@@ -90,7 +92,7 @@ def test_a_body_revision_of_one_provider_record_is_new_evidence_and_new_semantic
     asyncio.run(deduper.handle(raw(7001, first, stamp=STAMP + 5_000)))
     assert [row["evidence_version"] for row in snapshots(event_id)] == [1]
     assert work(event_id)["wanted_revision"] == 1 and len(bus.wakes()) == 1
-    assert sql("SELECT count(*) AS n FROM news_item_revisions")[0]["n"] == 0
+    assert sql(f"SELECT count(*) AS n FROM ({ITEM_REVISIONS_SQL})")[0]["n"] == 0
     store = PgSemanticStore(ThreadedDb(), clock=Clock(STAMP + 6_000))
     assert asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p"), event_id)) == "adopted"
     original = asyncio.run(store.head(event_id))
@@ -101,7 +103,7 @@ def test_a_body_revision_of_one_provider_record_is_new_evidence_and_new_semantic
     asyncio.run(deduper.handle(raw(7001, revised, stamp=STAMP + 10_000)))
     kept = sql("SELECT observed_at_ms, evidence_text FROM news_items WHERE item_id = %s", (item["item_id"],))[0]
     assert kept == {"observed_at_ms": item["observed_at_ms"], "evidence_text": item["evidence_text"]}
-    revision = sql("SELECT revision_sha256, evidence_text, received_at_ms FROM news_item_revisions")
+    revision = sql(f"SELECT revision_sha256, evidence_text, received_at_ms FROM ({ITEM_REVISIONS_SQL})")
     assert len(revision) == 1 and revision[0]["received_at_ms"] == STAMP + 10_000
     versions = snapshots(event_id)
     assert [row["evidence_version"] for row in versions] == [1, 2]
@@ -144,7 +146,7 @@ def test_an_attribution_only_revision_is_recorded_but_its_unchanged_body_is_not_
     asyncio.run(deduper.handle(raw(7051, TITLE, stamp=STAMP + 10_000, source="Associated Press")))
     assert work(event_id)["wanted_revision"] == 2
     assert bus.wakes() == [f"event:{event_id}:1", f"event:{event_id}:2"]
-    revision = sql("SELECT revision_sha256, evidence_text, reporting_origin FROM news_item_revisions")
+    revision = sql(f"SELECT revision_sha256, evidence_text, reporting_origin FROM ({ITEM_REVISIONS_SQL})")
     assert len(revision) == 1 and revision[0]["evidence_text"] == first.evidence[0].text
     assert revision[0]["reporting_origin"] != "Reuters"
     member = snapshots(event_id)[-1]["snapshot"]["members"][0]
@@ -194,7 +196,7 @@ def test_a_verbatim_copy_from_another_provider_record_settles_without_a_model_ca
     row = work(event_id)
     assert row["done_revision"] == row["wanted_revision"] == 2 and row["last_outcome"] == "no_new_evidence"
     assert row["processed_read_refs"] == read and row["attempts"] == 0
-    observation = sql("SELECT read_refs FROM news_semantic_observations WHERE input_revision = 2")
+    observation = sql(f"SELECT read_refs FROM ({SEMANTIC_RESULTS_SQL}) WHERE input_revision = 2")
     assert observation == [{"read_refs": []}]
     assert asyncio.run(store.head(event_id)) == first
     assert asyncio.run(store.claim_semantic_work(event_id, lease_ms=180_000)) is None
@@ -300,7 +302,7 @@ def test_no_new_source_identity_settles_the_revision_without_reextracting() -> N
     first = asyncio.run(store.head(EVENT))
     assert first is not None
     # A work revision can be requested for metadata whose source identity is already adopted.
-    sql("UPDATE news_semantic_work SET wanted_revision = 2 WHERE event_id = %s", (EVENT,))
+    set_semantic_job(EVENT, wanted_revision=2)
     source = asyncio.run(store.input_for(EVENT))
     assert source.evidence == ()
     assert asyncio.run(run_agent(agent, EVENT)) == "unchanged"
@@ -444,7 +446,7 @@ def test_provider_failures_defer_and_only_the_last_attempt_adopts_an_unresolved_
     # new member, and its unresolved comparison did not establish support for the old claim.
     public = sql("SELECT kind FROM news_trade_events WHERE source_revision = %s", (head.content_revision,))
     assert public == []
-    assert sql("SELECT count(*) AS n FROM news_semantic_observations WHERE event_id = %s", (EVENT,))[0]["n"] == 2
+    assert sql(f"SELECT count(*) AS n FROM ({SEMANTIC_RESULTS_SQL}) WHERE event_id = %s", (EVENT,))[0]["n"] == 2
 
 
 def test_a_reclaimed_slow_turn_cannot_regress_the_head_or_settle_the_new_owner() -> None:
@@ -517,7 +519,7 @@ def test_the_janitor_re_wakes_stale_pending_work_and_drops_expired_judgment_answ
         " ('judgment:old', '{}'::jsonb, %s), ('judgment:fresh', '{}'::jsonb, %s)",
         (old, STAMP),
     )
-    sql("UPDATE news_semantic_work SET published_at_ms = %s", (STAMP - 60_000,))
+    set_semantic_job(None, published_at_ms=STAMP - 60000)
     bus = RecordingBus()
     janitor = JanitorLoop(db=ThreadedDb(), cold_db=ThreadedDb(), bus=bus)
 
@@ -768,7 +770,7 @@ def test_an_input_that_cannot_be_built_fails_only_its_own_work() -> None:
     seed_event("ev-broken", text="Agency orders a 10% tariff on copper.", fingerprint="fp-broken")
     seed_event()
     # A reanalysis of a read that no longer exists cannot form a frozen input.
-    sql("UPDATE news_semantic_work SET reanalysis_read_ref = 'news_read:gone' WHERE event_id = 'ev-broken'")
+    set_semantic_job("ev-broken", reanalysis_read_ref="news_read:gone")
     asyncio.run(worker.handle(_wake("ev-broken")))  # the consumer does not raise
     broken = work("ev-broken")
     assert (broken["last_outcome"], broken["last_error_code"], broken["lease_token"]) == (

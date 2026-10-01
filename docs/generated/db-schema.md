@@ -8,17 +8,29 @@
 |--------|------|----------|---------|
 | `version_num` | `VARCHAR(32)` | False | `None` |
 
-## `news_claim_links`
+## `news_analyses`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `update_ref` | `TEXT` | False | `None` |
-| `current_ref` | `TEXT` | False | `None` |
-| `previous_ref` | `TEXT` | False | `None` |
-| `relation` | `TEXT` | False | `None` |
-| `current_event_id` | `TEXT` | False | `None` |
-| `previous_event_id` | `TEXT` | True | `None` |
-| `asserted_at_ms` | `BIGINT` | False | `None` |
+| `analysis_id` | `TEXT` | False | `None` |
+| `event_id` | `TEXT` | False | `None` |
+| `origin` | `TEXT` | False | `None` |
+| `input_revision` | `INTEGER` | False | `None` |
+| `completed_at_ms` | `BIGINT` | False | `None` |
+| `work_id` | `TEXT` | True | `None` |
+| `input_sha256` | `TEXT` | True | `None` |
+| `program_identity` | `TEXT` | True | `None` |
+| `input_manifest` | `JSONB` | False | `'{}'::jsonb` |
+| `read_refs` | `ARRAY` | False | `'{}'::text[]` |
+| `reanalysis_reason` | `TEXT` | True | `None` |
+| `reanalysis_head_ref` | `TEXT` | True | `None` |
+| `understanding` | `JSONB` | True | `None` |
+| `repair` | `JSONB` | True | `None` |
+| `content_revision` | `TEXT` | True | `None` |
+| `previous_content_revision` | `TEXT` | True | `None` |
+| `update_ref` | `TEXT` | True | `None` |
+| `adopted_at_ms` | `BIGINT` | True | `None` |
+| `document` | `JSONB` | True | `None` |
 
 ## `news_collectors`
 
@@ -40,29 +52,6 @@
 | `retrieval_symbol` | `TEXT` | True | `None` |
 | `retrieval_pair_base` | `TEXT` | True | `None` |
 
-## `news_event_bands`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `band_index` | `SMALLINT` | False | `None` |
-| `band_key` | `TEXT` | False | `None` |
-| `event_id` | `TEXT` | False | `None` |
-| `dedupe_family` | `TEXT` | False | `None` |
-| `expires_at_ms` | `BIGINT` | False | `None` |
-
-## `news_event_evidence_snapshots`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `event_id` | `TEXT` | False | `None` |
-| `evidence_version` | `INTEGER` | False | `None` |
-| `focus_fact_id` | `TEXT` | False | `None` |
-| `evidence_sha256` | `TEXT` | False | `None` |
-| `provenance` | `TEXT` | False | `None` |
-| `release_eligible` | `BOOLEAN` | False | `true` |
-| `snapshot` | `JSONB` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-
 ## `news_event_members`
 
 | Column | Type | Nullable | Default |
@@ -74,29 +63,6 @@
 | `jaccard_estimate` | `DOUBLE PRECISION` | True | `None` |
 | `fact_id` | `TEXT` | False | `None` |
 | `fact_text` | `TEXT` | False | `''::text` |
-
-## `news_event_update_heads`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `event_id` | `TEXT` | False | `None` |
-| `content_revision` | `TEXT` | False | `None` |
-| `input_revision` | `INTEGER` | False | `None` |
-| `update_ref` | `TEXT` | False | `None` |
-| `adopted_at_ms` | `BIGINT` | False | `None` |
-
-## `news_event_updates`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `event_id` | `TEXT` | False | `None` |
-| `content_revision` | `TEXT` | False | `None` |
-| `input_revision` | `INTEGER` | False | `None` |
-| `previous_content_revision` | `TEXT` | True | `None` |
-| `adopted_at_ms` | `BIGINT` | False | `None` |
-| `observation_result_id` | `TEXT` | True | `None` |
-| `document` | `JSONB` | False | `None` |
-| `scope_repair_id` | `TEXT` | True | `None` |
 
 ## `news_events`
 
@@ -135,37 +101,10 @@
 | `focus_span_start` | `INTEGER` | False | `0` |
 | `focus_span_end` | `INTEGER` | False | `0` |
 | `event_kind` | `TEXT` | False | `None` |
-| `source_contract_reason` | `TEXT` | True | `None` |
-
-## `news_head_scope_repairs`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `repair_id` | `TEXT` | False | `None` |
-| `event_id` | `TEXT` | False | `None` |
-| `previous_content_revision` | `TEXT` | False | `None` |
-| `content_revision` | `TEXT` | False | `None` |
-| `claim_refs` | `ARRAY` | False | `None` |
-| `proof` | `JSONB` | False | `None` |
-| `projection_version` | `TEXT` | False | `None` |
-| `recorded_at_ms` | `BIGINT` | False | `None` |
-
-## `news_item_revisions`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `item_id` | `TEXT` | False | `None` |
-| `revision_sha256` | `TEXT` | False | `None` |
-| `evidence_text` | `TEXT` | False | `None` |
-| `provider_params` | `JSONB` | False | `'{}'::jsonb` |
-| `reporting_origin` | `TEXT` | False | `None` |
-| `canonical_url` | `TEXT` | True | `None` |
-| `source_artifact_id` | `TEXT` | False | `None` |
-| `published_at_ms` | `BIGINT` | False | `None` |
-| `received_at_ms` | `BIGINT` | False | `None` |
-| `content_sha256` | `TEXT` | False | `None` |
-| `previous_revision_sha256` | `TEXT` | True | `None` |
-| `revision_sequence` | `BIGINT` | False | `None` |
+| `dedupe_bands` | `ARRAY` | False | `'{}'::text[]` |
+| `evidence_version` | `INTEGER` | True | `None` |
+| `evidence` | `JSONB` | True | `None` |
+| `current_analysis_id` | `TEXT` | True | `None` |
 
 ## `news_items`
 
@@ -194,6 +133,7 @@
 | `evidence_text` | `TEXT` | True | `None` |
 | `evidence_text_sha256` | `TEXT` | True | `None` |
 | `evidence_observed_at_ms` | `BIGINT` | True | `None` |
+| `revisions` | `JSONB` | False | `'[]'::jsonb` |
 
 ## `news_jobs`
 
@@ -406,59 +346,6 @@
 | `source_at_ms` | `BIGINT` | True | `None` |
 | `received_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-
-## `news_semantic_checkpoints`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `work_id` | `TEXT` | False | `None` |
-| `stage` | `TEXT` | False | `None` |
-| `document` | `JSONB` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-
-## `news_semantic_observations`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `result_id` | `TEXT` | False | `None` |
-| `work_id` | `TEXT` | False | `None` |
-| `event_id` | `TEXT` | False | `None` |
-| `input_revision` | `INTEGER` | False | `None` |
-| `input_sha256` | `TEXT` | False | `None` |
-| `program_identity` | `TEXT` | False | `None` |
-| `completed_at_ms` | `BIGINT` | False | `None` |
-| `understanding` | `JSONB` | False | `None` |
-| `evidence_refs` | `ARRAY` | False | `'{}'::text[]` |
-| `read_refs` | `ARRAY` | False | `'{}'::text[]` |
-| `reanalysis_reason` | `TEXT` | True | `None` |
-| `reanalysis_head_ref` | `TEXT` | True | `None` |
-
-## `news_semantic_work`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `event_id` | `TEXT` | False | `None` |
-| `wanted_revision` | `INTEGER` | False | `None` |
-| `done_revision` | `INTEGER` | True | `None` |
-| `lineage_id` | `TEXT` | False | `None` |
-| `attempts` | `INTEGER` | False | `0` |
-| `next_attempt_at_ms` | `BIGINT` | False | `None` |
-| `leased_until_ms` | `BIGINT` | True | `None` |
-| `lease_token` | `TEXT` | True | `None` |
-| `published_at_ms` | `BIGINT` | True | `None` |
-| `last_outcome` | `TEXT` | True | `None` |
-| `last_error_code` | `TEXT` | True | `None` |
-| `extra_read_state` | `TEXT` | True | `None` |
-| `extra_read_target_ref` | `TEXT` | True | `None` |
-| `attached_evidence` | `JSONB` | True | `None` |
-| `focus_claim_refs` | `JSONB` | True | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `processed_read_refs` | `ARRAY` | False | `'{}'::text[]` |
-| `reanalysis_read_ref` | `TEXT` | True | `None` |
-| `reanalysis_reason` | `TEXT` | True | `None` |
-| `reanalysis_head_ref` | `TEXT` | True | `None` |
-| `failed_read_refs` | `ARRAY` | False | `'{}'::text[]` |
-| `attempt_read_refs` | `ARRAY` | False | `'{}'::text[]` |
 
 ## `news_symbol_aliases`
 

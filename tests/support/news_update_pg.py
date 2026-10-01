@@ -380,10 +380,11 @@ async def adopt_next(
     update = assemble_update(source, extracted, head, adopted_at_ms=STAMP + 150)
     assert update is not None
     # Storage CAS tests prepare a real owner for this controlled frozen input.
-    sql(
-        "UPDATE news_semantic_work SET wanted_revision=GREATEST(wanted_revision,%s),"
-        "lease_token='storage-test', leased_until_ms=%s WHERE event_id=%s",
-        (source.revision, pg.clock() + 180_000, source.event_id),
+    set_semantic_job(
+        source.event_id,
+        wanted_revision=source.revision,
+        lease_token="storage-test",
+        leased_until_ms=pg.clock() + 180_000,
     )
     lease = SemanticLease(source=source, lease_token="storage-test", attempts=1)
     adopted = await pg.atomic_adopt(
@@ -427,3 +428,20 @@ async def adopt_other_event(pg: PgSemanticStore) -> PriorClaim:
     adopted, update = await adopt_next(pg, None, source, extraction_for(source), work_id="work-other")
     assert adopted
     return PriorClaim(event_id="ev-other", content_revision=update.content_revision, claim=update.claims[0])
+
+
+def set_semantic_job(event_id: str | None = None, **changes: Any) -> None:
+    """Prepare controlled revisions/leases through the typed job shape in a real transaction."""
+    from tracefold.news.storage.semantic_jobs import SemanticJobs
+
+    with contextlib.closing(connect_postgres_test()) as conn, conn.transaction():
+        jobs = SemanticJobs(conn)
+        events = conn.execute(
+            "SELECT subject_id FROM news_jobs WHERE job_kind='semantic' AND (%s::text IS NULL OR subject_id=%s)",
+            (event_id, event_id),
+        ).fetchall()
+        for event in events:
+            row = jobs.lock(str(event["subject_id"]))
+            assert row is not None
+            row.update(changes)
+            jobs.save(row)
