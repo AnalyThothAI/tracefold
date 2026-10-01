@@ -92,9 +92,7 @@ def _module_connection(postgres_module_clone_dsn: str) -> Iterator[Any]:
 
 @pytest.fixture
 def conn(_module_connection: Any) -> Iterator[Any]:
-    _module_connection.execute(
-        "TRUNCATE news_items, news_market_observations, news_event_evidence_snapshots RESTART IDENTITY CASCADE"
-    )
+    _module_connection.execute("TRUNCATE news_items, news_market_observations RESTART IDENTITY CASCADE")
     _module_connection.commit()
     yield _module_connection
     _module_connection.rollback()

@@ -10,6 +10,7 @@ from typing import Any
 
 from ..updates.contracts import EventUpdate, SemanticLease
 from .errors import EventUpdateConflict
+from .semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL, SEMANTIC_RESULTS_SQL
 from .semantic_work import SemanticWorkStorage
 from .trade_projection import TradeProjectionStorage
 from .update_commit import SemanticSource, commit_update, lock_event
@@ -23,19 +24,21 @@ class SemanticUpdateStorage:
 
     def event_update_head_document(self, event_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
-            """
+            f"""
             SELECT u.document
-              FROM news_event_update_heads h
-              JOIN news_event_updates u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
+              FROM ({ANALYSIS_HEADS_SQL}) h
+              JOIN ({ANALYSES_SQL}) u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
              WHERE h.event_id = %s
-            """,
+            """,  # noqa: S608 -- fixed SQL; bound values.
             (event_id,),
         ).fetchone()
         return None if row is None else dict(row["document"])
 
     def semantic_checkpoint_documents(self, work_id: str) -> dict[str, dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT stage, document FROM news_semantic_checkpoints WHERE work_id = %s", (work_id,)
+            "SELECT split_part(substr(cache_key,21),':',1) AS stage,answer AS document FROM"
+            " news_judgment_cache WHERE cache_key IN (%s,%s)",
+            (f"semantic_checkpoint:extraction:{work_id}", f"semantic_checkpoint:understanding:{work_id}"),
         ).fetchall()
         return {str(row["stage"]): dict(row["document"]) for row in rows}
 
@@ -46,14 +49,15 @@ class SemanticUpdateStorage:
 
         self.conn.execute(
             """
-            INSERT INTO news_semantic_checkpoints (work_id, stage, document, created_at_ms)
-            VALUES (%s, %s, %s::jsonb, %s)
-            ON CONFLICT (work_id, stage) DO NOTHING
+            INSERT INTO news_judgment_cache (cache_key, answer, created_at_ms)
+            VALUES (%s, %s::jsonb, %s)
+            ON CONFLICT (cache_key) DO NOTHING
             """,
-            (work_id, stage, document_json, int(now_ms)),
+            (f"semantic_checkpoint:{stage}:{work_id}", document_json, int(now_ms)),
         )
         row = self.conn.execute(
-            "SELECT document FROM news_semantic_checkpoints WHERE work_id = %s AND stage = %s", (work_id, stage)
+            "SELECT answer AS document FROM news_judgment_cache WHERE cache_key = %s",
+            (f"semantic_checkpoint:{stage}:{work_id}",),
         ).fetchone()
         return dict(row["document"])
 
@@ -68,6 +72,7 @@ class SemanticUpdateStorage:
         program_identity: str,
         completed_at_ms: int,
         understanding_json: str,
+        input_manifest_json: str,
         read_refs: Sequence[str],
         reanalysis_reason: str | None,
         reanalysis_head_ref: str | None,
@@ -76,11 +81,11 @@ class SemanticUpdateStorage:
 
         self.conn.execute(
             """
-            INSERT INTO news_semantic_observations (
-              result_id, work_id, event_id, input_revision, input_sha256, program_identity,
-              completed_at_ms, understanding, read_refs, reanalysis_reason, reanalysis_head_ref
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
-            ON CONFLICT (result_id) DO NOTHING
+            INSERT INTO news_analyses (
+              analysis_id, origin,work_id,event_id,input_revision,input_sha256,program_identity,
+              completed_at_ms,understanding,read_refs,reanalysis_reason,reanalysis_head_ref,input_manifest
+            ) VALUES (%s,'semantic',%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s::jsonb)
+            ON CONFLICT (analysis_id) DO NOTHING
             """,
             (
                 result_id,
@@ -94,11 +99,10 @@ class SemanticUpdateStorage:
                 list(read_refs),
                 reanalysis_reason,
                 reanalysis_head_ref,
+                input_manifest_json,
             ),
         )
-        row = self.conn.execute(
-            "SELECT * FROM news_semantic_observations WHERE result_id = %s", (result_id,)
-        ).fetchone()
+        row = self.conn.execute(f"SELECT * FROM ({SEMANTIC_RESULTS_SQL}) WHERE result_id = %s", (result_id,)).fetchone()  # noqa: S608 -- fixed SQL; bound values.
         return dict(row)
 
     def adopt_event_update(
@@ -114,7 +118,7 @@ class SemanticUpdateStorage:
     ) -> bool:
         """CAS the head and write the update, its public outbox rows and the notification marker.
 
-        Serialized per Event by a transaction advisory lock, so two adopters of one expected head can
+        Serialized per Event by a Event row lock, so two adopters of one expected head can
         never both write: the second sees the first's head and returns False with nothing written.
         """
 
@@ -133,7 +137,6 @@ class SemanticUpdateStorage:
                 source=SemanticSource(observation_result_id),
                 public_rows=public_rows,
                 now_ms=now_ms,
-                prior_events={row.claim.ref: row.event_id for row in lease.source.prior},
             )
         except ValueError as exc:
             raise EventUpdateConflict(str(exc)) from exc

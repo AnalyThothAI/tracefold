@@ -29,6 +29,7 @@ from ..updates.identity import identity
 from ..updates.projection import ReadingView, extraction_scopes, item_text, reading_view, reading_views
 from .errors import EventUpdateConflict
 from .evidence import EvidenceStorage
+from .semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL, ITEM_REVISIONS_SQL, SEMANTIC_JOBS_SQL
 
 RELATED_PRIOR_EVENTS_MAX: Final = 8
 
@@ -357,30 +358,24 @@ class SemanticInputStorage:
 
     def semantic_input_material(self, event_id: str, *, now_ms: int) -> dict[str, Any]:
         work = self.conn.execute(
-            """
+            f"""
             SELECT wanted_revision, done_revision, lineage_id, attached_evidence, focus_claim_refs,
                    processed_read_refs, failed_read_refs, last_outcome, last_error_code,
                    reanalysis_read_ref, reanalysis_reason, reanalysis_head_ref
-              FROM news_semantic_work WHERE event_id = %s
-            """,
+              FROM ({SEMANTIC_JOBS_SQL}) WHERE event_id = %s
+            """,  # noqa: S608 -- fixed SQL; bound values.
             (event_id,),
         ).fetchone()
-        snapshot = self.conn.execute(
-            """
-            SELECT s.evidence_version, s.snapshot,
-                   (SELECT jsonb_object_agg(f.focus_fact_id, f.fact) FROM (
-                      SELECT DISTINCT ON (h.focus_fact_id) h.focus_fact_id, h.snapshot -> 'focus_fact' AS fact
-                        FROM news_event_evidence_snapshots h
-                       WHERE h.event_id = s.event_id AND h.provenance = 'observed'
-                         AND h.evidence_version <= s.evidence_version
-                       ORDER BY h.focus_fact_id, h.evidence_version
-                    ) f) AS fact_scopes
-              FROM news_event_evidence_snapshots s
-             WHERE s.event_id = %s AND s.provenance = 'observed'
-             ORDER BY s.evidence_version DESC LIMIT 1
-            """,
-            (event_id,),
+        from .events import EventStorage
+
+        events = EventStorage()
+        events.conn = self.conn
+        snapshot = events.latest_evidence_snapshot(event_id)
+        state = self.conn.execute(
+            "SELECT evidence->'fact_scopes' AS fact_scopes FROM news_events WHERE event_id=%s", (event_id,)
         ).fetchone()
+        if snapshot is not None:
+            snapshot["fact_scopes"] = state["fact_scopes"]
         document: dict[str, Any] = {} if snapshot is None else dict(snapshot["snapshot"] or {})
         card = dict(document.get("card") or {})
         members = list(document.get("members") or ())
@@ -420,14 +415,14 @@ class SemanticInputStorage:
         )
         revisions = (
             self.conn.execute(
-                """
+                f"""
                 SELECT r.item_id, r.revision_sha256, r.revision_sequence, r.evidence_text, r.reporting_origin,
                        r.source_artifact_id,
                        r.canonical_url, r.published_at_ms, r.received_at_ms
-                  FROM news_item_revisions r
+                  FROM ({ITEM_REVISIONS_SQL}) r
                   JOIN unnest(%s::text[], %s::text[]) AS frozen(item_id, revision_sha256)
                     ON frozen.item_id = r.item_id AND frozen.revision_sha256 = r.revision_sha256
-                """,
+                """,  # noqa: S608 -- fixed SQL; bound values.
                 ([row[0] for row in frozen_revisions], [row[1] for row in frozen_revisions]),
             ).fetchall()
             if frozen_revisions
@@ -487,13 +482,13 @@ class SemanticInputStorage:
         """Corrections and conflicts this Event's adopted revisions already published, by claim pair."""
 
         rows = self.conn.execute(
-            """
+            f"""
             SELECT DISTINCT change->>'current_ref' AS current_ref, change->>'previous_ref' AS previous_ref,
                    change->>'relation' AS relation
-              FROM news_event_updates u CROSS JOIN LATERAL jsonb_array_elements(u.document->'changes') change
+              FROM ({ANALYSES_SQL}) u CROSS JOIN LATERAL jsonb_array_elements(u.document->'changes') change
              WHERE u.event_id = %s AND change->>'relation' IN ('corrects', 'conflicts')
              ORDER BY 1, 2, 3
-            """,
+            """,  # noqa: S608 -- fixed SQL; bound values.
             (event_id,),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -526,12 +521,12 @@ class SemanticInputStorage:
         if not event_ids:
             return []
         rows = self.conn.execute(
-            """
+            f"""
             SELECT h.event_id, u.document
-              FROM news_event_update_heads h
-              JOIN news_event_updates u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
+              FROM ({ANALYSIS_HEADS_SQL}) h
+              JOIN ({ANALYSES_SQL}) u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
              WHERE h.event_id = ANY(%s)
-            """,
+            """,  # noqa: S608 -- fixed SQL; bound values.
             (list(event_ids),),
         ).fetchall()
         by_event = {str(row["event_id"]): dict(row["document"]) for row in rows}

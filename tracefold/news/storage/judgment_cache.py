@@ -48,18 +48,9 @@ class JudgmentCacheStorage:
             """
             DELETE FROM news_judgment_cache WHERE cache_key IN (
               SELECT cache_key FROM news_judgment_cache WHERE created_at_ms < %s
-               ORDER BY created_at_ms, cache_key LIMIT %s
+               ORDER BY created_at_ms, cache_key LIMIT %s FOR UPDATE SKIP LOCKED
             )
             """,
             (cutoff, bounded),
         )
-        checkpoints = self.conn.execute(
-            """
-            DELETE FROM news_semantic_checkpoints WHERE (work_id, stage) IN (
-              SELECT work_id, stage FROM news_semantic_checkpoints WHERE created_at_ms < %s
-               ORDER BY created_at_ms, work_id, stage LIMIT %s
-            )
-            """,
-            (cutoff, bounded),
-        )
-        return int(answers.rowcount or 0) + int(checkpoints.rowcount or 0)
+        return int(answers.rowcount or 0)

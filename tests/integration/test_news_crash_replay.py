@@ -53,6 +53,12 @@ from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.storage.collectors import _INCIDENTS_SQL
+from tracefold.news.storage.semantic_rows import (
+    ANALYSES_SQL,
+    EVIDENCE_VERSIONS_SQL,
+    SEMANTIC_JOBS_SQL,
+    SEMANTIC_RESULTS_SQL,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -124,9 +130,7 @@ def conn(_module_connection: Any):
     verdict, delivery and asset row hangs off one of those, so `CASCADE` reaches all of them.
     """
 
-    _module_connection.execute(
-        "TRUNCATE news_items, news_market_observations, news_event_evidence_snapshots RESTART IDENTITY CASCADE"
-    )
+    _module_connection.execute("TRUNCATE news_items, news_market_observations RESTART IDENTITY CASCADE")
     _module_connection.execute(
         "UPDATE news_collectors SET incidents='[]',state=state || "
         "'{\"next_incident_id\": 1}'::jsonb WHERE collector_id='opennews'"
@@ -203,7 +207,7 @@ def _count(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> int:
 
 def _evidence_versions(conn: Any, event_id: str) -> list[int]:
     rows = conn.execute(
-        "SELECT evidence_version FROM news_event_evidence_snapshots WHERE event_id = %s ORDER BY evidence_version",
+        f"SELECT evidence_version FROM ({EVIDENCE_VERSIONS_SQL}) WHERE event_id = %s ORDER BY evidence_version",
         (event_id,),
     ).fetchall()
     return [int(row["evidence_version"]) for row in rows]
@@ -645,7 +649,7 @@ def test_a_mark_failure_after_a_successful_wake_is_re_woken_and_adopted_exactly_
     assert len(events) == 1
     event_id = str(events[0]["event_id"])
     assert events[0]["published_at_ms"] is None, "the mark is exactly what the injected fault stopped"
-    work = conn.execute("SELECT * FROM news_semantic_work WHERE event_id = %s", (event_id,)).fetchone()
+    work = conn.execute(f"SELECT * FROM ({SEMANTIC_JOBS_SQL}) WHERE event_id = %s", (event_id,)).fetchone()
     assert work["wanted_revision"] == 1 and work["published_at_ms"] is None
     assert [message.message_id for message in bus.of_kind("event")] == [f"event:{event_id}:1"]
 
@@ -663,8 +667,8 @@ def test_a_mark_failure_after_a_successful_wake_is_re_woken_and_adopted_exactly_
         asyncio.run(worker.handle(message))
     conn.commit()
 
-    assert _count(conn, "SELECT count(*) AS n FROM news_event_updates WHERE event_id = %s", (event_id,)) == 1
-    assert _count(conn, "SELECT count(*) AS n FROM news_semantic_observations WHERE event_id = %s", (event_id,)) == 1
-    work = conn.execute("SELECT * FROM news_semantic_work WHERE event_id = %s", (event_id,)).fetchone()
+    assert _count(conn, f"SELECT count(*) AS n FROM ({ANALYSES_SQL}) WHERE event_id = %s", (event_id,)) == 1
+    assert _count(conn, f"SELECT count(*) AS n FROM ({SEMANTIC_RESULTS_SQL}) WHERE event_id = %s", (event_id,)) == 1
+    work = conn.execute(f"SELECT * FROM ({SEMANTIC_JOBS_SQL}) WHERE event_id = %s", (event_id,)).fetchone()
     assert work["done_revision"] == 1 and work["last_outcome"] == "adopted"
     assert len(_events(conn)) == 1

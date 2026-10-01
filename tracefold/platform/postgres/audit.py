@@ -84,22 +84,14 @@ class QueryAuditCatalog:
 
 
 NEWS_TABLES = (
+    "news_analyses",
     "news_collectors",
     "news_market_observations",
     "news_market_wallets",
     "news_items",
     "news_events",
     "news_event_members",
-    "news_event_bands",
     "news_event_assets",
-    "news_item_revisions",
-    "news_semantic_work",
-    "news_semantic_checkpoints",
-    "news_semantic_observations",
-    "news_event_updates",
-    "news_head_scope_repairs",
-    "news_event_update_heads",
-    "news_claim_links",
     "news_judgment_cache",
     "news_jobs",
     "news_notifications",
@@ -109,7 +101,6 @@ NEWS_TABLES = (
     "news_trade_events",
     "news_market_wallet_fills",
     "news_market_wallet_events",
-    "news_event_evidence_snapshots",
 )
 
 # #104: the Trading bounded context's own registry. Kept beside `NEWS_TABLES` rather than merged into

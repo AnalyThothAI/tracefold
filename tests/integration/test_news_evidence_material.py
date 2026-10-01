@@ -9,6 +9,7 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.evidence import query_for, text_sha
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
+from tracefold.news.storage.semantic_rows import ITEM_REVISIONS_SQL
 
 pytestmark = pytest.mark.integration
 
@@ -75,15 +76,14 @@ def test_raw_payload_late_fill_and_evidence_revisions(postgres_clone_dsn):
         row = conn.execute("SELECT evidence_text FROM news_items WHERE item_id=%s", (batch.item_id,)).fetchone()
         assert row["evidence_text"] == item["evidence_text"]
         revisions = conn.execute(
-            "SELECT evidence_text, received_at_ms FROM news_item_revisions WHERE item_id=%s", (batch.item_id,)
+            f"SELECT evidence_text, received_at_ms FROM ({ITEM_REVISIONS_SQL}) WHERE item_id=%s", (batch.item_id,)
         ).fetchall()
         assert [(r["evidence_text"], r["received_at_ms"]) for r in revisions] == [
             ("BTC acquisition agreement announced.\nConflicting executed status.", 4000)
         ]
 
 
-def test_real_candidate_channels_keep_unknown_and_exclude_known_symbol_conflict(postgres_clone_dsn):
-    from tracefold.news.evidence import shortlist
+def test_real_candidate_channels_recall_unknown_identity_and_explicit_source(postgres_clone_dsn):
     from tracefold.news.models import MarketAsset
     from tracefold.news.storage.evidence import BACKGROUND_CANDIDATES_SQL, background_parameters
 
@@ -100,8 +100,8 @@ def test_real_candidate_channels_keep_unknown_and_exclude_known_symbol_conflict(
             assets=[MarketAsset("BTC", "crypto")],
         )
         unknown = repos.news.evidence_candidates(query)
-        assert first.item_id in {r["item_id"] for r in shortlist(unknown, query=query)}
-        # Explicit-source links are subject to the same identity filter as the other channels.
+        assert first.item_id in {r["item_id"] for r in unknown}
+        # Candidate retrieval names related Events. Claim comparison owns asset compatibility.
         conn.execute("UPDATE news_items SET canonical_url=%s WHERE item_id=%s", (item["canonical_url"], first.item_id))
         conn.execute(
             "INSERT INTO news_event_assets(event_id, symbol, market_type, opened_at_ms) "
@@ -110,7 +110,7 @@ def test_real_candidate_channels_keep_unknown_and_exclude_known_symbol_conflict(
         )
         candidates = repos.news.evidence_candidates(query)
         assert candidates and candidates[0]["retrieval_reason"] == "explicit_origin"
-        assert shortlist(candidates, query=query) == []
+        assert first.item_id in {r["item_id"] for r in candidates}
         plan = conn.execute(
             "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + BACKGROUND_CANDIDATES_SQL, background_parameters(query)
         ).fetchone()["QUERY PLAN"][0]

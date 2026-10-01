@@ -92,7 +92,7 @@ WALLET_EVENT_TOTALS_SQL: Final = f"""
               FROM news_market_wallet_events e JOIN news_market_observations i ON i.observation_id=e.item_id
               LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = i.notification_id
              WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
-        """  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+        """  # noqa: S608 -- fixed SQL; bound values.
 
 WALLET_EVENT_FILLS_SQL: Final = """
             SELECT chain_id, tx_hash, log_index, block_number, block_hash, wallet, token,
@@ -145,7 +145,7 @@ WALLET_NOTIFICATION_FUNNEL_SQL: Final = f"""
                    (SELECT count(*) FROM scoped WHERE state = 'sent') AS sent,
                    (SELECT reason FROM leading_reason) AS unsent_reason,
                    COALESCE((SELECT n FROM leading_reason), 0) AS unsent_reason_count
-        """  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+        """  # noqa: S608 -- fixed SQL; bound values.
 
 WALLET_EVENT_SQL: Final = f"""
             SELECT {EVENT_COLUMNS},{NOTIFICATION_PROJECTION},

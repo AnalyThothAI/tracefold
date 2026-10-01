@@ -60,7 +60,7 @@ WALLET_EPISODE_FUNNEL_SQL: Final = f"""
       JOIN news_market_observations i ON i.observation_id=e.item_id
       LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = i.notification_id
      WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 
 WALLET_EPISODE_REASONS_SQL: Final = f"""
     SELECT COALESCE(NULLIF(t.pending_reason, ''), e.notification_reason, '(none)') AS reason,
@@ -71,7 +71,7 @@ WALLET_EPISODE_REASONS_SQL: Final = f"""
       LEFT JOIN ({MARKET_JOBS_SQL}) t ON t.group_key = i.notify_group_key
      WHERE e.event_at_ms >= %s AND e.event_at_ms < %s AND d.state IS DISTINCT FROM 'sent'
      GROUP BY 1 ORDER BY 2 DESC, 1
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 
 # The shared send queue, in the order `market_due_delivery` reads it. Every family, because the
 # question this answers is whether one card is holding up the others (#649 §7.2).
@@ -81,7 +81,7 @@ WALLET_SEND_QUEUE_SQL: Final = f"""
      WHERE state = ANY (ARRAY['pending', 'unavailable'])
      ORDER BY next_attempt_at_ms, created_at_ms, delivery_key
      LIMIT %s
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 
 
 class WalletDiagnosticsStorage:

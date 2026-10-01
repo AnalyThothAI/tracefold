@@ -31,6 +31,7 @@ from ..updates.assembly import different_listing_assets
 from ..updates.contracts import Claim, EventUpdate
 from ..updates.identity import digest
 from .notification_rows import NOTIFY_JOBS_SQL, UPDATE_RECEIPTS_SQL
+from .semantic_rows import ANALYSES_SQL
 from .semantic_updates import SemanticUpdateStorage
 from .sql_values import _dumps
 
@@ -104,15 +105,15 @@ class NotificationContextStorage:
         if not refs:
             return []
         rows = self.conn.execute(
-            """
+            f"""
             SELECT DISTINCT change->>'previous_ref' AS ref
-              FROM news_event_updates u
+              FROM ({ANALYSES_SQL}) u
               CROSS JOIN LATERAL jsonb_array_elements(u.document->'changes') change
              WHERE u.adopted_at_ms < %s
                AND jsonb_path_query_array(u.document, '$.changes[*].previous_ref') ?| %s::text[]
                AND change->>'previous_ref'=ANY(%s::text[])
                AND change->>'relation' IN ('corrects','real_world_change')
-            """,
+            """,  # noqa: S608 -- fixed SQL; bound values.
             (int(as_of_ms), list(refs), list(refs)),
         ).fetchall()
         return sorted(str(row["ref"]) for row in rows)
@@ -124,7 +125,7 @@ class NotificationContextStorage:
             f"""
             SELECT state, claim_refs FROM ({UPDATE_RECEIPTS_SQL})
              WHERE event_id = %s AND kind = 'update' AND state IN ('sending', 'ambiguous')
-            """,  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+            """,  # noqa: S608 -- fixed SQL; bound values.
             (event_id,),
         ).fetchall()
         return (
@@ -349,12 +350,20 @@ class NotificationContextStorage:
         if not refs:
             return []
         query = """
-            SELECT update_ref, current_ref, previous_ref, relation, asserted_at_ms FROM news_claim_links
-             WHERE (current_ref = ANY(%s) OR previous_ref = ANY(%s)) AND asserted_at_ms < %s
+            SELECT DISTINCT a.update_ref,change->>'current_ref' AS current_ref,
+                   change->>'previous_ref' AS previous_ref,change->>'relation' AS relation,
+                   a.adopted_at_ms AS asserted_at_ms
+              FROM news_analyses a CROSS JOIN LATERAL jsonb_array_elements(a.document->'changes') change
+             WHERE a.adopted_at_ms < %s
+               AND (jsonb_path_query_array(a.document,'$."changes"[*]."current_ref"') ?| %s
+                 OR jsonb_path_query_array(a.document,'$."changes"[*]."previous_ref"') ?| %s)
+               AND (change->>'current_ref'=ANY(%s) OR change->>'previous_ref'=ANY(%s))
+               AND change->>'previous_ref'<>change->>'current_ref'
+               AND change->>'relation' IN ('equivalent','adds_information','real_world_change','corrects','conflicts')
         """
-        first = self.conn.execute(query, (list(refs), list(refs), as_of_ms)).fetchall()
+        first = self.conn.execute(query, (as_of_ms, *([list(refs)] * 4))).fetchall()
         reached = sorted({str(row[key]) for row in first for key in ("current_ref", "previous_ref")} - set(refs))
-        second = self.conn.execute(query, (reached, reached, as_of_ms)).fetchall() if reached else []
+        second = self.conn.execute(query, (as_of_ms, *([reached] * 4))).fetchall() if reached else []
         rows = {
             (str(row["update_ref"]), str(row["current_ref"]), str(row["previous_ref"])): dict(row)
             for row in (*first, *second)

@@ -99,12 +99,13 @@ def _summary(conn: Any) -> dict[str, Any]:
             SELECT (SELECT version_num FROM alembic_version) AS migration_head,
                    (SELECT count(*) FROM news_items WHERE left(item_id, 8) = 'restore-') AS news_items,
                    (SELECT count(*) FROM news_events WHERE event_id = %s) AS current_events,
-                   (SELECT count(*) FROM news_event_evidence_snapshots WHERE event_id = %s) AS evidence_rows,
-                   (SELECT max(evidence_sha256) FROM news_event_evidence_snapshots WHERE event_id = %s)
+                   (SELECT jsonb_array_length(evidence->'versions') FROM news_events WHERE event_id=%s) AS
+ evidence_rows,
+                   (SELECT evidence#>>'{versions,-1,evidence_sha256}' FROM news_events WHERE event_id=%s)
                      AS evidence_sha256,
                    (SELECT count(*) FROM news_notifications WHERE event_id = %s AND state = 'terminal')
                      AS delivery_rows,
-                   (SELECT count(*) FROM news_event_updates WHERE event_id = %s) AS update_rows,
+                   (SELECT count(*) FROM news_analyses WHERE adopted_at_ms IS NOT NULL AND event_id=%s) AS update_rows,
                    (SELECT count(*) FROM news_notifications WHERE origin IN ('reader_v2','editorial_v1') AND
         event_id = %s)
                      AS decision_rows,
@@ -157,8 +158,7 @@ def _smoke(conn: Any) -> dict[str, bool]:
     delivery = conn.execute(
         """SELECT d.state,d.kind,d.notification_id AS decision_ref,d.plan,u.document
              FROM news_notifications d
-             JOIN news_event_updates u ON u.event_id=d.event_id
-              AND d.update_ref=public.news_identity('update',jsonb_build_array(u.event_id,u.content_revision))
+             JOIN news_analyses u ON u.event_id=d.event_id AND d.update_ref=u.update_ref
             WHERE d.event_id=%s AND d.kind='update'""",
         (_CURRENT_EVENT_ID,),
     ).fetchone()

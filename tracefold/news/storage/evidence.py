@@ -162,20 +162,7 @@ SELECT m.event_id, m.item_id, m.comparison_title, m.comparison_fingerprint, m.le
        ARRAY(SELECT f.fact_text FROM news_event_members f
               WHERE f.event_id = m.event_id AND f.joined_at_ms <= %(cutoff)s
               ORDER BY f.joined_at_ms, f.item_id, f.fact_id) AS task_texts,
-       m.priority, m.score, m.retrieval_reason,
-       COALESCE((
-         SELECT jsonb_agg(asset)
-           FROM (SELECT document FROM news_event_updates u
-                  WHERE u.event_id=m.event_id AND u.adopted_at_ms <= %(cutoff)s
-                  ORDER BY u.adopted_at_ms DESC, u.content_revision DESC LIMIT 1) latest
-           CROSS JOIN LATERAL jsonb_array_elements(latest.document -> 'claims') claim
-           CROSS JOIN LATERAL jsonb_array_elements(claim -> 'fields' -> 'assets') asset
-          WHERE NOT (COALESCE(latest.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-            AND NOT (COALESCE(latest.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-       ), '[]'::jsonb) ||
-       COALESCE((SELECT jsonb_agg(jsonb_build_object('symbol', a.symbol, 'market_type', a.market_type))
-                 FROM news_event_assets a WHERE a.event_id=m.event_id), '[]'::jsonb) AS assets
-  FROM merged m
+       m.priority, m.score, m.retrieval_reason  FROM merged m
  ORDER BY m.event_id
 """
 )

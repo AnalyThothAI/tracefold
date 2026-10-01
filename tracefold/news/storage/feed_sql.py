@@ -8,6 +8,7 @@ from typing import Final
 from ..models import ADMITTED_ADMISSIONS
 from ..source_contracts import EVENT_KINDS
 from .notification_rows import NOTIFICATION_DECISIONS_SQL, NOTIFY_JOBS_SQL, UPDATE_PENDING_SQL, UPDATE_RECEIPTS_SQL
+from .semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL, SEMANTIC_JOBS_SQL
 
 ITEM_RELATED_COUNT_SQL: Final = "SELECT count(DISTINCT event_id) AS n FROM news_event_members WHERE item_id=%s"
 ITEM_RELATED_KEYS_SQL: Final = (
@@ -29,13 +30,13 @@ ITEM_RELATED_EVENTS_SQL: Final = f"""
            (SELECT array_agg(DISTINCT m.match_kind ORDER BY m.match_kind)
               FROM news_event_members m WHERE m.event_id=e.event_id AND m.item_id=%s) AS match_kinds
       FROM news_events e
-      LEFT JOIN news_semantic_work w ON w.event_id=e.event_id
-      LEFT JOIN news_event_update_heads h ON h.event_id=e.event_id
+      LEFT JOIN ({SEMANTIC_JOBS_SQL}) w ON w.event_id=e.event_id
+      LEFT JOIN ({ANALYSIS_HEADS_SQL}) h ON h.event_id=e.event_id
       LEFT JOIN ({NOTIFY_JOBS_SQL}) n ON n.event_id=e.event_id AND n.channel='news'
       LEFT JOIN ({NOTIFICATION_DECISIONS_SQL}) d ON d.decision_ref=n.decision_ref
      WHERE e.event_id=ANY(%s)
      ORDER BY e.event_id
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 
 ADMITTED_SQL: Final = ", ".join(f"'{value}'" for value in sorted(ADMITTED_ADMISSIONS))
 # Reader cards are EventUpdate intents.
@@ -107,22 +108,15 @@ EVENT_MEMBERS_SQL: Final = """
               FROM news_event_members m JOIN news_items i ON i.item_id = m.item_id
              WHERE m.event_id = %s ORDER BY m.joined_at_ms, m.item_id
 """
-STATUS_SOURCE_CONTRACTS_SQL: Final = """
+STATUS_SOURCE_CONTRACTS_SQL: Final = f"""
     SELECT e.event_kind, count(*) AS received,
            count(*) FILTER (WHERE h.event_id IS NOT NULL) AS adopted
       FROM news_events e
-      LEFT JOIN news_event_update_heads h ON h.event_id=e.event_id
+      LEFT JOIN ({ANALYSIS_HEADS_SQL}) h ON h.event_id=e.event_id
      WHERE e.opened_at_ms >= %s
-       AND EXISTS (
-         SELECT 1 FROM news_event_evidence_snapshots evidence
-          WHERE evidence.event_id=e.event_id AND evidence.provenance='observed'
-            AND evidence.snapshot->>'schema_version'='news_event_evidence_v3'
-            AND evidence.evidence_version=(
-              SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
-               WHERE latest.event_id=e.event_id)
-       )
+       AND e.evidence_version IS NOT NULL
      GROUP BY e.event_kind
-"""
+"""  # noqa: S608 -- fixed SQL; bound values.
 
 STATUS_PIPELINE_SQL: Final = f"""
     WITH event_counts AS (
@@ -131,14 +125,7 @@ STATUS_PIPELINE_SQL: Final = f"""
              count(*) FILTER (WHERE admission='candidate') AS candidates_24h
         FROM news_events current_event
        WHERE current_event.opened_at_ms >= %s
-         AND EXISTS (
-           SELECT 1 FROM news_event_evidence_snapshots evidence
-            WHERE evidence.event_id=current_event.event_id AND evidence.provenance='observed'
-              AND evidence.snapshot->>'schema_version'='news_event_evidence_v3'
-              AND evidence.evidence_version=(
-                SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
-                 WHERE latest.event_id=current_event.event_id)
-         )
+         AND current_event.evidence_version IS NOT NULL
     ), decision_counts AS (
       SELECT count(*) AS decisions_24h,
              count(*) FILTER (WHERE plan->>'action'='notify') AS selected_24h
@@ -146,7 +133,7 @@ STATUS_PIPELINE_SQL: Final = f"""
        WHERE origin IN ('editorial_v1','reader_v2') AND created_at_ms >= %s
     )
     SELECT event_counts.*,decision_counts.* FROM event_counts CROSS JOIN decision_counts
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 
 STATUS_DELIVERY_SQL: Final = f"""
     WITH terminal AS NOT MATERIALIZED (
@@ -202,9 +189,9 @@ STATUS_FUNNEL_DECISIONS_SQL: Final = f"""
       FROM ({NOTIFICATION_DECISIONS_SQL})
      WHERE origin IN ('editorial_v1','reader_v2') AND created_at_ms >= %s
      GROUP BY 1
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 
-_JUDGED_SQL: Final = "EXISTS (SELECT 1 FROM news_event_update_heads head WHERE head.event_id=current_event.event_id)"
+_JUDGED_SQL: Final = "current_event.current_analysis_id IS NOT NULL"
 STATUS_FUNNEL_TOTALS_SQL: Final = f"""
     SELECT count(*) AS events,
            count(*) FILTER (WHERE admission IN ({ADMITTED_SQL})) AS admitted,
@@ -220,16 +207,7 @@ STATUS_FUNNEL_TOTALS_SQL: Final = f"""
                )
            ) AS delivered
       FROM news_events current_event WHERE current_event.opened_at_ms >= %s
-       AND EXISTS (
-         SELECT 1 FROM news_event_evidence_snapshots evidence
-          WHERE evidence.event_id = current_event.event_id
-            AND evidence.evidence_version = (
-              SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
-               WHERE latest.event_id = current_event.event_id
-            )
-            AND evidence.provenance = 'observed'
-            AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-       )
+       AND current_event.evidence_version IS NOT NULL
 """  # noqa: S608
 
 
@@ -248,7 +226,7 @@ _FEED_PAGE_DELIVERY_SQL: Final = f"""
             SELECT dl.kind, dl.state, dl.settled_at_ms, dl.error_code, dl.card, dl.plan_key,
                    dl.content_revision, dl.payload_sha256
               FROM ({UPDATE_RECEIPTS_SQL}) dl
-              LEFT JOIN news_event_update_heads current_head ON current_head.event_id = dl.event_id
+              LEFT JOIN ({ANALYSIS_HEADS_SQL}) current_head ON current_head.event_id = dl.event_id
              WHERE dl.event_id = e.event_id AND dl.kind IN {READER_DELIVERY_KINDS_SQL}
              ORDER BY {_READER_DELIVERY_ORDER_SQL}
              LIMIT 1
@@ -260,7 +238,7 @@ _FEED_COUNTS_DELIVERY_SQL: Final = f"""
           LEFT JOIN (
             SELECT DISTINCT ON (dl.event_id) dl.event_id, dl.state
               FROM ({UPDATE_RECEIPTS_SQL}) dl
-              LEFT JOIN news_event_update_heads current_head ON current_head.event_id = dl.event_id
+              LEFT JOIN ({ANALYSIS_HEADS_SQL}) current_head ON current_head.event_id = dl.event_id
              WHERE dl.kind IN {READER_DELIVERY_KINDS_SQL}
              ORDER BY dl.event_id, {_READER_DELIVERY_ORDER_SQL}
           ) d ON d.event_id = e.event_id
@@ -271,17 +249,10 @@ def _feed_joins_sql(*, bulk_deliveries: bool = False) -> str:
     delivery_join = _FEED_COUNTS_DELIVERY_SQL if bulk_deliveries else _FEED_PAGE_DELIVERY_SQL
     return f"""
           JOIN news_items i ON i.item_id = e.leader_item_id
-          JOIN LATERAL (
-            SELECT s.provenance, s.snapshot
-              FROM news_event_evidence_snapshots s
-             WHERE s.event_id = e.event_id
-             ORDER BY s.evidence_version DESC LIMIT 1
-          ) current_evidence
-            ON current_evidence.provenance = 'observed'
-           AND current_evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-          LEFT JOIN news_semantic_work sw ON sw.event_id = e.event_id
-          LEFT JOIN news_event_update_heads h ON h.event_id = e.event_id
-          LEFT JOIN news_event_updates u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
+          JOIN LATERAL (SELECT 1 WHERE e.evidence_version IS NOT NULL) current_evidence ON true
+          LEFT JOIN ({SEMANTIC_JOBS_SQL}) sw ON sw.event_id = e.event_id
+          LEFT JOIN ({ANALYSIS_HEADS_SQL}) h ON h.event_id = e.event_id
+          LEFT JOIN ({ANALYSES_SQL}) u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
           LEFT JOIN ({NOTIFY_JOBS_SQL}) nw ON nw.event_id = e.event_id AND nw.channel = 'news'
           LEFT JOIN ({NOTIFICATION_DECISIONS_SQL}) nd ON nd.decision_ref = nw.decision_ref
           {delivery_join}

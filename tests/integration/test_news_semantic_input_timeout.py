@@ -16,6 +16,7 @@ from tests.support.news_update_admission import work
 from tests.support.news_update_pg import EVENT, STAMP, Clock, ThreadedDb, seed_event, sql
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.storage.evidence import EvidenceStorage
+from tracefold.news.storage.semantic_rows import SEMANTIC_JOBS_SQL
 from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.storage.semantic_work import SEMANTIC_ATTEMPTS_MAX, SEMANTIC_RETRY_MS
 from tracefold.news.updates.projection import reading_views
@@ -72,7 +73,7 @@ def test_input_timeout_spends_the_attempt_backs_off_and_fails_visibly_when_exhau
     clock.now_ms += 3_600_000
     assert asyncio.run(store.claim_semantic_work(EVENT, lease_ms=180_000)) is None
     assert asyncio.run(store.pending_semantic_events(10)) == ()
-    status = sql("SELECT last_error_code, count(*) AS n FROM news_semantic_work GROUP BY 1")
+    status = sql(f"SELECT last_error_code, count(*) AS n FROM ({SEMANTIC_JOBS_SQL}) GROUP BY 1")
     assert status == [{"last_error_code": "news_semantic_input_timeout", "n": 1}]
 
     monkeypatch.undo()

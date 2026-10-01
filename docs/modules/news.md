@@ -62,7 +62,7 @@ flowchart LR
     Source["OpenNews / news.raw<br/>来源契约与准入"]
     Evidence[("Item / revision / FactUnit / Event<br/>持久 semantic work")]
     Worker["SemanticWorker<br/>领取 revision / lease"]
-    Head[("EventUpdate / head / claim_links")]
+    Head[("news_analyses / Event head<br/>changes 派生命题链接")]
     Public["PublicUpdate outbox<br/>App → Trading"]
     Receipt[("真实送达账本<br/>历史命题版本")]
     Market["独立市场业务<br/>自有决定和账本"]
@@ -344,8 +344,8 @@ sequenceDiagram
 
 | 记录 | 实际状态或判定字段 | 结算与恢复 |
 | --- | --- | --- |
-| `news_semantic_work` | wanted/done revision、owner、lease、attempt、due、last outcome，以及 processed/failed read refs；运行状态由这些字段推导 | 当前 owner 完成、暂缓或失败；精确版本恢复不能改来源/旧 head |
-| `news_event_updates` / heads | 不可变内容版本与一个当前 head，没有“已推送”状态 | 采用/修复使用 Event 锁和 head CAS，观察保存与采用分开 |
+| `news_jobs(kind='semantic')` | wanted/done revision、lineage 和 read refs 由 `SemanticJobDetail` 定义；公共列保存 state、lease、attempt 和 due | 当前 owner 完成、暂缓或失败；精确版本恢复不能改来源/旧 head |
+| `news_analyses` / `news_events.current_analysis_id` | 语义观察和 scope repair 的单一分析链；语义结果只允许一次写入五个采纳字段，当前 head 是 Event 的指针 | 采用/修复先锁 Event 行再锁任务并做 head CAS；观察保存与采用分开 |
 | `news_jobs`（notify） | `pending/done/failed` | 当前版本完成或退避；真实失败才计尝试，耗尽后精确恢复 |
 | `news_notifications` | `decided/pending/dead` | 不可变判断与可变发送状态在同一行；可重试 not_sent 保留同 intent/payload |
 | `news_notifications` | `sending/sent/ambiguous/terminal` | 原行结算；sending 后无法证明结果则 ambiguous，禁止自动重发 |
@@ -411,7 +411,7 @@ stateDiagram-v2
 - 单独的月份（可带 early / mid- / late）：取该月最后一天，默认在过去一年内；只对事件类命题（`state_change`、`official_measure`、`other`）成立，数字类命题里的月份是统计期。
 - 带 `speaker` 的命题本身就是新表态，不判断；其余写法（如 “Sept. 10”）也不判断。
 
-**读者新颖度**是纯代码：采纳事务把每个修订 `changes` 里带 `previous_ref` 的比较写入只追加的 `news_claim_links`；通知快照在短事务里从两端读取链接（至多两跳，两跳须经过 `equivalent`），与已送 / 结果不明 / 发送中回执的 `claim_refs` 求交，得到 known / increment / development / in_flight / unlinked。同一对命题以最新一次断言为准，某个修订不再提及不算撤回；因此链接不会因后续修订的 head 不再重复而丢失。
+**读者新颖度**是纯代码：每个采纳分析的不可变 `document.changes` 保留带 `previous_ref` 的比较；通知快照通过 JSONB GIN 从两端读取派生链接（至多两跳，两跳须经过 `equivalent`），与已送 / 结果不明 / 发送中回执的 `claim_refs` 求交，得到 known / increment / development / in_flight / unlinked。同一对命题以最新一次断言为准，某个修订不再提及不算撤回；历史分析始终保留旧断言。
 
 **读者判断**是一次请求两道题（[reader.py](../../tracefold/news/notifications/reader.py)），每条命题有自己的冻结 `ReaderInput`：命题字段与可读主题、来源，以及至多 16 条实际已送正文。输入不含未指向某条已送消息的单个 `change` 类型；`EventUpdate.changes` 和持久命题链接仍决定更正、增量与新颖度。
 

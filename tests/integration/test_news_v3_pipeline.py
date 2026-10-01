@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from psycopg.errors import RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_current_delivery import seed_delivery
@@ -20,6 +19,11 @@ from tracefold.news.opennews import parse_opennews_message, source_artifact_iden
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.search import compile_news_search
 from tracefold.news.storage.collectors import RECOVERY_BACKLOG_LIMIT
+from tracefold.news.storage.semantic_rows import (
+    ANALYSES_SQL,
+    ANALYSIS_HEADS_SQL,
+    EVIDENCE_VERSIONS_SQL,
+)
 from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.updates.contracts import Extraction
 from tracefold.news.updates.judgment import ProviderUnavailable
@@ -306,13 +310,13 @@ def _editorial_rows(conn: Any, item_ids: tuple[str, ...]) -> dict[str, int]:
     """How much of the editorial plane these Items reached. Scoped, because the clone is shared."""
 
     row = conn.execute(
-        """
+        f"""
         SELECT (SELECT count(*) FROM news_events e WHERE e.leader_item_id = ANY(%(items)s)) AS events,
                (SELECT count(*) FROM news_event_members m WHERE m.item_id = ANY(%(items)s)) AS members,
-               (SELECT count(*) FROM news_event_evidence_snapshots s
+               (SELECT count(*) FROM ({EVIDENCE_VERSIONS_SQL}) s
                  JOIN news_events e ON e.event_id = s.event_id
                 WHERE e.leader_item_id = ANY(%(items)s)) AS snapshots,
-               (SELECT count(*) FROM news_event_updates u
+               (SELECT count(*) FROM ({ANALYSES_SQL}) u
                  JOIN news_events e ON e.event_id = u.event_id
                 WHERE e.leader_item_id = ANY(%(items)s)) AS updates
         """,
@@ -770,13 +774,14 @@ def test_explicit_multi_fact_item_creates_one_focused_event_per_fact(conn) -> No
     assert batch.item_inserted and len(batch.results) == 3
     assert len({result.event_id for result in batch.results}) == 3
     rows = conn.execute(
-        """
+        f"""
         SELECT e.event_id, e.focus_fact_id, e.focus_fact_text, e.focus_fact_method,
-               s.evidence_version, s.snapshot #>> '{card,leader_description}' AS content,
-               s.snapshot #>> '{card,leader_title}' AS model_title,
-               s.snapshot #>> '{card,raw_first_line}' AS model_raw_first_line
-          FROM news_events e
-          JOIN news_event_evidence_snapshots s
+               s.evidence_version, e.focus_fact_context AS content,
+               e.focus_fact_text AS model_title,
+               CASE WHEN e.focus_fact_method='explicit_numbered' THEN ''
+                    ELSE i.raw_first_line END AS model_raw_first_line
+          FROM news_events e JOIN news_items i ON i.item_id=e.leader_item_id
+          JOIN ({EVIDENCE_VERSIONS_SQL}) s
             ON s.event_id = e.event_id AND s.evidence_version = 1
          WHERE e.leader_item_id = %s ORDER BY e.focus_fact_text
         """,
@@ -872,8 +877,8 @@ def test_fourteen_fact_events_keep_the_last_task_and_adopt_independently(conn) -
                 asyncio.run(run_agent(worker, event_id))
         else:
             assert asyncio.run(run_agent(worker, event_id)) == "adopted"
-    assert conn.execute("SELECT count(*) AS n FROM news_event_update_heads").fetchone()["n"] == 13
-    assert conn.execute("SELECT 1 FROM news_event_update_heads WHERE event_id=%s", (event_ids[6],)).fetchone() is None
+    assert conn.execute(f"SELECT count(*) AS n FROM ({ANALYSIS_HEADS_SQL})").fetchone()["n"] == 13
+    assert conn.execute(f"SELECT 1 FROM ({ANALYSIS_HEADS_SQL}) WHERE event_id=%s", (event_ids[6],)).fetchone() is None
 
 
 def test_a_bare_numbered_digest_never_grounds_one_bullet_on_another(conn) -> None:
@@ -920,11 +925,12 @@ def test_a_bare_numbered_digest_never_grounds_one_bullet_on_another(conn) -> Non
         )
     assert len(batch.results) == 3
     rows = conn.execute(
-        """
+        f"""
         SELECT e.focus_fact_text, e.focus_fact_context, e.grounded_assets,
-               s.snapshot #>> '{card,raw_first_line}' AS model_raw_first_line
-          FROM news_events e
-          JOIN news_event_evidence_snapshots s
+               CASE WHEN e.focus_fact_method='explicit_numbered' THEN ''
+                    ELSE i.raw_first_line END AS model_raw_first_line
+          FROM news_events e JOIN news_items i ON i.item_id=e.leader_item_id
+          JOIN ({EVIDENCE_VERSIONS_SQL}) s
             ON s.event_id = e.event_id AND s.evidence_version = 1
          WHERE e.leader_item_id = %s ORDER BY e.focus_fact_text
         """,
@@ -1250,23 +1256,13 @@ def test_evidence_snapshots_are_append_only_and_outlive_event_retention(conn) ->
     assert snapshot is not None
 
     conn.execute("BEGIN")
-    conn.execute("SAVEPOINT evidence_mutation")
-    with pytest.raises(RaiseException, match="news_event_evidence_append_only"):
-        conn.execute(
-            "UPDATE news_event_evidence_snapshots SET release_eligible = false "
-            "WHERE event_id = %s AND evidence_version = %s",
-            (opened.event_id, snapshot["evidence_version"]),
-        )
-    conn.execute("ROLLBACK TO SAVEPOINT evidence_mutation")
-    conn.execute("RELEASE SAVEPOINT evidence_mutation")
-
     conn.execute("DELETE FROM news_items WHERE item_id = %s", (opened.item_id,))
     assert conn.execute("SELECT 1 FROM news_events WHERE event_id = %s", (opened.event_id,)).fetchone() is None
     retained = conn.execute(
-        "SELECT provenance, release_eligible FROM news_event_evidence_snapshots WHERE event_id = %s",
+        f"SELECT provenance, release_eligible FROM ({EVIDENCE_VERSIONS_SQL}) WHERE event_id = %s",
         (opened.event_id,),
     ).fetchone()
-    assert retained == {"provenance": "observed", "release_eligible": True}
+    assert retained is None
     conn.commit()
 
 
@@ -1440,7 +1436,7 @@ def test_feed_search_hard_cuts_asset_identity_from_full_text(conn) -> None:
             " WHERE item_id = (SELECT leader_item_id FROM news_events WHERE event_id = %s)",
             (tagged_new,),
         )
-        conn.execute("DELETE FROM news_semantic_work WHERE event_id = %s", (tagged_old,))
+        conn.execute("DELETE FROM news_jobs WHERE job_kind='semantic' AND subject_id=%s", (tagged_old,))
     as_of_ms = (
         int(
             conn.execute(

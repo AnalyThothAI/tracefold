@@ -15,12 +15,11 @@ from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict
 
-from .entities import asset_retrieval_symbols, source_asset_symbols
+from .entities import source_asset_symbols
 from .events.tokens import comparison_tokens
 from .models import MarketAsset
 
 BACKGROUND_WINDOW_MS: Final = 30 * 86_400_000
-RELATED_MAX: Final = 4
 RELATION_MAX: Final = 8
 ENTITY_MAX: Final = 24
 SIMILAR_MAX: Final = 32
@@ -115,75 +114,6 @@ _GENERIC = frozenset(
         "表示",
     }
 )
-_EVENT_CUES = frozenset(
-    {
-        "acquire",
-        "acquisition",
-        "agreement",
-        "merger",
-        "approve",
-        "approval",
-        "regulatory",
-        "buyback",
-        "sell",
-        "sale",
-        "split",
-        "dividend",
-        "file",
-        "lawsuit",
-        "investment",
-        "funding",
-        "invest",
-        "earnings",
-        "revenue",
-        "profit",
-        "production",
-        "outflow",
-        "inflow",
-        "withdrawal",
-        "deposit",
-        "closure",
-        "halt",
-        "resume",
-        "sanction",
-        "tariff",
-        "inflation",
-        "cpi",
-        "jobs",
-        "settlement",
-        "contract",
-        "deal",
-        "stake",
-        "partnership",
-        "投资",
-        "融资",
-        "营收",
-        "利润",
-        "关税",
-        "通胀",
-        "资金",
-        "流入",
-        "流出",
-        "存款",
-        "撤资",
-        "launch",
-        "list",
-        "delist",
-        "increase",
-        "decrease",
-        "rate",
-        "收购",
-        "批准",
-        "协议",
-        "回购",
-        "拆股",
-        "上市",
-        "利率",
-        "合作",
-        "监管",
-        "诉讼",
-    }
-)
 
 
 def evidence_terms(text: str) -> frozenset[str]:
@@ -241,47 +171,3 @@ def execution_evidence_views(verdicts: Sequence[Mapping[str, Any]]) -> list[dict
                 }
             )
     return views
-
-
-def _relevant_candidate(row: Mapping[str, Any], query: EvidenceQuery) -> bool:
-    assets = [MarketAsset.of(a) for a in row.get("assets") or ()]
-    assets.extend(
-        MarketAsset.of({"symbol": symbol, "market_type": row.get("asset_class")})
-        for symbol in row.get("grounded_assets") or ()
-    )
-    # Evaluate all known types before considering unknown tags. A provider's unknown
-    # tag cannot erase an explicit equity/crypto contradiction for the same symbol.
-    if any(
-        a.symbol == b.symbol and a.market_type != b.market_type and "unknown" not in (a.market_type, b.market_type)
-        for a in query.assets
-        for b in assets
-    ):
-        return False
-    texts = row.get("task_texts") or (str(row.get("leader_title") or row.get("comparison_title") or ""),)
-    terms = set().union(*(evidence_terms(text) for text in texts))
-    shared = terms & set().union(*(evidence_terms(text) for text in query.texts))
-    symbols = {a.symbol.lower() for a in (*query.assets, *assets)}
-    specific = shared - symbols
-    # A shared issuer/coin or generic announcement is insufficient. Preserve a
-    # concrete event cue together with a shared subject/asset clue, including CJK.
-    subject_clues = {term for term in shared - _EVENT_CUES if not term.isdigit()}
-    asset_overlap = {
-        symbol for asset in query.assets for symbol in asset_retrieval_symbols(asset.symbol, asset.market_type)
-    } & {symbol for asset in assets for symbol in asset_retrieval_symbols(asset.symbol, asset.market_type)}
-    return bool(specific & _EVENT_CUES) and bool(subject_clues or asset_overlap)
-
-
-def shortlist(rows: Sequence[Mapping[str, Any]], *, query: EvidenceQuery) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for row in sorted(rows, key=lambda r: (r["priority"], -r["score"], -r["created_at_ms"], r["event_id"])):
-        if not _relevant_candidate(row, query):
-            continue
-        origin = str(row.get("source_artifact_id") or row.get("canonical_url") or row["item_id"])
-        key = (origin, str(row["comparison_fingerprint"]))
-        if key not in seen:
-            seen.add(key)
-            result.append(dict(row))
-        if len(result) == RELATED_MAX:
-            break
-    return result

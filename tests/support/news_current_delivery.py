@@ -6,6 +6,8 @@ import hashlib
 import json
 from typing import Any
 
+from tracefold.news.storage.semantic_rows import ANALYSES_SQL
+
 
 def seed_delivery(
     conn: Any,
@@ -56,11 +58,11 @@ ON CONFLICT(notification_id) DO UPDATE SET intent_id=EXCLUDED.intent_id,state=EX
         ),
     )
     conn.execute(
-        """UPDATE news_notifications d SET sent_claims=(
+        f"""UPDATE news_notifications d SET sent_claims=(
              SELECT COALESCE(jsonb_agg(claim), '[]'::jsonb)
              FROM jsonb_array_elements(u.document->'claims') claim
              WHERE d.claim_refs ? (claim->>'ref'))
-           FROM news_event_updates u WHERE d.intent_id=%s
+           FROM ({ANALYSES_SQL}) u WHERE d.intent_id=%s
              AND u.event_id=d.event_id AND u.content_revision=d.content_revision""",
         (intent_id,),
     )

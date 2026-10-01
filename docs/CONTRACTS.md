@@ -103,7 +103,7 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 | `claim_ref` / evidence ref | 命题、引文与更正目标的稳定引用，不用裸标题代替 |
 | notification intent | 针对读者与精确内容的稳定发送意图 |
 | notification decision | 不可变的 `reader_v2` 决定：逐命题原因、读者新颖度、锚点与增量重要性分布、作答后端和冻结输入摘要；工作和意图引用其身份；`editorial_v1` 历史只读 |
-| claim link | 采纳时从 `changes` 写入的命题比较（`news_claim_links`），只追加，按两端 ref 双向读取 |
+| claim link | 已采纳 `news_analyses.document.changes` 中的不可变命题比较，按两端 ref 双向读取 |
 | card copy input digest | 所选命题的完整表达材料和文案器身份；仅相同实际输入复用中文文案 |
 | 冻结正文 / 实际发送账本 | 谁可能收到什么、结果是否已明确 |
 

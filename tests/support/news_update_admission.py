@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.support.news_update_pg import sql
+from tests.support.news_update_pg import ThreadedDb, sql
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.bus import RK_RAW_LIVE, BusMessage
 from tracefold.news.pipeline.admission import append_admission_evidence
 from tracefold.news.storage.events import prepare_evidence_snapshot
+from tracefold.news.storage.semantic_rows import EVIDENCE_VERSIONS_SQL, SEMANTIC_JOBS_SQL
 
 TITLE = "Agency orders 25% tariff on steel imports from Canada"
 
@@ -75,15 +76,23 @@ def event_of(record: int) -> str:
 
 
 def work(event_id: str) -> dict[str, Any]:
-    return sql("SELECT * FROM news_semantic_work WHERE event_id = %s", (event_id,))[0]
+    return sql(f"SELECT * FROM ({SEMANTIC_JOBS_SQL}) WHERE event_id = %s", (event_id,))[0]
 
 
 def snapshots(event_id: str) -> list[dict[str, Any]]:
-    return sql(
-        "SELECT evidence_version, snapshot FROM news_event_evidence_snapshots WHERE event_id = %s"
+    rows = sql(
+        f"SELECT evidence_version, snapshot FROM ({EVIDENCE_VERSIONS_SQL}) WHERE event_id = %s"
         " ORDER BY evidence_version",
         (event_id,),
     )
+
+    def current(repos):
+        return repos.news.latest_evidence_snapshot(event_id)
+
+    latest = ThreadedDb()._run("latest-evidence", current)
+    if latest is not None and rows:
+        rows[-1]["snapshot"] = latest["snapshot"]
+    return rows
 
 
 def add_member_evidence(event_id: str, item_id: str, text: str, *, now_ms: int) -> None:

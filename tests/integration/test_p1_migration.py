@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 
+from tests.fixtures.news_semantic_0422 import seed_event
 from tests.news.net_buy_fixtures import movement as fill
 from tests.news.net_buy_fixtures import roster, snapshot
 from tests.postgres_test_utils import (
@@ -16,7 +17,7 @@ from tests.postgres_test_utils import (
     postgres_migration_test_dsn,
     prepare_test_migration_database,
 )
-from tests.support.news_update_pg import EVENT, seed_event
+from tests.support.news_update_pg import EVENT
 from tests.support.p1_legacy_market import LegacyMarketSeed
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.liquidations import parse_liquidation

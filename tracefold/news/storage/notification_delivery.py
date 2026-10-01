@@ -13,6 +13,7 @@ from ..notifications.ports import BeginSendStatus
 from .errors import EventUpdateConflict
 from .notification_context import NotificationContextStorage
 from .notification_work import INTENT_ATTEMPTS_MAX, IntentOutcome, NotificationWorkStorage
+from .semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL
 from .sql_values import _dumps
 from .update_commit import lock_event
 
@@ -76,7 +77,8 @@ class NotificationDeliveryStorage:
             raise EventUpdateConflict("news_intent_card_not_frozen")
         event_id = str(queued["event_id"])
         head = self.conn.execute(
-            "SELECT update_ref FROM news_event_update_heads WHERE event_id = %s", (event_id,)
+            f"SELECT update_ref FROM ({ANALYSIS_HEADS_SQL}) WHERE event_id = %s",  # noqa: S608 -- fixed SQL; bound values.
+            (event_id,),
         ).fetchone()
         head_changed = head is None or head["update_ref"] != plan.update_ref
         reader_changed = (
@@ -105,18 +107,18 @@ class NotificationDeliveryStorage:
             )
             return "head_changed" if head_changed else "reader_changed" if reader_changed else "overlap"
         inserted = self.conn.execute(
-            """
+            f"""
             WITH frozen AS (
               SELECT COALESCE(jsonb_agg(claim), '[]'::jsonb) AS claims
-                FROM news_event_updates u
+                FROM ({ANALYSES_SQL}) u
                 CROSS JOIN LATERAL jsonb_array_elements(u.document -> 'claims') claim
                WHERE u.event_id = %(event)s AND u.content_revision = %(revision)s
                  AND claim ->> 'ref' = ANY(%(refs)s)
             ), selected AS (
               SELECT DISTINCT upper(asset ->> 'symbol') AS symbol
-                FROM news_event_updates u
+                FROM ({ANALYSES_SQL}) u
                 CROSS JOIN LATERAL jsonb_array_elements(u.document -> 'claims') claim
-                CROSS JOIN LATERAL jsonb_array_elements(claim #> '{fields,assets}') asset
+                CROSS JOIN LATERAL jsonb_array_elements(claim #> '{{fields,assets}}') asset
                WHERE u.event_id = %(event)s AND u.content_revision = %(revision)s
                  AND claim ->> 'ref' = ANY(%(refs)s) AND asset ->> 'role' = 'primary'
             ), canonical AS (
@@ -135,7 +137,7 @@ class NotificationDeliveryStorage:
              WHERE e.event_id=%(event)s AND n.intent_id=%(intent)s AND n.state='pending'
                AND n.lease_token=%(lease)s AND n.lease_until_ms>%(now)s
             RETURNING n.state
-            """,
+            """,  # noqa: S608 -- fixed SQL; bound values.
             {
                 "intent": intent_id,
                 "lease": lease_token,

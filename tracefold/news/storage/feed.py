@@ -47,6 +47,7 @@ from .feed_sql import (
     feed_counts_sql,
     feed_page_sql,
 )
+from .semantic_rows import EVIDENCE_VERSIONS_SQL
 
 
 class FeedStorage:
@@ -217,14 +218,14 @@ class FeedStorage:
                 "created_at_ms": int(row["created_at_ms"]),
             }
             for row in self.conn.execute(
-                """
+                f"""
                 SELECT event_id, evidence_version, focus_fact_id, evidence_sha256,
                        provenance, release_eligible, created_at_ms
-                  FROM news_event_evidence_snapshots
+                  FROM ({EVIDENCE_VERSIONS_SQL})
                  WHERE event_id = %s AND provenance = 'observed'
                    AND snapshot ->> 'schema_version' = 'news_event_evidence_v3'
                  ORDER BY evidence_version
-                """,
+                """,  # noqa: S608 -- fixed SQL; bound values.
                 (event_id,),
             ).fetchall()
         ]

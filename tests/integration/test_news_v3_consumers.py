@@ -36,6 +36,7 @@ from tracefold.news.pipeline.delivery_enrichment import DeliveryEnrichment
 from tracefold.news.pipeline.notification_sender import NotificationSender
 from tracefold.news.pipeline.send_entry import InitialSendEntry
 from tracefold.news.storage.notification_rows import UPDATE_RECEIPTS_SQL
+from tracefold.news.storage.semantic_rows import EVIDENCE_VERSIONS_SQL, ITEM_REVISIONS_SQL, SEMANTIC_JOBS_SQL
 
 pytestmark = pytest.mark.integration
 
@@ -219,10 +220,10 @@ def test_deduper_wakes_semantic_work_for_every_admitted_event_and_redelivery_is_
     assert all(m.priority == 0 for m in bus.published if m.routing_key.endswith(".normal"))
 
     rows = conn.execute(
-        """
+        f"""
         SELECT e.event_id, e.admission, e.published_at_ms, e.dedupe_family, e.queue_priority,
                w.wanted_revision, w.done_revision, w.published_at_ms AS woken_at_ms
-          FROM news_events e JOIN news_semantic_work w ON w.event_id = e.event_id
+          FROM news_events e JOIN ({SEMANTIC_JOBS_SQL}) w ON w.event_id = e.event_id
          WHERE e.event_id = ANY(%s)
         """,
         (sorted(woken),),
@@ -235,19 +236,19 @@ def test_deduper_wakes_semantic_work_for_every_admitted_event_and_redelivery_is_
     for row in rows:
         assert f"event.{row['dedupe_family']}.{row['queue_priority']}" in bus.routing_keys()
     unwoken_admitted = conn.execute(
-        """
+        f"""
         SELECT count(*) AS n FROM news_events e
          WHERE e.admission = ANY(%s)
-           AND NOT EXISTS (SELECT 1 FROM news_semantic_work w WHERE w.event_id = e.event_id)
+           AND NOT EXISTS (SELECT 1 FROM ({SEMANTIC_JOBS_SQL}) w WHERE w.event_id = e.event_id)
         """,
         (sorted(ADMITTED_ADMISSIONS),),
     ).fetchone()["n"]
     assert unwoken_admitted == 0
     suppressed = conn.execute(
-        """
+        f"""
         SELECT count(*) AS n FROM news_events e
          WHERE NOT (e.admission = ANY(%s))
-           AND NOT EXISTS (SELECT 1 FROM news_semantic_work w WHERE w.event_id = e.event_id)
+           AND NOT EXISTS (SELECT 1 FROM ({SEMANTIC_JOBS_SQL}) w WHERE w.event_id = e.event_id)
         """,
         (sorted(ADMITTED_ADMISSIONS),),
     ).fetchone()["n"]
@@ -257,12 +258,12 @@ def test_deduper_wakes_semantic_work_for_every_admitted_event_and_redelivery_is_
     def state() -> dict[str, Any]:
         return dict(
             conn.execute(
-                """
+                f"""
                 SELECT (SELECT count(*) FROM news_items) AS items,
                        (SELECT count(*) FROM news_events) AS events,
-                       (SELECT count(*) FROM news_event_evidence_snapshots) AS snapshots,
-                       (SELECT count(*) FROM news_item_revisions) AS revisions,
-                       (SELECT coalesce(sum(wanted_revision), 0) FROM news_semantic_work) AS wanted
+                       (SELECT count(*) FROM ({EVIDENCE_VERSIONS_SQL})) AS snapshots,
+                       (SELECT count(*) FROM ({ITEM_REVISIONS_SQL})) AS revisions,
+                       (SELECT coalesce(sum(wanted_revision), 0) FROM ({SEMANTIC_JOBS_SQL})) AS wanted
                 """
             ).fetchone()
         )
@@ -305,7 +306,7 @@ def test_recovery_raw_is_persisted_but_never_wakes_semantics_or_delivery(conn) -
     downstream = conn.execute(
         f"""
         SELECT
-          (SELECT count(*) FROM news_semantic_work WHERE event_id = ANY(%s)) AS semantic,
+          (SELECT count(*) FROM ({SEMANTIC_JOBS_SQL}) WHERE event_id = ANY(%s)) AS semantic,
           (SELECT count(*) FROM ({UPDATE_RECEIPTS_SQL}) WHERE event_id = ANY(%s)) AS deliveries
         """,
         (event_ids, event_ids),
@@ -479,7 +480,7 @@ def test_a_market_frame_that_matched_no_template_is_stored_raw_and_calls_no_mode
     # A market frame opens no Event, so it can want no semantic work.
     assert (
         conn.execute(
-            "SELECT count(*) AS n FROM news_semantic_work w JOIN news_event_members m ON m.event_id = w.event_id"
+            f"SELECT count(*) AS n FROM ({SEMANTIC_JOBS_SQL}) w JOIN news_event_members m ON m.event_id = w.event_id"
             " WHERE m.item_id = %s",
             (item["item_id"],),
         ).fetchone()["n"]

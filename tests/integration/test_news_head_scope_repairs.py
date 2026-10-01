@@ -17,6 +17,7 @@ from tracefold.news.storage.head_scope_repairs import audit_scope_rows
 from tracefold.news.storage.notification_jobs import NotificationJobDetail
 from tracefold.news.storage.notification_rows import NOTIFY_JOBS_SQL, UPDATE_RECEIPTS_SQL
 from tracefold.news.storage.notification_store import PgNotificationStore
+from tracefold.news.storage.semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL, SEMANTIC_RESULTS_SQL
 from tracefold.news.storage.update_commit import lock_event
 from tracefold.news.updates.identity import digest
 
@@ -40,25 +41,21 @@ def _seed_numbered_head(notification_state: str = "pending"):
         (unit.fact_id, unit.text, event_id),
     )
     sql(
-        """INSERT INTO news_semantic_observations
-             (result_id,work_id,event_id,input_revision,input_sha256,program_identity,
-              completed_at_ms,understanding)
-           VALUES ('historical-result','historical-work',%s,2,%s,'historical-test',%s,'{}'::jsonb)""",
-        (event_id, digest("historical-input"), STAMP),
+        """INSERT INTO news_analyses(analysis_id,origin,work_id,event_id,input_revision,input_sha256,
+             program_identity,completed_at_ms,understanding,content_revision,update_ref,adopted_at_ms,document)
+           VALUES ('historical-result','semantic','historical-work',%s,2,%s,'historical-test',
+                   %s,'{}',%s,%s,%s,%s::jsonb)""",
+        (
+            event_id,
+            digest("historical-input"),
+            STAMP,
+            head.content_revision,
+            head.ref,
+            STAMP + 1,
+            head.model_dump_json(),
+        ),
     )
-    sql(
-        """INSERT INTO news_event_updates
-             (event_id,content_revision,input_revision,previous_content_revision,
-              adopted_at_ms,observation_result_id,document)
-           VALUES (%s,%s,2,NULL,%s,'historical-result',%s::jsonb)""",
-        (event_id, head.content_revision, STAMP + 1, head.model_dump_json()),
-    )
-    sql(
-        """INSERT INTO news_event_update_heads
-             (event_id,content_revision,input_revision,update_ref,adopted_at_ms)
-           VALUES (%s,%s,2,%s,%s)""",
-        (event_id, head.content_revision, head.ref, STAMP + 1),
-    )
+    sql("UPDATE news_events SET current_analysis_id='historical-result' WHERE event_id=%s", (event_id,))
     decision_ref = None
     if notification_state == "done":
         decision_ref = "historical-decision"
@@ -109,8 +106,8 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(n
     finally:
         conn.close()
     revisions = sql(
-        """SELECT content_revision,observation_result_id,scope_repair_id
-             FROM news_event_updates WHERE event_id=%s ORDER BY adopted_at_ms""",
+        f"""SELECT content_revision,observation_result_id,scope_repair_id
+             FROM ({ANALYSES_SQL}) WHERE event_id=%s ORDER BY adopted_at_ms""",
         (event_id,),
     )
     assert len(revisions) == 2
@@ -119,12 +116,12 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(n
     assert revisions[1]["observation_result_id"] is None
     assert revisions[1]["scope_repair_id"]
     assert (
-        sql("SELECT content_revision FROM news_event_update_heads WHERE event_id=%s", (event_id,))[0][
+        sql(f"SELECT content_revision FROM ({ANALYSIS_HEADS_SQL}) WHERE event_id=%s", (event_id,))[0][
             "content_revision"
         ]
         == revision
     )
-    assert sql("SELECT count(*) AS n FROM news_head_scope_repairs")[0]["n"] == 1
+    assert sql("SELECT count(*) AS n FROM news_analyses WHERE origin='scope_repair'")[0]["n"] == 1
     (outbox,) = sql(
         """SELECT kind,source_fact_key,source_revision,payload,payload_sha256
              FROM news_trade_events WHERE source_revision=%s""",
@@ -149,7 +146,7 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(n
     finally:
         conn.close()
     assert sql("SELECT count(*) AS n FROM trading_source_amendments")[0]["n"] == 1
-    assert sql("SELECT count(*) AS n FROM news_semantic_observations")[0]["n"] == 1
+    assert sql(f"SELECT count(*) AS n FROM ({SEMANTIC_RESULTS_SQL})")[0]["n"] == 1
     # Work still owed follows the repaired head -- pending, or failed and waiting for a retry of exactly that
     # head -- without its budget replenished; completed work stays with the head it completed.
     assert sql(f"SELECT content_revision,state,decision_ref FROM ({NOTIFY_JOBS_SQL})")[0] == {
@@ -232,8 +229,8 @@ def test_begin_waiting_for_event_lock_rechecks_head_after_repair_commit() -> Non
                 for _ in range(100):
                     waiting = sql(
                         "SELECT 1 FROM pg_stat_activity WHERE datname=current_database() "
-                        "AND wait_event_type='Lock' AND wait_event='advisory' "
-                        "AND query LIKE 'SELECT pg_advisory_xact_lock%' LIMIT 1"
+                        "AND wait_event_type='Lock' "
+                        "AND query LIKE 'SELECT event_id FROM news_events%FOR NO KEY UPDATE%' LIMIT 1"
                     )
                     if waiting:
                         break

@@ -9,69 +9,70 @@ from __future__ import annotations
 from typing import Any, Final
 
 from .notification_rows import NOTIFICATION_DECISIONS_SQL, NOTIFY_JOBS_SQL, UPDATE_PENDING_SQL, UPDATE_RECEIPTS_SQL
+from .semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL, SEMANTIC_JOBS_SQL, SEMANTIC_RESULTS_SQL
 
 # The adopted head with its insert-only document. One row or none: the head is the Event's CAS target.
-EVENT_UPDATE_HEAD_SQL: Final = """
+EVENT_UPDATE_HEAD_SQL: Final = f"""
     SELECT h.event_id, h.content_revision, h.input_revision, h.update_ref, h.adopted_at_ms,
            u.previous_content_revision, u.observation_result_id, u.scope_repair_id, u.document
-      FROM news_event_update_heads h
-      JOIN news_event_updates u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
+      FROM ({ANALYSIS_HEADS_SQL}) h
+      JOIN ({ANALYSES_SQL}) u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
      WHERE h.event_id = %s
-"""
+"""  # noqa: S608 -- fixed SQL; bound values.
 # Every adopted revision of one Event, without the documents: the timeline needs the clock, the input
 # revision and which change kinds each adoption introduced.
-EVENT_UPDATE_REVISIONS_SQL: Final = """
+EVENT_UPDATE_REVISIONS_SQL: Final = f"""
     SELECT u.content_revision, u.input_revision, u.previous_content_revision, u.adopted_at_ms,
            u.observation_result_id, u.scope_repair_id,
            jsonb_path_query_array(u.document, '$.changes[*].kind') AS change_kinds,
            jsonb_array_length(u.document -> 'claims') AS claim_n
-      FROM news_event_updates u
+      FROM ({ANALYSES_SQL}) u
      WHERE u.event_id = %s
      ORDER BY u.adopted_at_ms, u.content_revision
      LIMIT 50
-"""
+"""  # noqa: S608 -- fixed SQL; bound values.
 # The prior claims a head's changes point at. A change names its previous content by update ref, which
 # is either an earlier revision of this Event or the current head of a related Event. A related Event
 # whose head has since moved on is not searched: its old statement reads as unknown.
-EVENT_UPDATE_PREVIOUS_CLAIMS_SQL: Final = """
+EVENT_UPDATE_PREVIOUS_CLAIMS_SQL: Final = f"""
     SELECT prior.update_ref, prior.event_id, claim ->> 'ref' AS claim_ref, claim ->> 'statement' AS statement
       FROM (
-        SELECT public.news_identity('update', jsonb_build_array(u.event_id, u.content_revision)) AS update_ref,
+        SELECT u.update_ref AS update_ref,
                u.event_id, u.document
-          FROM news_event_updates u
+          FROM ({ANALYSES_SQL}) u
          WHERE u.event_id = %s
-           AND public.news_identity('update', jsonb_build_array(u.event_id, u.content_revision)) = ANY(%s)
+           AND u.update_ref = ANY(%s)
         UNION ALL
         SELECT h.update_ref, u.event_id, u.document
-          FROM news_event_update_heads h
-          JOIN news_event_updates u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
+          FROM ({ANALYSIS_HEADS_SQL}) h
+          JOIN ({ANALYSES_SQL}) u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
          WHERE h.update_ref = ANY(%s) AND h.event_id <> %s
       ) prior
       CROSS JOIN LATERAL jsonb_array_elements(prior.document -> 'claims') AS claim
-"""
-EVENT_SEMANTIC_WORK_SQL: Final = """
+"""  # noqa: S608 -- fixed SQL; bound values.
+EVENT_SEMANTIC_WORK_SQL: Final = f"""
     SELECT event_id, wanted_revision, done_revision, attempts, next_attempt_at_ms, published_at_ms,
            last_outcome, last_error_code, extra_read_state, updated_at_ms
-      FROM news_semantic_work
+      FROM ({SEMANTIC_JOBS_SQL})
      WHERE event_id = %s
-"""
+"""  # noqa: S608 -- fixed SQL; bound values.
 # The most recent observations of one Event and the revision each was adopted as, if any.
-EVENT_SEMANTIC_OBSERVATIONS_SQL: Final = """
+EVENT_SEMANTIC_OBSERVATIONS_SQL: Final = f"""
     SELECT o.result_id, o.input_revision, o.program_identity, o.completed_at_ms,
            adopted.content_revision AS adopted_content_revision
-      FROM news_semantic_observations o
-      LEFT JOIN news_event_updates adopted ON adopted.observation_result_id = o.result_id
+      FROM ({SEMANTIC_RESULTS_SQL}) o
+      LEFT JOIN ({ANALYSES_SQL}) adopted ON adopted.observation_result_id = o.result_id
      WHERE o.event_id = %s
      ORDER BY o.completed_at_ms DESC, o.result_id DESC
      LIMIT 20
-"""
+"""  # noqa: S608 -- fixed SQL; bound values.
 EVENT_NOTIFICATION_WORK_SQL: Final = f"""
     SELECT w.event_id, w.channel, w.content_revision, w.state, d.plan, d.origin, w.decision_ref,
            w.reader_revision, w.attempts, w.last_error_code, w.next_attempt_at_ms, w.updated_at_ms
       FROM ({NOTIFY_JOBS_SQL}) w
       LEFT JOIN ({NOTIFICATION_DECISIONS_SQL}) d ON d.decision_ref = w.decision_ref
      WHERE w.event_id = %s AND w.channel = 'news'
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 # Every EventUpdate delivery receipt for one Event.
 EVENT_DELIVERIES_SQL: Final = f"""
     SELECT intent_id, kind, state, card, receipt, error_code, attempted_at_ms, settled_at_ms,
@@ -80,7 +81,7 @@ EVENT_DELIVERIES_SQL: Final = f"""
       FROM ({UPDATE_RECEIPTS_SQL})
      WHERE event_id = %s
      ORDER BY created_at_ms, intent_id
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 # Work still owed for one Event. A row leaves this table when its ledger row settles, so what remains
 # is either pending or dead.
 EVENT_DELIVERY_QUEUE_SQL: Final = f"""
@@ -90,7 +91,7 @@ EVENT_DELIVERY_QUEUE_SQL: Final = f"""
       FROM ({UPDATE_PENDING_SQL})
      WHERE event_id = %s
      ORDER BY enqueued_at_ms, intent_id
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 
 
 def event_update_head(conn: Any, event_id: str) -> dict[str, Any] | None:

@@ -361,7 +361,7 @@ def test_explicit_cashtag_survives_collision_but_plain_word_does_not(strong_only
 
 
 @pytest.mark.parametrize("case", ["new_member", "numbered_task", "changed_body", "whole_item"])
-def test_semantic_prior_query_uses_actual_pending_task_scope(case: str) -> None:
+def test_semantic_prior_query_uses_actual_pending_task_scope(case: str, monkeypatch) -> None:
     data = input_material()
     # The already read leader had these same tags; newly attaching a candidate would correctly
     # make its unchanged body a new reading input rather than leave it settled.
@@ -417,34 +417,37 @@ def test_semantic_prior_query_uses_actual_pending_task_scope(case: str) -> None:
 
     class Connection:
         def execute(self, sql, params=None):
-            if "FROM news_semantic_work" in sql:
+            if "FROM news_jobs" in sql:
                 return Rows(one=data["work"])
-            if "FROM news_event_evidence_snapshots s" in sql:
-                return Rows(
-                    one={
-                        "evidence_version": 2,
-                        "fact_scopes": data["fact_scopes"],
-                        "snapshot": {
-                            "card": {
-                                "leader_item_id": "digest",
-                                "leader_title": "Old unrelated leader acquisition",
-                                "asset_class": "crypto",
-                                "grounded_assets": ["OLD"],
-                                "provider_metadata": {
-                                    "coins": [{"symbol": "OLD", "grade": "A", "market_type": "equity"}]
-                                },
-                            },
-                            "members": data["members"],
-                        },
-                    }
-                )
+            if "AS fact_scopes FROM news_events" in sql:
+                return Rows(one={"fact_scopes": data["fact_scopes"]})
+            if "jsonb_to_recordset(i.revisions)" in sql:
+                return Rows(rows=data.get("revisions", ()))
             if "FROM news_items" in sql:
                 return Rows(rows=data["items"])
-            if "FROM news_item_revisions" in sql:
-                return Rows(rows=data.get("revisions", ()))
-            if "FROM news_event_updates" in sql:
+            if "FROM news_analyses" in sql:
                 return Rows()
             raise AssertionError(sql)
+
+    from tracefold.news.storage.events import EventStorage
+
+    monkeypatch.setattr(
+        EventStorage,
+        "latest_evidence_snapshot",
+        lambda self, event_id: {
+            "evidence_version": 2,
+            "snapshot": {
+                "card": {
+                    "leader_item_id": "digest",
+                    "leader_title": "Old unrelated leader acquisition",
+                    "asset_class": "crypto",
+                    "grounded_assets": ["OLD"],
+                    "provider_metadata": {"coins": [{"symbol": "OLD", "grade": "A", "market_type": "equity"}]},
+                },
+                "members": data["members"],
+            },
+        },
+    )
 
     class Candidates:
         def evidence_candidates(self, query):
@@ -698,6 +701,7 @@ def test_a_strategy_resend_changes_the_snapshot_but_is_no_semantic_material() ->
     latest = {
         "evidence_version": 1,
         "evidence_sha256": first["evidence_sha256"],
+        "material_sha256": first["material_sha256"],
         "snapshot": json.loads(first["snapshot_json"]),
     }
     resent = {

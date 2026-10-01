@@ -93,16 +93,10 @@ def _seed(conn: Any) -> None:
         (window_start, step, EVENTS),
     )
     conn.commit()
-    observation_sql = """
-        INSERT INTO news_semantic_observations
-          (result_id,work_id,event_id,input_revision,input_sha256,program_identity,completed_at_ms,understanding)
-        SELECT 'result:e-' || g, 'work:e-' || g, 'e-' || g, 1, repeat('a',64), 'price-scale-fixture',
-               %s + g * %s::bigint, '{}'::jsonb
-          FROM generate_series(%s::integer,%s::integer) AS g
-    """
     update_sql = """
-        INSERT INTO news_event_updates
-          (event_id,content_revision,input_revision,adopted_at_ms,observation_result_id,document)
+        INSERT INTO news_analyses
+          (event_id,content_revision,input_revision,adopted_at_ms,analysis_id,document,origin,work_id,
+           input_sha256,program_identity,completed_at_ms,understanding,update_ref)
         SELECT 'e-' || g, repeat('a',64), 1, %s + g * %s::bigint, 'result:e-' || g,
                jsonb_build_object(
                  'schema_version','news_event_update_v2', 'event_id','e-' || g,
@@ -113,27 +107,23 @@ def _seed(conn: Any) -> None:
                    'fields',jsonb_build_object('assets',jsonb_build_array(
                      jsonb_build_object('symbol','S' || (g %% 500),'market_type','crypto_perp','role','primary'),
                      jsonb_build_object('symbol','T' || (g %% 500),'market_type','crypto_perp','role','primary')
-                   )))))
-          FROM generate_series(%s::integer,%s::integer) AS g
-    """
-    head_sql = """
-        INSERT INTO news_event_update_heads
-          (event_id,content_revision,input_revision,update_ref,adopted_at_ms)
-        SELECT 'e-' || g, repeat('a',64), 1,
-               news_identity('update',jsonb_build_array('e-' || g,repeat('a',64))),
-               %s + g * %s::bigint
+                   ))))),
+               'semantic','work:e-'||g,repeat('a',64),'price-scale-fixture',
+               %s + g * %s::bigint,'{}'::jsonb,
+               'update:'||encode(sha256(convert_to(news_canonical_jsonb(
+                 jsonb_build_array('e-'||g,repeat('a',64))),'UTF8')),'hex')
           FROM generate_series(%s::integer,%s::integer) AS g
     """
     for batch_start in range(1, EVENTS + 1, UPDATE_BATCH):
         batch_end = min(EVENTS, batch_start + UPDATE_BATCH - 1)
-        params = (window_start, step, batch_start, batch_end)
-        conn.execute(observation_sql, params)
-        conn.execute(update_sql, params)
-        conn.execute(head_sql, params)
+        conn.execute(update_sql, (window_start, step, window_start, step, batch_start, batch_end))
+        conn.execute(
+            "UPDATE news_events e SET current_analysis_id=a.analysis_id FROM news_analyses a "
+            "WHERE a.event_id=e.event_id AND e.current_analysis_id IS NULL"
+        )
         conn.commit()
     conn.execute("ANALYZE news_events")
-    conn.execute("ANALYZE news_event_update_heads")
-    conn.execute("ANALYZE news_event_updates")
+    conn.execute("ANALYZE news_analyses")
     conn.commit()
 
 

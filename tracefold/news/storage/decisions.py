@@ -27,7 +27,7 @@ _PUSHED_NEWS_PROJECTION = f"""
            COALESCE(d.history_context -> 'canonical_assets', '[]'::jsonb) AS canonical_assets
       FROM news_events e
       JOIN ({UPDATE_RECEIPTS_SQL}) d ON d.event_id = e.event_id AND d.kind = 'update' AND d.state = 'sent'
-"""  # noqa: S608 -- only code-owned SQL projections; values stay bound.
+"""  # noqa: S608 -- fixed SQL; bound values.
 
 
 # #582 §3.3. The News an OI card's instrument already has, in the two numbers that card prints. Here
