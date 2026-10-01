@@ -14,10 +14,12 @@ import dspy
 import pytest
 
 from tests.support.news_update_semantic import MemoryCache
+from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.news.adapters import generation
 from tracefold.news.bus import Q_TRIAGE, BusMessage, PermanentError, TransientError
-from tracefold.news.pipeline.semantic import PROVIDER_OUTAGE_CAUSE, SemanticWorker
+from tracefold.news.pipeline.semantic import PROVIDER_OUTAGE_CAUSE, SEMANTIC_LEASE_MS, SemanticWorker
 from tracefold.news.storage.errors import EventUpdateConflict
+from tracefold.news.storage.semantic_store import CLAIM_SECONDS, PgSemanticStore
 from tracefold.news.storage.semantic_work import SEMANTIC_ATTEMPTS_MAX
 from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
@@ -44,6 +46,7 @@ from tracefold.news.updates.judgment import (
     error_code,
 )
 from tracefold.news.updates.semantics import SemanticAnalyzer
+from tracefold.news.updates.service import SEMANTIC_STAGE_SECONDS
 
 NOW = 1_790_405_000_000
 
@@ -307,6 +310,45 @@ def test_the_worker_reconciles_the_incident_before_it_consumes_the_existing_queu
 
     assert db.names == ["news_semantic_incident_reconcile"]
     assert bus.consumed == [(Q_TRIAGE, 3)]
+
+
+class SessionBudgets:
+    """A `WorkerDatabase` stand-in recording the budget each News-lane operation and its session got."""
+
+    def __init__(self, news: Any) -> None:
+        self.news = news
+        self.operation_timeouts: list[tuple[str, float]] = []
+        self.statement_timeouts: list[tuple[str, float | None]] = []
+
+    @contextmanager
+    def worker_session(self, name: str, statement_timeout_seconds: float | None = None, *_: Any, **__: Any) -> Any:
+        self.statement_timeouts.append((name, statement_timeout_seconds))
+        yield SimpleNamespace(news=self.news, instruments=object(), price=object())
+
+    async def run_news(self, name: str, fn: Any, *, operation_timeout_seconds: float) -> Any:
+        self.operation_timeouts.append((name, operation_timeout_seconds))
+        return fn()
+
+
+def test_the_claim_builds_its_frozen_input_under_its_own_budget_not_the_hot_path_default() -> None:
+    claims: list[dict[str, Any]] = []
+    news = SimpleNamespace(
+        semantic_input=object(),
+        semantic_work=SimpleNamespace(claim_semantic_work=lambda **kwargs: claims.append(kwargs)),
+    )
+    database = SessionBudgets(news)
+    store = PgSemanticStore(WorkerNewsDatabase(database), clock=Clock(), lease_token=lambda: "token")  # type: ignore[arg-type]
+
+    assert asyncio.run(store.claim_semantic_work("ev-1", lease_ms=SEMANTIC_LEASE_MS)) is None
+
+    # A claim cancelled at the 3 s default rolls back and is retried at once, forever (#770 rollout):
+    # the lane envelope and the PostgreSQL statement timeout both follow the claim's own budget.
+    assert database.operation_timeouts == [("news_update_claim_work", CLAIM_SECONDS)]
+    assert database.statement_timeouts == [("news_update_claim_work", CLAIM_SECONDS)]
+    assert CLAIM_SECONDS > 3.0
+    # The lease taken at the start of the claim still outlives the claim plus the stage it precedes.
+    assert CLAIM_SECONDS + SEMANTIC_STAGE_SECONDS < SEMANTIC_LEASE_MS / 1000
+    assert [(claim["event_id"], claim["input"]) for claim in claims] == [("ev-1", news.semantic_input)]
 
 
 def test_error_codes_are_bounded_and_never_free_text() -> None:
