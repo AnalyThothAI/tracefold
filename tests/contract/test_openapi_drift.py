@@ -424,10 +424,10 @@ def test_news_event_update_contract_is_exact_and_types_the_core_vocabulary() -> 
     from typing import get_args
 
     from tracefold.app.http.app import create_app
+    from tracefold.news.notifications.contracts import ClaimReason, PlanAction
     from tracefold.news.outcome import OutcomeKind
     from tracefold.news.update_view import LegacyClaimReason
     from tracefold.news.updates.contracts import Asset, ChangeKind, ContentKind, Mode, Phase
-    from tracefold.news.updates.notification import ClaimReason, PlanAction
     from tracefold.platform.config.models import Settings
 
     components = create_app(settings=Settings(ws_token="schema-gen-placeholder")).openapi()["components"]["schemas"]

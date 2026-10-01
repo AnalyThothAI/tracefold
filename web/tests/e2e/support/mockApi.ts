@@ -268,13 +268,26 @@ function marketData(url: URL) {
 
 function newsEventDetailData(path: string) {
   const eventId = decodeURIComponent(path.split("/").pop() ?? "evt-global-policy");
+  // Adopted tariff claims name CL; BTC/ETH remain raw source evidence, not adjacent reader assets.
+  const assets = [
+    {
+      symbol: "CL",
+      market_type: "commodity" as const,
+      base_symbol: "CL",
+      venue: "hl.xyz",
+      venue_symbol: "xyz:CL",
+      listed: true,
+      resolution_state: "resolved" as const,
+    },
+  ];
   // #706: an Event the News Agent processed reads its EventUpdate and processing, and no legacy verdict.
   if (eventId.startsWith("evt-agent")) {
-    return newsUpdateDetailFixture({ event: newsEventFixture({ event_id: eventId }) });
+    return newsUpdateDetailFixture({ event: newsEventFixture({ event_id: eventId, assets }) });
   }
   return newsEventDetailFixture({
     event: newsEventFixture({
       event_id: eventId,
+      assets,
       leader_description:
         "Liquidity rotation is visible across crypto beta and rates-sensitive assets.",
       leader_title: "Macro desk flags liquidity rotation",
@@ -317,9 +330,12 @@ function statusData() {
   };
 }
 
-/** One quote per requested symbol, exactly like the server: a symbol it cannot price says `unlisted`. */
+/** One quote per typed asset, preserving the complete requested market/symbol identity. */
 function newsQuotesData(url: URL) {
-  const symbols = (url.searchParams.get("symbols") ?? "").split(",").filter(Boolean);
+  const assets = JSON.parse(url.searchParams.get("assets") ?? "[]") as Array<{
+    symbol: string;
+    market_type: ReturnType<typeof newsQuoteFixture>["market_type"];
+  }>;
   const prices: Record<string, string> = {
     DOGE: "0.2191",
     ETH: "3521.80",
@@ -327,9 +343,10 @@ function newsQuotesData(url: URL) {
   };
   return {
     measured_at_ms: NOW,
-    quotes: symbols.map((symbol) =>
+    quotes: assets.map(({ symbol, market_type }) =>
       newsQuoteFixture({
         base_symbol: symbol,
+        market_type,
         price: prices[symbol] ?? "68123.4",
         requested_symbol: symbol,
         symbol,

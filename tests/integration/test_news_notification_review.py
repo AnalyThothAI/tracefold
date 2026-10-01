@@ -9,10 +9,10 @@ from psycopg.types.json import Jsonb
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_reader import FeedOnly, PushAll
 from tests.support.news_update_pg import EVENT, adopted_head, store
+from tracefold.news.notifications.planner import NotificationPlanner
 from tracefold.news.review.desk import DecisionFeedbackSubmission, DeskQuery, Principal, ReviewDesk, TaskRef
-from tracefold.news.storage.event_update_store import PgJudgmentCache
+from tracefold.news.storage.judgment_store import PgJudgmentCache
 from tracefold.news.updates.judgment import Budget
-from tracefold.news.updates.notification import NotificationPlanner
 from tracefold.platform.postgres.client import transaction
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -21,12 +21,12 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_d
 @pytest.mark.parametrize("selected", [True, False])
 def test_new_decision_is_reviewable_without_old_verdict(selected: bool) -> None:
     pg, _db, clock = store()
-    head = adopted_head(pg, clock)
-    snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    head = adopted_head(pg.semantic, clock)
+    snapshot = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
-    planner = NotificationPlanner(PushAll() if selected else FeedOnly(), PgJudgmentCache(pg.db))
+    planner = NotificationPlanner(PushAll() if selected else FeedOnly(), PgJudgmentCache(pg.semantic.db))
     plan = asyncio.run(planner.plan(head, snapshot.reader, Budget.start(5), now_ms=clock.now_ms))
-    committed = asyncio.run(pg.atomic_record_plan(plan))
+    committed = asyncio.run(pg.notifications.atomic_record_plan(plan))
     assert committed.status == "committed"
     assert (committed.lease is not None) == selected
 
@@ -79,16 +79,16 @@ def test_new_decision_is_reviewable_without_old_verdict(selected: bool) -> None:
 
 def test_a_repeated_plan_reuses_each_claims_persisted_reader_judgment() -> None:
     pg, _db, clock = store()
-    head = adopted_head(pg, clock)
-    snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    head = adopted_head(pg.semantic, clock)
+    snapshot = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
     judge = PushAll()
-    planner = NotificationPlanner(judge, PgJudgmentCache(pg.db))
+    planner = NotificationPlanner(judge, PgJudgmentCache(pg.semantic.db))
     first = asyncio.run(planner.plan(head, snapshot.reader, Budget.start(5), now_ms=clock.now_ms))
-    committed = asyncio.run(pg.atomic_record_plan(first))
+    committed = asyncio.run(pg.notifications.atomic_record_plan(first))
     assert committed.status == "committed" and len(judge.asked) == 1
     # A fresh planner, as after a restart or a lost CAS: the judgment comes from news_judgment_cache.
-    again = NotificationPlanner(PushAll(), PgJudgmentCache(pg.db))
+    again = NotificationPlanner(PushAll(), PgJudgmentCache(pg.semantic.db))
     second = asyncio.run(again.plan(head, snapshot.reader, Budget.start(5), now_ms=clock.now_ms))
     assert again.judge.asked == []  # type: ignore[attr-defined]
     assert second.record_ref == committed.effective_plan.record_ref
@@ -96,12 +96,12 @@ def test_a_repeated_plan_reuses_each_claims_persisted_reader_judgment() -> None:
 
 def test_decision_queue_filters_before_limit_and_uses_one_read_for_a_sparse_page() -> None:
     pg, _db, clock = store()
-    head = adopted_head(pg, clock)
-    snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    head = adopted_head(pg.semantic, clock)
+    snapshot = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
-    planner = NotificationPlanner(PushAll(), PgJudgmentCache(pg.db))
+    planner = NotificationPlanner(PushAll(), PgJudgmentCache(pg.semantic.db))
     plan = asyncio.run(planner.plan(head, snapshot.reader, Budget.start(5), now_ms=clock.now_ms))
-    assert asyncio.run(pg.atomic_record_plan(plan)).status == "committed"
+    assert asyncio.run(pg.notifications.atomic_record_plan(plan)).status == "committed"
     conn = connect_postgres_test(read_only=False)
     try:
         original = conn.execute(

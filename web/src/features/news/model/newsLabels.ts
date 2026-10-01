@@ -1,5 +1,4 @@
 import type {
-  NewsAssetRef,
   NewsEventKind,
   NewsFeedEvent,
   NewsFeedOutcome,
@@ -228,29 +227,6 @@ export function formatCount(value: number): string {
  */
 export function displayAssets(grounded: readonly string[]): string[] {
   return Array.from(new Set(grounded.map((symbol) => symbol.replace(/^XYZ-/, "").toUpperCase())));
-}
-
-/**
- * Resolved chips from the durable Event-asset projection (#87/#287).
- *
- * Server `assets` is authoritative and can exist when provider/Gate evidence is empty. Raw grounded tags
- * absent from that projection are appended as `listed: false` fallbacks — unknown evidence reads as "we
- * cannot place this", never as a confirmed listing.
- */
-export function displayAssetRefs(
-  grounded: readonly string[],
-  assets: readonly NewsAssetRef[] | undefined,
-): NewsAssetRef[] {
-  const resolved = [...(assets ?? [])];
-  const represented = new Set(
-    resolved.flatMap((asset) => displayAssets([asset.symbol, asset.base_symbol])),
-  );
-  for (const symbol of displayAssets(grounded)) {
-    if (represented.has(symbol)) continue;
-    resolved.push({ base_symbol: symbol, listed: false, symbol, venue: null });
-    represented.add(symbol);
-  }
-  return resolved;
 }
 
 /**

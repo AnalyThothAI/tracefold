@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final
 
+from ..notifications.contracts import NEWS_CHANNEL
 from ..updates.contracts import NOTIFICATION_CHANGES, EventUpdate
-from ..updates.notification import NEWS_CHANNEL
 from .sql_values import _dumps
 from .trade_projection import TradeProjectionStorage
 
@@ -18,10 +18,6 @@ CLAIM_LINK_RELATIONS: frozenset[str | None] = frozenset(
 )
 PUBLIC_TRADE_KINDS: Final[dict[str, str]] = {"catalyst_delta": "catalyst", "source_update": "source_update"}
 _EVENT_LOCK_NAMESPACE = 0x4E455755  # All head, plan and send-permission writers use this lock.
-
-
-class UpdateCommitOwner(Protocol):
-    conn: Any
 
 
 @dataclass(frozen=True)
@@ -47,8 +43,9 @@ def lock_event(conn: Any, event_id: str) -> None:
 
 
 def commit_update(
-    owner: UpdateCommitOwner,
+    conn: Any,
     *,
+    outbox: TradeProjectionStorage,
     expected_head_ref: str | None,
     update: EventUpdate,
     document_json: str,
@@ -71,7 +68,6 @@ def commit_update(
     failed one or replenish the budget of any responsibility.
     """
 
-    conn = owner.conn
     event_id = update.event_id
     head = conn.execute(
         "SELECT update_ref,input_revision FROM news_event_update_heads WHERE event_id=%s", (event_id,)
@@ -146,7 +142,6 @@ def commit_update(
              update_ref=EXCLUDED.update_ref, adopted_at_ms=EXCLUDED.adopted_at_ms""",
         (event_id, update.content_revision, update.input_revision, update.ref, update.adopted_at_ms),
     )
-    outbox = cast(TradeProjectionStorage, owner)
     for kind, payload in public_rows:
         if not outbox.enqueue_trade_event(
             kind=kind,

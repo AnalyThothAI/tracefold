@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from pydantic import Field
 
+from tracefold.news.models import MarketType
+
 from .common import ExactApiSchema
 from .news_common import NewsSymbolNormalizationData
 
@@ -27,7 +29,7 @@ class NewsSymbolContractData(ExactApiSchema):
 
     venue: str
     venue_symbol: str
-    instrument_class: str
+    instrument_class: MarketType
     quote_asset: str | None = None
     reference_only: bool = False
 

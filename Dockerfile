@@ -60,7 +60,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     UV_HTTP_TIMEOUT=300 uv sync --locked --no-dev
 
 RUN /app/.venv/bin/python -c \
-    'from tracefold.app.news_updates import news_program_identity; news_program_identity(extraction_model_identity="build", judgment_model_identity="build", card_model_identity="build")'
+    'from tracefold.app.news_updates import news_program_identity; news_program_identity(extraction_model_identity="build", judgment_model_identity="build")'
 
 FROM python:3.13-slim-bookworm@sha256:c45a22ea000adfd9cda29364bbe7edd23001ce5cc2ad15857cfbf7766943b9ca AS base
 

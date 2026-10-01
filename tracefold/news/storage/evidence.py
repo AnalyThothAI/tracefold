@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from psycopg.types.json import Jsonb
+
+from ..entities import ADDRESS_PATTERN, CRYPTO_QUOTE_SUFFIXES, RELATED_ASSET_ALIASES, asset_retrieval_symbols
 from ..evidence import CANDIDATE_MAX, ENTITY_MAX, RELATION_MAX, SIMILAR_MAX, EvidenceQuery
 
 ITEM_MATERIAL_COLUMNS = """item_id, source_artifact_id, canonical_url, reporting_origin, published_at_ms,
@@ -17,7 +20,10 @@ ITEM_MATERIAL_COLUMNS = """item_id, source_artifact_id, canonical_url, reporting
 _CANDIDATE_COLUMNS = """e.event_id, e.leader_item_id AS item_id, e.comparison_title,
     e.comparison_fingerprint, e.focus_fact_text AS leader_title,
     e.focus_fact_context AS leader_description, e.focus_fact_method, e.created_at_ms,
-    e.asset_class, e.grounded_assets, i.source_artifact_id, i.canonical_url"""
+    e.asset_class, e.grounded_assets, i.source_artifact_id, i.canonical_url,
+    ARRAY(SELECT m.fact_text FROM news_event_members m
+           WHERE m.event_id=e.event_id AND m.joined_at_ms <= %(cutoff)s
+           ORDER BY m.joined_at_ms, m.item_id, m.fact_id) AS task_texts"""
 _CANDIDATE_WHERE = """e.event_id <> %(event_id)s AND e.updated_at_ms <= %(cutoff)s
     AND e.created_at_ms >= %(since)s AND e.created_at_ms < %(cutoff)s
     AND i.provider_params_available_at_ms <= %(cutoff)s AND i.market_kind IS NULL"""
@@ -29,7 +35,13 @@ def _channel_sql(
     return f"""{name}_raw AS (  -- code-owned fragments only
 
       SELECT {_CANDIDATE_COLUMNS}, {priority} AS priority,
-             similarity(e.comparison_title, %(title)s) AS score, '{reason}'::text AS retrieval_reason
+             greatest(
+                 COALESCE((SELECT max(similarity(e.comparison_title, text))
+                             FROM unnest(%(texts)s::text[]) text), 0),
+                 COALESCE((SELECT max(similarity(m.fact_text, text))
+                             FROM news_event_members m CROSS JOIN unnest(%(texts)s::text[]) text
+                            WHERE m.event_id=e.event_id AND m.joined_at_ms <= %(cutoff)s), 0)
+             ) AS score, '{reason}'::text AS retrieval_reason
         FROM news_events e JOIN news_items i ON i.item_id=e.leader_item_id
        WHERE {_CANDIDATE_WHERE} AND ({predicate})
        ORDER BY {order} LIMIT %(candidate_max)s
@@ -50,29 +62,61 @@ BACKGROUND_CANDIDATES_SQL = (
         (
             _channel_sql(
                 "explicit",
-                predicate="""(%(artifact)s <> '' AND i.source_artifact_id=%(artifact)s)
-                   OR (%(url)s <> '' AND i.canonical_url=%(url)s)""",
+                predicate="""i.source_artifact_id=ANY(%(artifacts)s::text[])
+                   OR i.canonical_url=ANY(%(urls)s::text[])""",
                 priority=0,
                 reason="explicit_origin",
                 cap="relation_max",
             ),
             _channel_sql(
                 "entity",
-                predicate="""EXISTS (SELECT 1 FROM news_event_assets a
-                   WHERE a.event_id=e.event_id AND a.symbol=ANY(%(symbols)s))
-                   AND EXISTS (SELECT 1 FROM unnest(%(terms)s::text[]) t
-                       WHERE position(t in lower(e.comparison_title)) > 0 AND upper(t) <> ALL(%(symbols)s))""",
+                predicate="""cardinality(%(symbols)s::text[]) > 0 AND EXISTS (
+                     SELECT 1 FROM news_event_assets a
+                      CROSS JOIN LATERAL (
+                        SELECT regexp_replace(a.symbol, '^[[:space:]$]+|[[:space:]]+$', '', 'g') AS text
+                      ) tagged
+                      CROSS JOIN LATERAL (
+                        SELECT CASE WHEN tagged.text ~ %(address_pattern)s THEN tagged.text
+                          ELSE regexp_replace(regexp_replace(upper(tagged.text), '^XYZ-', ''), '^[^:]*:', '')
+                          END AS symbol
+                      ) normalized
+                      WHERE a.event_id=e.event_id AND (
+                        normalized.symbol=ANY(%(symbols)s)
+                        OR COALESCE(%(aliases)s::jsonb ->> normalized.symbol, normalized.symbol)=ANY(%(symbols)s)
+                        OR (COALESCE(a.market_type,'unknown') IN ('crypto','unknown')
+                            AND tagged.text !~ %(address_pattern)s AND (
+                          SELECT left(normalized.symbol, length(normalized.symbol)-length(quote))
+                            FROM unnest(%(quotes)s::text[]) WITH ORDINALITY quotes(quote, rank)
+                           WHERE right(normalized.symbol, length(quote))=quote
+                             AND length(normalized.symbol) > length(quote)+1
+                           ORDER BY rank LIMIT 1
+                        )=ANY(%(symbols)s))
+                      )
+                   )
+                   AND EXISTS (
+                     SELECT 1 FROM unnest(%(terms)s::text[]) t
+                      WHERE upper(t) <> ALL(%(symbols)s) AND (
+                        position(t in lower(e.comparison_title)) > 0
+                        OR EXISTS (SELECT 1 FROM news_event_members m
+                                    WHERE m.event_id=e.event_id AND m.joined_at_ms <= %(cutoff)s
+                                      AND position(t in lower(m.fact_text)) > 0)
+                      )
+                   )""",
                 priority=1,
                 reason="entity_event_terms",
                 cap="entity_max",
             ),
             _channel_sql(
                 "similarity_band",
-                predicate="e.comparison_title %% %(title)s",
+                predicate="""EXISTS (SELECT 1 FROM unnest(%(texts)s::text[]) text
+                       WHERE e.comparison_title %% text
+                          OR EXISTS (SELECT 1 FROM news_event_members m
+                                      WHERE m.event_id=e.event_id AND m.joined_at_ms <= %(cutoff)s
+                                        AND m.fact_text %% text))""",
                 priority=2,
                 reason="text_similarity",
                 cap="similar_max",
-                order="e.comparison_title <-> %(title)s, e.created_at_ms DESC, e.event_id",
+                order="score DESC, e.created_at_ms DESC, e.event_id",
             ),
         )
     )
@@ -101,10 +145,15 @@ def background_parameters(query: EvidenceQuery) -> dict[str, Any]:
         event_id=query.event_id,
         cutoff=query.cutoff_at_ms,
         since=query.cutoff_at_ms - query.window_ms,
-        artifact=query.source_artifact_id,
-        url=query.canonical_url,
-        title=query.title,
-        symbols=[a.symbol for a in query.assets],
+        artifacts=list(query.source_artifact_ids),
+        urls=list(query.canonical_urls),
+        texts=list(query.texts),
+        symbols=sorted(
+            {symbol for asset in query.assets for symbol in asset_retrieval_symbols(asset.symbol, asset.market_type)}
+        ),
+        aliases=Jsonb(RELATED_ASSET_ALIASES),
+        quotes=list(CRYPTO_QUOTE_SUFFIXES),
+        address_pattern=ADDRESS_PATTERN,
         terms=list(query.terms),
         relation_max=RELATION_MAX,
         entity_max=ENTITY_MAX,

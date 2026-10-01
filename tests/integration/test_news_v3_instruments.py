@@ -7,6 +7,7 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_review.instruments import Instrument, classify
+from tracefold.news.market_review.pricing import QuoteRequest
 
 pytestmark = pytest.mark.integration
 
@@ -458,22 +459,18 @@ def test_asset_refs_resolve_the_providers_prefixed_form_to_the_listed_contract(c
             [_inst("hl.xyz", "xyz:UNITREE", "UNITREE"), _inst("binance.perp", "BTCUSDT", "BTC")], now_ms=NOW
         )
 
-    refs = repos.instruments.asset_refs(["XYZ-UNITREE", "unitree", "BTC", "SPOT"])
-
-    # Keyed by the raw tag the caller passed, so no caller needs normalization knowledge of its own.
-    assert (
-        refs["XYZ-UNITREE"]
-        == refs["unitree"]
-        == {
-            "symbol": "UNITREE",
-            "base_symbol": "UNITREE",
-            "venue": "hl.xyz",
-            "listed": True,
-        }
-    )
-    assert refs["BTC"]["venue"] == "binance.perp"
-    # A tag that names nothing still gets an entry — a lookup gap must never read as a confirmed listing.
-    assert refs["SPOT"] == {"symbol": "SPOT", "base_symbol": "SPOT", "venue": None, "listed": False}
+    requests = [
+        QuoteRequest("XYZ-UNITREE", "pre_ipo"),
+        QuoteRequest("unitree", "pre_ipo"),
+        QuoteRequest("BTC", "crypto"),
+        QuoteRequest("SPOT", "crypto"),
+    ]
+    refs = repos.instruments.asset_refs(requests)
+    assert refs[requests[0]]["venue_symbol"] == refs[requests[1]]["venue_symbol"] == "xyz:UNITREE"
+    assert refs[requests[0]]["resolution_state"] == "resolved"
+    assert refs[requests[2]]["venue"] == "binance.perp"
+    assert refs[requests[3]]["resolution_state"] == "unlisted"
+    assert refs[requests[3]]["listed"] is False
 
 
 def test_normalization_block_only_reports_the_operator_owned_collapse(conn) -> None:
@@ -585,9 +582,39 @@ def test_asset_refs_never_claim_a_reference_only_symbol_is_listed(conn) -> None:
     repos = repositories_for_connection(conn)
     _with_reference_tier(repos)
 
-    refs = repos.instruments.asset_refs(["ATOM", "UWMC"])
-    assert refs["ATOM"] == {"symbol": "ATOM", "base_symbol": "ATOM", "venue": "binance.perp", "listed": True}
-    assert refs["UWMC"] == {"symbol": "UWMC", "base_symbol": "UWMC", "venue": None, "listed": False}
+    atom, uwmc, unknown = QuoteRequest("ATOM", "crypto"), QuoteRequest("UWMC", "equity"), QuoteRequest("ATOM")
+    refs = repos.instruments.asset_refs([atom, uwmc, unknown])
+    assert refs[atom]["venue"] == "binance.perp" and refs[atom]["listed"]
+    assert refs[uwmc]["venue"] == "us.listed" and not refs[uwmc]["listed"]
+    assert refs[uwmc]["resolution_state"] == "reference_only"
+    assert refs[unknown]["resolution_state"] == "unresolved_market" and refs[unknown]["venue"] is None
+
+
+def test_typed_asset_refs_keep_same_ticker_markets_and_reference_contracts_separate(conn) -> None:
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [
+                _inst("binance.perp", "VUSDT", "V", "USDT", cls="crypto"),
+                _inst("binance.perp", "VUSDC", "V", "USDC", cls="crypto"),
+                _inst("hl.xyz", "xyz:V", "V", "USDC", cls="equity"),
+                _inst("us.listed", "SEI", "SEI", cls="equity"),
+            ],
+            now_ms=NOW,
+        )
+    crypto, equity = QuoteRequest("V", "crypto"), QuoteRequest("V", "equity")
+    reference, unknown = QuoteRequest("SEI", "equity"), QuoteRequest("V", "unknown")
+    refs = repos.instruments.asset_refs([crypto, equity, reference, unknown])
+
+    assert len(refs) == 4
+    assert refs[crypto]["venue_symbol"] == "VUSDT"
+    assert refs[equity]["venue_symbol"] == "xyz:V"
+    assert refs[reference]["venue_symbol"] == "SEI"
+    assert refs[reference]["resolution_state"] == "reference_only" and refs[reference]["listed"] is False
+    # Source-only ledger questions retain catalogue grounding without selecting or pricing a market.
+    assert refs[unknown]["listed"] is True
+    assert refs[unknown]["resolution_state"] == "unresolved_market"
+    assert refs[unknown]["venue"] is refs[unknown]["venue_symbol"] is None
 
 
 def test_an_alias_of_a_traded_symbol_beats_a_us_ticker_of_the_same_name(conn) -> None:

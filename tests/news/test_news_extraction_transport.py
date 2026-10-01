@@ -19,9 +19,9 @@ from dspy.lm15 import Message, Response, Usage  # type: ignore[import-untyped]
 
 from tests.support.news_update_semantic import MemoryCache, TaskBackend, material
 from tests.support.scripted_lm import ScriptedLM
+from tracefold.news.adapters.extraction import DspyExtractor
 from tracefold.news.artifact_identity import canonical_json
 from tracefold.news.updates.contracts import Extraction, FrozenInput
-from tracefold.news.updates.dspy_backend import DspyExtractor
 from tracefold.news.updates.judgment import Budget, ContractFault, NewsJudgments
 from tracefold.news.updates.semantics import SemanticAnalyzer
 from tracefold.news.updates.topics import CODEBOOK

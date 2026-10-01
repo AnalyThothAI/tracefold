@@ -3,7 +3,8 @@
 The inputs are the archived 2026-09-28 `news_reader_input_v1` baseline (#742 PR-2); they are never sent to the
 current judge. The recorded answers are those of the #742 PR-5 rubric, asked on these inputs while v1 was the
 current contract, and the labels follow PR-5's product definition (rows it changed carry `label.relabel`). #750
-did not change `reader_decision`, so the pins guard the decision layer and the PR-5 cuts.
+did not change `reader_decision`. #759 preserves the cuts and selectively scores an actual
+state change at the push cut when an information link has no core-fact anchor.
 """
 
 from __future__ import annotations
@@ -100,7 +101,8 @@ def test_recorded_generative_fallback_answers_meet_the_bar_with_their_own_cuts(f
         at_push["precision_keep_borderline"],
         at_push["keep_recall"],
     )
-    assert pinned == (248, 62, 0.559, 0.565)
+    # #759 restores L098 (withdrawals resumed), without promoting parameter details.
+    assert pinned == (250, 62, 0.561, 0.579)
     assert [len(cluster["pushed"]) for cluster in report["clusters"]] == [2, 3]
 
 
@@ -110,3 +112,20 @@ def test_a_recorded_answer_round_trips(fixtures: Any) -> None:
         answers = recorded(rows, "native")
         row = rows[0]
         assert answer_record(answers[row["case_id"]]) == row["answers"]["native"]
+
+
+def test_recorded_recovery_is_an_action_while_partnership_terms_remain_details(fixtures: Any) -> None:
+    from scripts.eval_news_reader import decision
+
+    replay, *_ = fixtures
+    rows = {row["case_id"]: row for row in replay}
+    recovery, terms = rows["L098"], rows["L240"]
+    assert recovery["label"]["verdict"] == "keep"
+    assert terms["label"]["verdict"] == "demote"
+    assert recovery["reader_novelty"].novelty == terms["reader_novelty"].novelty == "increment"
+    answers = recorded((recovery, terms), "generated")
+    # These are archived production answers; no threshold or probability has been altered.
+    assert answers["L098"].importance is not None and answers["L098"].importance.value == 2.8
+    assert answers["L240"].importance is not None and answers["L240"].importance.value == 2.8
+    assert decision(recovery, answers["L098"]).outcome == "push"
+    assert decision(terms, answers["L240"]).outcome == "feed"

@@ -57,9 +57,9 @@ def _handle_retry_work(args: Namespace) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     try:
         with repositories(settings) as repos, repos.transaction():
-            reopened = repos.news.retry_failed_work(
+            work = repos.news.semantic_work if args.kind == "semantic" else repos.news.notification_work
+            reopened = work.retry_failed_revision(
                 event_id=str(args.event),
-                kind=str(args.kind),
                 revision=str(args.revision),
                 now_ms=now_ms(),
             )
@@ -77,7 +77,7 @@ def _handle_retry_work(args: Namespace) -> tuple[int, dict[str, Any]]:
 def _handle_reanalyze(args: Namespace) -> tuple[int, dict[str, Any]]:
     from tracefold.app.repository_session import repositories
     from tracefold.news.bus import now_ms
-    from tracefold.news.storage.event_updates import EventUpdateConflict
+    from tracefold.news.storage.errors import EventUpdateConflict
 
     if args.execute and (not args.read or not args.reason):
         return 2, {"ok": False, "error": "news_reanalysis_target_or_reason_missing"}
@@ -86,13 +86,16 @@ def _handle_reanalyze(args: Namespace) -> tuple[int, dict[str, Any]]:
     try:
         with repositories(settings) as repos:
             with repos.transaction():
-                listing = repos.news.reanalysis_scope_list(event_id=str(args.event), now_ms=now_ms())
+                listing = repos.news.semantic_work.reanalysis_scope_list(
+                    event_id=str(args.event), now_ms=now_ms(), input=repos.news.semantic_input
+                )
             if listing["wanted_revision"] != args.wanted or listing["head_revision"] != expected_head:
                 raise EventUpdateConflict("news_reanalysis_version_changed")
             if not args.execute:
                 return 0, {"ok": True, **listing}
             with repos.transaction():
-                revision = repos.news.request_reanalysis(
+                revision = repos.news.semantic_work.request_reanalysis(
+                    input=repos.news.semantic_input,
                     event_id=str(args.event),
                     expected_wanted_revision=args.wanted,
                     expected_head_revision=expected_head,
@@ -117,7 +120,7 @@ def _handle_repair_head_scopes(args: Namespace) -> tuple[int, dict[str, Any]]:
             return 2, {"ok": False, "error": "news_scope_repair_exact_target_required"}
         try:
             with repositories(settings) as repos, repos.transaction():
-                row = repos.news.head_scope_event(str(args.event))
+                row = repos.news.head_scope_repairs.head_scope_event(str(args.event))
                 if row is None:
                     raise ValueError("news_scope_repair_event_not_found")
                 proof = audit_head_scope(row)
@@ -125,7 +128,7 @@ def _handle_repair_head_scopes(args: Namespace) -> tuple[int, dict[str, Any]]:
                     raise ValueError("news_scope_repair_head_changed")
                 if digest(proof) != args.proof:
                     raise ValueError("news_scope_repair_proof_changed")
-                revision = repos.news.adopt_head_scope_repair(
+                revision = repos.news.head_scope_repairs.adopt_head_scope_repair(
                     expected_head=str(args.head), proof=proof, now_ms=now_ms()
                 )
         except ValueError as exc:
@@ -135,7 +138,7 @@ def _handle_repair_head_scopes(args: Namespace) -> tuple[int, dict[str, Any]]:
     if args.limit > 500:
         return 2, {"ok": False, "error": "news_scope_repair_page_limit_invalid"}
     with repositories(settings) as repos, repos.transaction():
-        rows = repos.news.head_scope_material(after=str(args.after), limit=args.limit + 1)
+        rows = repos.news.head_scope_repairs.head_scope_material(after=str(args.after), limit=args.limit + 1)
     page = rows[: args.limit]
     report = audit_scope_rows(page)
     return 0, {

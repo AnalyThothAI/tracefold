@@ -1120,7 +1120,7 @@
       },
       "NewsAssetRefData": {
         "additionalProperties": false,
-        "description": "One durable Event asset, resolved against the #75 instrument universe (#87/#287).\n\nThe ledger contains Gate-grounded provider tags and deterministic-judge primaries. ``listed`` keeps a tag\nsuch as `SPOT` from looking like a real token; ``venue`` is preferred when the base trades on several and\nis ``None`` when the symbol names nothing in the instrument universe.",
+        "description": "A current primary asset, or a source asset before adoption, resolved in its stated market.",
         "properties": {
           "base_symbol": {
             "title": "Base Symbol",
@@ -1130,6 +1130,29 @@
             "default": false,
             "title": "Listed",
             "type": "boolean"
+          },
+          "market_type": {
+            "enum": [
+              "crypto",
+              "equity",
+              "commodity",
+              "index",
+              "fx",
+              "pre_ipo",
+              "unknown"
+            ],
+            "title": "Market Type",
+            "type": "string"
+          },
+          "resolution_state": {
+            "enum": [
+              "resolved",
+              "reference_only",
+              "unresolved_market",
+              "unlisted"
+            ],
+            "title": "Resolution State",
+            "type": "string"
           },
           "symbol": {
             "title": "Symbol",
@@ -1145,11 +1168,24 @@
               }
             ],
             "title": "Venue"
+          },
+          "venue_symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue Symbol"
           }
         },
         "required": [
           "symbol",
-          "base_symbol"
+          "market_type",
+          "base_symbol",
+          "resolution_state"
         ],
         "title": "NewsAssetRefData",
         "type": "object"
@@ -1351,8 +1387,8 @@
               "equity",
               "commodity",
               "index",
-              "forex",
-              "fund",
+              "fx",
+              "pre_ipo",
               "unknown"
             ],
             "title": "Market Type",
@@ -5691,6 +5727,19 @@
             ],
             "title": "Instrument Class"
           },
+          "market_type": {
+            "enum": [
+              "crypto",
+              "equity",
+              "commodity",
+              "index",
+              "fx",
+              "pre_ipo",
+              "unknown"
+            ],
+            "title": "Market Type",
+            "type": "string"
+          },
           "price": {
             "anyOf": [
               {
@@ -5843,6 +5892,7 @@
         },
         "required": [
           "requested_symbol",
+          "market_type",
           "symbol",
           "base_symbol",
           "received_age_ms",
@@ -6537,6 +6587,15 @@
         "description": "One contract the base names on one venue.\n\n`reference_only` is the #91 distinction kept visible rather than filtered away: `us.listed` proves a\nticker exists, not that anyone can trade it, and the page is where an operator asks the first question.",
         "properties": {
           "instrument_class": {
+            "enum": [
+              "crypto",
+              "equity",
+              "commodity",
+              "index",
+              "fx",
+              "pre_ipo",
+              "unknown"
+            ],
             "title": "Instrument Class",
             "type": "string"
           },
@@ -11004,17 +11063,17 @@
     },
     "/api/news/quotes": {
       "get": {
-        "description": "Current quotes for a bounded symbol batch (#88).\n\nDeliberately not part of `/api/news/feed`: a price that changes every few seconds would invalidate the\nfeed's ETag on every poll and drag the feed and count queries along with it. The browser derives this\nbatch from the `assets[]` the feed already returned, so one query serves every row on screen.",
+        "description": "Current quotes for a bounded typed asset batch (#88).\n\nDeliberately not part of `/api/news/feed`: a price that changes every few seconds would invalidate the\nfeed's ETag on every poll and drag the feed and count queries along with it. The browser derives this\nbatch from the `assets[]` the feed already returned, so one query serves every row on screen.",
         "operationId": "get_news_quotes_api_news_quotes_get",
         "parameters": [
           {
             "in": "query",
-            "name": "symbols",
+            "name": "assets",
             "required": false,
             "schema": {
-              "default": "",
-              "maxLength": 2000,
-              "title": "Symbols",
+              "default": "[]",
+              "maxLength": 12000,
+              "title": "Assets",
               "type": "string"
             }
           }

@@ -27,7 +27,7 @@ from typing import Any, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
-from ..updates.notification import CardCopy
+from ..notifications.contracts import CardCopy
 
 CALIBRATION_RECEIPT_SCHEMA: Final = "tracefold.news.judge_calibration_receipt.v2"
 CALIBRATION_CASES_SCHEMA: Final = "tracefold.news.judge_calibration_cases.v2"

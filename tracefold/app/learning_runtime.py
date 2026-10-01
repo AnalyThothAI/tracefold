@@ -154,7 +154,6 @@ class NewsRuntimeModels:
         return news_program_identity(
             extraction_model_identity=self.extraction.identity,
             judgment_model_identity=self.judgment.identity,
-            card_model_identity=self.card.identity,
             news_judgment=self.news_judgment,
         )
 

@@ -140,7 +140,9 @@ describe("NewsPage", () => {
     expect(inRow.queryByText("影响明显")).toBeNull();
     // #87: a chip names the venue as well as the ticker, so the reader can tell a Binance perp from a
     // Hyperliquid builder-DEX equity without opening the Event.
-    expect(inRow.getByLabelText("关联资产")).toHaveTextContent("binance.perp:BTCbinance.perp:ETH");
+    expect(inRow.getByLabelText("关联资产")).toHaveTextContent(
+      "crypto · binance.perp:BTCcrypto · binance.perp:ETH",
+    );
     // #87: the row carries no buttons of its own — copy, label and open-original all live on the Event.
     expect(inRow.queryByRole("link", { name: "打开原文" })).toBeNull();
     expect(inRow.queryByRole("button", { name: "复制标题" })).toBeNull();
@@ -188,8 +190,9 @@ describe("NewsPage", () => {
     expect(kind).toHaveTextContent("上币/下币");
   });
 
-  it("shows a deterministic ledger asset with current price and 24H change in one quote batch", async () => {
+  it("keeps long unpriceable assets visible while quoting another asset in one batch", async () => {
     const quoteRequests: string[] = [];
+    const addresses = [`0x${"a".repeat(40)}`, "Z".repeat(44)];
     server.use(
       http.get(/.*\/api\/news\/feed$/, () =>
         HttpResponse.json({
@@ -198,7 +201,22 @@ describe("NewsPage", () => {
             events: [
               newsFeedEventFixture({
                 assets: [
-                  { base_symbol: "BTR", listed: true, symbol: "BTR", venue: "binance.perp" },
+                  ...addresses.map((symbol) => ({
+                    base_symbol: symbol.toUpperCase(),
+                    market_type: "crypto" as const,
+                    resolution_state: "unlisted" as const,
+                    listed: false,
+                    symbol,
+                    venue: null,
+                  })),
+                  {
+                    base_symbol: "BTR",
+                    market_type: "crypto" as const,
+                    resolution_state: "resolved" as const,
+                    listed: true,
+                    symbol: "BTR",
+                    venue: "binance.perp",
+                  },
                 ],
                 event_id: "evt-oi-btr",
                 grounded_assets: [],
@@ -209,7 +227,7 @@ describe("NewsPage", () => {
         }),
       ),
       http.get(/.*\/api\/news\/quotes$/, ({ request }) => {
-        quoteRequests.push(new URL(request.url).searchParams.get("symbols") ?? "");
+        quoteRequests.push(new URL(request.url).searchParams.get("assets") ?? "");
         return HttpResponse.json({
           ok: true,
           data: {
@@ -233,10 +251,18 @@ describe("NewsPage", () => {
 
     const row = (await screen.findByRole("heading", { name: "BTR 持仓异动" })).closest("article");
     expect(row).not.toBeNull();
-    await waitFor(() => expect(quoteRequests).toEqual(["BTR"]));
-    expect(within(row!).getByLabelText("关联资产")).toHaveTextContent(
-      "binance.perp:BTR0.16059·+39.38%",
+    await waitFor(() =>
+      expect(quoteRequests).toEqual([JSON.stringify([{ symbol: "BTR", market_type: "crypto" }])]),
     );
+    expect(within(row!).getByLabelText("关联资产")).toHaveTextContent(
+      "crypto · binance.perp:BTR0.16059·+39.38%",
+    );
+    for (const address of addresses) {
+      const label = within(row!).getByText(address);
+      expect(label).toBeVisible();
+      expect(label).toHaveAttribute("title", "未匹配行情标的");
+      expect(label.closest("a")).toBeNull();
+    }
   });
 
   it("keeps Event Reaction off the approved three-column feed", async () => {
@@ -886,7 +912,16 @@ describe("NewsPage", () => {
             ...detail,
             event: {
               ...detail.event,
-              assets: [{ base_symbol: "BTR", listed: true, symbol: "BTR", venue: "binance.perp" }],
+              assets: [
+                {
+                  base_symbol: "BTR",
+                  market_type: "crypto" as const,
+                  resolution_state: "resolved" as const,
+                  listed: true,
+                  symbol: "BTR",
+                  venue: "binance.perp",
+                },
+              ],
               grounded_assets: [],
             },
             normalization: [],

@@ -30,8 +30,17 @@ test("opens beside the list, swaps to the next row, and closes on Esc", async ({
     openFullPage("evt-global-policy"),
   );
   await expect(panel.getByRole("heading", { name: "判定链路" })).toBeVisible();
-  // The current tariff claim names CL, which does not resolve to this Event's listed BTC/ETH sources.
-  await expect(panel.getByRole("link", { name: /代币页/ })).toHaveCount(0);
+  // The public asset and footer follow adopted primary CL, while source BTC/ETH stay out of these links.
+  await expect(panel.getByRole("link", { name: "代币页 CL", exact: true })).toHaveAttribute(
+    "href",
+    "/news/symbols/CL",
+  );
+  await expect(
+    panel.getByLabel("关联资产").getByRole("link", { name: "CL", exact: true }),
+  ).toHaveAttribute("href", "/news/symbols/CL");
+  await expect(
+    panel.locator('a[href="/news/symbols/BTC"], a[href="/news/symbols/ETH"]'),
+  ).toHaveCount(0);
   await expect(panel.locator(".news-timeline-inline-facts").first()).toBeVisible();
   await expect(panel.getByText("判定明细", { exact: true })).toHaveCount(0);
   await expect(panel.getByText("当前报价", { exact: true })).toHaveCount(0);

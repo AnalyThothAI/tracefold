@@ -51,21 +51,24 @@ from tracefold.news.models import (
     ReaderMarketMovement,
     ReaderTradeTarget,
 )
+from tracefold.news.notifications.contracts import FrozenCard, NotificationPlan
+from tracefold.news.notifications.ports import IntentLease, SendOutcome
+from tracefold.news.notifications.service import NotificationTurn
 from tracefold.news.opennews import OpenNewsHistoryError
 from tracefold.news.pipeline import admission as admission_module
 from tracefold.news.pipeline import delivery as delivery_module
 from tracefold.news.pipeline import recovery as recovery_module
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererLoop
+from tracefold.news.pipeline.delivery_enrichment import DeliveryEnrichment
 from tracefold.news.pipeline.maintenance import JanitorLoop
+from tracefold.news.pipeline.notification_sender import NotificationSender
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
+from tracefold.news.pipeline.send_entry import InitialSendEntry
 from tracefold.news.reader_card import ReaderCard
 from tracefold.news.storage.root import NewsRepository
 from tracefold.news.updates.contracts import EventUpdate
-from tracefold.news.updates.notification import FrozenCard, NotificationPlan
-from tracefold.news.updates.ports import IntentLease, SendOutcome
-from tracefold.news.updates.service import NotificationTurn
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
@@ -128,17 +131,44 @@ class RecordingHandoffTelemetry:
         )
 
 
+class _RecordingStorage:
+    """A named repository owner; reject methods absent from the real storage class."""
+
+    def __init__(self, news: RecordingNews, owner_type: type[Any]) -> None:
+        self.news = news
+        self.owner_type = owner_type
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_") or not callable(getattr(self.owner_type, name, None)):
+            raise AttributeError(f"recording_storage_unknown_operation:{self.owner_type.__name__}:{name}")
+        return self.news._method(name)
+
+
 class RecordingNews:
     """Minimal NewsRepository double: records every call and answers from a scripted table."""
 
     def __init__(self, **responses: Any) -> None:
         self.responses = responses
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        shape = NewsRepository(None)
+        for name in (
+            "semantic_work",
+            "semantic_updates",
+            "semantic_input",
+            "notification_context",
+            "notification_work",
+            "notification_delivery",
+            "judgment_cache",
+            "head_scope_repairs",
+        ):
+            setattr(self, name, _RecordingStorage(self, type(getattr(shape, name))))
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_") or (name not in self.responses and not callable(getattr(NewsRepository, name, None))):
             raise AttributeError(f"recording_news_unknown_operation:{name}")
+        return self._method(name)
 
+    def _method(self, name: str) -> Any:
         def _call(*args: Any, **kwargs: Any) -> Any:
             self.calls.append((name, {**{f"arg{i}": a for i, a in enumerate(args)}, **kwargs}))
             if name == "evidence_material" and name not in self.responses:
@@ -779,26 +809,40 @@ def _deliverer(
     finite_operations: Any | None = None,
     admission_timeout_for: set[str] | None = None,
 ) -> DelivererLoop:
-    return DelivererLoop(
-        db=FakeWorkerDatabase(news or _delivery_news(), price=price, admission_timeout_for=admission_timeout_for),
+    db = FakeWorkerDatabase(news or _delivery_news(), price=price, admission_timeout_for=admission_timeout_for)
+    entry = InitialSendEntry(
         sender=sender,
         finite_operations=finite_operations or InlineFinite(),
         min_interval_seconds=min_interval_seconds,
-        notification_prepare_limit=notification_prepare_limit,
-        notifications=notifications,  # type: ignore[arg-type]
+    )
+    enrichment = DeliveryEnrichment(
+        db=db,
+        send_entry=entry,
         candle_fetcher_for=candle_fetcher_for,
         price_fetcher_for=price_fetcher_for,
         tradability_verifier=tradability_verifier,
     )
+    return DelivererLoop(
+        db=db,
+        notification_sender=NotificationSender(entry, enrichment),
+        enrichment=enrichment,
+        notification_prepare_limit=notification_prepare_limit,
+        notifications=notifications,  # type: ignore[arg-type]
+    )
+
+
+async def _close_deliverer(consumer: DelivererLoop) -> None:
+    await consumer.drain()
+    await consumer.notification_sender.send_entry.close()
 
 
 def _send(consumer: DelivererLoop, intent: Intent) -> SendOutcome:
     plan, card, update = intent
 
     async def run() -> SendOutcome:
-        async with consumer.send_slot():
-            preflight = await consumer.preflight(card, plan=plan, update=update)
-            return preflight or await consumer.send(card, plan=plan, update=update)
+        async with consumer.notification_sender.send_slot():
+            preflight = await consumer.notification_sender.preflight(card, plan=plan, update=update)
+            return preflight or await consumer.notification_sender.send(card, plan=plan, update=update)
 
     return asyncio.run(run())
 
@@ -1166,7 +1210,8 @@ def test_the_deliverer_prices_exactly_the_selected_claims_primary_assets() -> No
 def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("tracefold.news.pipeline.delivery.now_ms", lambda: NOW_MS)
+    monkeypatch.setattr("tracefold.news.pipeline.notification_sender.now_ms", lambda: NOW_MS)
+    monkeypatch.setattr("tracefold.news.pipeline.delivery_enrichment.now_ms", lambda: NOW_MS)
     price = RecordingPrice(
         quotes=[
             {
@@ -1244,7 +1289,8 @@ def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentati
 def test_delivery_price_points_try_binance_first_and_fail_over_the_whole_calculation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("tracefold.news.pipeline.delivery.now_ms", lambda: NOW_MS)
+    monkeypatch.setattr("tracefold.news.pipeline.notification_sender.now_ms", lambda: NOW_MS)
+    monkeypatch.setattr("tracefold.news.pipeline.delivery_enrichment.now_ms", lambda: NOW_MS)
     price = RecordingPrice(
         quotes=[
             {
@@ -1329,7 +1375,8 @@ _MSFT_INSTRUMENTS = {"MSFT": (PriceInstrument("binance.perp", "MSFTUSDT", "MSFT"
 def test_telegram_delivery_sends_before_market_enrichment_then_edits_the_same_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("tracefold.news.pipeline.delivery.now_ms", lambda: NOW_MS)
+    monkeypatch.setattr("tracefold.news.pipeline.notification_sender.now_ms", lambda: NOW_MS)
+    monkeypatch.setattr("tracefold.news.pipeline.delivery_enrichment.now_ms", lambda: NOW_MS)
     msft = _intent(("MSFT", "equity"))
 
     async def scenario() -> tuple[RecordingNews, RecordingEditableSender, list[str]]:
@@ -1369,7 +1416,7 @@ def test_telegram_delivery_sends_before_market_enrichment_then_edits_the_same_me
         await asyncio.wait_for(price_started.wait(), timeout=0.2)
         assert order == ["prepare", "send", "price"]
         allow_prices.set()
-        await consumer.close()
+        await _close_deliverer(consumer)
         return news, sender, order
 
     news, sender, order = asyncio.run(scenario())
@@ -1423,7 +1470,7 @@ def test_the_enrichment_edit_is_paced_by_the_same_entry_the_initial_send_uses() 
             min_interval_seconds=interval,
         )
         await consumer.advance()
-        await consumer.close()
+        await _close_deliverer(consumer)
         return sender
 
     sender = asyncio.run(scenario())
@@ -1442,7 +1489,7 @@ def test_a_sent_card_with_nothing_to_enrich_is_not_edited() -> None:
             news, notifications=ScriptedNotifications(_intent()), sender=RecordingEditableSender(order)
         )
         await consumer.advance()
-        await consumer.close()
+        await _close_deliverer(consumer)
 
     asyncio.run(scenario())
 
@@ -1494,7 +1541,7 @@ def test_one_named_instrument_is_sent_first_then_edited_with_a_fresh_cross_venue
         )
         await consumer.advance()
         assert order[:2] == ["prepare", "send"]
-        await consumer.close()
+        await _close_deliverer(consumer)
         return news, sender, verifier
 
     news, sender, verifier = asyncio.run(scenario())
@@ -1540,7 +1587,7 @@ def test_an_untyped_named_instrument_is_edited_when_the_catalogue_resolves_it() 
             price_fetcher_for=lambda venue: fetch if venue == "bitget.perp" else None,
         )
         await consumer.advance()
-        await consumer.close()
+        await _close_deliverer(consumer)
         return sender, order
 
     sender, order = asyncio.run(scenario())
@@ -1578,7 +1625,7 @@ def test_an_authoritative_five_venue_absence_edits_the_card_to_say_so_and_never_
             tradability_verifier=verifier,
         )
         await consumer.advance()
-        await consumer.close()
+        await _close_deliverer(consumer)
         return news, sender
 
     news, sender = asyncio.run(scenario())
@@ -1600,7 +1647,7 @@ def test_a_card_about_several_instruments_gets_no_catalogue_check() -> None:
             tradability_verifier=verifier,
         )
         await consumer.advance()
-        await consumer.close()
+        await _close_deliverer(consumer)
 
     asyncio.run(scenario())
 
@@ -1795,7 +1842,7 @@ def test_pending_enrichment_does_not_block_the_next_telegram_initial_send() -> N
         assert order.count("send") == 2
         assert "edit" not in order
         allow_prices.set()
-        await consumer.close()
+        await _close_deliverer(consumer)
         return order
 
     order = asyncio.run(scenario())
@@ -1826,7 +1873,7 @@ def test_delivery_drain_waits_for_native_edit_before_closing_the_sender() -> Non
         sender.release.set()
         await asyncio.wait_for(drain_task, timeout=1.0)
         assert await finite.drain(timeout_seconds=1.0)
-        await consumer.close_sender()
+        await consumer.notification_sender.send_entry.close()
         finite.close()
         return order, sender
 
@@ -1870,7 +1917,7 @@ def test_delivery_drain_allows_an_accepted_edit_to_submit_after_shutdown_admissi
         allow_price.set()
         await asyncio.wait_for(drain_task, timeout=1.0)
         assert await finite.drain(timeout_seconds=1.0)
-        await consumer.close_sender()
+        await consumer.notification_sender.send_entry.close()
         finite.close()
         return order
 

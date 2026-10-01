@@ -70,7 +70,7 @@ print(
             "cwd": str(Path.cwd()),
             "cli_main_module": cli_main.__module__,
             "news_program_identity": news_program_identity(
-                extraction_model_identity="probe", judgment_model_identity="probe", card_model_identity="probe"
+                extraction_model_identity="probe", judgment_model_identity="probe"
             ),
             "storyline_registry_entries": len(load_storyline_registry().entries),
             "trading_root": str(Path(tracefold.trading.__file__).resolve().parent),
@@ -272,7 +272,7 @@ def test_installed_distribution_reads_its_own_news_program_identity(isolated_pro
 
     # The identity digests the News core's own packaged sources, so a wheel missing one would disagree.
     assert isolated_probe["news_program_identity"] == news_program_identity(
-        extraction_model_identity="probe", judgment_model_identity="probe", card_model_identity="probe"
+        extraction_model_identity="probe", judgment_model_identity="probe"
     )
     # #509: the installed wheel loads and validates the storyline registry from its own package data.
     assert isolated_probe["storyline_registry_entries"] == len(load_storyline_registry().entries)

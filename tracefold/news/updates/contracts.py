@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ..models import MarketType, market_type_of
 from ..taxonomy import SourceAuthority
 from .identity import digest, identity
 
@@ -171,10 +172,31 @@ class Citation(Exact):
     quote: str = Field(min_length=1)
 
 
+class SourceAssetCandidate(Exact):
+    """One existing provider tag for a specific evidence source, not a claim assignment."""
+
+    symbol: str = Field(min_length=1)
+    market_type: MarketType = "unknown"
+    grade: str | None = None
+
+    @field_validator("market_type", mode="before")
+    @classmethod
+    def read_legacy_market(cls, value: object) -> object:
+        return market_type_of(value) if isinstance(value, str) and value in {"forex", "fund"} else value
+
+
 class Asset(Exact):
     symbol: str = Field(min_length=1)
-    market_type: Literal["crypto", "equity", "commodity", "index", "forex", "fund", "unknown"]
+    market_type: MarketType
     role: Literal["primary", "mentioned"]
+
+    @field_validator("market_type", mode="before")
+    @classmethod
+    def read_legacy_market(cls, value: object) -> object:
+        # Existing adopted documents retain their stored claim/content refs. The old editorial
+        # vocabulary used forex for fx and fund without establishing an instrument class: a fund
+        # can hold equities, bonds or other assets, so it cannot honestly be coerced to equity.
+        return market_type_of(value) if isinstance(value, str) and value in {"forex", "fund"} else value
 
 
 class ClaimFields(Exact):
@@ -518,6 +540,7 @@ class FrozenInput(Exact):
     # A later observed snapshot can add no model-visible source identity. The Agent records a
     # no-op observation and settles that revision without calling the extractor.
     evidence: tuple[Evidence, ...]
+    asset_candidates: dict[str, tuple[SourceAssetCandidate, ...]] = Field(default_factory=dict)
     extraction_scopes: tuple[ExtractionScope, ...] = ()
     # This Event's current claims, then related Events' current claims recalled for comparison.
     prior: tuple[PriorClaim, ...] = ()
@@ -554,6 +577,8 @@ class FrozenInput(Exact):
             if len(refs) != len(set(refs)):
                 raise ValueError("news_input_duplicate_reference")
         evidence = {item.ref: item for item in self.evidence}
+        if not self.asset_candidates.keys() <= evidence.keys():
+            raise ValueError("news_asset_candidate_evidence_missing")
         for scope in self.extraction_scopes:
             if scope.evidence_ref not in evidence:
                 raise ValueError("news_extraction_scope_evidence_missing")

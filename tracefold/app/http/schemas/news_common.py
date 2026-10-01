@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import Field
 
+from tracefold.news.models import MarketType
+
 from .common import ExactApiSchema
 
 
@@ -32,17 +34,15 @@ class NewsOutcomeData(ExactApiSchema):
 
 
 class NewsAssetRefData(ExactApiSchema):
-    """One durable Event asset, resolved against the #75 instrument universe (#87/#287).
-
-    The ledger contains Gate-grounded provider tags and deterministic-judge primaries. ``listed`` keeps a tag
-    such as `SPOT` from looking like a real token; ``venue`` is preferred when the base trades on several and
-    is ``None`` when the symbol names nothing in the instrument universe.
-    """
+    """A current primary asset, or a source asset before adoption, resolved in its stated market."""
 
     symbol: str
+    market_type: MarketType
     base_symbol: str
     venue: str | None = None
+    venue_symbol: str | None = None
     listed: bool = False
+    resolution_state: Literal["resolved", "reference_only", "unresolved_market", "unlisted"]
 
 
 class NewsSymbolNormalizationData(ExactApiSchema):

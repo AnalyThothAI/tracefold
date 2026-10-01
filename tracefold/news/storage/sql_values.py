@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any, Final
 
 from ..models import ADMITTED_ADMISSIONS
@@ -15,3 +16,7 @@ def _dumps(value: Any) -> str:
 
 
 _ADMITTED_SQL: Final = ", ".join(f"'{value}'" for value in sorted(ADMITTED_ADMISSIONS))
+
+
+def _retry_delay(delays: Sequence[int], attempts: int) -> int:
+    return int(delays[max(0, min(int(attempts), len(delays)) - 1)])

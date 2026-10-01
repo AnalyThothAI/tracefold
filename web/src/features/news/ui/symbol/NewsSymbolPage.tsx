@@ -65,7 +65,13 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
   const feedWindow = useNewsFeedWindowWithToken(token, filters);
   const feedQuery = feedWindow.query;
   /* One Case batch feeds both compact Alpha summaries on this symbol page. */
-  const quotesQuery = useNewsQuotesWithToken(token, normalized ? [normalized] : []);
+  const quotesQuery = useNewsQuotesWithToken(
+    token,
+    (symbolQuery.data?.contracts ?? []).map((contract) => ({
+      symbol: normalized,
+      market_type: contract.instrument_class,
+    })),
+  );
 
   const firstPage = feedQuery.data?.pages[0];
   const rows = uniqueFeedEvents(feedQuery.data?.pages ?? []);
@@ -98,7 +104,7 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
       <div className="news-symbol-body">
         <NewsQuoteReadState query={quotesQuery}>
           <NewsSymbolIdentity
-            quote={quotesQuery.data?.quotes?.[0]}
+            quotes={quotesQuery.data?.quotes ?? []}
             symbol={symbolQuery.data}
             tiles={[
               { key: "events", label: "24H 事件", value: count(firstPage?.counts?.total) },

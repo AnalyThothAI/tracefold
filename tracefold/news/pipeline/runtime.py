@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Callable
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from tracefold.news.market_review.instrument_storage import InstrumentsRepository
 from tracefold.news.market_review.storage import PriceRepository
-from tracefold.news.storage.root import NewsRepository
+
+if TYPE_CHECKING:
+    from tracefold.news.storage.root import NewsRepository
 
 
 class NewsRepositories(Protocol):

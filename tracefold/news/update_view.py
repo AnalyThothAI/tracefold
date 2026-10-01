@@ -13,9 +13,10 @@ from typing import Any, Final, Literal
 
 from pydantic import ValidationError
 
+from .notifications.contracts import ClaimDecision, NotificationPlan
+from .notifications.policy import cuts_for
 from .taxonomy import IPTC_SUBJECT_LABELS_ZH, source_authority_zh
 from .updates.contracts import Claim, EventUpdate, Evidence
-from .updates.notification import ClaimDecision, NotificationPlan
 
 UPDATE_DECODE_ERROR: Final = "news_event_update_undecodable"
 PLAN_DECODE_ERROR: Final = "news_notification_plan_undecodable"
@@ -438,7 +439,7 @@ def _claim_reason_zh(row: ClaimDecision) -> str:
     text = _zh(CLAIM_REASON_ZH, row.reason)
     judgment = None if row.reader is None else row.reader.judgment
     if judgment is not None and judgment.importance is not None and judgment.backend is not None:
-        cuts = judgment.cuts
+        cuts = cuts_for(judgment)
         text += f"（增量重要性 {judgment.importance.value:.2f}；推送 ≥ {cuts.push}，重点 ≥ {cuts.key}）"
     if row.reader is not None and row.reader.earlier is not None:
         text += f"；{_zh(RENDER_ZH, row.reader.render)}此前已推送的一条"

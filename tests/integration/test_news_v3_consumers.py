@@ -32,6 +32,9 @@ from tracefold.news.market_review.instrument_storage import InstrumentsRepositor
 from tracefold.news.models import ADMITTED_ADMISSIONS
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererLoop
+from tracefold.news.pipeline.delivery_enrichment import DeliveryEnrichment
+from tracefold.news.pipeline.notification_sender import NotificationSender
+from tracefold.news.pipeline.send_entry import InitialSendEntry
 
 pytestmark = pytest.mark.integration
 
@@ -157,11 +160,13 @@ def _deduper(conn: Any, bus: FakeBus) -> DeduperConsumer:
 
 
 def _deliverer(conn: Any) -> DelivererLoop:
+    db = FakeWorkerDatabase(conn)
+    entry = InitialSendEntry(sender=None, finite_operations=InlineFiniteOperations(), min_interval_seconds=0.0)
+    enrichment = DeliveryEnrichment(db=db, send_entry=entry)
     return DelivererLoop(
-        db=FakeWorkerDatabase(conn),
-        sender=None,
-        finite_operations=InlineFiniteOperations(),
-        min_interval_seconds=0.0,
+        db=db,
+        notification_sender=NotificationSender(entry, enrichment),
+        enrichment=enrichment,
     )
 
 

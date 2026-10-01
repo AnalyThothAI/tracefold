@@ -14,10 +14,12 @@ import dspy
 import pytest
 
 from tests.support.news_update_semantic import MemoryCache
+from tracefold.news.adapters import generation
 from tracefold.news.bus import Q_TRIAGE, BusMessage, PermanentError, TransientError
 from tracefold.news.pipeline.semantic import PROVIDER_OUTAGE_CAUSE, SemanticWorker
-from tracefold.news.storage.event_updates import SEMANTIC_ATTEMPTS_MAX, EventUpdateConflict, SemanticLease
-from tracefold.news.updates import dspy_backend
+from tracefold.news.storage.errors import EventUpdateConflict
+from tracefold.news.storage.semantic_work import SEMANTIC_ATTEMPTS_MAX
+from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
     Citation,
     ClaimFields,
@@ -26,6 +28,7 @@ from tracefold.news.updates.contracts import (
     Extraction,
     FrozenInput,
     PriorClaim,
+    SemanticLease,
     Source,
 )
 from tracefold.news.updates.judgment import (
@@ -40,7 +43,7 @@ from tracefold.news.updates.judgment import (
     Task,
     error_code,
 )
-from tracefold.news.updates.semantics import SemanticAnalyzer, assemble_update
+from tracefold.news.updates.semantics import SemanticAnalyzer
 
 NOW = 1_790_405_000_000
 
@@ -149,7 +152,6 @@ def worker(store: FakeStore, agent: FakeAgent, *, db: FakeDb | None = None, cloc
         concurrency=2,
         circuit_failures=2,
         circuit_open_seconds=60.0,
-        program_identity="program-test",
         clock=clock or Clock(),
     )
 
@@ -175,7 +177,6 @@ def test_a_worker_without_a_semantic_runtime_acknowledges_wakes_and_leaves_work_
         concurrency=1,
         circuit_failures=2,
         circuit_open_seconds=60.0,
-        program_identity=None,
     )
 
     asyncio.run(subject.handle(wake()))
@@ -300,7 +301,6 @@ def test_the_worker_reconciles_the_incident_before_it_consumes_the_existing_queu
         concurrency=3,
         circuit_failures=2,
         circuit_open_seconds=60.0,
-        program_identity="program-test",
     )
 
     asyncio.run(subject.run(stop_event=asyncio.Event()))
@@ -433,13 +433,13 @@ class _ScriptedPredict:
 def _scripted(monkeypatch: pytest.MonkeyPatch, script: dict[str, Any]):
     _ScriptedPredict.script = script
     _ScriptedPredict.asked = []
-    monkeypatch.setattr(dspy_backend.dspy, "Predict", _ScriptedPredict)
+    monkeypatch.setattr(generation.dspy, "Predict", _ScriptedPredict)
     yield _ScriptedPredict.asked
 
 
 def test_a_transient_primary_failure_asks_the_declared_fallback_once(monkeypatch: pytest.MonkeyPatch) -> None:
     with _scripted(monkeypatch, {"primary": dspy.LMRateLimitError("rate"), "fallback": "answer"}) as asked:
-        result = asyncio.run(dspy_backend._generate(object(), ("primary", "fallback")))
+        result = asyncio.run(generation.generate(object(), ("primary", "fallback")))
     assert result == "answer" and asked == ["primary", "fallback"]
 
 
@@ -449,7 +449,7 @@ def test_a_route_that_fails_on_every_endpoint_is_provider_unavailable(monkeypatc
         _scripted(monkeypatch, failures) as asked,
         pytest.raises(ProviderUnavailable, match="news_generation_lm_timeout_error"),
     ):
-        asyncio.run(dspy_backend._generate(object(), ("primary", "fallback")))
+        asyncio.run(generation.generate(object(), ("primary", "fallback")))
     assert asked == ["primary", "fallback"]
 
 
@@ -457,7 +457,7 @@ def test_a_parse_failure_uses_a_distinct_configured_fallback(monkeypatch: pytest
     parse_failure = dspy.AdapterParseError("adapter", dspy.Signature("question -> answer"), "bad")
     script = {"primary": parse_failure, "fallback": "answer"}
     with _scripted(monkeypatch, script) as asked:
-        assert asyncio.run(dspy_backend._generate(object(), ("primary", "fallback"))) == "answer"
+        assert asyncio.run(generation.generate(object(), ("primary", "fallback"))) == "answer"
     assert asked == ["primary", "fallback"]
 
 
@@ -473,7 +473,7 @@ def test_a_parse_failure_with_the_same_route_fails_once(
         _scripted(monkeypatch, {"primary": parse_failure}) as asked,
         pytest.raises(ContractFault, match=code),
     ):
-        asyncio.run(dspy_backend._generate(object(), ("primary", "primary")))
+        asyncio.run(generation.generate(object(), ("primary", "primary")))
     assert asked == ["primary"]
 
 
@@ -501,13 +501,13 @@ def test_parse_failure_uses_finish_metadata_and_never_logs_raw_content(
             lm.history.append({"response": {"choices": [{"finish_reason": "length"}]}})
             raise failure
 
-    monkeypatch.setattr(dspy_backend.dspy, "Predict", Predict)
+    monkeypatch.setattr(generation.dspy, "Predict", Predict)
     with pytest.raises(ContractFault, match="news_generation_output_truncated"):
-        asyncio.run(dspy_backend._generate(object(), lm))
+        asyncio.run(generation.generate(object(), lm))
     assert secret not in caplog.text
 
 
 def test_a_single_lm_is_a_route_of_one(monkeypatch: pytest.MonkeyPatch) -> None:
     with _scripted(monkeypatch, {"only": dspy.LMTransportError("down")}) as asked, pytest.raises(ProviderUnavailable):
-        asyncio.run(dspy_backend._generate(object(), "only"))
+        asyncio.run(generation.generate(object(), "only"))
     assert asked == ["only"]

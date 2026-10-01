@@ -264,13 +264,16 @@ def test_the_semantic_runtime_imports_no_retired_program_or_rule_owner() -> None
         SRC / "news" / "pipeline" / "admission.py",
         SRC / "news" / "pipeline" / "maintenance.py",
         SRC / "news" / "pipeline" / "root.py",
-        SRC / "news" / "storage" / "event_updates.py",
-        SRC / "news" / "storage" / "event_update_store.py",
+        *sorted((SRC / "news" / "storage").glob("semantic_*.py")),
+        *sorted((SRC / "news" / "storage").glob("notification_*.py")),
+        SRC / "news" / "storage" / "judgment_cache.py",
         SRC / "app" / "news_updates.py",
         SRC / "app" / "learning_runtime.py",
         SRC / "app" / "workers" / "wiring" / "news.py",
         SRC / "app" / "workers" / "wiring" / "components.py",
         *sorted((SRC / "news" / "updates").glob("*.py")),
+        *sorted((SRC / "news" / "notifications").glob("*.py")),
+        *sorted((SRC / "news" / "adapters").glob("*.py")),
     ]
     offenders = {
         str(path.relative_to(ROOT)): sorted(module for module in _imported_modules(path) if _under(module, retired))

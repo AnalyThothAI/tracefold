@@ -18,6 +18,23 @@ from pydantic import ValidationError
 from tests.support.news_update_semantic import MemoryCache
 from tests.support.scripted_lm import ScriptedLM
 from tracefold.app.system_one import SystemOneConnection
+from tracefold.news.adapters.reader_judge import DspyReaderJudge
+from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, ReaderNovelty, current_links, reader_novelty
+from tracefold.news.notifications.policy import READER_CUTS, ReaderCuts, anchor_index, cuts_for, reader_decision
+from tracefold.news.notifications.reader import (
+    ANCHOR_QUESTION,
+    IMPORTANCE_LEVELS,
+    IMPORTANCE_QUESTION,
+    READER_INSTRUCTIONS,
+    READER_QUOTE_CHARS_MAX,
+    AnchorEvidence,
+    ImportanceEvidence,
+    ReaderInput,
+    ReaderJudgment,
+    cache_key,
+    cached_judgments,
+)
+from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
     Citation,
     ClaimFields,
@@ -27,31 +44,8 @@ from tracefold.news.updates.contracts import (
     FrozenInput,
     Source,
 )
-from tracefold.news.updates.dspy_backend import DspyReaderJudge
 from tracefold.news.updates.identity import digest
 from tracefold.news.updates.judgment import Budget, ConfigurationFault
-from tracefold.news.updates.reader_judgments import (
-    ANCHOR_QUESTION,
-    IMPORTANCE_LEVELS,
-    IMPORTANCE_QUESTION,
-    READER_CUTS,
-    READER_INSTRUCTIONS,
-    READER_QUOTE_CHARS_MAX,
-    AnchorEvidence,
-    ClaimLink,
-    ImportanceEvidence,
-    LinkedReceipt,
-    ReaderCuts,
-    ReaderInput,
-    ReaderJudgment,
-    ReaderNovelty,
-    cache_key,
-    cached_judgments,
-    current_links,
-    reader_decision,
-    reader_novelty,
-)
-from tracefold.news.updates.semantics import assemble_update
 from tracefold.news.updates.topics import CODEBOOK
 
 STAMP = 1_790_405_000_000
@@ -230,7 +224,7 @@ def test_one_native_request_asks_both_questions_over_one_shared_state() -> None:
     assert judgment.identity == native_identity and judgment.served_model == "jev-1.13-served"
     assert judgment.importance is not None and judgment.importance.value == pytest.approx(2.8)
     assert judgment.importance.probabilities == pytest.approx((0.0, 0.1, 0.1, 0.7, 0.1))
-    assert judgment.anchor is not None and judgment.anchor.anchor(judgment.cuts) == 0
+    assert judgment.anchor is not None and anchor_index(judgment.anchor, cuts_for(judgment)) == 0
     assert judgment.matches(_reader()) and not judgment.matches(_reader(SENT[:1]))
 
 
@@ -284,9 +278,9 @@ def test_an_unavailable_native_answer_falls_back_once_to_the_same_questions_on_t
     judgment, requests, generated, judge = asyncio.run(run())
     assert requests == 1 and len(generated.requests) == 1
     assert judgment.status == "available" and judgment.backend == "generated"
-    assert judgment.identity == judge.generated_identity and judgment.cuts == READER_CUTS["generated"]
+    assert judgment.identity == judge.generated_identity and cuts_for(judgment) == READER_CUTS["generated"]
     assert judgment.importance is not None and judgment.importance.value == pytest.approx(2.0)
-    assert judgment.anchor is not None and judgment.anchor.anchor(judgment.cuts) is None
+    assert judgment.anchor is not None and anchor_index(judgment.anchor, cuts_for(judgment)) is None
     request = generated.requests[0]
     prompt = "\n".join([str(request.system or ""), *(message.text for message in request.messages)])
     assert READER_INSTRUCTIONS in prompt
@@ -406,9 +400,9 @@ def test_evidence_shapes_and_judgment_status_are_exact() -> None:
     with pytest.raises(ValidationError, match="news_reader_available_judgment_incomplete"):
         ReaderJudgment(status="available", backend="native", identity="n")
     anchor = AnchorEvidence(probabilities={"m1": 0.1, "m2": 0.75, "none": 0.15}, confidence=0.5)
-    assert anchor.anchor(READER_CUTS["native"]) == 1
+    assert anchor_index(anchor, READER_CUTS["native"]) == 1
     unsure = AnchorEvidence(probabilities={"m1": 0.1, "m2": 0.55, "none": 0.35}, confidence=0.5)
-    assert unsure.anchor(READER_CUTS["native"]) is None
+    assert anchor_index(unsure, READER_CUTS["native"]) is None
     for cuts in READER_CUTS.values():
         assert 0 < cuts.push < cuts.key < len(IMPORTANCE_LEVELS) - 1 and 0 < cuts.anchor_none_below < 1
 
@@ -557,3 +551,62 @@ def test_a_known_core_fact_is_pushed_only_at_the_key_cut(
         novelty, _judgment(importance, anchor), first_available_at_ms=20, message_intents=("ra", "rb")
     )
     assert (result.outcome, result.render, result.anchor_intent_id) == (outcome, render, intent)
+
+
+@pytest.mark.parametrize(
+    ("kind", "mode", "phase", "expected"),
+    [
+        ("state_change", "observation", "executing", "push"),  # withdrawals actually resume
+        ("state_change", "observation", "completed", "push"),  # mainnet actually goes live
+        ("official_measure", "decision", "ordered", "push"),  # a measure has been ordered
+        ("official_measure", "decision", "effective", "push"),
+        ("state_change", "observation", "cancelled", "push"),
+        ("state_change", "observation", None, "feed"),
+        ("state_change", "observation", "unknown", "feed"),
+        ("state_change", "commitment", "announced", "feed"),
+        ("state_change", "forecast", "completed", "feed"),
+        ("new_quantity", "observation", "completed", "feed"),
+        ("quantified_flow", "observation", "executing", "feed"),
+        ("other", "commitment", "announced", "feed"),
+    ],
+)
+def test_a_background_link_does_not_raise_the_bar_for_an_actual_unanchored_action(
+    kind: str, mode: str, phase: str | None, expected: str
+) -> None:
+    fields = ClaimFields.model_validate(
+        {
+            "subject": "Venue",
+            "action": "resumed withdrawals",
+            "content_kind": kind,
+            "mode": mode,
+            "phase": phase,
+        }
+    )
+    result = reader_decision(
+        ReaderNovelty(novelty="increment", intent_id="hack", linked_intents=("hack",)),
+        _judgment(2.6, {"m1": 0.2, "none": 0.8}),
+        first_available_at_ms=20,
+        message_intents=("hack",),
+        claim_fields=fields,
+    )
+    assert (result.outcome, result.render, result.anchor_intent_id) == (expected, "full", None)
+
+
+def test_an_actual_action_keeps_exact_known_inflight_and_anchor_protections() -> None:
+    fields = ClaimFields(
+        subject="Venue",
+        action="resumed withdrawals",
+        content_kind="state_change",
+        mode="observation",
+        phase="executing",
+    )
+    anchor = {"m1": 0.9, "none": 0.1}
+    for novelty, expected in (("known", "known"), ("in_flight", "in_flight"), ("increment", "feed")):
+        result = reader_decision(
+            ReaderNovelty.model_validate({"novelty": novelty, "intent_id": "ra"}),
+            _judgment(2.6, anchor),
+            first_available_at_ms=20,
+            message_intents=("ra",),
+            claim_fields=fields,
+        )
+        assert result.outcome == expected

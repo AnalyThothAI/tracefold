@@ -293,7 +293,17 @@ def test_api_projects_deterministic_event_assets_from_postgres_to_feed_and_detai
     assert many_events_statement_count == one_event_statement_count
     feed_event = next(event for event in feed.json()["data"]["events"] if event["event_id"] == event_id)
     detail_event = detail.json()["data"]["event"]
-    expected = [{"symbol": "BTR", "base_symbol": "BTR", "venue": "binance.perp", "listed": True}]
+    expected = [
+        {
+            "symbol": "BTR",
+            "market_type": "unknown",
+            "base_symbol": "BTR",
+            "venue": None,
+            "venue_symbol": None,
+            "listed": True,
+            "resolution_state": "unresolved_market",
+        }
+    ]
     assert feed_event["grounded_assets"] == detail_event["grounded_assets"] == []
     assert feed_event["assets"] == detail_event["assets"] == expected
 

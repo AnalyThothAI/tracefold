@@ -135,7 +135,7 @@ export interface paths {
         };
         /**
          * Get News Quotes
-         * @description Current quotes for a bounded symbol batch (#88).
+         * @description Current quotes for a bounded typed asset batch (#88).
          *
          *     Deliberately not part of `/api/news/feed`: a price that changes every few seconds would invalidate the
          *     feed's ETag on every poll and drag the feed and count queries along with it. The browser derives this
@@ -662,11 +662,7 @@ export interface components {
         };
         /**
          * NewsAssetRefData
-         * @description One durable Event asset, resolved against the #75 instrument universe (#87/#287).
-         *
-         *     The ledger contains Gate-grounded provider tags and deterministic-judge primaries. ``listed`` keeps a tag
-         *     such as `SPOT` from looking like a real token; ``venue`` is preferred when the base trades on several and
-         *     is ``None`` when the symbol names nothing in the instrument universe.
+         * @description A current primary asset, or a source asset before adoption, resolved in its stated market.
          */
         NewsAssetRefData: {
             /** Base Symbol */
@@ -676,10 +672,22 @@ export interface components {
              * @default false
              */
             listed: boolean;
+            /**
+             * Market Type
+             * @enum {string}
+             */
+            market_type: "crypto" | "equity" | "commodity" | "index" | "fx" | "pre_ipo" | "unknown";
+            /**
+             * Resolution State
+             * @enum {string}
+             */
+            resolution_state: "resolved" | "reference_only" | "unresolved_market" | "unlisted";
             /** Symbol */
             symbol: string;
             /** Venue */
             venue?: string | null;
+            /** Venue Symbol */
+            venue_symbol?: string | null;
         };
         /** NewsBrokerQueueData */
         NewsBrokerQueueData: {
@@ -734,7 +742,7 @@ export interface components {
              * Market Type
              * @enum {string}
              */
-            market_type: "crypto" | "equity" | "commodity" | "index" | "forex" | "fund" | "unknown";
+            market_type: "crypto" | "equity" | "commodity" | "index" | "fx" | "pre_ipo" | "unknown";
             /**
              * Role
              * @enum {string}
@@ -2409,6 +2417,11 @@ export interface components {
             freshness_basis: ("source_and_received" | "received_only") | null;
             /** Instrument Class */
             instrument_class?: string | null;
+            /**
+             * Market Type
+             * @enum {string}
+             */
+            market_type: "crypto" | "equity" | "commodity" | "index" | "fx" | "pre_ipo" | "unknown";
             /** Price */
             price?: string | null;
             /** Price Kind */
@@ -2731,8 +2744,11 @@ export interface components {
          *     ticker exists, not that anyone can trade it, and the page is where an operator asks the first question.
          */
         NewsSymbolContractData: {
-            /** Instrument Class */
-            instrument_class: string;
+            /**
+             * Instrument Class
+             * @enum {string}
+             */
+            instrument_class: "crypto" | "equity" | "commodity" | "index" | "fx" | "pre_ipo" | "unknown";
             /** Quote Asset */
             quote_asset?: string | null;
             /**
@@ -4240,7 +4256,7 @@ export interface operations {
     get_news_quotes_api_news_quotes_get: {
         parameters: {
             query?: {
-                symbols?: string;
+                assets?: string;
             };
             header?: never;
             path?: never;

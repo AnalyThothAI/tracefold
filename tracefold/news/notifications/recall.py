@@ -11,13 +11,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
 
-from ..events.grounding import COMMODITY_CONTEXT
-from ..market_review.instruments import ALIAS_SEEDS, resolve_base_symbol
-from .contracts import Claim
-from .identity import digest
-from .reader_judgments import READER_INPUT_VERSION, READER_MESSAGES_MAX, LinkedReceipt, ReaderNovelty
+from ..entities import asset_retrieval_symbols, identity_value, retrieval_name
+from ..updates.contracts import Claim
+from ..updates.identity import digest
+from .novelty import LinkedReceipt, ReaderNovelty
+from .reader import READER_INPUT_VERSION, READER_MESSAGES_MAX
 
-RECALL_POLICY: Final = "claim_receipts_v1"
+RECALL_POLICY: Final = "claim_receipts_v3"
 RECALL_WINDOW_MS: Final = 48 * 60 * 60 * 1000
 LINKED_RECEIPT_WINDOW_MS: Final = 48 * 60 * 60 * 1000
 ROUTE_CANDIDATES_MAX: Final = 32
@@ -34,39 +34,6 @@ _WORD = re.compile(r"[A-Za-z][A-Za-z0-9]{2,}")
 # The SQL route extracts the same words from the same text, so both sides count the same terms.
 WORD_PATTERN: Final = _WORD.pattern
 _HAN = re.compile(r"[\u3400-\u9fff]+")
-# Subjects and objects that name no one in particular; equal text on them is no shared identity.
-_GENERIC_ENTITY: Final = frozenset({"market", "markets", "data", "government", "company", "people"})
-# Asset spellings resolve through the owners that already ground them: ticker aliases from the instrument
-# catalogue's seeds (`XAU`/`XAUT` -> `GOLD`, `XAG` -> `SILVER`, `WTI` -> `CL`), and a commodity written as a word
-# in any language through the Gate's grounding table, whose keys are catalogue commodities. The alias map is
-# closed over hops so the SQL route applies it with one lookup.
-ASSET_ALIASES: Final[Mapping[str, str]] = {alias: resolve_base_symbol(alias) for alias in ALIAS_SEEDS}
-_COMMODITY_NAMES: Final = tuple((resolve_base_symbol(tag), pattern) for tag, pattern in COMMODITY_CONTEXT.items())
-# Leading `$` (cashtags) and surrounding whitespace carry no identity. The SQL route strips the same edges.
-_SYMBOL_EDGES: Final = re.compile(r"^[\s$]+|\s+$")
-
-
-def asset_symbols(symbol: str, market_type: str) -> frozenset[str]:
-    """Every canonical symbol one claim asset names; two assets are the same when these sets meet.
-
-    `$OKLO` is `OKLO`, `xyz:GOLD` and `XAU` are `GOLD`, and a commodity named in words (`spot gold`,
-    `国际现货黄金`, `现货白银`) is the catalogue commodity the grounding table recognises in it. Anything
-    else keeps its own normalized spelling, so an unknown name still matches the same name exactly.
-    """
-
-    text = _SYMBOL_EDGES.sub("", symbol)
-    names = {resolve_base_symbol(text)}
-    if market_type == "commodity":
-        names.update(base for base, pattern in _COMMODITY_NAMES if pattern.search(text))
-    return frozenset(name for name in names if name)
-
-
-def commodity_name_patterns(symbol: str) -> tuple[str, ...]:
-    """The grounding patterns that name commodity `symbol`, spelled for PostgreSQL's `~*` (`\\y`, not `\\b`)."""
-
-    return tuple(
-        sorted({pattern.pattern.replace(r"\b", r"\y") for base, pattern in _COMMODITY_NAMES if base == symbol})
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +79,7 @@ def _asset_pairs(claim: Claim, role: str) -> frozenset[tuple[str, str]]:
         (symbol, asset.market_type)
         for asset in claim.fields.assets
         if asset.role == role
-        for symbol in asset_symbols(asset.symbol, asset.market_type)
+        for symbol in asset_retrieval_symbols(asset.symbol, asset.market_type)
     )
 
 
@@ -129,12 +96,12 @@ def query_for_claim(claim: Claim) -> ClaimRecallQuery:
     text = " ".join((claim.statement, fields.subject, fields.action, fields.object))
     return ClaimRecallQuery(
         ref=claim.ref,
-        subject="" if fields.subject.strip().casefold() in _GENERIC_ENTITY else fields.subject.strip().casefold(),
-        object="" if fields.object.strip().casefold() in _GENERIC_ENTITY else fields.object.strip().casefold(),
+        subject=retrieval_name(fields.subject),
+        object=retrieval_name(fields.object),
         primary_assets=_asset_pairs(claim, "primary"),
         mentioned_assets=_asset_pairs(claim, "mentioned"),
         known_identity=frozenset(
-            (hint.key, hint.value.strip().casefold())
+            (hint.key, identity_value(hint.value))
             for hint in claim.known_identity
             if hint.key in {"subject_id", "object_id"} and hint.value.strip()
         ),
@@ -154,16 +121,21 @@ def _structure(query: ClaimRecallQuery, candidate: RecallCandidate) -> tuple[str
         elif query.primary_assets & mentioned or query.mentioned_assets & primary:
             reasons.add("asset_role_cross")
         for hint in claim.known_identity:
-            if (hint.key, hint.value.strip().casefold()) in query.known_identity:
-                reasons.add(f"identity:{hint.key}:{hint.value.strip().casefold()}")
-        if (
-            query.subject
-            and query.subject not in _GENERIC_ENTITY
-            and query.subject == fields.subject.strip().casefold()
-        ):
+            if (hint.key, identity_value(hint.value)) in query.known_identity:
+                reasons.add(f"identity:{hint.key}:{identity_value(hint.value)}")
+        if query.subject and query.subject == retrieval_name(fields.subject):
             reasons.add(f"subject:{query.subject}")
-        if query.object and query.object not in _GENERIC_ENTITY and query.object == fields.object.strip().casefold():
-            reasons.add(f"object:{query.object}")
+        if query.object and query.object == retrieval_name(fields.object):
+            typed_current = {asset for asset in query.primary_assets if asset[1] != "unknown"}
+            typed_previous = {asset for asset in primary if asset[1] != "unknown"}
+            # An object like "earnings" still retrieves background, but cannot outrank the actual asset
+            # when both accounts explicitly identify non-overlapping typed primary retrieval features.
+            prefix = (
+                "object_background"
+                if typed_current and typed_previous and not typed_current & typed_previous
+                else "object"
+            )
+            reasons.add(f"{prefix}:{query.object}")
     return tuple(sorted(reasons))
 
 
@@ -224,6 +196,17 @@ def select_for_claim(
         candidate for candidate in by_id.values() if as_of_ms - RECALL_WINDOW_MS <= candidate.settled_at_ms < as_of_ms
     )
     structure = {candidate.intent_id: _structure(query, candidate) for candidate in ordinary}
+    specific = {
+        intent: any(reason.startswith(("identity:", "object:")) for reason in reasons)
+        for intent, reasons in structure.items()
+    }
+    primary = {
+        intent: any(
+            reason.startswith("primary_asset:") and not reason.startswith("primary_asset:unknown:")
+            for reason in reasons
+        )
+        for intent, reasons in structure.items()
+    }
     lexical: dict[str, int]
     ranked_routes: tuple[tuple[str, tuple[tuple[RecallCandidate, int], ...]], ...]
     if routes is None:
@@ -231,7 +214,12 @@ def select_for_claim(
         lexical = {intent: len(terms) for intent, (_, terms) in evidence.items()}
         structural_rank = sorted(
             (candidate for candidate in ordinary if structure[candidate.intent_id]),
-            key=lambda candidate: (-candidate.settled_at_ms, candidate.intent_id),
+            key=lambda candidate: (
+                not specific[candidate.intent_id],
+                not primary[candidate.intent_id],
+                -candidate.settled_at_ms,
+                candidate.intent_id,
+            ),
         )[:ROUTE_CANDIDATES_MAX]
         lexical_rank = sorted(
             (candidate for candidate in ordinary if candidate.intent_id in evidence),
@@ -276,7 +264,14 @@ def select_for_claim(
             reasons.setdefault(candidate.intent_id, set()).update((route, *details))
     ranked_ids = sorted(
         scores,
-        key=lambda intent: (-scores[intent], -by_id[intent].settled_at_ms, intent),
+        # A hot actor or a passing asset mention may supply useful cross-language background, but
+        # cannot crowd a concrete primary/identity/object or qualifying body match out of 16 slots.
+        key=lambda intent: (
+            0 if specific[intent] or lexical.get(intent, 0) >= LEXICAL_SHARED_MIN else 1 if primary[intent] else 2,
+            -scores[intent],
+            -by_id[intent].settled_at_ms,
+            intent,
+        ),
     )
     selected = tuple(dict.fromkeys((*linked, *ranked_ids)))[:READER_MESSAGES_MAX]
     return ClaimSelection(
@@ -295,7 +290,6 @@ def reader_context_revision(
     blocked: tuple[str, ...],
     ambiguous: tuple[str, ...],
     invalidated: tuple[str, ...],
-    watch_symbols: tuple[str, ...],
     protected_listing: tuple[str, ...] = (),
 ) -> str:
     """Hash exactly the claim-scoped input and state facts used to make a reader decision."""
@@ -318,7 +312,6 @@ def reader_context_revision(
         "blocked": sorted(blocked),
         "ambiguous": sorted(ambiguous),
         "invalidated": sorted(invalidated),
-        "watch": sorted(watch_symbols),
         "protected_listing": sorted(protected_listing),
     }
     return f"reader_v3:{digest(material)}"

@@ -1,7 +1,7 @@
 import { Card } from "@shared/ui/Card";
 import { SourceLine } from "@shared/ui/SourceLine";
 
-import type { NewsQuote, NewsSymbol } from "../../api/newsQueries";
+import { newsAssetKey, type NewsQuote, type NewsSymbol } from "../../api/newsQueries";
 import { NewsQuotePrice } from "../chrome/NewsQuoteValue";
 
 /**
@@ -18,11 +18,11 @@ import { NewsQuotePrice } from "../chrome/NewsQuoteValue";
  * came for.
  */
 export function NewsSymbolIdentity({
-  quote,
+  quotes,
   symbol,
   tiles,
 }: {
-  quote: NewsQuote | undefined;
+  quotes: NewsQuote[];
   symbol: NewsSymbol | undefined;
   /** The artifact's three figures beside the identity: how much arrived, how much was pushed, and how
       much of the OI window this name is holding. Each already read by the page; none re-derived here. */
@@ -72,10 +72,17 @@ export function NewsSymbolIdentity({
             ) : null}
           </div>
 
-          <div className="news-symbol-quote">
-            <small>MARK · {quote?.state_zh || (quote ? quote.state : "—")}</small>
-            <NewsQuotePrice quote={quote} />
-          </div>
+          {quotes.map((quote) => (
+            <div
+              className="news-symbol-quote"
+              key={newsAssetKey(quote.market_type, quote.requested_symbol)}
+            >
+              <small>
+                {quote.market_type} · {quote.state_zh || quote.state}
+              </small>
+              <NewsQuotePrice quote={quote} />
+            </div>
+          ))}
         </div>
 
         {/*

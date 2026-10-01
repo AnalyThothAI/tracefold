@@ -49,7 +49,7 @@ def test_scripted_provider_cites_only_visible_task_segments() -> None:
 def test_scripted_provider_runs_through_the_production_dspy_projection() -> None:
     from tests.golden._scripted_news_lm import scripted_generative_lm
     from tests.support.news_update_semantic import material
-    from tracefold.news.updates.dspy_backend import DspyExtractor
+    from tracefold.news.adapters.extraction import DspyExtractor
 
     evidence = material("Binance will list ACMEUSDT perpetual futures on 2026-09-08")
     source = FrozenInput(event_id="golden-event", revision=1, lineage_id="golden-line", evidence=(evidence,))

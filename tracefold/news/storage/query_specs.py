@@ -15,13 +15,8 @@ from ..market_review.pricing import REACTION_DUE_BATCH, REACTION_METRIC_VERSION
 from ..market_review.quote_storage import DUE_REACTIONS_SQL
 from ..review.desk import review_read_statements
 from ..source_contracts import MARKET_KINDS
-from .chain_tape import (
-    TAPE_STATE_ID,
-    WALLET_ROSTER_ROWS_SQL,
-    WALLET_TAPE_STATE_SQL,
-)
+from .chain_tape import TAPE_STATE_ID, WALLET_ROSTER_ROWS_SQL, WALLET_TAPE_STATE_SQL
 from .decisions import MARKET_NEWS_PUSHED_SQL, MARKET_NEWS_TOTAL_SQL
-from .event_updates import SEMANTIC_FAILED_CODES_SQL, SEMANTIC_STATUS_SQL, SEMANTIC_WAKE_STATE_SQL
 from .events import BAND_CANDIDATES_SQL
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
@@ -62,6 +57,7 @@ from .operations import (
     RECOVERY_BACKLOG_LIMIT,
     pending_recovery_incidents_statement,
 )
+from .semantic_work import SEMANTIC_FAILED_CODES_SQL, SEMANTIC_STATUS_SQL, SEMANTIC_WAKE_STATE_SQL
 from .update_reads import (
     EVENT_DELIVERIES_SQL,
     EVENT_DELIVERY_QUEUE_SQL,

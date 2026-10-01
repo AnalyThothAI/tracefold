@@ -97,16 +97,45 @@ describe("query hook category contracts", () => {
       "ZZZ",
       ...Array.from({ length: 100 }, (_, index) => `A${String(index).padStart(3, "0")}`),
     ];
-    const selected = symbols.slice(0, 100).sort();
+    const assets = symbols.map((symbol) => ({ symbol, market_type: "crypto" as const }));
+    const selected = assets
+      .slice(0, 100)
+      .sort((left, right) => left.symbol.localeCompare(right.symbol));
     const options = captureQueryOptions(
-      () => useNewsQuotesWithToken("", symbols),
+      () => useNewsQuotesWithToken("", assets),
       queryKeys.newsQuotes(selected),
     );
 
-    expect(selected).toContain("ZZZ");
+    expect(selected.map((asset) => asset.symbol)).toContain("ZZZ");
     expect(options.refetchInterval).toBe(NEWS_QUOTES_REFETCH_MS);
     expect(options.refetchIntervalInBackground).toBe(false);
     expect(options.refetchOnWindowFocus).toBe(true);
+  });
+
+  it("keys the full market/symbol batch and excludes unknown markets from pricing", () => {
+    const assets = [
+      { symbol: "V", market_type: "equity" as const },
+      { symbol: "V", market_type: "crypto" as const },
+      { symbol: "V", market_type: "equity" as const },
+      { symbol: "NEWS", market_type: "unknown" as const },
+      { symbol: `0x${"a".repeat(40)}`, market_type: "crypto" as const },
+      { symbol: "Z".repeat(44), market_type: "crypto" as const },
+      { symbol: "Visa Inc", market_type: "equity" as const },
+    ];
+    const batch = [assets[1], assets[0]];
+    expect(
+      captureQueryOptions(
+        () => useNewsQuotesWithToken("token", assets),
+        queryKeys.newsQuotes(batch),
+      ).enabled,
+    ).toBe(true);
+    expect(queryKeys.newsQuotes([assets[0]])).not.toEqual(queryKeys.newsQuotes([assets[1]]));
+    expect(
+      captureQueryOptions(
+        () => useNewsQuotesWithToken("token", [assets[3]]),
+        queryKeys.newsQuotes([]),
+      ).enabled,
+    ).toBe(false);
   });
 });
 

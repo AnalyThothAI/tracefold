@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
     ChangeKind,
     DraftClaim,
@@ -24,7 +25,6 @@ from tracefold.news.updates.contracts import (
     SupportDraft,
 )
 from tracefold.news.updates.public import public_updates
-from tracefold.news.updates.semantics import assemble_update
 
 
 def evidence(text: str, *, revision: int, first_available_at_ms: int) -> Evidence:

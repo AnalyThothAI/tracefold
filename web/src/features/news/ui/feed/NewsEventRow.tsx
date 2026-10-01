@@ -3,13 +3,7 @@ import type { MouseEvent } from "react";
 import { Link } from "react-router-dom";
 
 import type { NewsFeedEvent, NewsQuote } from "../../api/newsQueries";
-import {
-  absoluteTime,
-  clockTime,
-  displayAssetRefs,
-  eventHeadline,
-  relativeTime,
-} from "../../model/newsLabels";
+import { absoluteTime, clockTime, eventHeadline, relativeTime } from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
@@ -50,7 +44,7 @@ export function NewsEventRow({
 }) {
   const headline = eventHeadline(event);
   const showOriginal = headline !== event.leader_title;
-  const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
+  const assets = event.assets ?? [];
   const sentAt = event.delivery?.state === "sent" ? event.delivery.settled_at_ms : null;
   const openState = searchState == null ? undefined : { feedSearch: searchState };
   const onHeadlineClick = (clickEvent: MouseEvent<HTMLAnchorElement>) => {

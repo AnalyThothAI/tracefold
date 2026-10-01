@@ -8,7 +8,8 @@ from typing import Any
 
 import pytest
 
-from tracefold.news.updates import dspy_backend
+from tracefold.news.adapters import generation
+from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
     DraftClaim,
     EventUpdate,
@@ -20,7 +21,6 @@ from tracefold.news.updates.contracts import (
     SupportDraft,
 )
 from tracefold.news.updates.judgment import Answer, BatchResult, ProviderUnavailable, Question, Task
-from tracefold.news.updates.semantics import assemble_update
 
 STAMP = 1_790_405_000_000
 
@@ -131,5 +131,5 @@ def generated(monkeypatch: pytest.MonkeyPatch, reply: Any) -> list[dict[str, Any
         prediction = SimpleNamespace(result=signature.output_fields["result"].annotation.model_validate(value))
         return prediction if accept is None else accept(prediction)
 
-    monkeypatch.setattr(dspy_backend, "_generate", answer)
+    monkeypatch.setattr(generation, "generate", answer)
     return calls

@@ -66,9 +66,25 @@ def _event(event_id: str = "ev-1") -> dict[str, Any]:
 _OUTCOME = {"kind": "no_update", "text_zh": "仅有来源", "reason_zh": "没有当前语义工作记录", "group": "held"}
 
 
+class _FakeSemanticWork:
+    def __init__(self, calls: list[tuple[str, dict[str, Any]]]) -> None:
+        self.calls = calls
+
+    def semantic_status(self, *, now_ms: int) -> dict[str, Any]:
+        self.calls.append(("semantic_status", {"now_ms": now_ms}))
+        return {
+            "semantic_observations_24h": 0,
+            "semantic_adopted_24h": 0,
+            "semantic_failed_24h": 0,
+            "semantic_pending": 0,
+            "semantic_failed_by_code_24h": {},
+        }
+
+
 class _FakeNewsRepository:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.semantic_work = _FakeSemanticWork(self.calls)
         self.events = [_event()]
         self.event_assets_by_id = {"ev-1": ["COPPER", "SPOT"]}
         self.detail_overrides: dict[str, dict[str, Any]] = {}
@@ -147,16 +163,6 @@ class _FakeNewsRepository:
         self.calls.append(("asset_usage_24h", {"now_ms": now_ms}))
         return {"ev-1": ["COPPER", "SPOT"], "ev-2": ["SPOT"]}
 
-    def semantic_status(self, *, now_ms: int) -> dict[str, Any]:
-        self.calls.append(("semantic_status", {"now_ms": now_ms}))
-        return {
-            "semantic_observations_24h": 0,
-            "semantic_adopted_24h": 0,
-            "semantic_failed_24h": 0,
-            "semantic_pending": 0,
-            "semantic_failed_by_code_24h": {},
-        }
-
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         self.calls.append(("status_snapshot", {"now_ms": now_ms}))
         return {
@@ -196,19 +202,22 @@ class _FakeNewsRepository:
 class _FakeInstrumentsRepository:
     """#75 universe as the status route sees it before any snapshot has landed."""
 
-    def asset_refs(self, symbols: Any) -> dict[str, dict[str, Any]]:
-        # Keyed by the raw provider tag; `symbol` comes back normalized (the real one strips `XYZ-`).
+    def asset_refs(self, requests: Any) -> dict[Any, dict[str, Any]]:
         listed = {"BTR": "binance.perp", "COPPER": "hl.xyz"}
-        out: dict[str, dict[str, Any]] = {}
-        for raw in symbols:
-            norm = str(raw).upper().removeprefix("XYZ-")
-            out[str(raw)] = {
-                "symbol": norm,
-                "base_symbol": norm,
-                "venue": listed.get(norm),
-                "listed": norm in listed,
+        return {
+            request: {
+                "symbol": request.symbol,
+                "market_type": request.market_type,
+                "base_symbol": request.symbol.upper().removeprefix("XYZ-"),
+                "venue": None if request.market_type == "unknown" else listed.get(request.symbol),
+                "venue_symbol": None,
+                "listed": request.symbol in listed,
+                "resolution_state": "unresolved_market"
+                if request.market_type == "unknown"
+                else ("resolved" if request.symbol in listed else "unlisted"),
             }
-        return out
+            for request in requests
+        }
 
     def search_identity(self, symbol: str, *, allow_pair: bool = True) -> InstrumentSearchIdentity | None:
         token = str(symbol).upper()
@@ -301,6 +310,7 @@ class _FakePriceRepository:
         return [
             {
                 "requested_symbol": symbol,
+                "market_type": requests[index].market_type,
                 "symbol": str(symbol).upper(),
                 "base_symbol": str(symbol).upper(),
                 "venue": None,
@@ -324,7 +334,7 @@ class _FakePriceRepository:
                 "state": "unlisted",
                 "state_zh": "无可交易合约",
             }
-            for symbol in symbols
+            for index, symbol in enumerate(symbols)
         ]
 
     def price_status(self, **kwargs: Any) -> dict[str, Any]:
@@ -490,8 +500,24 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
     # One entry per instrument named, not per tag: `COPPER` and `XYZ-COPPER` are the same contract, and once
     # resolved they are byte-identical (#87 review).
     assert body["data"]["events"][0]["assets"] == [
-        {"symbol": "COPPER", "base_symbol": "COPPER", "venue": "hl.xyz", "listed": True},
-        {"symbol": "SPOT", "base_symbol": "SPOT", "venue": None, "listed": False},
+        {
+            "symbol": "COPPER",
+            "base_symbol": "COPPER",
+            "venue": None,
+            "listed": True,
+            "market_type": "unknown",
+            "venue_symbol": None,
+            "resolution_state": "unresolved_market",
+        },
+        {
+            "symbol": "SPOT",
+            "base_symbol": "SPOT",
+            "venue": None,
+            "listed": False,
+            "market_type": "unknown",
+            "venue_symbol": None,
+            "resolution_state": "unresolved_market",
+        },
     ]
     assert response.headers.get("etag")
     assert news.calls[0][1]["cursor"] is None
@@ -726,9 +752,39 @@ def test_deterministic_event_assets_project_to_feed_and_detail(client) -> None:
     assert feed.status_code == detail.status_code == 200
     feed_event = next(event for event in feed.json()["data"]["events"] if event["event_id"] == "ev-listing")
     detail_event = detail.json()["data"]["event"]
-    expected = [{"symbol": "BTR", "base_symbol": "BTR", "venue": "binance.perp", "listed": True}]
+    expected = [
+        {
+            "symbol": "BTR",
+            "base_symbol": "BTR",
+            "venue": None,
+            "listed": True,
+            "market_type": "unknown",
+            "venue_symbol": None,
+            "resolution_state": "unresolved_market",
+        }
+    ]
     assert feed_event["grounded_assets"] == detail_event["grounded_assets"] == []
     assert feed_event["assets"] == detail_event["assets"] == expected
+
+
+def test_typed_primary_projection_is_authoritative_even_when_empty(client) -> None:
+    http, news = client
+    news.events = [
+        {**_event("typed-primary"), "assets": [{"symbol": "BTR", "market_type": "crypto", "role": "primary"}]},
+        {**_event("empty-primary"), "assets": []},
+    ]
+    news.event_assets_by_id = {"typed-primary": ["COPPER"], "empty-primary": ["COPPER"]}
+
+    feed = http.get("/api/news/feed", params={"token": TOKEN}).json()["data"]
+    by_event = {event["event_id"]: event for event in feed["events"]}
+    assert [(asset["symbol"], asset["market_type"]) for asset in by_event["typed-primary"]["assets"]] == [
+        ("BTR", "crypto")
+    ]
+    assert by_event["typed-primary"]["assets"][0]["resolution_state"] == "resolved"
+    assert by_event["empty-primary"]["assets"] == []
+    detail = http.get("/api/news/events/empty-primary", params={"token": TOKEN}).json()["data"]
+    assert detail["event"]["assets"] == []
+    assert not any(call[0] == "event_asset_symbols" for call in news.calls)
 
 
 def test_status_counts_grounding_from_both_owners_without_either_reaching_across(client) -> None:
@@ -1135,7 +1191,7 @@ def test_status_marks_the_product_degraded_when_model_outputs_are_unusable(
         }
 
     news.status_snapshot = status_snapshot  # type: ignore[method-assign]
-    news.semantic_status = semantic_status  # type: ignore[method-assign]
+    news.semantic_work.semantic_status = semantic_status  # type: ignore[method-assign]
     app = create_app(settings=settings)
     app.state.service = _FakeRuntime(settings, news)
     monkeypatch.setattr(
@@ -1214,7 +1270,13 @@ def test_news_routes_require_the_operator_token(client) -> None:
 # ---------------------------------------------------------------------------- #88 price surfaces
 def test_quotes_returns_one_result_per_requested_symbol(client) -> None:
     api, _ = client
-    response = api.get("/api/news/quotes", params={"symbols": "BTC,ETH,BTC", "token": TOKEN})
+    response = api.get(
+        "/api/news/quotes",
+        params={
+            "assets": canonical_json([{"symbol": symbol, "market_type": "crypto"} for symbol in ("BTC", "ETH", "BTC")]),
+            "token": TOKEN,
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -1224,6 +1286,45 @@ def test_quotes_returns_one_result_per_requested_symbol(client) -> None:
     assert {quote["state"] for quote in payload["data"]["quotes"]} == {"unlisted"}
     assert payload["data"]["quotes"][0]["price"] is None  # never a fabricated zero
     assert set(payload["data"]["quotes"][0]) == set(event_schemas.NewsQuoteData.model_fields)
+
+
+def test_quotes_keep_same_ticker_markets_distinct_and_unknown_unpriced(client, monkeypatch) -> None:
+    api, _ = client
+    queried = []
+    original = _FakePriceRepository.quotes_for_symbols
+
+    def quote_batch(self, requests, **kwargs):
+        queried.extend(requests)
+        return original(self, requests, **kwargs)
+
+    monkeypatch.setattr(_FakePriceRepository, "quotes_for_symbols", quote_batch)
+    response = api.get(
+        "/api/news/quotes",
+        params={
+            "assets": canonical_json(
+                [
+                    {"symbol": "V", "market_type": "equity"},
+                    {"symbol": "V", "market_type": "crypto"},
+                    {"symbol": "V", "market_type": "unknown"},
+                    {"symbol": "V", "market_type": "equity"},
+                ]
+            ),
+            "token": TOKEN,
+        },
+    )
+
+    assert response.status_code == 200
+    quotes = response.json()["data"]["quotes"]
+    assert [(quote["requested_symbol"], quote["market_type"]) for quote in quotes] == [
+        ("V", "equity"),
+        ("V", "crypto"),
+        ("V", "unknown"),
+    ]
+    assert [(request.symbol, request.market_type) for request in queried] == [("V", "equity"), ("V", "crypto")]
+    assert quotes[2]["price"] is None and quotes[2]["venue_symbol"] is None
+    assert quotes[2]["state"] == "unavailable" and quotes[2]["state_zh"] == "市场未确定"
+    legacy = api.get("/api/news/quotes", params={"symbols": "V", "token": TOKEN})
+    assert legacy.status_code == 400 and legacy.json()["error"] == "unsupported_query_param"
 
 
 def test_the_symbol_card_names_every_contract_and_keeps_the_reference_tier_visible(client) -> None:
@@ -1272,16 +1373,19 @@ def test_the_symbol_route_rejects_a_path_segment_that_is_not_a_base_symbol(clien
 
 def test_quotes_rejects_an_oversized_or_malformed_symbol_batch(client) -> None:
     api, _ = client
-    too_many = ",".join(f"S{index}" for index in range(101))
-    response = api.get("/api/news/quotes", params={"symbols": too_many, "token": TOKEN})
+    too_many = canonical_json([{"symbol": f"S{index}", "market_type": "crypto"} for index in range(101)])
+    response = api.get("/api/news/quotes", params={"assets": too_many, "token": TOKEN})
     assert response.status_code == 400
-    assert response.json()["error"] == "news_quotes_symbols_too_many"
+    assert response.json()["error"] == "news_quotes_assets_too_many"
 
-    long_symbol = api.get("/api/news/quotes", params={"symbols": "X" * 33, "token": TOKEN})
+    long_symbol = api.get(
+        "/api/news/quotes",
+        params={"assets": canonical_json([{"symbol": "X" * 33, "market_type": "crypto"}]), "token": TOKEN},
+    )
     assert long_symbol.status_code == 400
-    assert long_symbol.json()["error"] == "news_quotes_symbol_invalid"
+    assert long_symbol.json()["error"] == "news_quotes_assets_invalid"
 
-    unknown = api.get("/api/news/quotes", params={"symbols": "BTC", "unknown": "1", "token": TOKEN})
+    unknown = api.get("/api/news/quotes", params={"assets": "[]", "unknown": "1", "token": TOKEN})
     assert unknown.status_code == 400
     assert unknown.json()["error"] == "unsupported_query_param"
 

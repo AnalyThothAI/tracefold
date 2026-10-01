@@ -10,6 +10,7 @@ from tracefold.app.learning_runtime import compose_news_models
 from tracefold.app.workers.runtime import NEWS_DELIVERY, workers_runtime_status
 from tracefold.news.health import status_health
 from tracefold.news.market_review.instruments import grounding_rollup
+from tracefold.news.market_review.pricing import QuoteRequest
 from tracefold.platform.config.models import news_model_availability, news_push_availability
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
@@ -29,7 +30,7 @@ def get_news_status(request: Request) -> Response:
     settings = runtime.settings
     with runtime.repositories() as repos:
         snapshot = repos.news.status_snapshot(now_ms=now_ms)
-        semantic = repos.news.semantic_status(now_ms=now_ms)
+        semantic = repos.news.semantic_work.semantic_status(now_ms=now_ms)
         workers_runtime_row = repos.workers_runtime_row()
         workers_state, _ = _news_workers_observation(workers_runtime_row, now_ms=now_ms)
         instruments = repos.instruments.universe_summary()
@@ -39,7 +40,12 @@ def get_news_status(request: Request) -> Response:
         price = repos.price.price_status(now_ms=now_ms)
         grounding = grounding_rollup(
             usage,
-            repos.instruments.asset_refs({symbol for symbols in usage.values() for symbol in symbols}),
+            {
+                asset.symbol: ref
+                for asset, ref in repos.instruments.asset_refs(
+                    QuoteRequest(symbol) for symbols in usage.values() for symbol in symbols
+                ).items()
+            },
         )
     # Serve receives no provider credential. It can validate the declared target contract, while Workers
     # owns the secure-file check and provider preflight. A declared target is not callable when Workers is

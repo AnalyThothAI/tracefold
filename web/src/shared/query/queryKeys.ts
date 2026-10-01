@@ -48,8 +48,9 @@ export const queryKeys = {
   // #207 PR-W1: identity only, and identity does not change on a poll — the token page's Events, price and
   // rank window each keep their own key and their own rhythm.
   newsSymbol: (base: string) => ["news-symbol", base] as const,
-  // #88: the quote key is the sorted symbol batch, so the feed and an open Event share one poll.
-  newsQuotes: (symbols: readonly string[]) => ["news-quotes", symbols.join(",")] as const,
+  // The market and ticker together identify every question in the sorted quote batch.
+  newsQuotes: (assets: ReadonlyArray<{ market_type: string; symbol: string }>) =>
+    ["news-quotes", JSON.stringify(assets)] as const,
   // The Signal lane's own keys. Separate from News so a 15 s trading poll cannot evict the
   // feed page a reader is scrolled into.
   tradingStatus: () => ["trading-status"] as const,

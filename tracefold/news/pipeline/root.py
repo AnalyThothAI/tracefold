@@ -13,6 +13,7 @@ from .maintenance import InstrumentSnapshotLoop, JanitorLoop
 from .receiver import OpenNewsReceiver
 from .recovery import RecoveryRunner
 from .semantic import SemanticWorker
+from .send_entry import InitialSendEntry
 
 
 @dataclass
@@ -27,6 +28,7 @@ class NewsPipeline:
     # admission's publishes, and the semantic work waits durably in PostgreSQL (#553 PR-3, #706).
     semantic: SemanticWorker
     deliverer: DelivererLoop
+    send_entry: InitialSendEntry
     janitor: JanitorLoop
     instruments: InstrumentSnapshotLoop | None = None
     # #88/#304: two bounded Price Review loops. They are not consumers — no queue or delivery —
@@ -70,4 +72,4 @@ class NewsPipeline:
     async def close(self) -> None:
         """Close the provider after the Workers root has drained native operations."""
 
-        await self.deliverer.close_sender()
+        await self.send_entry.close()
