@@ -25,7 +25,6 @@ from tracefold.app.workers.runtime import (
     NEWS_INGESTION,
     NEWS_INSTRUMENTS,
     NEWS_QUOTES,
-    NEWS_REACTIONS,
     SHARED_RESOURCE_FAILURES,
     CapabilityStates,
 )
@@ -33,11 +32,9 @@ from tracefold.app.workers.wiring.database import (
     WorkerNewsColdDatabase,
     WorkerNewsDatabase,
     WorkerQuoteDatabase,
-    WorkerReactionDatabase,
 )
 from tracefold.app.workers.wiring.market_review import (
     _delivery_price_fetcher_for,
-    _event_reaction_loop,
     _instrument_snapshot_loop,
     _quote_snapshot_loop,
 )
@@ -47,7 +44,7 @@ from tracefold.integrations.telegram import TelegramNewsPushSender
 from tracefold.integrations.venues import VenueCatalogTradabilityVerifier
 from tracefold.news.chain_tape.rules import WalletRules
 from tracefold.news.market_notifications import TICK_SECONDS, MarketNotificationLoop
-from tracefold.news.market_review.loops import QuoteDatabasePort, ReactionDatabasePort
+from tracefold.news.market_review.loops import QuoteDatabasePort
 from tracefold.news.market_review.pricing import QuoteRequest
 from tracefold.news.notifications.service import Notifications
 from tracefold.news.pipeline.admission import DeduperConsumer
@@ -165,7 +162,6 @@ async def _wire_news_pipeline(
     news_db = WorkerNewsDatabase(db)
     cold_db = WorkerNewsColdDatabase(db)
     quote_db = WorkerQuoteDatabase(db)
-    reaction_db = WorkerReactionDatabase(db)
 
     ws_client = OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
     history_client = (
@@ -194,7 +190,6 @@ async def _wire_news_pipeline(
         news_db=news_db,
         cold_db=cold_db,
         quote_db=quote_db,
-        reaction_db=reaction_db,
         finite=finite,
         news_updates=news_updates,
         sender=_push_sender_or_fault(settings, capabilities=capabilities),
@@ -210,7 +205,6 @@ async def _wire_news_pipeline(
     for capability, loop in (
         (NEWS_INSTRUMENTS, pipeline.instruments),
         (NEWS_QUOTES, pipeline.quotes),
-        (NEWS_REACTIONS, pipeline.reactions),
     ):
         if loop is None:
             capabilities.disabled(capability, f"{capability}_not_configured")
@@ -475,7 +469,6 @@ def _compose_news_pipeline(
     news_db: NewsDatabasePort,
     cold_db: NewsDatabasePort,
     quote_db: QuoteDatabasePort,
-    reaction_db: ReactionDatabasePort,
     finite: FiniteOperations,
     news_updates: NewsUpdateRuntime | None,
     sender: FeishuNewsPushSender | TelegramNewsPushSender | None,
@@ -554,5 +547,4 @@ def _compose_news_pipeline(
             watchlist=sorted(watchlist_symbols),
             telemetry=telemetry,
         ),
-        reactions=_event_reaction_loop(settings, db=reaction_db, telemetry=telemetry),
     )

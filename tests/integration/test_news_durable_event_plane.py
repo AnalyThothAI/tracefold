@@ -29,7 +29,6 @@ from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
 import pytest
-from psycopg.errors import UniqueViolation
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.rabbitmq import declared_amqp_url, declared_management_url
@@ -50,6 +49,7 @@ from tracefold.news.bus import (
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
+from tracefold.news.storage.collectors import _INCIDENTS_SQL
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("rabbitmq_url")]
 
@@ -93,7 +93,7 @@ def _module_connection(postgres_module_clone_dsn: str) -> Iterator[Any]:
 @pytest.fixture
 def conn(_module_connection: Any) -> Iterator[Any]:
     _module_connection.execute(
-        "TRUNCATE news_items, news_opennews_incidents, news_event_evidence_snapshots RESTART IDENTITY CASCADE"
+        "TRUNCATE news_items, news_market_observations, news_event_evidence_snapshots RESTART IDENTITY CASCADE"
     )
     _module_connection.commit()
     yield _module_connection
@@ -163,7 +163,7 @@ def _open_incidents(connection: Any) -> list[dict[str, Any]]:
     return [
         dict(row)
         for row in connection.execute(
-            "SELECT * FROM news_opennews_incidents WHERE closed_at_ms IS NULL ORDER BY incident_id"
+            "SELECT * FROM (" + _INCIDENTS_SQL + ") incidents WHERE closed_at_ms IS NULL ORDER BY incident_id"
         ).fetchall()
     ]
 
@@ -206,7 +206,7 @@ def test_official_recovery_reaches_admission_through_the_real_broker(conn: Any) 
     asyncio.run(scenario())
 
     incident = conn.execute(
-        "SELECT recovery_status, recovered_count FROM news_opennews_incidents WHERE incident_id = %s",
+        "SELECT recovery_status, recovered_count FROM (" + _INCIDENTS_SQL + ") incidents WHERE incident_id = %s",
         (incident_id,),
     ).fetchone()
     assert incident is not None and (incident["recovery_status"], incident["recovered_count"]) == ("recovered", 1)
@@ -387,7 +387,7 @@ def test_a_queue_byte_bound_opens_the_broker_backpressure_incident_recovery_read
     closed = [
         dict(row)
         for row in conn.execute(
-            "SELECT * FROM news_opennews_incidents WHERE cause_class = 'broker_backpressure'"
+            "SELECT * FROM (" + _INCIDENTS_SQL + ") incidents WHERE cause_class = 'broker_backpressure'"
         ).fetchall()
     ]
     assert len(closed) == 1 and closed[0]["closed_at_ms"] is not None
@@ -496,16 +496,7 @@ def test_concurrent_incident_opens_converge_through_the_partial_unique_index(con
         assert int(rows[0]["opened_at_ms"]) == stamp
         assert int(rows[0]["updated_at_ms"]) == stamp + 1
 
-        # Two open incidents of one cause class are what the index makes impossible.
-        with pytest.raises(UniqueViolation, match="ux_news_opennews_incidents_open_cause"):
-            conn.execute(
-                """
-                INSERT INTO news_opennews_incidents (
-                  cause_class, opened_at_ms, planned, recovery_status, created_at_ms, updated_at_ms
-                ) VALUES ('broker_unavailable', %s, false, 'pending', %s, %s)
-                """,
-                (stamp, stamp, stamp),
-            )
+        assert len([row for row in rows if row["cause_class"] == "broker_unavailable"]) == 1
     finally:
         other.close()
 

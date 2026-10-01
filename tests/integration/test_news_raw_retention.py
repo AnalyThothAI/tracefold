@@ -214,51 +214,49 @@ def test_raw_retention_keeps_30_day_judged_corpus_and_expires_it_after_365_days(
 
 
 def _seed_market_item(repos, *, item_id: str, at_ms: int, parsed: bool) -> None:
-    """One market Item with its typed OI fact, or one raw card with neither."""
+    from tracefold.news.market_observations import MarketObservation
 
-    repos.news.upsert_item(
-        item_id=item_id,
-        source_id="opennews",
-        source_item_key=f"key-{item_id}",
-        title="TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%",
-        raw_first_line="",
-        description="",
-        canonical_url=None,
-        reporting_origin="OpenNews",
-        published_at_ms=at_ms,
-        observed_at_ms=at_ms,
-        provider_metadata_json="{}",
-        strategy_ids_json="[]",
-        ingest_mode="live",
-        trace_id=f"trace-{item_id}",
-        now_ms=at_ms,
-        market_kind="oi" if parsed else "unknown_market",
-        market_source_strategy_id="1019" if parsed else "9999",
-        market_parse_status="parsed" if parsed else "raw",
-        market_parse_error=None if parsed else "unknown_market_source",
+    fields = (
+        dict(
+            oi_event_id=f"event-{item_id}",
+            parser_version="oi_signal_v1",
+            symbol="TRUMP",
+            raw_instrument="TRUMP",
+            direction="rise",
+            oi_change_bps=455,
+            oi_value_usd=32170000,
+            whale_long_profit_bps=8021,
+            whale_oi_ratio_bps=10071,
+            provider="opennews",
+            source_venue="binance",
+            source_contract_version="opennews_oi_source_v1",
+            measurement_window_ms=300000,
+            measurement_definition="oi_signal_v1|opennews_oi_source_v1|300000",
+            available_at_ms=at_ms,
+        )
+        if parsed
+        else {}
     )
-    if not parsed:
-        return
-    repos.news.insert_oi_signal(
-        event_id=f"event-{item_id}",
-        metric_version="oi_signal_v1",
-        symbol="TRUMP",
-        raw_instrument="TRUMP",
-        direction="rise",
-        oi_change_bps=455,
-        oi_value_usd=32_170_000,
-        whale_long_profit_bps=8_021,
-        whale_oi_ratio_bps=10_071,
-        observed_at_ms=at_ms,
-        received_at_ms=at_ms,
+    repos.news.insert_market_observation(
+        MarketObservation(
+            observation_id=item_id,
+            kind="oi" if parsed else "unknown_market",
+            source_id="opennews",
+            source_item_key=f"key-{item_id}",
+            source_strategy_id="1019" if parsed else "9999",
+            title=item_id,
+            raw_first_line="",
+            description="",
+            provider_metadata={},
+            provider_params={},
+            ingest_mode="live",
+            event_at_ms=at_ms,
+            received_at_ms=at_ms,
+            parse_status="parsed" if parsed else "raw",
+            parse_error=None if parsed else "unknown_market_source",
+            **fields,
+        ),
         now_ms=at_ms,
-        provider="opennews",
-        source_strategy_id="1019",
-        source_contract_version="opennews_oi_source_v1",
-        measurement_window_ms=300_000,
-        measurement_definition="oi_signal_v1|opennews_oi_source_v1|300000",
-        source_item_id=item_id,
-        source_venue="binance",
     )
 
 
@@ -288,26 +286,24 @@ def test_market_items_live_on_the_judged_tier_whatever_their_parse_status(postgr
                 batch_size=500,
             )
 
+        with repos.transaction():
+            market_result = repos.news.purge_market_observations(cutoff_ms=NOW_MS - 365 * DAY_MS, batch_size=500)
+
         surviving = {
             row["item_id"]
             for row in conn.execute(
-                "SELECT item_id FROM news_items WHERE item_id LIKE 'market-%' OR item_id = 'item-news-unjudged'"
+                "SELECT observation_id AS item_id FROM news_market_observations WHERE observation_id LIKE 'market-%'"
             ).fetchall()
         }
         assert surviving == {"market-parsed-recent", "market-raw-recent"}
-        assert result["deleted_items"] >= 2
-        # The typed fact left with the Item it was parsed from, and no orphan stayed behind.
-        orphans = conn.execute(
-            """
-            SELECT count(*) AS n
-              FROM news_oi_signals s
-             WHERE NOT EXISTS (SELECT 1 FROM news_items i WHERE i.item_id = s.source_item_id)
-            """
-        ).fetchone()
-        assert orphans["n"] == 0
+        assert result["deleted_items"] == 1
+        assert market_result["deleted_items"] == 1
+        assert (
+            conn.execute("SELECT count(*) AS n FROM news_items WHERE item_id='item-news-unjudged'").fetchone()["n"] == 0
+        )
         assert (
             conn.execute(
-                "SELECT count(*) AS n FROM news_oi_signals WHERE source_item_id = 'market-parsed-recent'"
+                "SELECT count(*) AS n FROM news_market_observations WHERE observation_id = 'market-parsed-recent'"
             ).fetchone()["n"]
             == 1
         )

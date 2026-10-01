@@ -197,7 +197,7 @@ similarity 的探测文本有界：一次 GIN 探测在生产副本上约 20–1
 
 读取输入时若仍遇 statement timeout 或取消，领取在 savepoint 里只回滚这次读取：尝试照常计数并按 15 s / 60 s / 300 s 退避、释放租约、记录 `news_semantic_input_timeout`，耗尽后进入可见失败；领取、输入与所记录的阅读范围仍同笔提交，一次尝试只读到一份一致输入。排查见[语义失败](../OPERATIONS.md#语义失败)。
 
-原始市场报告走单独的 `admit_market_item`：保存 Item 与解析结果，不创建伪 Event，不走编辑型 Gate / MinHash / 语义链路。
+原始市场报告走单独的 `admit_market_item`：由 `insert_market_observation` 保存不可变的 `news_market_observations` 与解析状态，不写编辑型 `news_items`，不创建伪 Event，不走编辑型 Gate / MinHash / 语义链路。
 
 <a id="agent"></a>
 <a id="section-newsagent-到底做了什么"></a>
@@ -625,3 +625,11 @@ T2 的卡片生成失败不应回滚 T2 的知识；T3 更正不会改写 T0 冻
 ---
 
 [返回文档中心](../README.md) · [架构图谱](../ARCHITECTURE.md#atlas) · [返回顶部](#news增量新闻理解与独立通知)
+
+## 市场事实与采集器持久状态
+
+P1 将 OI、清算、大户报告、钱包触发和无法结构化的市场记录统一保存为 `news_market_observations`。观察身份沿用原 Item ID；业务字段在首次写入后保持不变，重放只合并实际新增的来源策略，完全相同的帧不改写行。首次 OI 写入在同一事务发布原有公开 outbox，页面分组键、时间字段和通知续接保持一致。`news_items`、修订、Event 成员和冻结证据只拥有编辑型新闻。
+
+`news_collectors` 固定拥有 `opennews`、`chain_tape`、`wallet_roster`、`instrument_catalog` 四行。各行状态由对应 Pydantic 模型验证，修改时锁住整行并一次写回状态与事故数组。事故保留全部未关闭或待恢复记录以及最近 20 个已关闭且恢复结算的记录；单调 ID 不随裁剪重用。名单由 `news_market_wallets` 的成员区间保存，历史版本按加入和退出边界读取；相同成员只更新来源信息，不生成新版本。钱包和市场观察各自执行有界保留清理。
+
+当前报价、发送时行情补充与持续报价采集继续运行；旧 Event Reaction 和钱包 outcome 采样已删除。Feed / Event Detail 不再返回 reaction / reactions，钱包接口不再返回 reference 与 outcomes，Workers 不再声明 `news_reactions` 和 `wallet_prices` 能力。迁移备份、预检和回退边界见[迁移手册](../MIGRATIONS.md)。

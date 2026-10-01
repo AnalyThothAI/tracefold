@@ -44,6 +44,7 @@ from tracefold.news.market_notifications import (
     MarketNotificationLoop,
     group_identity,
 )
+from tracefold.news.market_observations import MarketObservation
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import QUOTE_FRESH_MAX_AGE_MS, QUOTE_READ_TIMEOUT_SECONDS, Quote
 from tracefold.news.opennews import parse_opennews_message
@@ -219,7 +220,11 @@ def _deliveries(conn: Any) -> list[dict[str, Any]]:
 
 
 def _notify_state(conn: Any, item_id: str) -> str | None:
-    rows = _rows(conn, "SELECT market_notify_state FROM news_items WHERE item_id = %s", (item_id,))
+    rows = _rows(
+        conn,
+        "SELECT notify_state AS market_notify_state FROM news_market_observations WHERE observation_id = %s",
+        (item_id,),
+    )
     return None if not rows else rows[0]["market_notify_state"]
 
 
@@ -252,8 +257,8 @@ def test_a_notification_failure_leaves_the_committed_fact_and_the_backlog_untouc
     with pytest.raises(RuntimeError, match="injected_failure"):
         asyncio.run(loop.advance())
 
-    assert _rows(conn, "SELECT item_id FROM news_items WHERE item_id = 'oi-1'")
-    assert _rows(conn, "SELECT source_item_id FROM news_oi_signals WHERE source_item_id = 'oi-1'")
+    assert _rows(conn, "SELECT observation_id AS item_id FROM news_market_observations WHERE observation_id = 'oi-1'")
+    assert _rows(conn, "SELECT observation_id FROM news_market_observations WHERE observation_id = 'oi-1'")
     assert _notify_state(conn, "oi-1") == "pending"
     assert _deliveries(conn) == []
 
@@ -330,7 +335,13 @@ def test_an_observation_committed_late_is_not_skipped_by_the_take_query(conn: An
             # Turn one cannot see the uncommitted row, and processes the newer one.
             asyncio.run(_loop(db, sender, clock=_Clock()).advance())
             assert _notify_state(conn, "oi-new") == "processed"
-            assert _rows(conn, "SELECT item_id FROM news_items WHERE item_id = 'oi-late'") == []
+            assert (
+                _rows(
+                    conn,
+                    "SELECT observation_id AS item_id FROM news_market_observations WHERE observation_id = 'oi-late'",
+                )
+                == []
+            )
 
             commit.set()
             pending_write.result(timeout=30)
@@ -484,7 +495,7 @@ def test_new_observations_merge_into_an_un_started_card_and_a_frozen_one_refuses
     assert held[0]["attempts"] == 0
     covered = _rows(
         conn,
-        "SELECT item_id FROM news_items WHERE market_notify_delivery_key = %s ORDER BY item_id",
+        "SELECT observation_id AS item_id FROM news_market_observations WHERE notification_id = %s ORDER BY item_id",
         (held[0]["delivery_key"],),
     )
     assert [row["item_id"] for row in covered] == ["oi-1", "oi-2"]
@@ -515,14 +526,14 @@ def test_new_observations_merge_into_an_un_started_card_and_a_frozen_one_refuses
     # The set the frozen card speaks for is unchanged, and the later observation is on the new card.
     still_covered = _rows(
         conn,
-        "SELECT item_id FROM news_items WHERE market_notify_delivery_key = %s ORDER BY item_id",
+        "SELECT observation_id AS item_id FROM news_market_observations WHERE notification_id = %s ORDER BY item_id",
         (sent[0]["delivery_key"],),
     )
     assert [row["item_id"] for row in still_covered] == ["oi-1", "oi-2", "oi-3"]
     successor = next(row for row in after if row["delivery_key"] != sent[0]["delivery_key"])
     joined = _rows(
         conn,
-        "SELECT item_id FROM news_items WHERE market_notify_delivery_key = %s",
+        "SELECT observation_id AS item_id FROM news_market_observations WHERE notification_id = %s",
         (successor["delivery_key"],),
     )
     assert [row["item_id"] for row in joined] == ["oi-4"]
@@ -575,7 +586,7 @@ def test_a_new_alert_round_covers_only_itself_and_the_held_observation_stays_on_
     assert fmt.clock(held_at) not in printed
     covered = _rows(
         conn,
-        "SELECT item_id FROM news_items WHERE market_notify_delivery_key = %s",
+        "SELECT observation_id AS item_id FROM news_market_observations WHERE notification_id = %s",
         (second["delivery_key"],),
     )
     assert [row["item_id"] for row in covered] == ["oi-round2"]
@@ -768,9 +779,9 @@ def test_an_outage_merges_per_group_and_recovery_sends_one_summary_for_each(conn
     # Nothing was dropped: every observation is accounted for by exactly one card.
     orphans = _rows(
         conn,
-        "SELECT item_id FROM news_items"
-        " WHERE market_kind IS NOT NULL AND market_notify_state = 'processed'"
-        "   AND market_notify_delivery_key IS NULL",
+        "SELECT observation_id AS item_id FROM news_market_observations"
+        " WHERE kind IS NOT NULL AND notify_state = 'processed'"
+        "   AND notification_id IS NULL",
     )
     assert orphans == []
 
@@ -791,30 +802,42 @@ def _liquidation_item(conn: Any, item_id: str, *, at_ms: int, side: str) -> None
     assert fact is not None
     repos = repositories_for_connection(conn)
     with repos.transaction():
-        news = repos.news
-        news.upsert_item(
-            item_id=item_id,
-            source_id="opennews",
-            source_item_key=item_id,
-            title=title,
-            raw_first_line=title,
-            description="",
-            canonical_url=None,
-            reporting_origin="opennews",
-            published_at_ms=at_ms,
-            observed_at_ms=at_ms,
-            provider_metadata_json="{}",
-            strategy_ids_json="[]",
-            ingest_mode="live",
-            trace_id="trace",
+        repos.news.insert_market_observation(
+            MarketObservation(
+                observation_id=item_id,
+                kind="liquidation",
+                source_id="opennews",
+                source_item_key=item_id,
+                title=title,
+                raw_first_line=title,
+                description="",
+                event_at_ms=at_ms,
+                received_at_ms=at_ms,
+                available_at_ms=at_ms,
+                provider_metadata={},
+                provider_params={},
+                ingest_mode="live",
+                source_strategy_id="2083",
+                parse_status="parsed",
+                parse_error=None,
+                provider="opennews",
+                **{
+                    name: getattr(fact, name)
+                    for name in (
+                        "symbol",
+                        "raw_instrument",
+                        "source_venue",
+                        "parser_version",
+                        "source_contract_version",
+                        "liquidated_position_side",
+                        "forced_order_side",
+                        "notional_usd",
+                        "price",
+                    )
+                },
+            ),
             now_ms=at_ms,
-            market_kind="liquidation",
-            market_source_strategy_id="2083",
-            market_parse_status="parsed",
-            market_parse_error=None,
-            provider_params_json="{}",
         )
-        news.insert_market_liquidation(fact=fact, ingest_mode="live", now_ms=at_ms)
 
 
 def test_a_smart_money_round_sends_a_first_card_a_closing_card_and_no_third(conn: Any) -> None:
@@ -934,9 +957,9 @@ def test_an_unstructured_record_is_processed_and_never_alerted(conn: Any) -> Non
 
     marked = _rows(
         conn,
-        "SELECT item_id, market_notify_state, market_notify_group_key AS group_key,"
-        "       market_notify_delivery_key AS delivery_key"
-        "  FROM news_items ORDER BY item_id",
+        "SELECT observation_id AS item_id, notify_state AS market_notify_state, notify_group_key AS group_key,"
+        "       notification_id AS delivery_key"
+        "  FROM news_market_observations ORDER BY observation_id",
     )
     assert marked == [
         {
@@ -972,27 +995,25 @@ def _raw_item(conn: Any, item_id: str, *, at_ms: int, kind: str, title: str) -> 
 
     repos = repositories_for_connection(conn)
     with repos.transaction():
-        repos.news.upsert_item(
-            item_id=item_id,
-            source_id="opennews",
-            source_item_key=item_id,
-            title=title,
-            raw_first_line=title,
-            description="",
-            canonical_url=None,
-            reporting_origin="opennews",
-            published_at_ms=at_ms,
-            observed_at_ms=at_ms,
-            provider_metadata_json="{}",
-            strategy_ids_json="[]",
-            ingest_mode="live",
-            trace_id="trace",
+        repos.news.insert_market_observation(
+            MarketObservation(
+                observation_id=item_id,
+                kind=kind,
+                source_id="opennews",
+                source_item_key=item_id,
+                title=title,
+                raw_first_line=title,
+                description="",
+                event_at_ms=at_ms,
+                received_at_ms=at_ms,
+                provider_metadata={},
+                provider_params={},
+                ingest_mode="live",
+                source_strategy_id="2026",
+                parse_status="raw",
+                parse_error="market_template_unmatched",
+            ),
             now_ms=at_ms,
-            market_kind=kind,
-            market_source_strategy_id="2026",
-            market_parse_status="raw",
-            market_parse_error="market_template_unmatched",
-            provider_params_json="{}",
         )
 
 
@@ -1011,29 +1032,45 @@ def _wallet_item(conn: Any, item_id: str, *, at_ms: int, action: str, side: str)
     assert fact is not None, title
     repos = repositories_for_connection(conn)
     with repos.transaction():
-        repos.news.upsert_item(
-            item_id=item_id,
-            source_id="opennews",
-            source_item_key=item_id,
-            title=title,
-            raw_first_line=title,
-            description="",
-            canonical_url=None,
-            reporting_origin="opennews",
-            published_at_ms=at_ms,
-            observed_at_ms=at_ms,
-            provider_metadata_json="{}",
-            strategy_ids_json="[]",
-            ingest_mode="live",
-            trace_id="trace",
+        repos.news.insert_market_observation(
+            MarketObservation(
+                observation_id=item_id,
+                kind="smart_money",
+                source_id="opennews",
+                source_item_key=item_id,
+                title=title,
+                raw_first_line=title,
+                description="",
+                event_at_ms=at_ms,
+                received_at_ms=at_ms,
+                available_at_ms=at_ms,
+                provider_metadata={},
+                provider_params={},
+                ingest_mode="live",
+                source_strategy_id="2026",
+                parse_status="parsed",
+                parse_error=None,
+                provider="opennews",
+                notional_usd=fact.reported_notional_usd,
+                **{
+                    name: getattr(fact, name)
+                    for name in (
+                        "symbol",
+                        "raw_instrument",
+                        "source_venue",
+                        "parser_version",
+                        "source_contract_version",
+                        "trader_label",
+                        "account_address",
+                        "action",
+                        "position_side",
+                        "price",
+                        "pnl_usd",
+                    )
+                },
+            ),
             now_ms=at_ms,
-            market_kind="smart_money",
-            market_source_strategy_id="2026",
-            market_parse_status="parsed",
-            market_parse_error=None,
-            provider_params_json='{"relatedAddress": "0x4d3a"}',
         )
-        repos.news.insert_market_smart_money(fact=fact, ingest_mode="live", now_ms=at_ms)
 
 
 # --- the card's quote, on the same read model News is quoted from (#562 §2) ------------------------
@@ -1326,7 +1363,9 @@ def test_the_quote_read_changes_no_notification_decision(conn: Any) -> None:
     def replay(*, quotes: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
         connection = connect_postgres_test(read_only=False)
         try:
-            connection.execute("TRUNCATE news_items, news_market_tracks, news_market_deliveries CASCADE")
+            connection.execute(
+                "TRUNCATE news_market_observations, news_items, news_market_tracks, news_market_deliveries CASCADE"
+            )
             if quotes:
                 _quotable(connection)
             db = _Db(connection)
@@ -1754,7 +1793,9 @@ def test_the_news_read_changes_no_notification_decision(conn: Any) -> None:
     def replay(*, news: bool) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
         connection = connect_postgres_test(read_only=False)
         try:
-            connection.execute("TRUNCATE news_items, news_market_tracks, news_market_deliveries CASCADE")
+            connection.execute(
+                "TRUNCATE news_market_observations, news_items, news_market_tracks, news_market_deliveries CASCADE"
+            )
             connection.execute("TRUNCATE news_events, news_deliveries CASCADE")
             _news_event(
                 connection,

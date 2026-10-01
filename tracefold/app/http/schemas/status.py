@@ -23,15 +23,10 @@ class NewsQuoteVenueData(ExactApiSchema):
 class NewsPriceStatusData(ExactApiSchema):
     """#88 §11: per-source freshness and Reaction backlog, so congestion is visible before the UI shows it."""
 
-    metric_version: str = ""
     # The backlog SLO (#88 §14): how far behind the oldest Event-asset still waiting for a horizon is.
-    oldest_due_age_ms: int = 0
     sources: list[NewsQuoteVenueData] = Field(default_factory=list)
     fresh_sources: int = 0
     quotes: int = 0
-    reaction_partial_7d: int = 0
-    reaction_complete_7d: int = 0
-    reaction_unavailable_7d: int = 0
 
 
 class NewsIncidentData(ExactApiSchema):

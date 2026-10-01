@@ -40,9 +40,6 @@ def get_news_event(request: Request, event_id: str) -> Response:
         if data is not None:
             _attach_asset_refs([data["event"]], repos.news, repos.instruments)
             data["normalization"] = _normalization(data["event"], repos.instruments)
-            now_ms = int(time.time() * 1000)
-            data["reactions"] = repos.price.event_reactions(event_id)
-            data["reaction"] = repos.price.event_reaction_aggregates([event_id], now_ms=now_ms).get(event_id)
     if data is None:
         return _json({"ok": False, "error": "news_event_not_found"}, status_code=404)
     return _etagged(data, request, envelope=_EventEnvelope)

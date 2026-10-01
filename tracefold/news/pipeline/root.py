@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
-from ..market_review.loops import EventReactionLoop, QuoteSnapshotLoop
+from ..market_review.loops import QuoteSnapshotLoop
 from .admission import DeduperConsumer
 from .delivery import DelivererLoop
 from .maintenance import InstrumentSnapshotLoop, JanitorLoop
@@ -34,7 +34,6 @@ class NewsPipeline:
     # #88/#304: two bounded Price Review loops. They are not consumers — no queue or delivery —
     # and every one of them may be absent without the pipeline changing shape.
     quotes: QuoteSnapshotLoop | None = None
-    reactions: EventReactionLoop | None = None
 
     def runners(self) -> list[tuple[str, Callable[[asyncio.Event], Awaitable[None]]]]:
         """Ordered task declarations. The optional stages are bound to a local so the absent ones are
@@ -55,13 +54,11 @@ class NewsPipeline:
                 ("news-janitor", lambda stop: janitor.run(stop_event=stop)),
             ]
         )
-        instruments, quotes, reactions = self.instruments, self.quotes, self.reactions
+        instruments, quotes = self.instruments, self.quotes
         if instruments is not None:
             out.append(("news-instruments", lambda stop: instruments.run(stop_event=stop)))
         if quotes is not None:
             out.append(("news-quotes", lambda stop: quotes.run(stop_event=stop)))
-        if reactions is not None:
-            out.append(("news-reactions", lambda stop: reactions.run(stop_event=stop)))
         return out
 
     async def drain(self) -> None:

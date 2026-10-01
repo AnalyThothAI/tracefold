@@ -3,7 +3,7 @@
 Every record here goes through the real wire template, the real parser and the real repository, and
 every card is decided by `MarketNotificationLoop.advance()` against real PostgreSQL. Nothing about
 the lifecycle is re-implemented: the counts below are read back out of `news_market_deliveries` and
-`news_items` afterwards, so a rule change that stopped merging would move them.
+`news_market_observations` afterwards, so a rule change that stopped merging would move them.
 
 The corpus is shaped from the sample the Issue measured (§9: 405 OI, 111 liquidation and 108
 smart-money live records in one 72 h window, plus the unparsable drift the wallet Strategy really
@@ -41,6 +41,7 @@ from tracefold.news.market_notifications import (
     TICK_SECONDS,
     MarketNotificationLoop,
 )
+from tracefold.news.market_observations import MarketObservation
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import Quote
 from tracefold.news.oi_signals import measurement_definition, oi_source_contract, parse_oi_signal
@@ -210,7 +211,7 @@ def _smart_money_corpus(rng: random.Random) -> list[_Record]:
 
 
 def _admit(news: Any, record: _Record) -> None:
-    """One record admitted exactly as the entry admits it: Item, then its typed fact if it has one."""
+    """One record stored with its immutable parsed business fields through the single writer."""
 
     parse_status, parse_error = "raw", "market_template_unmatched"
     oi = liquidation = wallet = None
@@ -239,55 +240,91 @@ def _admit(news: Any, record: _Record) -> None:
         )
     if oi is not None or liquidation is not None or wallet is not None:
         parse_status, parse_error = "parsed", None
-    news.upsert_item(
-        item_id=record.item_id,
-        source_id="opennews",
-        source_item_key=record.item_id,
-        title=record.title,
-        raw_first_line=record.title,
-        description="",
-        canonical_url=None,
-        reporting_origin="opennews",
-        published_at_ms=record.at_ms,
-        observed_at_ms=record.at_ms,
-        provider_metadata_json="{}",
-        strategy_ids_json="[]",
-        ingest_mode="live",
-        trace_id="replay",
-        now_ms=record.at_ms,
-        market_kind=record.kind,
-        market_source_strategy_id=record.strategy_id,
-        market_parse_status=parse_status,
-        market_parse_error=parse_error,
-        provider_params_json=json.dumps({"relatedAddress": record.address} if record.address else {}),
-    )
+    fields = {}
     if oi is not None:
         source = oi_source_contract({"strategies": [{"id": record.strategy_id}]})
-        news.insert_oi_signal(
-            event_id=f"replay-{record.item_id}",
-            metric_version="oi_signal_v1",
-            symbol=oi.symbol,
-            raw_instrument=oi.raw_instrument,
-            direction=oi.direction,
-            oi_change_bps=oi.oi_change_bps,
-            oi_value_usd=oi.oi_value_usd,
-            whale_long_profit_bps=oi.whale_long_profit_bps,
-            whale_oi_ratio_bps=oi.whale_oi_ratio_bps,
-            observed_at_ms=record.at_ms,
-            received_at_ms=record.at_ms,
-            now_ms=record.at_ms,
-            provider=MARKET_PROVIDER,
-            source_strategy_id=None if source is None else source.strategy_id,
-            source_contract_version=None if source is None else source.contract_version,
-            measurement_window_ms=None if source is None else source.measurement_window_ms,
-            measurement_definition=measurement_definition(source),
-            source_item_id=record.item_id,
-            source_venue=record.venue,
-        )
+        fields = {
+            "provider": MARKET_PROVIDER,
+            "source_venue": record.venue,
+            "parser_version": "oi_signal_v1",
+            "oi_event_id": f"replay-{record.item_id}",
+            "source_contract_version": None if source is None else source.contract_version,
+            "measurement_window_ms": None if source is None else source.measurement_window_ms,
+            "measurement_definition": measurement_definition(source),
+            **{
+                name: getattr(oi, name)
+                for name in (
+                    "symbol",
+                    "raw_instrument",
+                    "direction",
+                    "oi_change_bps",
+                    "oi_value_usd",
+                    "whale_long_profit_bps",
+                    "whale_oi_ratio_bps",
+                )
+            },
+        }
     elif liquidation is not None:
-        news.insert_market_liquidation(fact=liquidation, ingest_mode="live", now_ms=record.at_ms)
+        fields = {
+            "provider": MARKET_PROVIDER,
+            **{
+                name: getattr(liquidation, name)
+                for name in (
+                    "symbol",
+                    "raw_instrument",
+                    "source_venue",
+                    "parser_version",
+                    "source_contract_version",
+                    "liquidated_position_side",
+                    "forced_order_side",
+                    "notional_usd",
+                    "price",
+                )
+            },
+        }
     elif wallet is not None:
-        news.insert_market_smart_money(fact=wallet, ingest_mode="live", now_ms=record.at_ms)
+        fields = {
+            "provider": MARKET_PROVIDER,
+            "notional_usd": wallet.reported_notional_usd,
+            **{
+                name: getattr(wallet, name)
+                for name in (
+                    "symbol",
+                    "raw_instrument",
+                    "source_venue",
+                    "parser_version",
+                    "source_contract_version",
+                    "trader_label",
+                    "account_address",
+                    "action",
+                    "position_side",
+                    "price",
+                    "pnl_usd",
+                )
+            },
+        }
+    news.insert_market_observation(
+        MarketObservation(
+            observation_id=record.item_id,
+            kind=record.kind,
+            source_id="opennews",
+            source_item_key=record.item_id,
+            source_strategy_id=record.strategy_id,
+            title=record.title,
+            raw_first_line=record.title,
+            description="",
+            event_at_ms=record.at_ms,
+            received_at_ms=record.at_ms,
+            available_at_ms=record.at_ms if fields else None,
+            provider_metadata={},
+            provider_params={"relatedAddress": record.address} if record.address else {},
+            ingest_mode="live",
+            parse_status=parse_status,
+            parse_error=parse_error,
+            **fields,
+        ),
+        now_ms=record.at_ms,
+    )
 
 
 class _Clock:
@@ -519,11 +556,11 @@ def _report(connection: Any, corpus: list[_Record]) -> dict[str, _Kind]:
     }
     report: dict[str, _Kind] = {name: _Kind() for name in ("oi", "liquidation", "smart_money", "raw")}
     for row in connection.execute(
-        "SELECT i.market_notify_group_key AS group_key, i.market_notify_delivery_key AS delivery_key,"
-        "       COALESCE(i.observed_at_ms < t.round_started_at_ms, false) AS round_closed"
-        "  FROM news_items i"
-        "  LEFT JOIN news_market_tracks t ON t.group_key = i.market_notify_group_key"
-        " WHERE i.market_notify_state = 'processed'"
+        "SELECT i.notify_group_key AS group_key, i.notification_id AS delivery_key,"
+        "       COALESCE(i.received_at_ms < t.round_started_at_ms, false) AS round_closed"
+        "  FROM news_market_observations i"
+        "  LEFT JOIN news_market_tracks t ON t.group_key = i.notify_group_key"
+        " WHERE i.notify_state = 'processed'"
     ).fetchall():
         # No track row is the unstructured answer, which is exactly how the read model tells it apart
         # from a group that is holding an observation for a card (#582 §3.2).

@@ -160,7 +160,10 @@ def test_missing_sell_never_creates_false_quorum_and_normal_receipts_reach_one_s
     chain.withhold_receipts.add(missing_sell.transaction_hash)
     version = _seed_roster(conn, wallets)
     _seed_cursor(conn, block=SELL_BLOCK - 20_000, roster_version=version)
-    conn.execute("UPDATE news_market_wallet_tape_state SET detection_cutover_at_ms=0")
+    conn.execute(
+        "UPDATE news_collectors SET state=state || "
+        "jsonb_build_object('detection_cutover_at_ms',0) WHERE collector_id='chain_tape'"
+    )
     conn.commit()
     clock = [asyncio.run(chain.block_timestamp_ms(SELL_BLOCK)) + 1000]
     collector = _loop(conn, chain, clock=lambda: clock[0])

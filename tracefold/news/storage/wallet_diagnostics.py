@@ -55,8 +55,8 @@ WALLET_EPISODE_FUNNEL_SQL: Final = """
            count(*) FILTER (WHERE d.state = 'unavailable') AS unavailable,
            count(*) FILTER (WHERE d.state = 'pending') AS pending
       FROM news_market_wallet_events e
-      JOIN news_items i ON i.item_id = e.item_id
-      LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
+      JOIN news_market_observations i ON i.observation_id=e.item_id
+      LEFT JOIN news_market_deliveries d ON d.delivery_key = i.notification_id
      WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
 """
 
@@ -64,9 +64,9 @@ WALLET_EPISODE_REASONS_SQL: Final = """
     SELECT COALESCE(NULLIF(t.pending_reason, ''), e.notification_reason, '(none)') AS reason,
            count(*) AS episodes
       FROM news_market_wallet_events e
-      JOIN news_items i ON i.item_id = e.item_id
-      LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
-      LEFT JOIN news_market_tracks t ON t.group_key = i.market_notify_group_key
+      JOIN news_market_observations i ON i.observation_id=e.item_id
+      LEFT JOIN news_market_deliveries d ON d.delivery_key = i.notification_id
+      LEFT JOIN news_market_tracks t ON t.group_key = i.notify_group_key
      WHERE e.event_at_ms >= %s AND e.event_at_ms < %s AND d.state IS DISTINCT FROM 'sent'
      GROUP BY 1 ORDER BY 2 DESC, 1
 """

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
-from typing import Any, Final
+from typing import Any
 
 # S608 exemptions below interpolate only the module-owned venue-priority expression; all values stay bound.
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
@@ -14,7 +14,6 @@ from .instruments import REFERENCE_VENUES, normalize_symbol
 from .pricing import (
     QUOTE_SOURCE_GROUP_MAX,
     QUOTE_TARGET_MAX,
-    REACTION_METRIC_VERSION,
     PriceInstrument,
     Quote,
     QuoteRequest,
@@ -27,63 +26,10 @@ from .pricing import (
     source_rank_sql,
 )
 from .projections import (
-    _aggregate_public,
     _directory_only_quote,
-    _reaction_public,
     _unavailable_quote,
     _unlisted_quote,
 )
-
-# The due-work scan, named so the query audit plans the statement this method executes rather than a
-# hand-copied look-alike of it (#589 L-F1).
-DUE_REACTIONS_SQL: Final = """
-            SELECT a.event_id, a.symbol, a.opened_at_ms AS anchor_at_ms,
-                   r.state, r.venue, r.venue_symbol, r.instrument_class,
-                   r.p0, r.p0_at_ms, r.p1, r.p1_at_ms,
-                   EXISTS (
-                     SELECT 1 FROM news_event_update_heads h
-                     JOIN news_event_updates u
-                       ON u.event_id = h.event_id AND u.content_revision = h.content_revision
-                     CROSS JOIN LATERAL jsonb_array_elements(u.document -> 'claims') claim
-                     CROSS JOIN LATERAL jsonb_array_elements(claim -> 'fields' -> 'assets') asset
-                    WHERE h.event_id = a.event_id
-                      AND NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-                      AND NOT (COALESCE(u.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-                      AND replace(upper(asset ->> 'symbol'), 'XYZ-', '') = a.symbol
-                      AND asset ->> 'role' = 'primary'
-                   ) AS is_primary,
-                   COALESCE((
-                     SELECT asset ->> 'market_type' FROM news_event_update_heads h
-                     JOIN news_event_updates u
-                       ON u.event_id = h.event_id AND u.content_revision = h.content_revision
-                     CROSS JOIN LATERAL jsonb_array_elements(u.document -> 'claims') claim
-                     CROSS JOIN LATERAL jsonb_array_elements(claim -> 'fields' -> 'assets') asset
-                    WHERE h.event_id = a.event_id
-                      AND NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-                      AND NOT (COALESCE(u.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-                      AND replace(upper(asset ->> 'symbol'), 'XYZ-', '') = a.symbol
-                    ORDER BY (asset ->> 'role' = 'primary') DESC
-                    LIMIT 1
-                   ), a.market_type) AS market_type
-              FROM news_event_assets a
-              JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
-              -- A lateral probe on the primary key, not a hash join: the scan walks Event-assets oldest
-              -- first and stops at the limit, so it must never read the whole Reaction table to do it.
-              LEFT JOIN LATERAL (
-                SELECT r.state, r.venue, r.venue_symbol, r.instrument_class,
-                       r.p0, r.p0_at_ms, r.p1, r.p1_at_ms, r.unavailable_reason
-                  FROM news_event_reactions r
-                 WHERE r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = %s
-              ) r ON true
-             WHERE a.opened_at_ms <= %s
-               AND (r.state IS NULL OR r.state IN ('pending', 'partial'))
-               AND (
-                 r.state IS DISTINCT FROM 'partial'
-                 OR (a.opened_at_ms <= %s AND r.unavailable_reason IS NULL)
-               )
-             ORDER BY a.opened_at_ms
-             LIMIT %s
-"""
 
 
 class QuoteStorage:
@@ -197,11 +143,10 @@ class QuoteStorage:
                 JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
                WHERE a.opened_at_ms >= %s
               UNION ALL
-              SELECT o.symbol, o.observed_at_ms
-                FROM news_oi_signals o
-                JOIN news_items i ON i.item_id = o.source_item_id AND i.first_ingest_mode = 'live'
-               WHERE o.observed_at_ms >= %s AND NOT o.historical
-                 AND o.metric_version = %s
+              SELECT o.symbol, o.event_at_ms
+                FROM news_market_observations o
+               WHERE o.event_at_ms >= %s AND NOT o.historical
+                 AND o.kind='oi' AND o.ingest_mode='live' AND o.parser_version = %s
             )
             SELECT symbol, max(observed_at_ms) AS last_ms
               FROM candidates
@@ -396,176 +341,6 @@ class QuoteStorage:
         for request, row in zip(requested, out, strict=True):
             row["market_type"] = request.market_type
         return out
-
-    def due_reactions(self, *, now_ms: int, limit: int) -> list[dict[str, Any]]:
-        """Event-assets whose next horizon is due, oldest first, bounded.
-
-        The durable source of due work is PostgreSQL, not an in-memory queue: a restart loses nothing and a
-        turn that cannot plan every row leaves the rest for the next one. Acquisition covers every live
-        grounded Event, not only the delivered ones — a Reaction the reader never received is exactly what
-        the potential-miss review needs (#88 §6).
-        """
-
-        stamp = int(now_ms)
-        rows = self.conn.execute(
-            DUE_REACTIONS_SQL,
-            (REACTION_METRIC_VERSION, stamp - 3_600_000, stamp - 14_400_000, int(limit)),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def oldest_due_age_ms(self, *, now_ms: int, history_max_age_ms: int) -> int:
-        """Backlog SLO input: how late the latest-running due Event-asset is against *its own* horizon.
-
-        Lateness is measured per row against the horizon that row is waiting for — anchor+1H for one that has
-        no price points yet, anchor+4H for a partial one. Measuring everything against the 1H horizon made a
-        perfectly healthy system report ~180 min the moment any row became 4H-due, which would have pinned
-        the ≤5 min / 15 min SLO permanently at "warning" and taught the operator to ignore it.
-        """
-
-        stamp = int(now_ms)
-        row = self.conn.execute(
-            """
-            SELECT max(
-                     CASE WHEN r.state = 'partial' THEN %s - (a.opened_at_ms + 14400000)
-                          ELSE %s - (a.opened_at_ms + 3600000) END
-                   ) AS lateness
-              FROM news_event_assets a
-              JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
-              LEFT JOIN news_event_reactions r
-                ON r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = %s
-             WHERE a.opened_at_ms <= %s
-               AND a.opened_at_ms >= %s
-               AND (r.state IS NULL OR r.state IN ('pending', 'partial'))
-               AND (
-                 r.state IS DISTINCT FROM 'partial'
-                 OR (a.opened_at_ms <= %s AND r.unavailable_reason IS NULL)
-               )
-            """,
-            (
-                stamp,
-                stamp,
-                REACTION_METRIC_VERSION,
-                stamp - 3_600_000,
-                stamp - int(history_max_age_ms),
-                stamp - 14_400_000,
-            ),
-        ).fetchone()
-        lateness = (row or {}).get("lateness")
-        return 0 if lateness is None else max(0, int(lateness))
-
-    def upsert_reaction(self, row: Mapping[str, Any], *, now_ms: int) -> None:
-        """Idempotent by `(event_id, symbol, metric_version)`; a replay writes the same row again."""
-
-        self.conn.execute(
-            """
-            INSERT INTO news_event_reactions
-              (event_id, symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
-               p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
-               is_primary, state, unavailable_reason, created_at_ms, updated_at_ms)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (event_id, symbol, metric_version) DO UPDATE SET
-              venue = EXCLUDED.venue,
-              venue_symbol = EXCLUDED.venue_symbol,
-              instrument_class = EXCLUDED.instrument_class,
-              p0 = COALESCE(news_event_reactions.p0, EXCLUDED.p0),
-              p0_at_ms = COALESCE(news_event_reactions.p0_at_ms, EXCLUDED.p0_at_ms),
-              p1 = COALESCE(news_event_reactions.p1, EXCLUDED.p1),
-              p1_at_ms = COALESCE(news_event_reactions.p1_at_ms, EXCLUDED.p1_at_ms),
-              p4 = COALESCE(news_event_reactions.p4, EXCLUDED.p4),
-              p4_at_ms = COALESCE(news_event_reactions.p4_at_ms, EXCLUDED.p4_at_ms),
-              return_1h_bps = COALESCE(news_event_reactions.return_1h_bps, EXCLUDED.return_1h_bps),
-              return_4h_bps = COALESCE(news_event_reactions.return_4h_bps, EXCLUDED.return_4h_bps),
-              is_primary = EXCLUDED.is_primary,
-              state = EXCLUDED.state,
-              unavailable_reason = EXCLUDED.unavailable_reason,
-              updated_at_ms = EXCLUDED.updated_at_ms
-            """,
-            (
-                str(row["event_id"]),
-                str(row["symbol"]),
-                REACTION_METRIC_VERSION,
-                str(row.get("venue") or ""),
-                str(row.get("venue_symbol") or ""),
-                str(row.get("instrument_class") or "unknown"),
-                int(row["anchor_at_ms"]),
-                row.get("p0"),
-                optional_int(row.get("p0_at_ms")),
-                row.get("p1"),
-                optional_int(row.get("p1_at_ms")),
-                row.get("p4"),
-                optional_int(row.get("p4_at_ms")),
-                optional_int(row.get("return_1h_bps")),
-                optional_int(row.get("return_4h_bps")),
-                bool(row.get("is_primary")),
-                str(row["state"]),
-                row.get("unavailable_reason"),
-                int(now_ms),
-                int(now_ms),
-            ),
-        )
-
-    def event_reactions(self, event_id: str) -> list[dict[str, Any]]:
-        """Every per-asset Reaction for one Event, with the raw closes the returns were computed from."""
-
-        rows = self.conn.execute(
-            """
-            SELECT symbol, metric_version, venue, venue_symbol, instrument_class, anchor_at_ms,
-                   p0, p0_at_ms, p1, p1_at_ms, p4, p4_at_ms, return_1h_bps, return_4h_bps,
-                   is_primary, state, unavailable_reason, updated_at_ms
-              FROM news_event_reactions
-             WHERE event_id = %s
-             ORDER BY symbol, metric_version
-            """,
-            (str(event_id),),
-        ).fetchall()
-        return [_reaction_public(dict(row)) for row in rows]
-
-    def event_reaction_aggregates(self, event_ids: Sequence[str], *, now_ms: int) -> dict[str, dict[str, Any]]:
-        """The compact event-level 1H/4H aggregate for a bounded batch of Events, for the feed.
-
-        One Event contributes one sample however many assets it mentions: the aggregate is the median signed
-        return of active primary assets in its adopted EventUpdate that resolve to a contract. An Event
-        whose primaries price nothing has no aggregate; per-asset rows remain on the detail page.
-        """
-
-        wanted = [str(event_id) for event_id in event_ids if str(event_id).strip()]
-        if not wanted:
-            return {}
-        rows = self.conn.execute(
-            """
-            WITH wanted AS (SELECT unnest(%s::text[]) AS event_id),
-            prim AS (
-              SELECT DISTINCT w.event_id, replace(upper(asset ->> 'symbol'), 'XYZ-', '') AS symbol
-                FROM wanted w
-                JOIN news_event_update_heads h ON h.event_id = w.event_id
-                JOIN news_event_updates u
-                  ON u.event_id = h.event_id AND u.content_revision = h.content_revision
-                CROSS JOIN LATERAL jsonb_array_elements(u.document -> 'claims') claim
-                CROSS JOIN LATERAL jsonb_array_elements(claim -> 'fields' -> 'assets') asset
-               WHERE asset ->> 'role' = 'primary'
-                 AND NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-                 AND NOT (COALESCE(u.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-            )
-            SELECT p.event_id,
-                   min(e.opened_at_ms) AS anchor_at_ms,
-                   count(*) AS primary_n,
-                   count(r.event_id) AS row_n,
-                   count(*) FILTER (WHERE r.state = 'unavailable') AS unavailable_n,
-                   count(*) FILTER (WHERE r.return_1h_bps IS NOT NULL) AS priced_1h,
-                   count(*) FILTER (WHERE r.return_4h_bps IS NOT NULL) AS priced_4h,
-                   min(r.unavailable_reason) AS unavailable_reason,
-                   array_remove(array_agg(r.p0), NULL) AS p0s,
-                   array_remove(array_agg(r.return_1h_bps), NULL) AS bps_1h,
-                   array_remove(array_agg(r.return_4h_bps), NULL) AS bps_4h
-              FROM prim p
-              JOIN news_events e ON e.event_id = p.event_id
-              LEFT JOIN news_event_reactions r
-                ON r.event_id = p.event_id AND r.symbol = p.symbol AND r.metric_version = %s
-             GROUP BY p.event_id
-            """,
-            (wanted, REACTION_METRIC_VERSION),
-        ).fetchall()
-        return {str(row["event_id"]): _aggregate_public(dict(row), now_ms=int(now_ms)) for row in rows}
 
 
 _JSON_SEPARATORS = (",", ":")

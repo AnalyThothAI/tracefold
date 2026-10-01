@@ -162,7 +162,6 @@ def get_news_wallet_event(
             before_log=position[2] if position else None,
             limit=limit + 1,
         )
-        outcomes = repos.news.wallet_outcomes(episode_id)
     next_cursor = None
     if len(fills) > limit:
         last = fills[limit - 1]
@@ -174,7 +173,6 @@ def get_news_wallet_event(
             "event": _event(event),
             "fills": fills[:limit],
             "next_fills_cursor": next_cursor,
-            "outcomes": outcomes,
         },
         request,
         envelope=_DetailEnvelope,
@@ -198,8 +196,6 @@ def _event(row: dict[str, Any]) -> dict[str, Any]:
         "intent_at_ms",
         "first_attempt_at_ms",
         "settled_at_ms",
-        "reference_at_ms",
-        "reference_source",
     )
     return {
         **{field: row[field] for field in fields},
@@ -215,7 +211,6 @@ def _event(row: dict[str, Any]) -> dict[str, Any]:
             row["notification_next_due_at_ms"] if row["notification_state"] == "pending" else None
         ),
         "attempts": row["attempts"] or 0,
-        "reference_price": None if row["reference_price"] is None else str(row["reference_price"]),
     }
 
 

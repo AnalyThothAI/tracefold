@@ -84,8 +84,9 @@ class QueryAuditCatalog:
 
 
 NEWS_TABLES = (
-    "news_ingest_state",
-    "news_opennews_incidents",
+    "news_collectors",
+    "news_market_observations",
+    "news_market_wallets",
     "news_items",
     "news_events",
     "news_event_members",
@@ -108,21 +109,13 @@ NEWS_TABLES = (
     "news_notification_external_feedback",
     "news_external_miss_snapshots",
     "news_market_instruments",
-    "news_market_instrument_snapshot_state",
     "news_symbol_aliases",
     "news_quote_snapshots",
-    "news_event_reactions",
-    "news_oi_signals",
     "news_trade_events",
-    "news_market_liquidations",
-    "news_market_smart_money",
     "news_market_tracks",
     "news_market_deliveries",
     "news_market_wallet_fills",
-    "news_market_wallet_roster",
-    "news_market_wallet_tape_state",
     "news_market_wallet_events",
-    "news_market_wallet_outcomes",
     "news_event_evidence_snapshots",
 )
 
@@ -494,12 +487,12 @@ class ProjectionValidationAudit:
             """
             WITH ingest_mismatch AS (
               SELECT CASE
-                       WHEN count(*) <> 1 THEN 1
+                       WHEN count(*) <> 4 THEN 1
                        ELSE count(*) FILTER (
-                         WHERE singleton_key <> 'opennews'
+                         WHERE jsonb_typeof(state) <> 'object' OR jsonb_typeof(incidents) <> 'array'
                        )::integer
                      END AS count
-                FROM news_ingest_state
+                FROM news_collectors
             ),
             delivery_mismatch AS (
               SELECT count(*)::integer AS count
@@ -525,14 +518,14 @@ class ProjectionValidationAudit:
             ),
             market_coverage_mismatch AS (
               SELECT count(*)::integer AS count
-              FROM news_items i
-              WHERE i.market_notify_delivery_key IS NOT NULL
+              FROM news_market_observations i
+              WHERE i.notification_id IS NOT NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM news_market_deliveries d
-                   WHERE d.delivery_key = i.market_notify_delivery_key)
+                   WHERE d.delivery_key = i.notification_id)
             )
             SELECT
-              (SELECT count FROM ingest_mismatch) AS news_ingest_state_mismatch,
+              (SELECT count FROM ingest_mismatch) AS news_collectors_mismatch,
               (SELECT count FROM delivery_mismatch) AS news_delivery_state_mismatch,
               (SELECT count FROM market_delivery_mismatch) AS news_market_delivery_state_mismatch,
               (SELECT count FROM market_coverage_mismatch) AS news_market_coverage_mismatch

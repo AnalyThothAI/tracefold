@@ -10,7 +10,7 @@ test.beforeEach(async ({ page }) => {
   await installMockApi(page);
 });
 
-test("token episode keeps initial facts, current changes and unknown price separate", async ({
+test("token episode keeps initial facts and current changes readable", async ({
   page,
 }, testInfo) => {
   await page.goto("/news/wallets");
@@ -23,7 +23,7 @@ test("token episode keeps initial facts, current changes and unknown price separ
   await expect(page.getByRole("region", { name: "事件详情" })).not.toContainText(
     /已发送\s*·\s*未发送/,
   );
-  await expect(page.getByText("未取得触发时的可靠价格基准，价格变化保持未知。")).toBeVisible();
+  await expect(page.getByText("未取得触发时的可靠价格基准，价格变化保持未知。")).toHaveCount(0);
   await expect(page.getByText("1.234567890123456789").first()).toBeVisible();
   await expectNoDocumentHorizontalOverflow(page);
   await page.screenshot({ path: testInfo.outputPath("wallet-net-buy.png"), fullPage: true });
@@ -42,7 +42,7 @@ test("episode deep link survives reload independently of list and history range"
   await expectNoDocumentHorizontalOverflow(page);
 });
 
-test("signed net amounts, zero return and tiny prices survive the real page", async ({
+test("signed net amounts and zero cash values survive the real page", async ({
   page,
 }, testInfo) => {
   const data = newsWalletDecimalDetailFixture();
@@ -53,8 +53,7 @@ test("signed net amounts, zero return and tiny prices survive the real page", as
   await page.getByText("其他观察地址与未纳入原因 · 1", { exact: true }).click();
   await expect(page.getByRole("cell", { name: "$-1,500.50 -1500 raw", exact: true })).toBeVisible();
   await expect(page.getByText("$0", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("价格 $1.23e-28", { exact: true })).toBeVisible();
-  await expect(page.getByText("观察后价格变化 0%", { exact: true })).toBeVisible();
+  await expect(page.getByText("观察后价格变化", { exact: false })).toHaveCount(0);
   const snapshotEdges = await page
     .locator(".news-wallets-snapshots > section")
     .evaluateAll((nodes) => nodes.map((node) => node.getBoundingClientRect().right));

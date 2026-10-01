@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from .common import ExactApiSchema
-from .events import NewsEventData, NewsReactionSummaryData
+from .events import NewsEventData
 from .news_common import (
     NewsDeliverySummaryData,
     NewsOutcomeData,
@@ -32,7 +32,6 @@ class NewsFeedEventData(NewsEventData):
     delivery: NewsDeliverySummaryData | None = None
     # #88: the fixed 1H/4H return after this Event. Current quotes are deliberately *not* here — they change
     # every few seconds and would make the feed's ETag useless; the browser reads them from /api/news/quotes.
-    reaction: NewsReactionSummaryData | None = None
 
 
 class NewsFeedFiltersData(ExactApiSchema):

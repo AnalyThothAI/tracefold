@@ -4,7 +4,6 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import {
   newsFeedEventFixture,
   newsFeedFixture,
-  newsReactionFixture,
   newsStatusFixture,
   newsSymbolFixture,
 } from "@tests/fixtures/newsFixture";
@@ -196,33 +195,12 @@ describe("NewsSymbolPage", () => {
     expect(kind).toHaveTextContent("上币/下币");
   });
 
-  it("shows a pending horizon as 未到期 rather than a zero return", async () => {
-    server.use(
-      http.get(/.*\/api\/news\/feed$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsFeedFixture({
-            events: [
-              newsFeedEventFixture({
-                reaction: newsReactionFixture({
-                  return_1h_bps: null,
-                  return_4h_bps: null,
-                  state: "pending",
-                  state_zh: "未到期",
-                }),
-              }),
-            ],
-          }),
-        }),
-      ),
-    );
-
+  it("keeps the event row without retired return columns", async () => {
     renderSymbol();
-
-    const row = await screen.findByText("央行政策转向，风险资产承压");
-    const cell = row.closest(".news-symbol-row")?.querySelector(".news-symbol-reaction");
-    expect(cell).toHaveTextContent("未到期");
-    expect(cell).not.toHaveTextContent("0.00%");
+    const [row] = await screen.findAllByText("央行政策转向，风险资产承压");
+    expect(row.closest(".news-symbol-row")).toBeInTheDocument();
+    expect(screen.queryByText("1H")).not.toBeInTheDocument();
+    expect(screen.queryByText("4H")).not.toBeInTheDocument();
   });
 
   it("carries no Trading section and asks the Trading lane for nothing", async () => {

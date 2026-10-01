@@ -112,11 +112,6 @@ EVENT_FEEDBACK_SQL: Final = """
     JOIN news_notification_decisions d ON d.decision_ref=f.decision_ref
    WHERE d.event_id=%s AND d.origin IN ('editorial_v1','reader_v2')
    ORDER BY f.created_at_ms DESC,f.review_id DESC"""
-STATUS_INGEST_SQL: Final = """
-    SELECT connected, last_frame_at_ms, last_publish_at_ms, last_error_code, broker_snapshot
-      FROM news_ingest_state
-     WHERE singleton_key = 'opennews'
-"""
 # Every statement `/api/news/status` executes, in one place. The query audit registers these exact
 # constants, so the page and its plan evidence cannot be two different queries: the audit used to carry
 # a `count(news_verdicts)` sketch while the route ran the correlated latest-Evidence subquery, the
@@ -419,7 +414,6 @@ __all__ = [
     "OUTCOME_GROUP_SQL",
     "READER_DELIVERY_KINDS_SQL",
     "SOURCE_AUTHORITY_PREDICATE",
-    "STATUS_INGEST_SQL",
     "SUBJECT_CODE_PREDICATE",
     "TEXT_SEARCH_PREDICATE",
     "feed_counts_sql",

@@ -22,52 +22,6 @@ from .news_common import (
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
-class NewsReactionSummaryData(ExactApiSchema):
-    """The compact event-level Event Reaction: one sample per Event, median over its priceable primaries.
-
-    This is a fixed historical measurement anchored at the Event, not a current rolling window. A pending
-    horizon says pending; it is never zero.
-    """
-
-    state: Literal["pending", "partial", "complete", "unavailable"]
-    state_zh: str = ""
-    # Only populated when the Event has exactly one priceable primary. It is the Event-anchored mark, never
-    # a current quote; a multi-asset Event has no meaningful shared price and therefore returns null.
-    p0: str | None = None
-    return_1h_bps: int | None = None
-    return_4h_bps: int | None = None
-    asset_n: int = 0
-    priced_n: int = 0
-    unavailable_reason: str | None = None
-    unavailable_reason_zh: str = ""
-    metric_version: str
-
-
-class NewsEventReactionData(ExactApiSchema):
-    """One per-asset Reaction with the raw closes it was computed from, for audit on the detail page."""
-
-    symbol: str
-    metric_version: str
-    venue: str | None = None
-    venue_symbol: str | None = None
-    instrument_class: str = "unknown"
-    anchor_at_ms: int
-    p0: str | None = None
-    p0_at_ms: int | None = None
-    p1: str | None = None
-    p1_at_ms: int | None = None
-    p4: str | None = None
-    p4_at_ms: int | None = None
-    return_1h_bps: int | None = None
-    return_4h_bps: int | None = None
-    is_primary: bool
-    state: Literal["pending", "partial", "complete", "unavailable"]
-    state_zh: str = ""
-    unavailable_reason: str | None = None
-    unavailable_reason_zh: str = ""
-    updated_at_ms: int | None = None
-
-
 class NewsEventData(ExactApiSchema):
     event_id: str
     event_kind: EventKind
@@ -445,8 +399,6 @@ class NewsEventDetailData(ExactApiSchema):
     evidence_snapshots: list[NewsEvidenceSnapshotData] = Field(default_factory=list)
     reader_receipt: NewsReaderReceiptData
     normalization: list[NewsSymbolNormalizationData] = Field(default_factory=list)
-    reaction: NewsReactionSummaryData | None = None
-    reactions: list[NewsEventReactionData] = Field(default_factory=list)
 
 
 class NewsItemRelatedEventData(ExactApiSchema):
@@ -507,8 +459,8 @@ class NewsQuoteData(ExactApiSchema):
     source_age_ms: int | None
     effective_age_ms: int | None
     freshness_basis: Literal["source_and_received", "received_only"] | None
-    reference_at_ms: int | None
     reference_age_ms: int | None
+    reference_at_ms: int | None
     state: Literal["fresh", "stale", "unavailable", "unlisted"]
     state_zh: str = ""
 
@@ -526,7 +478,6 @@ __all__ = [
     "NewsEventData",
     "NewsEventDetailData",
     "NewsEventMemberData",
-    "NewsEventReactionData",
     "NewsEventUpdateData",
     "NewsEvidenceSnapshotData",
     "NewsItemRelatedEventData",
@@ -537,7 +488,6 @@ __all__ = [
     "NewsQuoteData",
     "NewsQuoteRequestData",
     "NewsQuotesData",
-    "NewsReactionSummaryData",
     "NewsReaderReceiptData",
     "NewsSemanticWorkData",
     "NewsTimelineStepData",

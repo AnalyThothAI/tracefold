@@ -1159,9 +1159,6 @@ export interface components {
             normalization?: components["schemas"]["NewsSymbolNormalizationData"][];
             outcome: components["schemas"]["NewsOutcomeData"];
             processing?: components["schemas"]["NewsProcessingData"] | null;
-            reaction?: components["schemas"]["NewsReactionSummaryData"] | null;
-            /** Reactions */
-            reactions?: components["schemas"]["NewsEventReactionData"][];
             reader_receipt: components["schemas"]["NewsReaderReceiptData"];
             /** Timeline */
             timeline?: components["schemas"]["NewsTimelineStepData"][];
@@ -1207,64 +1204,6 @@ export interface components {
             title: string;
             /** Url */
             url?: string | null;
-        };
-        /**
-         * NewsEventReactionData
-         * @description One per-asset Reaction with the raw closes it was computed from, for audit on the detail page.
-         */
-        NewsEventReactionData: {
-            /** Anchor At Ms */
-            anchor_at_ms: number;
-            /**
-             * Instrument Class
-             * @default unknown
-             */
-            instrument_class: string;
-            /** Is Primary */
-            is_primary: boolean;
-            /** Metric Version */
-            metric_version: string;
-            /** P0 */
-            p0?: string | null;
-            /** P0 At Ms */
-            p0_at_ms?: number | null;
-            /** P1 */
-            p1?: string | null;
-            /** P1 At Ms */
-            p1_at_ms?: number | null;
-            /** P4 */
-            p4?: string | null;
-            /** P4 At Ms */
-            p4_at_ms?: number | null;
-            /** Return 1H Bps */
-            return_1h_bps?: number | null;
-            /** Return 4H Bps */
-            return_4h_bps?: number | null;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "pending" | "partial" | "complete" | "unavailable";
-            /**
-             * State Zh
-             * @default
-             */
-            state_zh: string;
-            /** Symbol */
-            symbol: string;
-            /** Unavailable Reason */
-            unavailable_reason?: string | null;
-            /**
-             * Unavailable Reason Zh
-             * @default
-             */
-            unavailable_reason_zh: string;
-            /** Updated At Ms */
-            updated_at_ms?: number | null;
-            /** Venue */
-            venue?: string | null;
-            /** Venue Symbol */
-            venue_symbol?: string | null;
         };
         /**
          * NewsEventUpdateData
@@ -1459,7 +1398,6 @@ export interface components {
             provider_score_max?: number | null;
             /** Published At Ms */
             published_at_ms?: number | null;
-            reaction?: components["schemas"]["NewsReactionSummaryData"] | null;
             /**
              * Reporting Origin
              * @default
@@ -2345,35 +2283,10 @@ export interface components {
              */
             fresh_sources: number;
             /**
-             * Metric Version
-             * @default
-             */
-            metric_version: string;
-            /**
-             * Oldest Due Age Ms
-             * @default 0
-             */
-            oldest_due_age_ms: number;
-            /**
              * Quotes
              * @default 0
              */
             quotes: number;
-            /**
-             * Reaction Complete 7D
-             * @default 0
-             */
-            reaction_complete_7d: number;
-            /**
-             * Reaction Partial 7D
-             * @default 0
-             */
-            reaction_partial_7d: number;
-            /**
-             * Reaction Unavailable 7D
-             * @default 0
-             */
-            reaction_unavailable_7d: number;
             /** Sources */
             sources?: components["schemas"]["NewsQuoteVenueData"][];
         };
@@ -2496,50 +2409,6 @@ export interface components {
             measured_at_ms: number;
             /** Quotes */
             quotes?: components["schemas"]["NewsQuoteData"][];
-        };
-        /**
-         * NewsReactionSummaryData
-         * @description The compact event-level Event Reaction: one sample per Event, median over its priceable primaries.
-         *
-         *     This is a fixed historical measurement anchored at the Event, not a current rolling window. A pending
-         *     horizon says pending; it is never zero.
-         */
-        NewsReactionSummaryData: {
-            /**
-             * Asset N
-             * @default 0
-             */
-            asset_n: number;
-            /** Metric Version */
-            metric_version: string;
-            /** P0 */
-            p0?: string | null;
-            /**
-             * Priced N
-             * @default 0
-             */
-            priced_n: number;
-            /** Return 1H Bps */
-            return_1h_bps?: number | null;
-            /** Return 4H Bps */
-            return_4h_bps?: number | null;
-            /**
-             * State
-             * @enum {string}
-             */
-            state: "pending" | "partial" | "complete" | "unavailable";
-            /**
-             * State Zh
-             * @default
-             */
-            state_zh: string;
-            /** Unavailable Reason */
-            unavailable_reason?: string | null;
-            /**
-             * Unavailable Reason Zh
-             * @default
-             */
-            unavailable_reason_zh: string;
         };
         /** NewsReaderReceiptData */
         NewsReaderReceiptData: {
@@ -2945,12 +2814,6 @@ export interface components {
             notification_state: string;
             /** Received At Ms */
             received_at_ms: number;
-            /** Reference At Ms */
-            reference_at_ms: number | null;
-            /** Reference Price */
-            reference_price: string | null;
-            /** Reference Source */
-            reference_source: string | null;
             /** Settled At Ms */
             settled_at_ms: number | null;
             /** Token */
@@ -2971,8 +2834,6 @@ export interface components {
             fills: components["schemas"]["NewsWalletFillData"][];
             /** Next Fills Cursor */
             next_fills_cursor: string | null;
-            /** Outcomes */
-            outcomes: components["schemas"]["NewsWalletOutcomeData"][];
         };
         /** NewsWalletEventTotalsData */
         NewsWalletEventTotalsData: {
@@ -3064,33 +2925,6 @@ export interface components {
             window_from_ms: number;
             /** Window To Ms */
             window_to_ms: number;
-        };
-        /** NewsWalletOutcomeData */
-        NewsWalletOutcomeData: {
-            /** At Ms */
-            at_ms: number;
-            /** Change Percent */
-            change_percent: string | null;
-            /**
-             * Horizon
-             * @enum {string}
-             */
-            horizon: "15m" | "1h" | "4h";
-            /** Price */
-            price: string | null;
-            /** Reference At Ms */
-            reference_at_ms: number | null;
-            /** Reference Price */
-            reference_price: string | null;
-            /** Source */
-            source: string;
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "comparable" | "missing_reference" | "late";
-            /** Target At Ms */
-            target_at_ms: number;
         };
         /**
          * NewsWalletRosterData

@@ -215,8 +215,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "reader_receipt",
         "normalization",
         # #88: the event-level aggregate and every per-asset Reaction with the closes behind it.
-        "reaction",
-        "reactions",
     }
     assert set(components["NewsOutcomeData"]["properties"]) == {"kind", "text_zh", "reason_zh", "group"}
     assert set(components["NewsStatusData"]["properties"]) == {

@@ -11,11 +11,15 @@ from tracefold.platform.postgres.audit import (
 
 from ..market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS, MARKET_WINDOW_ROW_CAP
 from ..market_review.instrument_storage import SEARCH_EVENT_SYMBOLS_SQL, SEARCH_IDENTITY_SQL
-from ..market_review.pricing import REACTION_DUE_BATCH, REACTION_METRIC_VERSION
-from ..market_review.quote_storage import DUE_REACTIONS_SQL
 from ..review.desk import review_read_statements
 from ..source_contracts import MARKET_KINDS
 from .chain_tape import TAPE_STATE_ID, WALLET_ROSTER_ROWS_SQL, WALLET_TAPE_STATE_SQL
+from .collectors import (
+    OPEN_INCIDENTS_SQL,
+    RECOVERY_BACKLOG_LIMIT,
+    STATUS_INGEST_SQL,
+    pending_recovery_incidents_statement,
+)
 from .decisions import MARKET_NEWS_PUSHED_SQL, MARKET_NEWS_TOTAL_SQL
 from .events import BAND_CANDIDATES_SQL
 from .feed_sql import (
@@ -33,7 +37,6 @@ from .feed_sql import (
     STATUS_FUNNEL_REVIEW_RATIOS_SQL,
     STATUS_FUNNEL_REVIEWS_SQL,
     STATUS_FUNNEL_TOTALS_SQL,
-    STATUS_INGEST_SQL,
     STATUS_PIPELINE_SQL,
     STATUS_SOURCE_CONTRACTS_SQL,
     SUBJECT_CODE_PREDICATE,
@@ -51,12 +54,7 @@ from .market import (
     MARKET_SOURCES_SQL,
     MARKET_TIMELINE_SQL,
 )
-from .operations import (
-    OPEN_INCIDENTS_SQL,
-    RAW_RETENTION_CANDIDATE_SQL,
-    RECOVERY_BACKLOG_LIMIT,
-    pending_recovery_incidents_statement,
-)
+from .operations import RAW_RETENTION_CANDIDATE_SQL
 from .semantic_work import SEMANTIC_FAILED_CODES_SQL, SEMANTIC_STATUS_SQL, SEMANTIC_WAKE_STATE_SQL
 from .update_reads import (
     EVENT_DELIVERIES_SQL,
@@ -70,14 +68,11 @@ from .update_reads import (
 )
 from .wallet_events import (
     NET_BUY_WINDOW_SQL,
-    WALLET_DUE_OUTCOMES_SQL,
-    WALLET_DUE_REFERENCES_SQL,
     WALLET_EVENT_FILLS_SQL,
     WALLET_EVENT_SQL,
     WALLET_EVENT_TOTALS_SQL,
     WALLET_EVENTS_SQL,
     WALLET_NOTIFICATION_FUNNEL_SQL,
-    WALLET_OUTCOMES_SQL,
     WALLET_PENDING_RECEIPTS_SQL,
 )
 
@@ -85,7 +80,6 @@ from .wallet_events import (
 def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     day_ago = int(now_ms) - 24 * 3600_000
     hour_ago = int(now_ms) - 3600_000
-    four_hours_ago = int(now_ms) - 4 * 3600_000
     week_ago = int(now_ms) - 168 * 3600_000
     raw_cutoff = int(now_ms) - 30 * 24 * 3600_000
     judged_cutoff = int(now_ms) - 365 * 24 * 3600_000
@@ -145,7 +139,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_raw_retention_candidates",
             sql=RAW_RETENTION_CANDIDATE_SQL,
-            params=(raw_cutoff, judged_cutoff, judged_cutoff, judged_cutoff, judged_cutoff, judged_cutoff, 500),
+            params=(raw_cutoff, judged_cutoff, judged_cutoff, judged_cutoff, 500),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
@@ -538,30 +532,9 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
-            name="news_wallet_outcomes",
-            sql=WALLET_OUTCOMES_SQL,
-            params=("episode",),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
             name="news_wallet_pending_receipts",
             sql=WALLET_PENDING_RECEIPTS_SQL,
             params=(20,),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="news_wallet_due_outcomes",
-            sql=WALLET_DUE_OUTCOMES_SQL,
-            params=(900000, "15m", 900000, int(now_ms), 2),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="news_wallet_due_references",
-            sql=WALLET_DUE_REFERENCES_SQL,
-            params=(int(now_ms) - 300000, int(now_ms), 2),
             max_read_return_amplification=20.0,
             max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
@@ -659,25 +632,6 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql="SELECT alias, base_symbol, source FROM news_symbol_aliases"
             " WHERE base_symbol = ANY(%s) AND source = ANY(%s) ORDER BY base_symbol, alias",
             params=(["BTC"], ["seed"]),
-            max_read_return_amplification=8.0,
-            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="news_reaction_due_scan",
-            sql=DUE_REACTIONS_SQL,
-            params=(REACTION_METRIC_VERSION, hour_ago, four_hours_ago, REACTION_DUE_BATCH),
-            max_read_return_amplification=20.0,
-            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
-        ),
-        ReadQuerySpec(
-            name="news_reaction_attach",
-            sql=(
-                "SELECT reaction.event_id, reaction.symbol, reaction.return_1h_bps, reaction.return_4h_bps,"
-                " reaction.state FROM news_event_reactions reaction"
-                " JOIN news_events event ON event.event_id = reaction.event_id"
-                " WHERE reaction.event_id = ANY(%s) AND reaction.metric_version = %s"
-            ),
-            params=(["event"], REACTION_METRIC_VERSION),
             max_read_return_amplification=8.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
         ),

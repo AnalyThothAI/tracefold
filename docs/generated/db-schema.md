@@ -20,6 +20,15 @@
 | `previous_event_id` | `TEXT` | True | `None` |
 | `asserted_at_ms` | `BIGINT` | False | `None` |
 
+## `news_collectors`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `collector_id` | `TEXT` | False | `None` |
+| `state` | `JSONB` | False | `'{}'::jsonb` |
+| `incidents` | `JSONB` | False | `'[]'::jsonb` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `news_deliveries`
 
 | Column | Type | Nullable | Default |
@@ -122,31 +131,6 @@
 | `fact_id` | `TEXT` | False | `None` |
 | `fact_text` | `TEXT` | False | `''::text` |
 
-## `news_event_reactions`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `event_id` | `TEXT` | False | `None` |
-| `symbol` | `TEXT` | False | `None` |
-| `metric_version` | `TEXT` | False | `None` |
-| `venue` | `TEXT` | False | `''::text` |
-| `venue_symbol` | `TEXT` | False | `''::text` |
-| `instrument_class` | `TEXT` | False | `'unknown'::text` |
-| `anchor_at_ms` | `BIGINT` | False | `None` |
-| `p0` | `NUMERIC` | True | `None` |
-| `p0_at_ms` | `BIGINT` | True | `None` |
-| `p1` | `NUMERIC` | True | `None` |
-| `p1_at_ms` | `BIGINT` | True | `None` |
-| `p4` | `NUMERIC` | True | `None` |
-| `p4_at_ms` | `BIGINT` | True | `None` |
-| `return_1h_bps` | `INTEGER` | True | `None` |
-| `return_4h_bps` | `INTEGER` | True | `None` |
-| `is_primary` | `BOOLEAN` | False | `false` |
-| `state` | `TEXT` | False | `'pending'::text` |
-| `unavailable_reason` | `TEXT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
 ## `news_event_update_heads`
 
 | Column | Type | Nullable | Default |
@@ -238,18 +222,6 @@
 | `projection_version` | `TEXT` | False | `None` |
 | `recorded_at_ms` | `BIGINT` | False | `None` |
 
-## `news_ingest_state`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `singleton_key` | `TEXT` | False | `'opennews'::text` |
-| `connected` | `BOOLEAN` | False | `false` |
-| `last_frame_at_ms` | `BIGINT` | True | `None` |
-| `last_publish_at_ms` | `BIGINT` | True | `None` |
-| `last_error_code` | `TEXT` | True | `None` |
-| `broker_snapshot` | `JSONB` | False | `'{}'::jsonb` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-
 ## `news_item_revisions`
 
 | Column | Type | Nullable | Default |
@@ -288,14 +260,7 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `source_artifact_id` | `TEXT` | False | `''::text` |
-| `market_kind` | `TEXT` | True | `None` |
-| `market_source_strategy_id` | `TEXT` | True | `None` |
-| `market_parse_status` | `TEXT` | True | `None` |
-| `market_parse_error` | `TEXT` | True | `None` |
 | `provider_params` | `JSONB` | False | `'{}'::jsonb` |
-| `market_notify_state` | `TEXT` | True | `None` |
-| `market_notify_group_key` | `TEXT` | True | `None` |
-| `market_notify_delivery_key` | `TEXT` | True | `None` |
 | `provider_params_available_at_ms` | `BIGINT` | True | `None` |
 | `provider_params_sha256` | `TEXT` | True | `None` |
 | `evidence_text` | `TEXT` | True | `None` |
@@ -334,13 +299,6 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `news_market_instrument_snapshot_state`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `venue` | `TEXT` | False | `None` |
-| `last_snapshot_ms` | `BIGINT` | False | `None` |
-
 ## `news_market_instruments`
 
 | Column | Type | Nullable | Default |
@@ -353,70 +311,55 @@
 | `status` | `TEXT` | False | `'trading'::text` |
 | `observed_at_ms` | `BIGINT` | False | `None` |
 
-## `news_market_liquidations`
+## `news_market_observations`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `source_key` | `TEXT` | False | `None` |
-| `item_id` | `TEXT` | False | `None` |
-| `fact_id` | `TEXT` | False | `None` |
-| `ingest_mode` | `TEXT` | False | `None` |
-| `symbol` | `TEXT` | False | `None` |
-| `source_venue` | `TEXT` | True | `None` |
-| `liquidated_position_side` | `TEXT` | False | `None` |
-| `forced_order_side` | `TEXT` | False | `None` |
-| `notional_usd` | `NUMERIC` | False | `None` |
-| `quantity` | `NUMERIC` | True | `None` |
-| `price` | `NUMERIC` | False | `None` |
-| `event_at_ms` | `BIGINT` | False | `None` |
-| `received_at_ms` | `BIGINT` | False | `None` |
-| `parser_version` | `TEXT` | False | `None` |
-| `provider_record_identity` | `TEXT` | False | `None` |
-| `symbol_contract_identity` | `TEXT` | False | `None` |
-| `position_side_semantics` | `TEXT` | False | `None` |
-| `quantity_semantics` | `TEXT` | False | `None` |
-| `notional_semantics` | `TEXT` | False | `None` |
-| `price_semantics` | `TEXT` | False | `None` |
-| `completeness_assumption` | `TEXT` | False | `None` |
-| `throttle_assumption` | `TEXT` | False | `None` |
-| `source_contract_version` | `TEXT` | False | `None` |
-| `source_contract_complete` | `BOOLEAN` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `provider` | `TEXT` | False | `'opennews'::text` |
-| `raw_instrument` | `TEXT` | False | `''::text` |
-| `source_strategy_id` | `TEXT` | False | `'2000'::text` |
-| `available_at_ms` | `BIGINT` | False | `None` |
-
-## `news_market_smart_money`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `source_key` | `TEXT` | False | `None` |
-| `item_id` | `TEXT` | False | `None` |
-| `fact_id` | `TEXT` | False | `None` |
-| `ingest_mode` | `TEXT` | False | `None` |
-| `provider` | `TEXT` | False | `None` |
+| `observation_id` | `TEXT` | False | `None` |
+| `kind` | `TEXT` | False | `None` |
+| `source_id` | `TEXT` | False | `None` |
+| `source_item_key` | `TEXT` | False | `None` |
 | `source_strategy_id` | `TEXT` | False | `None` |
-| `trader_label` | `TEXT` | False | `None` |
-| `account_address` | `TEXT` | True | `None` |
-| `source_venue` | `TEXT` | True | `None` |
-| `raw_instrument` | `TEXT` | False | `None` |
-| `symbol` | `TEXT` | False | `None` |
-| `action` | `TEXT` | False | `None` |
-| `position_side` | `TEXT` | False | `None` |
-| `reported_notional_usd` | `NUMERIC` | False | `None` |
-| `price` | `NUMERIC` | False | `None` |
-| `pnl_usd` | `NUMERIC` | True | `None` |
+| `provider_metadata` | `JSONB` | False | `'{}'::jsonb` |
+| `provider_params` | `JSONB` | False | `'{}'::jsonb` |
+| `title` | `TEXT` | False | `None` |
+| `raw_first_line` | `TEXT` | False | `''::text` |
+| `description` | `TEXT` | False | `''::text` |
+| `ingest_mode` | `TEXT` | False | `None` |
+| `parse_status` | `TEXT` | False | `None` |
+| `parse_error` | `TEXT` | True | `None` |
 | `event_at_ms` | `BIGINT` | False | `None` |
 | `received_at_ms` | `BIGINT` | False | `None` |
-| `available_at_ms` | `BIGINT` | False | `None` |
+| `available_at_ms` | `BIGINT` | True | `None` |
+| `notify_state` | `TEXT` | False | `None` |
+| `notify_group_key` | `TEXT` | True | `None` |
+| `notification_id` | `TEXT` | True | `None` |
+| `provider` | `TEXT` | True | `None` |
+| `source_venue` | `TEXT` | True | `None` |
+| `raw_instrument` | `TEXT` | True | `None` |
+| `symbol` | `TEXT` | True | `None` |
+| `parser_version` | `TEXT` | True | `None` |
+| `source_contract_version` | `TEXT` | True | `None` |
+| `historical` | `BOOLEAN` | False | `false` |
+| `oi_event_id` | `TEXT` | True | `None` |
+| `measurement_definition` | `TEXT` | True | `None` |
+| `measurement_window_ms` | `BIGINT` | True | `None` |
+| `direction` | `TEXT` | True | `None` |
+| `oi_change_bps` | `BIGINT` | True | `None` |
+| `oi_value_usd` | `BIGINT` | True | `None` |
+| `whale_long_profit_bps` | `BIGINT` | True | `None` |
+| `whale_oi_ratio_bps` | `BIGINT` | True | `None` |
+| `liquidated_position_side` | `TEXT` | True | `None` |
+| `forced_order_side` | `TEXT` | True | `None` |
+| `notional_usd` | `NUMERIC` | True | `None` |
+| `price` | `NUMERIC` | True | `None` |
+| `trader_label` | `TEXT` | True | `None` |
+| `account_address` | `TEXT` | True | `None` |
+| `action` | `TEXT` | True | `None` |
+| `position_side` | `TEXT` | True | `None` |
+| `pnl_usd` | `NUMERIC` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
-| `parser_version` | `TEXT` | False | `None` |
-| `provider_record_identity` | `TEXT` | False | `None` |
-| `source_contract_version` | `TEXT` | False | `None` |
-| `notional_semantics` | `TEXT` | False | `None` |
-| `price_semantics` | `TEXT` | False | `None` |
-| `completeness_assumption` | `TEXT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_market_tracks`
 
@@ -474,10 +417,6 @@
 | `notification_eligible` | `BOOLEAN` | False | `None` |
 | `notification_reason` | `TEXT` | True | `None` |
 | `send_snapshot` | `JSONB` | True | `None` |
-| `reference_price` | `NUMERIC` | True | `None` |
-| `reference_at_ms` | `BIGINT` | True | `None` |
-| `reference_source` | `TEXT` | True | `None` |
-| `outcome_attempted_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_market_wallet_fills`
 
@@ -507,64 +446,18 @@
 | `derived_at_ms` | `BIGINT` | True | `None` |
 | `derived_reason` | `TEXT` | True | `None` |
 
-## `news_market_wallet_outcomes`
+## `news_market_wallets`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
-| `item_id` | `TEXT` | False | `None` |
-| `horizon` | `TEXT` | False | `None` |
-| `delivery_key` | `TEXT` | True | `None` |
-| `target_at_ms` | `BIGINT` | False | `None` |
-| `at_ms` | `BIGINT` | False | `None` |
-| `price` | `NUMERIC` | True | `None` |
-| `source` | `TEXT` | False | `None` |
-| `reference_price` | `NUMERIC` | True | `None` |
-| `reference_at_ms` | `BIGINT` | True | `None` |
-| `status` | `TEXT` | False | `None` |
-
-## `news_market_wallet_roster`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `roster_version` | `BIGINT` | False | `None` |
-| `taken_at_ms` | `BIGINT` | False | `None` |
 | `wallet` | `TEXT` | False | `None` |
+| `joined_version` | `BIGINT` | False | `None` |
+| `joined_at_ms` | `BIGINT` | False | `None` |
+| `left_version` | `BIGINT` | True | `None` |
+| `left_at_ms` | `BIGINT` | True | `None` |
 | `handle` | `TEXT` | False | `''::text` |
 | `provider` | `TEXT` | False | `'robinhoodtrenches'::text` |
-| `known_at_ms` | `BIGINT` | False | `None` |
 | `monitoring_from_ms` | `BIGINT` | True | `None` |
-
-## `news_market_wallet_tape_state`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `state_id` | `TEXT` | False | `None` |
-| `high_water_block` | `BIGINT` | False | `0` |
-| `high_water_tx_index` | `INTEGER` | False | `'-1'::integer` |
-| `roster_version` | `BIGINT` | False | `0` |
-| `last_outcome` | `TEXT` | False | `''::text` |
-| `last_error` | `TEXT` | True | `None` |
-| `last_success_at_ms` | `BIGINT` | True | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
-| `ignored_inbound_total` | `BIGINT` | False | `0` |
-| `unknown_total` | `BIGINT` | False | `0` |
-| `noise_through_block` | `BIGINT` | False | `0` |
-| `noise_through_tx_index` | `INTEGER` | False | `'-1'::integer` |
-| `detection_cutover_at_ms` | `BIGINT` | False | `((EXTRACT(epoch FROM now()) * (1000)::numeric))::bigint` |
-| `coverage_from_ms` | `BIGINT` | True | `None` |
-| `scanned_at_ms` | `BIGINT` | True | `None` |
-| `scanned_block` | `BIGINT` | True | `None` |
-| `scanned_log` | `INTEGER` | True | `None` |
-| `gap_at_ms` | `BIGINT` | True | `None` |
-| `roster_last_attempt_at_ms` | `BIGINT` | True | `None` |
-| `roster_last_success_at_ms` | `BIGINT` | True | `None` |
-| `roster_last_error` | `TEXT` | True | `None` |
-| `next_attempt_at_ms` | `BIGINT` | False | `0` |
-| `consecutive_failures` | `INTEGER` | False | `0` |
-| `blocked_tx_hash` | `TEXT` | True | `None` |
-| `enrichment_error` | `TEXT` | True | `None` |
-| `roster_next_attempt_at_ms` | `BIGINT` | False | `0` |
-| `roster_consecutive_failures` | `INTEGER` | False | `0` |
 
 ## `news_notification_decisions`
 
@@ -622,50 +515,6 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `decision_ref` | `TEXT` | True | `None` |
 | `last_error_code` | `TEXT` | True | `None` |
-
-## `news_oi_signals`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `event_id` | `TEXT` | False | `None` |
-| `metric_version` | `TEXT` | False | `None` |
-| `symbol` | `TEXT` | False | `None` |
-| `direction` | `TEXT` | False | `None` |
-| `oi_change_bps` | `BIGINT` | False | `None` |
-| `oi_value_usd` | `BIGINT` | False | `None` |
-| `whale_long_profit_bps` | `BIGINT` | False | `None` |
-| `whale_oi_ratio_bps` | `BIGINT` | False | `None` |
-| `observed_at_ms` | `BIGINT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `source_strategy_id` | `TEXT` | True | `None` |
-| `source_contract_version` | `TEXT` | True | `None` |
-| `measurement_window_ms` | `BIGINT` | True | `None` |
-| `source_item_id` | `TEXT` | False | `None` |
-| `source_venue` | `TEXT` | True | `None` |
-| `available_at_ms` | `BIGINT` | False | `None` |
-| `raw_instrument` | `TEXT` | False | `''::text` |
-| `provider` | `TEXT` | False | `'opennews'::text` |
-| `received_at_ms` | `BIGINT` | False | `None` |
-| `measurement_definition` | `TEXT` | False | `''::text` |
-| `historical` | `BOOLEAN` | False | `false` |
-
-## `news_opennews_incidents`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `incident_id` | `BIGINT` | False | `nextval('"public".news_opennews_incidents_incident_id_seq'::regclass)` |
-| `cause_class` | `TEXT` | False | `None` |
-| `opened_at_ms` | `BIGINT` | False | `None` |
-| `closed_at_ms` | `BIGINT` | True | `None` |
-| `planned` | `BOOLEAN` | False | `false` |
-| `close_code` | `INTEGER` | True | `None` |
-| `recovery_status` | `TEXT` | False | `'pending'::text` |
-| `recovery_from_at_ms` | `BIGINT` | True | `None` |
-| `recovery_to_at_ms` | `BIGINT` | True | `None` |
-| `recovered_count` | `INTEGER` | False | `0` |
-| `last_error_code` | `TEXT` | True | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_quote_snapshots`
 

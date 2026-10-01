@@ -1,4 +1,4 @@
-import type { NewsEventReaction, NewsQuote, NewsReaction } from "../api/newsQueries";
+import type { NewsQuote } from "../api/newsQueries";
 
 /**
  * Price formatting for the two market values the console shows (#88).
@@ -66,29 +66,6 @@ export function quoteStaleLabel(quote: NewsQuote): string {
 export function quoteVenueLabel(quote: NewsQuote): string {
   if (!quote.venue) return "";
   return quote.venue_symbol ? `${quote.venue}:${quote.venue_symbol}` : quote.venue;
-}
-
-/**
- * What a reaction cell says when it has no number. The horizon is fixed and historical, so "未到期" and
- * "无法计算" are different facts and neither is a zero return.
- */
-export function reactionPlaceholder(
-  reaction: NewsReaction | NewsEventReaction | null | undefined,
-  horizon: "1h" | "4h",
-): string {
-  if (!reaction) return "—";
-  if (reaction.state === "unavailable") return reaction.unavailable_reason_zh || "无法计算";
-  if (horizon === "4h" && reaction.state === "partial") return "未到期";
-  return reaction.state === "pending" ? "未到期" : "—";
-}
-
-export function reactionValue(
-  reaction: NewsReaction | NewsEventReaction | null | undefined,
-  horizon: "1h" | "4h",
-): number | null {
-  if (!reaction) return null;
-  const value = horizon === "1h" ? reaction.return_1h_bps : reaction.return_4h_bps;
-  return value ?? null;
 }
 
 /** The topbar figure: a hit rate is only shown with the denominator that earned it. */

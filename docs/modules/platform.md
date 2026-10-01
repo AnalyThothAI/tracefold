@@ -108,8 +108,8 @@ class Request,Permit,Native,Wait,Timeout,Release,Result store;
 | --- | --- | --- |
 | 基础入口 | `news-receiver`、`news-recovery`、`news-deduper`、`news-janitor` | 保留根级失败语义，不能让入口永久停止却持续报告绿色 |
 | 编辑与发送 | `news-semantic`、`news-deliverer`、`news-market-notifications` | 标记对应能力异常，健康兄弟任务继续 |
-| 目录与价格 | `news-instruments`、`news-quotes`、`news-reactions` | 与编辑链路分别呈现；可恢复 provider 错误按各循环规则处理 |
-| 钱包 | `news-wallet-roster`、`news-chain-tape`、`news-wallet-net-buy`、`news-wallet-prices` | 名单、采集、检测、价格各有能力与进度 |
+| 目录与价格 | `news-instruments`、`news-quotes` | 与编辑链路分别呈现；可恢复 provider 错误按各循环规则处理 |
+| 钱包 | `news-wallet-roster`、`news-chain-tape`、`news-wallet-net-buy` | 名单、采集、检测各有能力与进度 |
 
 ```mermaid
 ---
@@ -159,7 +159,7 @@ class Config,Compose,Foundation,Optional,Root,Status,View store;
 | --- | --- |
 | [OpenNews](../../tracefold/integrations/opennews/) | News 原始实时输入与历史恢复 |
 | [Telegram](../../tracefold/integrations/telegram.py)、[Feishu](../../tracefold/integrations/feishu.py) | 发送精确冻结卡片，报告真正可证明的发送结果 |
-| [venues](../../tracefold/integrations/venues/) | News 目录、当前报价、历史 Reaction；公共只读 REST |
+| [venues](../../tracefold/integrations/venues/) | News 目录、当前报价、发送时行情；公共只读 REST |
 | [marketdata](../../tracefold/integrations/marketdata/) | Trading 研究的有界原始市场数据 |
 | [Robinhood Chain](../../tracefold/integrations/robinhood_chain.py)、[名单适配](../../tracefold/integrations/robinhoodtrenches.py) | 回执采集和名单刷新，两个独立请求边界 |
 | [Dexscreener](../../tracefold/integrations/dexscreener.py) | 钱包价格等公共证据，不决定首报资格 |

@@ -1,17 +1,8 @@
-"""Price Review domain (#88): which contract a News asset is priced on, and what an Event's return means.
+"""Current quote contracts, source precedence and shared venue price selection.
 
-Two derived read models live behind this module and they are deliberately not the same shape:
-
-* **Quote Snapshot** is the current display value. Last value wins, intermediate values have no durable
-  worth, and one row per provider source holds a bounded map of normalized quotes. It answers "what is this
-  contract worth now, on which venue, how old is that".
-* **Event Reaction** is the deterministic return between an Event's market anchor and a fixed horizon. It is
-  versioned, idempotent by ``(event_id, symbol, metric_version)`` and rebuildable from provider history, so a
-  process that was offline at anchor+1H can still fill it later.
-
-Everything here is pure: no provider client, no repository, no clock. The budgets are code-owned safety
-policy rather than operator configuration — an operator cannot turn this plane into an unbounded market
-collector by editing YAML.
+Quote snapshots hold bounded latest display values with explicit clocks and freshness. Shared trade,
+candle and return helpers serve delivery-time enrichment and other active venue readers. Provider I/O,
+repositories and clocks remain outside these pure functions.
 """
 
 from __future__ import annotations
@@ -29,25 +20,13 @@ from .instruments import InstrumentClass
 PriceKind = Literal["last", "mark", "mid"]
 QuoteState = Literal["fresh", "stale", "unavailable", "unlisted"]
 FreshnessBasis = Literal["source_and_received", "received_only"]
-ReactionState = Literal["pending", "partial", "complete", "unavailable"]
 
-# ---------------------------------------------------------------------------- metric contract
-# `reaction_v1` freezes candle interval, price kind, alignment, gap tolerance, source selection, multi-asset
-# aggregation and the hit definition. Changing any of them is a new version plus a replay; it must never
-# silently change what a stored v1 row means.
-# v2 (#651 §6.2): resolution is typed. A quote target and a Reaction row are now selected by
-# `(symbol, market_type)` and filtered on `news_market_instruments.instrument_class`, so a `SEI` equity
-# Event no longer prices against the `SEI` coin and a `V` equity Event resolves to nothing rather than to
-# a same-name token. Every stored `reaction_v1` row was measured under the untyped rule and keeps its
-# version as audit; nothing reads the two together.
-REACTION_METRIC_VERSION: Final = "reaction_v2"
+# Shared venue candle alignment and gap tolerance.
 CANDLE_INTERVAL: Final = "5m"
 CANDLE_INTERVAL_MS: Final = 300_000
 # One interval plus provider timestamp jitter. Wide enough that a boundary rounding difference between two
 # venues does not read as a hole, narrow enough that a halted or illiquid session never forward-fills.
 CANDLE_GAP_TOLERANCE_MS: Final = CANDLE_INTERVAL_MS + 30_000
-HORIZONS: Final[tuple[str, ...]] = ("1h", "4h")
-HORIZON_MS: Final[Mapping[str, int]] = {"1h": 3_600_000, "4h": 14_400_000}
 
 # ---------------------------------------------------------------------------- code-owned budgets
 # 20 s, not 5. The five-second cadence was written for a freshness SLO the product never had: the browser
@@ -82,12 +61,6 @@ QUOTE_SOURCE_GROUP_MAX: Final = 12
 QUOTE_FRESH_MAX_AGE_MS: Final = 45_000
 QUOTE_REQUEST_SYMBOL_MAX: Final = 100
 
-REACTION_PERIOD_SECONDS: Final = 60.0
-REACTION_DUE_BATCH: Final = 100
-REACTION_CANDLE_REQUESTS_MAX: Final = 32
-# Hyperliquid's public candle window is bounded and Binance's is not, so an Event older than this is reported
-# as `history_expired` instead of retried forever.
-REACTION_HISTORY_MAX_AGE_MS: Final = 30 * 24 * 3_600_000
 EXTERNAL_CONCURRENCY: Final = 4
 
 REVIEW_MAX_HOURS: Final = 720
@@ -95,7 +68,7 @@ REVIEW_POTENTIAL_MISS_LIMIT: Final = 50
 
 # ---------------------------------------------------------------------------- source selection strategy
 # The one place venue precedence is written down. `asset_refs` (the console chip), the Quote planner and the
-# Reaction planner all order candidates through the helpers below — #88 §2 forbids independent copies, and
+# price readers all order candidates through the helpers below — #88 §2 forbids independent copies, and
 # the SQL builders exist so a repository query cannot quietly grow a second ranking.
 PRICE_SOURCE_ORDER: Final[tuple[str, ...]] = (
     "binance.perp",
@@ -427,35 +400,9 @@ def return_bps(p0: Decimal, price: Decimal) -> int | None:
         return None
 
 
-def median_bps(values: Sequence[int]) -> int | None:
-    """Event-level aggregation: the median signed return of the priceable primaries, never a sum or a first.
-
-    Discrete median — an even count takes the lower of the two middles rather than averaging them. Two
-    reasons: the result stays a return one contract actually printed, and it is exactly PostgreSQL's
-    `percentile_disc(0.5)`, so the feed's per-Event aggregate and the review page's aggregates over those
-    aggregates cannot disagree about what "median" means.
-    """
-
-    ordered = sorted(int(value) for value in values)
-    if not ordered:
-        return None
-    return ordered[(len(ordered) - 1) // 2]
-
-
-def coverage_pct(priced: int, eligible: int) -> float | None:
-    return None if eligible <= 0 else round(priced * 100 / eligible, 1)
-
-
-def hit_pct(hits: int, priced: int) -> float | None:
-    """A percentage without a denominator is a lie the review page refuses to tell."""
-
-    return None if priced <= 0 else round(hits * 100 / priced, 1)
-
-
 # ---------------------------------------------------------------------------- server-owned reader copy
 # The browser formats numbers and picks a tone; it never owns a vocabulary table. A current quote and an
-# Event Reaction are different time semantics, so their words are deliberately different too — nothing here
-# calls either one "变动" on its own.
+# rolling day change retain their own explicit vocabulary.
 QUOTE_STATE_ZH: Final[Mapping[str, str]] = {
     "fresh": "报价正常",
     "stale": "报价陈旧",
@@ -464,20 +411,7 @@ QUOTE_STATE_ZH: Final[Mapping[str, str]] = {
 }
 PRICE_KIND_ZH: Final[Mapping[str, str]] = {"last": "最新成交价", "mark": "标记价", "mid": "盘口中价"}
 CHANGE_BASIS_ZH: Final[Mapping[str, str]] = {"rolling_24h": "滚动 24H", "provider_day": "场所日内"}
-REACTION_STATE_ZH: Final[Mapping[str, str]] = {
-    "pending": "未到期",
-    "partial": "1H 已出",
-    "complete": "已完成",
-    "unavailable": "无法计算",
-}
 # Stable semantic reasons only. A timeout or a 429 is loop health, never a permanent row reason.
-REACTION_REASON_ZH: Final[Mapping[str, str]] = {
-    "instrument_unresolved": "该符号没有可交易合约",
-    "reference_only": "只在美股参考名录里，本地无行情源",
-    "history_expired": "场所历史已过期，无法回补",
-    "no_candle_within_gap": "该时段没有成交 K 线，不做前向填充",
-}
-HORIZON_ZH: Final[Mapping[str, str]] = {"1h": "事件后 1H", "4h": "事件后 4H"}
 
 
 def quote_state_zh(state: str | None) -> str:
@@ -492,27 +426,12 @@ def change_basis_zh(basis: str | None) -> str:
     return CHANGE_BASIS_ZH.get(str(basis or ""), "")
 
 
-def reaction_state_zh(state: str | None) -> str:
-    return REACTION_STATE_ZH.get(str(state or ""), "")
-
-
-def reaction_reason_zh(reason: str | None) -> str:
-    return REACTION_REASON_ZH.get(str(reason or ""), "")
-
-
-def horizon_zh(horizon: str | None) -> str:
-    return HORIZON_ZH.get(str(horizon or ""), "")
-
-
 __all__ = [
     "CANDLE_GAP_TOLERANCE_MS",
     "CANDLE_INTERVAL",
     "CANDLE_INTERVAL_MS",
     "CHANGE_BASIS_ZH",
     "EXTERNAL_CONCURRENCY",
-    "HORIZONS",
-    "HORIZON_MS",
-    "HORIZON_ZH",
     "PRICE_KIND_ZH",
     "PRICE_SOURCE_ORDER",
     "QUOTE_ASSET_ORDER",
@@ -528,13 +447,6 @@ __all__ = [
     "QUOTE_STATE_ZH",
     "QUOTE_TARGET_MAX",
     "QUOTE_TURN_DEADLINE_SECONDS",
-    "REACTION_CANDLE_REQUESTS_MAX",
-    "REACTION_DUE_BATCH",
-    "REACTION_HISTORY_MAX_AGE_MS",
-    "REACTION_METRIC_VERSION",
-    "REACTION_PERIOD_SECONDS",
-    "REACTION_REASON_ZH",
-    "REACTION_STATE_ZH",
     "REVIEW_MAX_HOURS",
     "REVIEW_POTENTIAL_MISS_LIMIT",
     "Candle",
@@ -545,12 +457,7 @@ __all__ = [
     "QuoteFreshness",
     "QuoteRequest",
     "QuoteState",
-    "ReactionState",
     "change_basis_zh",
-    "coverage_pct",
-    "hit_pct",
-    "horizon_zh",
-    "median_bps",
     "parse_change_pct",
     "parse_price",
     "price_kind_for",
@@ -560,8 +467,6 @@ __all__ = [
     "quote_change_24h_bps",
     "quote_freshness",
     "quote_state_zh",
-    "reaction_reason_zh",
-    "reaction_state_zh",
     "reference_freshness",
     "return_bps",
     "select_candle",

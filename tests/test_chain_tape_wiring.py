@@ -8,7 +8,6 @@ runner rather than being swallowed, and whatever the provider adapters hold is r
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -16,7 +15,6 @@ import pytest
 from tracefold.app.workers.runtime import (
     CHAIN_TAPE,
     WALLET_NET_BUY,
-    WALLET_PRICES,
     WALLET_ROSTER,
     CapabilityStates,
 )
@@ -24,7 +22,6 @@ from tracefold.app.workers.task_contract import worker_business_tasks
 from tracefold.app.workers.wiring.chain_tape import (
     CHAIN_TAPE_TASK_NAME,
     WALLET_NET_BUY_TASK_NAME,
-    WALLET_PRICES_TASK_NAME,
     WALLET_ROSTER_TASK_NAME,
     ChainTapeComposition,
     _wire_chain_tape,
@@ -88,7 +85,7 @@ def test_the_flag_off_is_a_disabled_capability_and_no_task() -> None:
 
     assert loop is None
     assert capabilities.payload()[CHAIN_TAPE] == {"state": "disabled", "reason": "news_chain_tape_disabled"}
-    assert set(capabilities.payload()) == {CHAIN_TAPE, WALLET_ROSTER, WALLET_NET_BUY, WALLET_PRICES}
+    assert set(capabilities.payload()) == {CHAIN_TAPE, WALLET_ROSTER, WALLET_NET_BUY}
 
 
 @pytest.mark.parametrize("notifications_enabled", [True, False])
@@ -114,14 +111,12 @@ def test_the_flag_on_builds_one_loop_and_reports_the_capability_running(
     assert loop.chain.chain_id == 4663
     assert capabilities.payload()[CHAIN_TAPE] == {"state": "running", "reason": None}
     assert capabilities.payload()[WALLET_NET_BUY]["state"] == "running"
-    assert capabilities.payload()[WALLET_PRICES]["state"] == "running"
     assert capabilities.payload()[WALLET_ROSTER]["state"] == "running"
     tasks = worker_business_tasks(news_pipeline=None, chain_tape=composed)
     assert [(task.name, task.capability, task.foundational) for task in tasks] == [
         (WALLET_ROSTER_TASK_NAME, WALLET_ROSTER, False),
         (CHAIN_TAPE_TASK_NAME, CHAIN_TAPE, False),
         (WALLET_NET_BUY_TASK_NAME, WALLET_NET_BUY, False),
-        (WALLET_PRICES_TASK_NAME, WALLET_PRICES, False),
     ]
     assert composed.detector.notifications_enabled is notifications_enabled
     assert not hasattr(composed.detector, "chain")
@@ -200,7 +195,7 @@ def test_the_configured_cadence_is_what_the_workers_task_actually_polls_with(
         del loop, stop_event
 
     tape = ChainTapeComposition(  # type: ignore[arg-type]
-        loop=_Tape(), roster=_Loop(), detector=_Loop(), prices=_Loop(), poll_seconds=11.0
+        loop=_Tape(), roster=_Loop(), detector=_Loop(), poll_seconds=11.0
     )
     tasks = worker_business_tasks(news_pipeline=None, chain_tape=tape)
     task = next(item for item in tasks if item.name == CHAIN_TAPE_TASK_NAME)
@@ -248,125 +243,6 @@ def test_stopping_a_wallet_task_cancels_and_joins_its_slow_inflight_turn() -> No
         stop.set()
         await asyncio.wait_for(task, timeout=0.2)
         assert cancelled.is_set()
-        assert price.closed
-
-    asyncio.run(drive())
-
-
-def test_a_slow_price_does_not_stop_the_production_ingestion_task(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Exercise the real composition, task declarations, poll runner and ingestion loop."""
-
-    from tracefold.news.chain_tape.contracts import RosterMember, RosterSnapshot
-
-    async def drive() -> None:
-        price_entered = asyncio.Event()
-        ingestion_continued = asyncio.Event()
-        stop = asyncio.Event()
-        roster = RosterSnapshot(
-            roster_version=1,
-            taken_at_ms=10**15,
-            members=(RosterMember("0x" + "1" * 40, "one"),),
-        )
-
-        class Repository:
-            def chain_tape_collection_plan(self):
-                return None, roster, roster.wallets
-
-            def wallet_read_snapshot(self):
-                from contextlib import nullcontext
-
-                return nullcontext()
-
-            def chain_tape_state(self) -> None:
-                return None
-
-            def chain_tape_current_roster(self) -> Any:
-                return roster
-
-            def chain_tape_collection_wallets(self, **kwargs: Any) -> Any:
-                return roster.wallets
-
-            def chain_tape_overlap_fills(self, **kwargs: Any) -> list[Any]:
-                return []
-
-            def chain_tape_record_coverage(self, **kwargs: Any) -> None:
-                pass
-
-            def chain_tape_record_fills(self, fills: Any) -> int:
-                return len(fills)
-
-            def chain_tape_save_state(self, **kwargs: Any) -> None:
-                pass
-
-        class Db:
-            async def read(self, name: str, fn: Any, **kwargs: Any) -> Any:
-                return fn(SimpleNamespace(news=Repository()))
-
-            async def tx(self, name: str, fn: Any, **kwargs: Any) -> Any:
-                return await self.read(name, fn, **kwargs)
-
-        class Chain:
-            chain_id = 4663
-            last_response_bytes = 0
-
-            def __init__(self, **kwargs: Any) -> None:
-                self.closed = False
-
-            async def block_number(self) -> int:
-                if price_entered.is_set():
-                    ingestion_continued.set()
-                return 100
-
-            async def block_timestamp_ms(self, block: int) -> int:
-                return block * 100
-
-            async def logs(self, **kwargs: Any) -> tuple[Any, ...]:
-                return ()
-
-            async def aclose(self) -> None:
-                self.closed = True
-
-        class Detector(_Loop):
-            def __init__(self, **kwargs: Any) -> None:
-                super().__init__()
-
-            async def derive(self, *args: Any, **kwargs: Any) -> Any:
-                return SimpleNamespace(checks=0, exits=0, crowding=0)
-
-            async def take_outcomes(self, *args: Any) -> Any:
-                return SimpleNamespace(outcomes=0, unavailable=0)
-
-        class Price(_Loop):
-            async def advance(self) -> Any:
-                price_entered.set()
-                await asyncio.Event().wait()
-
-            async def take_price(self, **kwargs: Any) -> Any:
-                return await self.advance()
-
-        price = Price()
-        monkeypatch.setattr("tracefold.app.workers.wiring.chain_tape.WorkerChainTapeDatabase", lambda _: Db())
-        monkeypatch.setattr("tracefold.app.workers.wiring.chain_tape.RobinhoodChainClient", Chain)
-        monkeypatch.setattr("tracefold.app.workers.wiring.chain_tape.RobinhoodTrenchesClient", Chain)
-        monkeypatch.setattr("tracefold.app.workers.wiring.chain_tape.DexScreenerClient", Chain)
-        monkeypatch.setattr("tracefold.app.workers.wiring.chain_tape.NetBuyDetector", Detector)
-        monkeypatch.setattr("tracefold.app.workers.wiring.chain_tape.WalletPriceSampler", lambda *args, **kwargs: price)
-        composed = _wire_chain_tape(
-            settings=_settings(enabled=True, poll_interval_s=0.5),
-            db=object(),  # type: ignore[arg-type]
-            capabilities=CapabilityStates(),
-        )
-        assert composed is not None
-        declarations = worker_business_tasks(news_pipeline=None, chain_tape=composed)
-        tasks = [asyncio.create_task(item.run(stop)) for item in declarations]
-        try:
-            await asyncio.wait_for(price_entered.wait(), timeout=1)
-            await asyncio.wait_for(ingestion_continued.wait(), timeout=1)
-        finally:
-            stop.set()
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
         assert price.closed
 
     asyncio.run(drive())

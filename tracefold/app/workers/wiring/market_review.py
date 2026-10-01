@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Callable, Sequence
-from typing import Any, Final
+from typing import Any
 
 from tracefold.integrations.venues import (
-    candle_fetcher_for,
     fetch_binance_futures_day_quotes,
     fetch_binance_futures_quotes,
     fetch_binance_instruments,
@@ -19,10 +18,8 @@ from tracefold.integrations.venues import (
     fetch_us_reference_instruments,
 )
 from tracefold.news.market_review.loops import (
-    EventReactionLoop,
     QuoteDatabasePort,
     QuoteSnapshotLoop,
-    ReactionDatabasePort,
 )
 from tracefold.news.pipeline.maintenance import InstrumentSnapshotLoop
 from tracefold.news.pipeline.runtime import NewsDatabasePort
@@ -97,46 +94,10 @@ def _quote_snapshot_loop(
     )
 
 
-def _event_reaction_loop(
-    settings: Any,
-    *,
-    db: ReactionDatabasePort,
-    telemetry: TelemetryRegistry | None = None,
-) -> EventReactionLoop | None:
-    venues = settings.news.venues
-    if not venues.enabled or not (venues.binance or venues.hyperliquid or venues.okx):
-        return None
-    return EventReactionLoop(
-        db=db,
-        fetcher_for=functools.partial(_candle_fetcher_for, settings, interval="5m"),
-        telemetry=telemetry,
-    )
-
-
 # Narrower than the venue package's five, and left that way. A Reaction row is a measurement other
 # rows are compared against, so widening the set is a decision about the metric's population rather than
 # about plumbing: production holds 827 reactions on `binance.*` / `hl.*` and none anywhere else, and a
 # symbol whose only listing is on Lighter or Bitget would start receiving them the day this tuple grows.
-_REACTION_VENUE_PREFIXES: Final = ("binance.", "hl.", "okx.")
-
-
-def _candle_fetcher_for(settings: Any, venue: str, *, interval: str) -> Any | None:
-    if not _price_venue_enabled(settings, venue):
-        return None
-    fetcher = candle_fetcher_for(venue, prefixes=_REACTION_VENUE_PREFIXES)
-    if fetcher is None:
-        return None
-
-    async def candles(venue_symbol: str, start_ms: int, end_ms: int) -> Any:
-        return await fetcher(
-            venue_symbol,
-            venue=venue,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            interval=interval,
-        )
-
-    return candles
 
 
 def _delivery_price_fetcher_for(settings: Any, venue: str) -> Any | None:

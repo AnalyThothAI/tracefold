@@ -43,11 +43,10 @@ config:
 ---
 flowchart TB
     accTitle: 市场观察的两个消费者
-    accDescr: 确定性解析保存 Item 与有效类型化事实。页面和分组通知读取市场事实；仅对应的公开 OI 来源进入交易研究。
+    accDescr: 确定性解析保存不可变市场观测及其解析状态。页面和分组通知读取市场事实；仅对应的公开 OI 来源进入交易研究。
     Frame["已识别来源的原始记录"] --> Parse["确定性格式解析"]
-    Parse --> Item["Item 与解析状态"]
-    Parse -->|"有效测量"| Fact["类型化市场事实"]
-    Item --> API["市场列表与详情"]
+    Parse --> Fact[("news_market_observations<br/>业务事实与解析状态")]
+    Fact --> API["市场列表与详情"]
     Fact --> Group["分组与通知节奏"]
     Group --> Intent["通知意图与精确发送结果"]
     Fact -->|"OI 公开来源"| Outbox["公开交易来源 outbox"]
@@ -59,11 +58,11 @@ flowchart TB
     classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
     classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
 class Frame external;
-class Parse,Item,Fact,API,Group,Intent,Outbox news;
+class Parse,Fact,API,Group,Intent,Outbox news;
 class Analysis research;
 ```
 
-*数据流 · 解析失败仍保留原始 Item；通知和 Trading 是独立消费者，不是前后审批步骤。*
+*数据流 · 解析失败仍保留原始市场观测；通知和 Trading 是独立消费者，不是前后审批步骤。*
 
 此路径没有编辑型 Event、语义模型、四轴 taxonomy 或模型新闻价值判断。未知来源契约与解析失败保留原始记录和具名原因，不能转成 OI 为零的假测量。
 
@@ -220,3 +219,5 @@ Trading 读取自己的有界市场证据并选择当前计划菜单。旧 OI �
 ---
 
 [返回文档中心](../README.md) · [架构图谱](../ARCHITECTURE.md#atlas) · [返回顶部](#oi-与类型化市场观察)
+
+市场存储由 [observations.py](../../tracefold/news/storage/observations.py)统一写入：相同帧重放不改 `xmin`，业务字段和解析状态保持首次记录，新增策略只合并元数据。首插 OI 才写公开 outbox，观测 ID 与旧市场 Item ID 相同。`news_items` 只保存编辑新闻；市场保留由独立有界删除批次执行。

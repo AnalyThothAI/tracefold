@@ -19,7 +19,7 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.search import compile_news_search
-from tracefold.news.storage.operations import RECOVERY_BACKLOG_LIMIT
+from tracefold.news.storage.collectors import RECOVERY_BACKLOG_LIMIT
 from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.updates.contracts import Extraction
 from tracefold.news.updates.judgment import ProviderUnavailable
@@ -402,7 +402,8 @@ def test_two_records_with_the_same_values_and_time_are_two_observations(conn) ->
     assert first.market is not None and second.market is not None
     items = (first.item_id, second.item_id)
     rows = conn.execute(
-        "SELECT source_item_id FROM news_oi_signals WHERE source_item_id = ANY(%s)", (list(items),)
+        "SELECT observation_id AS source_item_id FROM news_market_observations WHERE observation_id = ANY(%s)",
+        (list(items),),
     ).fetchall()
     assert sorted(row["source_item_id"] for row in rows) == sorted(items)
     assert _editorial_rows(conn, items) == {"events": 0, "members": 0, "snapshots": 0, "updates": 0}
@@ -434,7 +435,10 @@ def test_one_record_replayed_adds_no_observation_and_never_rewrites_the_first_pa
     _admit_market_frame(repos, replayed)
 
     stored = conn.execute(
-        "SELECT item_id, provider_params, market_kind, market_parse_status FROM news_items WHERE source_item_key = %s",
+        (
+            "SELECT observation_id AS item_id, provider_params, kind AS market_kind, parse_status "
+            "AS market_parse_status FROM news_market_observations WHERE source_item_key = %s"
+        ),
         ("9510010",),
     ).fetchall()
     assert len(stored) == 1
@@ -442,7 +446,7 @@ def test_one_record_replayed_adds_no_observation_and_never_rewrites_the_first_pa
     assert (stored[0]["market_kind"], stored[0]["market_parse_status"]) == ("oi", "parsed")
     assert (
         conn.execute(
-            "SELECT count(*) AS n FROM news_oi_signals WHERE source_item_id = %s", (stored[0]["item_id"],)
+            "SELECT count(*) AS n FROM news_market_observations WHERE observation_id = %s", (stored[0]["item_id"],)
         ).fetchone()["n"]
         == 1
     )
@@ -480,8 +484,10 @@ def test_every_measured_venue_and_both_liquidation_strategies_store_a_typed_fact
     assert result.market is not None
     assert (result.market.market_kind, result.market.parse_status) == ("liquidation", "parsed")
     row = conn.execute(
-        "SELECT source_venue, source_strategy_id, ingest_mode, symbol, raw_instrument"
-        " FROM news_market_liquidations WHERE item_id = %s",
+        (
+            "SELECT source_venue, source_strategy_id, ingest_mode, symbol, raw_instrument FROM "
+            "news_market_observations WHERE observation_id = %s"
+        ),
         (result.item_id,),
     ).fetchone()
     assert (row["source_venue"], row["source_strategy_id"], row["ingest_mode"]) == (
@@ -543,8 +549,11 @@ def test_smart_money_open_close_and_pnl_reports_are_typed_with_their_address(
 
     assert result.market is not None and result.market.parse_status == "parsed"
     row = conn.execute(
-        "SELECT action, position_side, account_address, source_venue, pnl_usd, raw_instrument, symbol,"
-        " reported_notional_usd, price FROM news_market_smart_money WHERE item_id = %s",
+        (
+            "SELECT action, position_side, account_address, source_venue, pnl_usd, raw_instrument, "
+            "symbol, notional_usd AS reported_notional_usd, price FROM news_market_observations "
+            "WHERE observation_id = %s"
+        ),
         (result.item_id,),
     ).fetchone()
     assert (row["action"], row["position_side"]) == (action, side)
@@ -556,9 +565,9 @@ def test_smart_money_open_close_and_pnl_reports_are_typed_with_their_address(
     assert (row["raw_instrument"], row["symbol"]) == ("SOL", "SOL")
     assert str(row["reported_notional_usd"]) == "482113.55"
     # The provider's own extension fields survive persistence at full precision.
-    params = conn.execute("SELECT provider_params FROM news_items WHERE item_id = %s", (result.item_id,)).fetchone()[
-        "provider_params"
-    ]
+    params = conn.execute(
+        "SELECT provider_params FROM news_market_observations WHERE observation_id = %s", (result.item_id,)
+    ).fetchone()["provider_params"]
     assert params["relatedAddress"] == address
     assert params["strategy"]["metrics"]["position_value"]["value"] == 482113.55
     conn.commit()
@@ -589,13 +598,18 @@ def test_a_withdraw_report_is_stored_as_a_raw_record_and_stays_visible(conn) -> 
     assert (result.market.parse_status, result.market.parse_error) == ("raw", "smart_money_template_unmatched")
     assert (
         conn.execute(
-            "SELECT count(*) AS n FROM news_market_smart_money WHERE item_id = %s", (result.item_id,)
+            (
+                "SELECT count(*) AS n FROM news_market_observations WHERE observation_id = %s AND "
+                "parser_version IS NOT NULL"
+            ),
+            (result.item_id,),
         ).fetchone()["n"]
         == 0
     )
-    observed = conn.execute("SELECT observed_at_ms FROM news_items WHERE item_id = %s", (result.item_id,)).fetchone()[
-        "observed_at_ms"
-    ]
+    observed = conn.execute(
+        "SELECT received_at_ms AS observed_at_ms FROM news_market_observations WHERE observation_id = %s",
+        (result.item_id,),
+    ).fetchone()["observed_at_ms"]
     groups, _ = repositories_for_connection(conn).news.market_groups(
         kinds=("smart_money",),
         from_ms=observed,
@@ -648,8 +662,10 @@ def test_the_native_instrument_prefix_survives_beside_the_normalized_symbol(conn
     )
 
     row = conn.execute(
-        "SELECT symbol, raw_instrument, measurement_definition, provider FROM news_oi_signals"
-        " WHERE source_item_id = %s",
+        (
+            "SELECT symbol, raw_instrument, measurement_definition, provider FROM "
+            "news_market_observations WHERE observation_id = %s"
+        ),
         (result.item_id,),
     ).fetchone()
     assert (row["symbol"], row["raw_instrument"]) == ("UNITREE", "XYZ-UNITREE")
@@ -685,13 +701,15 @@ def test_a_market_item_that_accumulated_a_news_strategy_keeps_its_parser_and_its
 
     assert result.market is not None
     assert (result.market.market_kind, result.market.parse_status) == ("oi", "parsed")
-    row = conn.execute("SELECT symbol FROM news_oi_signals WHERE source_item_id = %s", (result.item_id,)).fetchone()
+    row = conn.execute(
+        "SELECT symbol FROM news_market_observations WHERE observation_id = %s", (result.item_id,)
+    ).fetchone()
     assert row is not None and row["symbol"] == "MIXED"
     # Both tuples survive on the Item: the second is metadata about the record, never a reason to
     # re-read it, and never a reason to open an Event for it.
-    stored = conn.execute("SELECT provider_metadata FROM news_items WHERE item_id = %s", (result.item_id,)).fetchone()[
-        "provider_metadata"
-    ]
+    stored = conn.execute(
+        "SELECT provider_metadata FROM news_market_observations WHERE observation_id = %s", (result.item_id,)
+    ).fetchone()["provider_metadata"]
     assert {strategy["id"] for strategy in stored["strategies"]} == {"1018", "1019"}
     assert _editorial_rows(conn, (result.item_id,)) == {"events": 0, "members": 0, "snapshots": 0, "updates": 0}
     conn.commit()

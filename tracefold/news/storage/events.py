@@ -217,20 +217,6 @@ def _snapshot_member(row: Mapping[str, Any]) -> dict[str, Any]:
     return member
 
 
-def _market_notify_state(market_kind: str | None, ingest_mode: str) -> str | None:
-    """A live market record is a to-do; a recovered one is history (#553 §4.1.5).
-
-    Recovery replays what the provider published while this process was not listening. Alerting on it
-    would interrupt a reader with an observation whose moment has passed, and would also make a
-    reconnection look like a market event. Ordinary news has no notification state here at all -- its
-    delivery is its Event's, and this column is not part of that decision.
-    """
-
-    if market_kind is None:
-        return None
-    return "pending" if ingest_mode == "live" else "historical"
-
-
 class EventStorage:
     conn: Any
 
@@ -253,10 +239,6 @@ class EventStorage:
         trace_id: str,
         now_ms: int,
         source_artifact_id: str = "",
-        market_kind: str | None = None,
-        market_source_strategy_id: str | None = None,
-        market_parse_status: str | None = None,
-        market_parse_error: str | None = None,
         provider_params_json: str = "{}",
         provider_params_sha256: str | None = None,
         evidence_text: str | None = None,
@@ -264,15 +246,8 @@ class EventStorage:
     ) -> bool:
         """Insert or merge provenance. Returns True when the Item is new.
 
-        The market columns and the business payload are written once and never rewritten (#553). A
-        provider replay of the same record is the same observation: merging a later parse status or a
-        later payload into an admitted fact would let a parser change what the provider was recorded
-        as having said. `market_notify_state` is written once for the same reason it matters most --
-        a replay of a record a card already covered must not put it back on the notification to-do
-        list and interrupt the reader a second time. `provider_metadata.strategies` still merges,
-        because an Item genuinely can be reported under a second Strategy later, and that is metadata
-        about the record rather than the record itself. A later, different body of the same record is
-        not merged here either: `record_item_revision` keeps it beside the first one.
+        A replay merges source Strategies and provenance while retaining the first body.
+        Later, different bodies are recorded by `record_item_revision` beside the original.
         """
 
         row = self.conn.execute(
@@ -281,12 +256,11 @@ class EventStorage:
               item_id, source_id, source_item_key, title, raw_first_line, description, canonical_url,
               reporting_origin, published_at_ms, observed_at_ms, provider_metadata, provenance,
               first_ingest_mode, trace_id, created_at_ms, updated_at_ms, source_artifact_id,
-              market_kind, market_source_strategy_id, market_parse_status, market_parse_error,
-              provider_params, market_notify_state, provider_params_available_at_ms, provider_params_sha256,
+              provider_params, provider_params_available_at_ms, provider_params_sha256,
               evidence_text, evidence_text_sha256
             ) VALUES (
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s
+              %s::jsonb, %s, %s, %s, %s
             )
             ON CONFLICT (item_id) DO UPDATE SET
               provider_metadata = jsonb_set(
@@ -320,16 +294,6 @@ class EventStorage:
                 SELECT COALESCE(jsonb_agg(DISTINCT value ORDER BY value), '[]'::jsonb)
                   FROM jsonb_array_elements_text(news_items.provenance || EXCLUDED.provenance) AS t(value)
               ),
-              market_kind = COALESCE(news_items.market_kind, EXCLUDED.market_kind),
-              market_source_strategy_id = CASE
-                WHEN news_items.market_kind IS NULL THEN EXCLUDED.market_source_strategy_id
-                ELSE news_items.market_source_strategy_id END,
-              market_parse_status = CASE
-                WHEN news_items.market_kind IS NULL THEN EXCLUDED.market_parse_status
-                ELSE news_items.market_parse_status END,
-              market_parse_error = CASE
-                WHEN news_items.market_kind IS NULL THEN EXCLUDED.market_parse_error
-                ELSE news_items.market_parse_error END,
               provider_params = CASE
                 WHEN news_items.provider_params = '{}'::jsonb THEN EXCLUDED.provider_params
                 ELSE news_items.provider_params END,
@@ -341,9 +305,6 @@ class EventStorage:
                 THEN EXCLUDED.evidence_text ELSE news_items.evidence_text END,
               evidence_text_sha256 = CASE WHEN news_items.provider_params = '{}'::jsonb
                 THEN EXCLUDED.evidence_text_sha256 ELSE news_items.evidence_text_sha256 END,
-              market_notify_state = CASE
-                WHEN news_items.market_kind IS NULL THEN EXCLUDED.market_notify_state
-                ELSE news_items.market_notify_state END,
               updated_at_ms = GREATEST(news_items.updated_at_ms, EXCLUDED.updated_at_ms)
             RETURNING (xmax = 0) AS inserted
             """,
@@ -365,12 +326,7 @@ class EventStorage:
                 int(now_ms),
                 int(now_ms),
                 source_artifact_id,
-                market_kind,
-                market_source_strategy_id,
-                market_parse_status,
-                market_parse_error,
                 provider_params_json,
-                _market_notify_state(market_kind, ingest_mode),
                 int(now_ms) if provider_params_sha256 is not None else None,
                 provider_params_sha256,
                 evidence_text,

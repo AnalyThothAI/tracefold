@@ -2526,23 +2526,6 @@
               }
             ]
           },
-          "reaction": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NewsReactionSummaryData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "reactions": {
-            "items": {
-              "$ref": "#/components/schemas/NewsEventReactionData"
-            },
-            "title": "Reactions",
-            "type": "array"
-          },
           "reader_receipt": {
             "$ref": "#/components/schemas/NewsReaderReceiptData"
           },
@@ -2670,194 +2653,6 @@
           "match_kind"
         ],
         "title": "NewsEventMemberData",
-        "type": "object"
-      },
-      "NewsEventReactionData": {
-        "additionalProperties": false,
-        "description": "One per-asset Reaction with the raw closes it was computed from, for audit on the detail page.",
-        "properties": {
-          "anchor_at_ms": {
-            "title": "Anchor At Ms",
-            "type": "integer"
-          },
-          "instrument_class": {
-            "default": "unknown",
-            "title": "Instrument Class",
-            "type": "string"
-          },
-          "is_primary": {
-            "title": "Is Primary",
-            "type": "boolean"
-          },
-          "metric_version": {
-            "title": "Metric Version",
-            "type": "string"
-          },
-          "p0": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "P0"
-          },
-          "p0_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "P0 At Ms"
-          },
-          "p1": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "P1"
-          },
-          "p1_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "P1 At Ms"
-          },
-          "p4": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "P4"
-          },
-          "p4_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "P4 At Ms"
-          },
-          "return_1h_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Return 1H Bps"
-          },
-          "return_4h_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Return 4H Bps"
-          },
-          "state": {
-            "enum": [
-              "pending",
-              "partial",
-              "complete",
-              "unavailable"
-            ],
-            "title": "State",
-            "type": "string"
-          },
-          "state_zh": {
-            "default": "",
-            "title": "State Zh",
-            "type": "string"
-          },
-          "symbol": {
-            "title": "Symbol",
-            "type": "string"
-          },
-          "unavailable_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Unavailable Reason"
-          },
-          "unavailable_reason_zh": {
-            "default": "",
-            "title": "Unavailable Reason Zh",
-            "type": "string"
-          },
-          "updated_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Updated At Ms"
-          },
-          "venue": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Venue"
-          },
-          "venue_symbol": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Venue Symbol"
-          }
-        },
-        "required": [
-          "symbol",
-          "metric_version",
-          "anchor_at_ms",
-          "is_primary",
-          "state"
-        ],
-        "title": "NewsEventReactionData",
         "type": "object"
       },
       "NewsEventUpdateData": {
@@ -3325,16 +3120,6 @@
               }
             ],
             "title": "Published At Ms"
-          },
-          "reaction": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NewsReactionSummaryData"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "reporting_origin": {
             "default": "",
@@ -5561,34 +5346,9 @@
             "title": "Fresh Sources",
             "type": "integer"
           },
-          "metric_version": {
-            "default": "",
-            "title": "Metric Version",
-            "type": "string"
-          },
-          "oldest_due_age_ms": {
-            "default": 0,
-            "title": "Oldest Due Age Ms",
-            "type": "integer"
-          },
           "quotes": {
             "default": 0,
             "title": "Quotes",
-            "type": "integer"
-          },
-          "reaction_complete_7d": {
-            "default": 0,
-            "title": "Reaction Complete 7D",
-            "type": "integer"
-          },
-          "reaction_partial_7d": {
-            "default": 0,
-            "title": "Reaction Partial 7D",
-            "type": "integer"
-          },
-          "reaction_unavailable_7d": {
-            "default": 0,
-            "title": "Reaction Unavailable 7D",
             "type": "integer"
           },
           "sources": {
@@ -5899,8 +5659,8 @@
           "source_age_ms",
           "effective_age_ms",
           "freshness_basis",
-          "reference_at_ms",
           "reference_age_ms",
+          "reference_at_ms",
           "state"
         ],
         "title": "NewsQuoteData",
@@ -6027,96 +5787,6 @@
           "measured_at_ms"
         ],
         "title": "NewsQuotesData",
-        "type": "object"
-      },
-      "NewsReactionSummaryData": {
-        "additionalProperties": false,
-        "description": "The compact event-level Event Reaction: one sample per Event, median over its priceable primaries.\n\nThis is a fixed historical measurement anchored at the Event, not a current rolling window. A pending\nhorizon says pending; it is never zero.",
-        "properties": {
-          "asset_n": {
-            "default": 0,
-            "title": "Asset N",
-            "type": "integer"
-          },
-          "metric_version": {
-            "title": "Metric Version",
-            "type": "string"
-          },
-          "p0": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "P0"
-          },
-          "priced_n": {
-            "default": 0,
-            "title": "Priced N",
-            "type": "integer"
-          },
-          "return_1h_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Return 1H Bps"
-          },
-          "return_4h_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Return 4H Bps"
-          },
-          "state": {
-            "enum": [
-              "pending",
-              "partial",
-              "complete",
-              "unavailable"
-            ],
-            "title": "State",
-            "type": "string"
-          },
-          "state_zh": {
-            "default": "",
-            "title": "State Zh",
-            "type": "string"
-          },
-          "unavailable_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Unavailable Reason"
-          },
-          "unavailable_reason_zh": {
-            "default": "",
-            "title": "Unavailable Reason Zh",
-            "type": "string"
-          }
-        },
-        "required": [
-          "state",
-          "metric_version"
-        ],
-        "title": "NewsReactionSummaryData",
         "type": "object"
       },
       "NewsReaderReceiptData": {
@@ -7145,39 +6815,6 @@
             "title": "Received At Ms",
             "type": "integer"
           },
-          "reference_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reference At Ms"
-          },
-          "reference_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reference Price"
-          },
-          "reference_source": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reference Source"
-          },
           "settled_at_ms": {
             "anyOf": [
               {
@@ -7238,10 +6875,7 @@
           "intent_at_ms",
           "first_attempt_at_ms",
           "settled_at_ms",
-          "attempts",
-          "reference_price",
-          "reference_at_ms",
-          "reference_source"
+          "attempts"
         ],
         "title": "NewsWalletEventData",
         "type": "object"
@@ -7269,20 +6903,12 @@
               }
             ],
             "title": "Next Fills Cursor"
-          },
-          "outcomes": {
-            "items": {
-              "$ref": "#/components/schemas/NewsWalletOutcomeData"
-            },
-            "title": "Outcomes",
-            "type": "array"
           }
         },
         "required": [
           "event",
           "fills",
-          "next_fills_cursor",
-          "outcomes"
+          "next_fills_cursor"
         ],
         "title": "NewsWalletEventDetailData",
         "type": "object"
@@ -7546,98 +7172,6 @@
           "unsent_reason_count"
         ],
         "title": "NewsWalletFunnelData",
-        "type": "object"
-      },
-      "NewsWalletOutcomeData": {
-        "additionalProperties": false,
-        "properties": {
-          "at_ms": {
-            "title": "At Ms",
-            "type": "integer"
-          },
-          "change_percent": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Change Percent"
-          },
-          "horizon": {
-            "enum": [
-              "15m",
-              "1h",
-              "4h"
-            ],
-            "title": "Horizon",
-            "type": "string"
-          },
-          "price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Price"
-          },
-          "reference_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reference At Ms"
-          },
-          "reference_price": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reference Price"
-          },
-          "source": {
-            "title": "Source",
-            "type": "string"
-          },
-          "status": {
-            "enum": [
-              "comparable",
-              "missing_reference",
-              "late"
-            ],
-            "title": "Status",
-            "type": "string"
-          },
-          "target_at_ms": {
-            "title": "Target At Ms",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "horizon",
-          "target_at_ms",
-          "at_ms",
-          "price",
-          "source",
-          "reference_price",
-          "reference_at_ms",
-          "status",
-          "change_percent"
-        ],
-        "title": "NewsWalletOutcomeData",
         "type": "object"
       },
       "NewsWalletRosterData": {

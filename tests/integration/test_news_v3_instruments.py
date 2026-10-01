@@ -24,7 +24,7 @@ def conn(postgres_module_clone_dsn: str):
 @pytest.fixture(autouse=True)
 def _clean(conn):
     conn.execute("DELETE FROM news_market_instruments")
-    conn.execute("DELETE FROM news_market_instrument_snapshot_state")
+    conn.execute("UPDATE news_collectors SET state='{\"venues\": {}}'::jsonb WHERE collector_id='instrument_catalog'")
     conn.execute("DELETE FROM news_symbol_aliases")
     conn.execute("DELETE FROM news_items")
     conn.commit()
@@ -57,7 +57,10 @@ def _tuple_counters(conn) -> tuple[int, int]:
 
 
 def _snapshot_state(conn) -> dict[str, int]:
-    rows = conn.execute("SELECT venue, last_snapshot_ms FROM news_market_instrument_snapshot_state").fetchall()
+    rows = conn.execute(
+        "SELECT key AS venue,value::bigint AS last_snapshot_ms FROM news_collectors, LATERAL "
+        "jsonb_each_text(state->'venues') WHERE collector_id='instrument_catalog'"
+    ).fetchall()
     return {str(row["venue"]): int(row["last_snapshot_ms"]) for row in rows}
 
 

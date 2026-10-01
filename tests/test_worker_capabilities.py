@@ -643,12 +643,11 @@ def _settings(**venues: Any):
 def test_price_loops_are_wired_per_source_and_follow_the_existing_venue_switches() -> None:
     """The composition root is the only place these adapters are chosen; nothing here calls a venue."""
 
-    from tracefold.app.workers.wiring.market_review import _event_reaction_loop, _quote_snapshot_loop
+    from tracefold.app.workers.wiring.market_review import _quote_snapshot_loop
 
     settings = _settings()
     quotes = _quote_snapshot_loop(settings, db=_UncalledDatabasePort(), watchlist=["BTC"])
-    reactions = _event_reaction_loop(settings, db=_UncalledDatabasePort())
-    assert quotes is not None and reactions is not None
+    assert quotes is not None
 
     # One adapter per provider source, including a HIP-3 dex nobody wired by hand.
     assert quotes.fetcher_for("binance.spot") is not None
@@ -664,13 +663,9 @@ def test_price_loops_are_wired_per_source_and_follow_the_existing_venue_switches
     assert quotes.day_fetcher_for("hl.brandnewdex") is None
     assert quotes.day_fetcher_for("us.listed") is None
 
-    assert reactions.fetcher_for("binance.perp") is not None
-    assert reactions.fetcher_for("hl.spot") is not None
-    assert reactions.fetcher_for("us.listed") is None
-
 
 def test_a_disabled_venue_removes_its_adapter_rather_than_failing_the_turn() -> None:
-    from tracefold.app.workers.wiring.market_review import _event_reaction_loop, _quote_snapshot_loop
+    from tracefold.app.workers.wiring.market_review import _quote_snapshot_loop
 
     binance_only = _settings(binance=True, hyperliquid=False)
     quotes = _quote_snapshot_loop(binance_only, db=_UncalledDatabasePort(), watchlist=[])
@@ -685,7 +680,6 @@ def test_a_disabled_venue_removes_its_adapter_rather_than_failing_the_turn() -> 
 
     off = _settings(enabled=False)
     assert _quote_snapshot_loop(off, db=_UncalledDatabasePort(), watchlist=[]) is None
-    assert _event_reaction_loop(off, db=_UncalledDatabasePort()) is None
 
 
 class _UncalledDatabasePort:

@@ -15,9 +15,7 @@ from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import (
-    HORIZON_MS,
     QUOTE_FRESH_MAX_AGE_MS,
-    REACTION_METRIC_VERSION,
     Quote,
     QuoteRequest,
 )
@@ -39,9 +37,8 @@ def conn(postgres_module_clone_dsn: str):
 @pytest.fixture(autouse=True)
 def _clean(conn):
     for table in (
-        "news_event_reactions",
         "news_quote_snapshots",
-        "news_oi_signals",
+        "news_market_observations",
         "news_event_assets",
         "news_semantic_observations",
         "news_events",
@@ -238,36 +235,12 @@ def test_quote_working_set_includes_recent_oi_ledger_symbols(conn) -> None:
     # The OI arm reaches the ledger through the Item that produced it (#553). There is no Event: a
     # market observation opens none, and the working set was reading one only because the foreign key
     # forced it to.
+    from tests.support.market_oi import _write_oi
+
+    repos = repositories_for_connection(conn)
+    _write_oi(repos.news, "i-ev-oi", at_ms=NOW, change_bps=864)
     conn.execute(
-        """
-        INSERT INTO news_items (
-          item_id, source_id, source_item_key, title, raw_first_line, description, reporting_origin,
-          published_at_ms, observed_at_ms, provider_metadata, provenance, first_ingest_mode, trace_id,
-          created_at_ms, updated_at_ms, market_kind, market_source_strategy_id, market_parse_status,
-          market_notify_state
-        ) VALUES (
-          'i-ev-oi', 'opennews', 'i-ev-oi', 'DOGE OI Rise', '', '', 'opennews', %s, %s,
-          '{}'::jsonb, '[]'::jsonb, 'live', 'trace', %s, %s, 'oi', '1019', 'parsed',
-          -- A live market Item is a to-do for the notification loop, and the CHECK that says so
-          -- refuses a NULL marker outright (#553 PR-2): a writer that does not know the column is an
-          -- old writer, and the loop would never see its observation.
-          'pending'
-        )
-        """,
-        (NOW, NOW, NOW, NOW),
-    )
-    conn.execute(
-        """
-        INSERT INTO news_oi_signals (
-          event_id, metric_version, symbol, raw_instrument, direction, oi_change_bps, oi_value_usd,
-          whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, received_at_ms, created_at_ms,
-          provider, measurement_definition, source_item_id, source_venue, available_at_ms, historical
-        ) VALUES (
-          'ev-oi', 'oi_signal_v1', 'DOGE', 'DOGE', 'rise', 864, 73010000, 8060, 21097, %s, %s, %s,
-          'opennews', 'oi_signal_v1|unproven|unproven', 'i-ev-oi', 'binance', %s, false
-        )
-        """,
-        (NOW, NOW, NOW, NOW),
+        "UPDATE news_market_observations SET symbol='DOGE',raw_instrument='DOGE' WHERE observation_id='i-ev-oi'"
     )
     conn.commit()
 
@@ -565,229 +538,9 @@ def test_duplicate_request_symbols_cannot_multiply_repository_work(conn) -> None
 
 
 # ---------------------------------------------------------------------------- due work
-def test_the_due_scan_covers_held_events_and_stops_at_terminal_rows(conn) -> None:
-    _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"))
-    _event(conn, "pushed", symbols=("BTC",), opened_at_ms=NOW - 2 * HOUR)
-    _event(conn, "dropped", symbols=("BTC",), opened_at_ms=NOW - 2 * HOUR)
-    _event(conn, "fresh", symbols=("BTC",), opened_at_ms=NOW - 60_000)  # 1H not due yet
-    _event(conn, "recovered", symbols=("BTC",), opened_at_ms=NOW - 2 * HOUR, ingest_mode="recovery")
-    repos = repositories_for_connection(conn)
-
-    due = repos.price.due_reactions(now_ms=NOW, limit=100)
-
-    # Acquisition is not restricted to delivered Events — a held Event is exactly what the miss review needs.
-    assert {row["event_id"] for row in due} == {"pushed", "dropped"}
-
-    with repos.transaction():
-        repos.price.upsert_reaction(
-            {
-                "event_id": "pushed",
-                "symbol": "BTC",
-                "anchor_at_ms": NOW - 2 * HOUR,
-                "venue": "binance.perp",
-                "venue_symbol": "BTCUSDT",
-                "p0": Decimal("100"),
-                "p0_at_ms": NOW - 2 * HOUR,
-                "p1": Decimal("101"),
-                "p1_at_ms": NOW - HOUR,
-                "return_1h_bps": 100,
-                "state": "partial",
-                "unavailable_reason": "no_candle_within_gap",
-            },
-            now_ms=NOW,
-        )
-
-    # A partial row that already named its reason has finished trying; re-asking every minute is a spin.
-    assert {row["event_id"] for row in repos.price.due_reactions(now_ms=NOW, limit=100)} == {"dropped"}
-
-
-def test_the_price_plane_plans_a_reaction_from_the_events_own_grounded_asset(conn) -> None:
-    """`due_reactions` walks Event-assets, not verdicts, and the Gate's grounding is what writes them.
-
-    #267 added a second writer so a deterministic market judge could attach the primary its Event's
-    Gate could not ground. That judge, and the Events it judged, are gone (#553): a market observation
-    opens no Event, so it reaches no reaction horizon and there is nothing left to write back. What
-    remains is the one path that was always true for editorial Events.
-    """
-
-    _universe(conn, _instrument("binance.perp", "TRUMPUSDT", "TRUMP"))
-    _event(conn, "grounded-frame", symbols=("TRUMP",), opened_at_ms=NOW - 2 * HOUR)
-    repos = repositories_for_connection(conn)
-
-    due = repos.price.due_reactions(now_ms=NOW, limit=100)
-
-    assert [(row["event_id"], row["symbol"]) for row in due] == [("grounded-frame", "TRUMP")]
-    # The anchor is the Event's own, so the 1 H and 4 H horizons are measured from the frame.
-    assert due[0]["anchor_at_ms"] == NOW - 2 * HOUR
-    assert due[0]["is_primary"] is True
-    assert not hasattr(repos.news, "record_event_assets")
-
-
-def test_reaction_writes_are_idempotent_and_never_lose_a_persisted_price_point(conn) -> None:
-    _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"))
-    _event(conn, "e1", symbols=("BTC",), opened_at_ms=NOW - 5 * HOUR)
-    repos = repositories_for_connection(conn)
-    base = {
-        "event_id": "e1",
-        "symbol": "BTC",
-        "anchor_at_ms": NOW - 5 * HOUR,
-        "venue": "binance.perp",
-        "venue_symbol": "BTCUSDT",
-        "p0": Decimal("100"),
-        "p0_at_ms": NOW - 5 * HOUR,
-        "p1": Decimal("101"),
-        "p1_at_ms": NOW - 4 * HOUR,
-        "return_1h_bps": 100,
-        "state": "partial",
-    }
-    with repos.transaction():
-        repos.price.upsert_reaction(base, now_ms=NOW)
-        repos.price.upsert_reaction(base, now_ms=NOW)  # replay writes the same row
-        repos.price.upsert_reaction(
-            {**base, "p4": Decimal("110"), "p4_at_ms": NOW - HOUR, "return_4h_bps": 1000, "state": "complete"},
-            now_ms=NOW,
-        )
-
-    rows = repos.price.event_reactions("e1")
-    assert len(rows) == 1
-    assert rows[0]["state"] == "complete"
-    assert rows[0]["return_1h_bps"] == 100 and rows[0]["return_4h_bps"] == 1000
-    assert rows[0]["p0"].startswith("100")  # the raw close is retained beside the return, for audit
-    assert rows[0]["metric_version"] == REACTION_METRIC_VERSION
-    assert rows[0]["is_primary"] is False
-
-
-def test_reactions_cascade_with_the_event_under_existing_retention(conn) -> None:
-    _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"))
-    _event(conn, "e1", symbols=("BTC",), opened_at_ms=NOW - 5 * HOUR)
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        repos.price.upsert_reaction(
-            {
-                "event_id": "e1",
-                "symbol": "BTC",
-                "anchor_at_ms": NOW - 5 * HOUR,
-                "state": "unavailable",
-                "unavailable_reason": "instrument_unresolved",
-            },
-            now_ms=NOW,
-        )
-    conn.execute("DELETE FROM news_items WHERE item_id = 'i-e1'")
-    conn.commit()
-    assert conn.execute("SELECT count(*) AS n FROM news_event_reactions").fetchone()["n"] == 0
 
 
 # ---------------------------------------------------------------------------- review
-def _complete(conn, event_id: str, symbol: str, *, anchor: int, bps_1h: int, bps_4h: int) -> None:
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        repos.price.upsert_reaction(
-            {
-                "event_id": event_id,
-                "symbol": symbol,
-                "anchor_at_ms": anchor,
-                "venue": "binance.perp",
-                "venue_symbol": f"{symbol}USDT",
-                "p0": Decimal("100"),
-                "p0_at_ms": anchor,
-                "p1": Decimal("101"),
-                "p1_at_ms": anchor + HOUR,
-                "p4": Decimal("104"),
-                "p4_at_ms": anchor + 4 * HOUR,
-                "return_1h_bps": bps_1h,
-                "return_4h_bps": bps_4h,
-                "is_primary": True,
-                "state": "complete",
-            },
-            now_ms=NOW,
-        )
-
-
-def test_event_level_aggregate_contributes_one_sample_per_event(conn) -> None:
-    _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"), _instrument("binance.perp", "ETHUSDT", "ETH"))
-    anchor = NOW - 6 * HOUR
-    _event(conn, "multi", symbols=("BTC", "ETH"), opened_at_ms=anchor)
-    _complete(conn, "multi", "BTC", anchor=anchor, bps_1h=100, bps_4h=100)
-    _complete(conn, "multi", "ETH", anchor=anchor, bps_1h=300, bps_4h=300)
-    repos = repositories_for_connection(conn)
-
-    aggregates = repos.price.event_reaction_aggregates(["multi"], now_ms=NOW)
-
-    assert aggregates["multi"]["asset_n"] == 2
-    assert aggregates["multi"]["priced_n"] == 2
-    assert aggregates["multi"]["p0"] is None  # prices in different units cannot be aggregated
-    assert aggregates["multi"]["return_1h_bps"] == 100  # discrete median, not a sum
-    assert aggregates["multi"]["state"] == "complete"
-
-
-def test_an_event_with_no_priceable_primary_has_no_aggregate_but_stays_visible(conn) -> None:
-    _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"))
-    anchor = NOW - 6 * HOUR
-    _event(conn, "e1", symbols=("BTC",), opened_at_ms=anchor)
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        repos.price.upsert_reaction(
-            {
-                "event_id": "e1",
-                "symbol": "BTC",
-                "anchor_at_ms": anchor,
-                "is_primary": True,
-                "state": "unavailable",
-                "unavailable_reason": "no_candle_within_gap",
-            },
-            now_ms=NOW,
-        )
-
-    aggregate = repos.price.event_reaction_aggregates(["e1"], now_ms=NOW)["e1"]
-    assert aggregate["state"] == "unavailable"
-    assert aggregate["p0"] is None
-    assert aggregate["return_1h_bps"] is None
-    assert aggregate["unavailable_reason"] == "no_candle_within_gap"
-
-
-def test_backlog_lateness_is_measured_against_each_row_own_horizon(conn) -> None:
-    """A row waiting for 4H is not three hours late just because 4H is three hours after 1H."""
-
-    _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"))
-    repos = repositories_for_connection(conn)
-
-    # On time: 1H matured a minute ago and nothing has measured it yet.
-    _event(conn, "fresh", symbols=("BTC",), opened_at_ms=NOW - HOUR - 60_000)
-    assert repos.price.oldest_due_age_ms(now_ms=NOW, history_max_age_ms=30 * 24 * HOUR) == pytest.approx(
-        60_000, abs=1_000
-    )
-
-    # Also on time: a partial row whose 4H matured a minute ago. Under the old definition this reported
-    # three hours and would have sat permanently above the 15-minute warning threshold.
-    _event(conn, "partial", symbols=("BTC",), opened_at_ms=NOW - 4 * HOUR - 60_000)
-    with repos.transaction():
-        repos.price.upsert_reaction(
-            {
-                "event_id": "partial",
-                "symbol": "BTC",
-                "anchor_at_ms": NOW - 4 * HOUR - 60_000,
-                "venue": "binance.perp",
-                "venue_symbol": "BTCUSDT",
-                "p0": Decimal("100"),
-                "p0_at_ms": NOW - 4 * HOUR,
-                "p1": Decimal("101"),
-                "p1_at_ms": NOW - 3 * HOUR,
-                "return_1h_bps": 100,
-                "is_primary": True,
-                "state": "partial",
-            },
-            now_ms=NOW,
-        )
-
-    assert repos.price.oldest_due_age_ms(now_ms=NOW, history_max_age_ms=30 * 24 * HOUR) == pytest.approx(
-        60_000, abs=1_000
-    )
-
-    # Genuinely behind: an unmeasured row whose 1H matured two hours ago.
-    _event(conn, "late", symbols=("BTC",), opened_at_ms=NOW - 3 * HOUR)
-    assert repos.price.oldest_due_age_ms(now_ms=NOW, history_max_age_ms=30 * 24 * HOUR) == pytest.approx(
-        2 * HOUR, abs=1_000
-    )
 
 
 def test_price_status_reports_source_freshness_and_backlog(conn) -> None:
@@ -811,7 +564,7 @@ def test_price_status_reports_source_freshness_and_backlog(conn) -> None:
         )
 
     status = repos.price.price_status(now_ms=NOW + 1_000)
-    assert "oldest_due_age_ms" in status  # the backlog SLO, reported rather than merely computable
+    assert "oldest_due_age_ms" not in status
     assert status["sources"][0]["source_key"] == "hl.perp"
     assert status["sources"][0]["state"] == "fresh"
     assert status["sources"][0]["freshness_basis"] == "received_only"
@@ -820,7 +573,7 @@ def test_price_status_reports_source_freshness_and_backlog(conn) -> None:
     assert status["sources"][0]["effective_age_ms"] == 1_000
     assert "age_ms" not in status["sources"][0]
     assert status["quotes"] == 1
-    assert status["metric_version"] == REACTION_METRIC_VERSION
+    assert "metric_version" not in status
 
 
 def test_price_status_aggregates_the_oldest_and_worst_applicable_quote(conn) -> None:
@@ -860,8 +613,3 @@ def test_price_status_aggregates_the_oldest_and_worst_applicable_quote(conn) -> 
     assert source["received_age_ms"] == 0
     assert source["freshness_basis"] == "source_and_received"
     assert status["fresh_sources"] == 0
-
-
-def test_horizon_constants_match_the_stored_metric(conn) -> None:
-    del conn
-    assert HORIZON_MS == {"1h": 3_600_000, "4h": 14_400_000}

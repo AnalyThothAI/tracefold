@@ -122,7 +122,10 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 | OI | 变化百分比、名义金额和 measurement 定义不能替代实际仓位方向 |
 | 钱包 episode | first / current / send snapshot、每地址资格、覆盖截止和实际观察时点分别保存 |
 | Quote Snapshot | 当前展示值和 freshness，不是历史成交价 |
-| `reaction_v2` | 类型化标的、固定 5m K 线、1h / 4h 新闻后价格反应 |
+
+#764 P1 的公开接口删减：Feed 删除 `events[].reaction`，Event 详情删除 `reaction` / `reactions`；状态删除 `price.metric_version`、`oldest_due_age_ms` 和三项 `reaction_*_7d`；钱包事件删除 `reference_price`、`reference_at_ms`、`reference_source`，详情删除 `outcomes`；bootstrap 能力删除 `news_reactions` / `wallet_prices`。当前报价的参考时钟、freshness 和 24H 变化保留，市场列表、详情与时间线 JSON 保持不变。
+
+市场观测业务字段首次写入后不可变；同一来源观测 ID 重放只合并新增策略元数据，元数据未变时不改写行。首插 OI 保持原 `source_fact_key` 和 outbox payload。钱包 `roster_version` 仍是外部成员身份，成员以 `joined_version <= v AND (left_version IS NULL OR left_version > v)` 还原。
 
 符号必须结合资产类别与交易所原生身份。基础币符号、股票 ticker、倍数合约和 USDT / USDC 市场不能靠字符串相等推断经济等价。
 

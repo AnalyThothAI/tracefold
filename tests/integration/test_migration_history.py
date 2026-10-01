@@ -37,7 +37,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20261001_0420"
+HEAD = "20261001_0421"
 PRE_CUT = "20260928_0410"
 # The revision before the smart-money reparse: what `20260905_0365` left behind, before `20260906_0370`
 # ran the production parser over it.
@@ -177,7 +177,7 @@ def test_the_one_window_rewrite_keeps_the_surviving_window_and_marks_the_new_fac
         )
         conn.commit()
 
-        command.upgrade(config, HEAD)
+        command.upgrade(config, "20261001_0419")
 
         row = conn.execute(
             "SELECT initial_snapshot, latest_snapshot, send_snapshot FROM news_market_wallet_events"
@@ -201,6 +201,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20261001_0420",
         "20261001_0419",
         "20260929_0418",
         "20260929_0417",
@@ -1334,9 +1335,9 @@ def test_the_market_notification_marker_separates_the_pre_enable_backlog_from_li
     The revision cannot ask the loop which observations a reader has already seen, because before it
     ran no loop existed. What it can say is that every market record that predates it belongs to a
     window nobody was being alerted for, and alerting on a two-day-old OI frame at enable time
-    interrupts a reader with something they cannot act on (#553 §4.1.5). This proves both halves on
-    one database: the backlog seeded *before* the upgrade is `historical` and stays out of the take
-    query, and a record admitted *after* it is `pending` and is the first thing the loop reads.
+    interrupts a reader with something they cannot act on (#553 §4.1.5). This isolates the enable-time migration:
+    the backlog seeded before the upgrade is `historical` and stays out of the take query. Current
+    writer and replay behavior are verified by the market-observation integration tests.
     """
 
     config = _config()
@@ -1375,7 +1376,7 @@ def test_the_market_notification_marker_separates_the_pre_enable_backlog_from_li
                 """
             )
 
-        command.upgrade(config, "head")
+        command.upgrade(config, "20260905_0366")
 
         marked = {
             str(row["item_id"]): row["market_notify_state"]
@@ -1393,64 +1394,6 @@ def test_the_market_notification_marker_separates_the_pre_enable_backlog_from_li
         ).fetchone()
         assert int(backlog["pending"]) == 0
 
-        # And the writer that runs after the revision produces the other half.
-        repos = repositories_for_connection(conn)
-        with repos.transaction():
-            for item_id, mode in (("live-oi", "live"), ("recovered-oi", "recovery")):
-                repos.news.upsert_item(
-                    item_id=item_id,
-                    source_id="opennews",
-                    source_item_key=item_id,
-                    title=item_id,
-                    raw_first_line=item_id,
-                    description="",
-                    canonical_url=None,
-                    reporting_origin="opennews",
-                    published_at_ms=2000,
-                    observed_at_ms=2000,
-                    provider_metadata_json="{}",
-                    strategy_ids_json="[]",
-                    ingest_mode=mode,
-                    trace_id="trace",
-                    now_ms=2000,
-                    market_kind="oi",
-                    market_source_strategy_id="1019",
-                    market_parse_status="parsed",
-                    market_parse_error=None,
-                )
-        admitted = {
-            str(row["item_id"]): row["market_notify_state"]
-            for row in conn.execute(
-                "SELECT item_id, market_notify_state FROM news_items WHERE item_id IN ('live-oi', 'recovered-oi')"
-            ).fetchall()
-        }
-        assert admitted == {"live-oi": "pending", "recovered-oi": "historical"}
-
-        # A replay of a record the backlog already marked does not put it back on the to-do list.
-        with repos.transaction():
-            repos.news.upsert_item(
-                item_id="backlog-oi",
-                source_id="opennews",
-                source_item_key="backlog-oi",
-                title="backlog-oi",
-                raw_first_line="backlog-oi",
-                description="",
-                canonical_url=None,
-                reporting_origin="opennews",
-                published_at_ms=1000,
-                observed_at_ms=1000,
-                provider_metadata_json="{}",
-                strategy_ids_json="[]",
-                ingest_mode="live",
-                trace_id="trace",
-                now_ms=3000,
-                market_kind="oi",
-                market_source_strategy_id="1019",
-                market_parse_status="parsed",
-                market_parse_error=None,
-            )
-        replayed = conn.execute("SELECT market_notify_state FROM news_items WHERE item_id = 'backlog-oi'").fetchone()
-        assert replayed["market_notify_state"] == "historical"
     finally:
         conn.close()
 
@@ -1599,7 +1542,8 @@ def test_the_catalogue_freshness_answer_survives_the_move_off_the_row() -> None:
         state = {
             str(row["venue"]): int(row["last_snapshot_ms"])
             for row in conn.execute(
-                "SELECT venue, last_snapshot_ms FROM news_market_instrument_snapshot_state"
+                "SELECT key AS venue,value::bigint AS last_snapshot_ms FROM news_collectors c "
+                "CROSS JOIN LATERAL jsonb_each_text(c.state->'venues') WHERE collector_id='instrument_catalog'"
             ).fetchall()
         }
         # One row per venue, each holding the last moment that venue answered — a delisting is written

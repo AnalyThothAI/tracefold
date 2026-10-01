@@ -2,27 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 # S608 exemption below appends one fixed optional predicate; incident values remain bound parameters.
 from .sql_values import _dumps
 
-RECOVERY_BACKLOG_LIMIT = 20
 RAW_RETENTION_BATCH_MAX = 1_000
-INGEST_LIVENESS_SQL = """
-    SELECT connected, updated_at_ms
-      FROM news_ingest_state
-     WHERE singleton_key = 'opennews'
-"""
-_PENDING_RECOVERY_INCIDENTS_SQL = """
-    SELECT incident_id, cause_class, opened_at_ms, closed_at_ms, recovery_from_at_ms,
-           recovery_to_at_ms, last_error_code, updated_at_ms
-      FROM news_opennews_incidents
-     WHERE recovery_status = 'pending' AND closed_at_ms IS NOT NULL
-     ORDER BY incident_id
-     LIMIT %s
-"""
 
 _RAW_RETENTION_PRESERVATION_SQL = """
   AND (
@@ -47,24 +32,10 @@ _RAW_RETENTION_PRESERVATION_SQL = """
       )
 """
 
-# A market Item lives on the judged tier whatever happened to it (#553). It has no verdict, no review
-# and no learning case, so the evidence predicate below can never preserve one -- under `raw_days`
-# alone every OI frame, liquidation report and account report would expire in 30 days while the
-# ordinary news it sits beside keeps a year. Which retention an observation gets is a decision about
-# the observation, not a reward for having been judged.
-_MARKET_RETENTION_SQL = """
-  AND (
-        %s::bigint IS NULL
-        OR i.market_kind IS NULL
-        OR i.observed_at_ms < %s
-      )
-"""
-
 RAW_RETENTION_CANDIDATE_SQL = f"""
     SELECT i.item_id, i.observed_at_ms
       FROM news_items i
      WHERE i.observed_at_ms < %s
-       {_MARKET_RETENTION_SQL}
        {_RAW_RETENTION_PRESERVATION_SQL}
      ORDER BY i.observed_at_ms, i.item_id
      LIMIT %s
@@ -74,24 +45,9 @@ _RAW_RETENTION_DELETE_SQL = f"""
     DELETE FROM news_items i
      WHERE i.item_id = ANY(%s)
        AND i.observed_at_ms < %s
-       {_MARKET_RETENTION_SQL}
        {_RAW_RETENTION_PRESERVATION_SQL}
  RETURNING i.item_id, i.observed_at_ms
 """  # noqa: S608
-
-
-# The open-incident list `/api/news/status` renders, and the statement its query audit plans. The audit
-# used to carry a copy that omitted `planned`, which is a different projection of the same rows (#570 A2).
-OPEN_INCIDENTS_SQL = (
-    "SELECT incident_id, cause_class, opened_at_ms, planned FROM news_opennews_incidents"
-    " WHERE closed_at_ms IS NULL ORDER BY incident_id"
-)
-
-
-def pending_recovery_incidents_statement(*, limit: int) -> tuple[str, tuple[int]]:
-    """Return the exact bounded statement shared by Recovery, status, and query audit."""
-
-    return _PENDING_RECOVERY_INCIDENTS_SQL, (int(limit),)
 
 
 class OperationsStorage:
@@ -262,199 +218,6 @@ class OperationsStorage:
         )
         return str(evidence_snapshot["evidence_sha256"])
 
-    def update_ingest_state(
-        self,
-        *,
-        now_ms: int,
-        connected: bool | None = None,
-        last_frame_at_ms: int | None = None,
-        last_publish_at_ms: int | None = None,
-        last_error_code: str | None = None,
-        clear_error: bool = False,
-    ) -> None:
-        self.conn.execute(
-            """
-            UPDATE news_ingest_state
-               SET connected = COALESCE(%s, connected),
-                   last_frame_at_ms = COALESCE(%s, last_frame_at_ms),
-                   last_publish_at_ms = COALESCE(%s, last_publish_at_ms),
-                   last_error_code = CASE WHEN %s THEN NULL ELSE COALESCE(%s, last_error_code) END,
-                   updated_at_ms = GREATEST(updated_at_ms, %s)
-             WHERE singleton_key = 'opennews'
-            """,
-            (
-                connected,
-                last_frame_at_ms,
-                last_publish_at_ms,
-                bool(clear_error),
-                last_error_code,
-                int(now_ms),
-            ),
-        )
-
-    def ingest_liveness(self) -> dict[str, Any] | None:
-        """What the durable row still claims about the last Receiver process, and when it last wrote.
-
-        `connected` is only ever set true by a live connection and false by a reported disconnect, so a
-        process that starts and finds it still true is reading the trace of one that never reported one.
-        `updated_at_ms` is the last write of any kind — a frame, a connection change, or the Janitor's
-        minute snapshot — which makes it the last moment that process is known to have been running.
-        """
-
-        row = self.conn.execute(INGEST_LIVENESS_SQL).fetchone()
-        if row is None:
-            return None
-        return {"connected": bool(row["connected"]), "updated_at_ms": int(row["updated_at_ms"])}
-
-    def update_broker_snapshot(self, *, snapshot: Mapping[str, Any], now_ms: int) -> None:
-        self.conn.execute(
-            """
-            UPDATE news_ingest_state SET broker_snapshot = %s::jsonb, updated_at_ms = GREATEST(updated_at_ms, %s)
-             WHERE singleton_key = 'opennews'
-            """,
-            (_dumps({**dict(snapshot), "observed_at_ms": int(now_ms)}), int(now_ms)),
-        )
-
-    def open_incident(
-        self, *, cause_class: str, now_ms: int, planned: bool = False, close_code: int | None = None
-    ) -> int:
-        """Open the one incident of this cause class, or return the one already open.
-
-        This is a single idempotent statement resting on the partial unique index
-        `ux_news_opennews_incidents_open_cause` (migration 0335), not a read-then-write. Two writers
-        racing therefore converge in PostgreSQL rather than through application locking, and no caller
-        needs to remember whether it already opened this incident.
-        """
-
-        row = self.conn.execute(
-            """
-            INSERT INTO news_opennews_incidents (
-              cause_class, opened_at_ms, planned, close_code, recovery_status, created_at_ms, updated_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (cause_class) WHERE closed_at_ms IS NULL
-            DO UPDATE SET updated_at_ms = GREATEST(
-              news_opennews_incidents.updated_at_ms, EXCLUDED.updated_at_ms
-            )
-            RETURNING incident_id
-            """,
-            (
-                cause_class,
-                int(now_ms),
-                bool(planned),
-                close_code,
-                "not_applicable" if cause_class == "triage_circuit_open" else "pending",
-                int(now_ms),
-                int(now_ms),
-            ),
-        ).fetchone()
-        if row is None:
-            raise RuntimeError("news_incident_open_unresolved")
-        return int(row["incident_id"])
-
-    def close_open_incidents(self, *, cause_classes: Sequence[str] | None, now_ms: int) -> int:
-        cause_filter = "" if cause_classes is None else " AND cause_class = ANY(%s)"
-        params: tuple[Any, ...] = (int(now_ms), int(now_ms), int(now_ms))
-        if cause_classes is not None:
-            params = (*params, list(cause_classes))
-        cursor = self.conn.execute(
-            f"""
-            UPDATE news_opennews_incidents
-               SET closed_at_ms = %s, recovery_to_at_ms = COALESCE(recovery_to_at_ms, %s),
-                   recovery_status = CASE
-                     WHEN cause_class IN ('broker_backpressure', 'broker_unavailable') THEN 'pending'
-                     ELSE recovery_status
-                   END,
-                   updated_at_ms = %s
-             WHERE closed_at_ms IS NULL{cause_filter}
-            """,  # noqa: S608
-            params,
-        )
-        return int(cursor.rowcount or 0)
-
-    def pending_recovery_incidents(self, *, limit: int = 20) -> list[dict[str, Any]]:
-        sql, params = pending_recovery_incidents_statement(limit=limit)
-        rows = self.conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-
-    def recovery_backlog(self) -> dict[str, Any]:
-        rows = self.pending_recovery_incidents(limit=RECOVERY_BACKLOG_LIMIT)
-        pending_count = len(rows)
-        oldest_opened_at_ms = min((int(row["opened_at_ms"]) for row in rows), default=None)
-        latest_error = max(
-            (row for row in rows if row["last_error_code"] is not None),
-            key=lambda row: (int(row["updated_at_ms"]), int(row["incident_id"])),
-            default=None,
-        )
-        last_error_code = latest_error["last_error_code"] if latest_error is not None else None
-        return {
-            "pending_count": pending_count,
-            "oldest_opened_at_ms": oldest_opened_at_ms,
-            "last_error_code": last_error_code,
-            "reason": (
-                "recovery_transient"
-                if pending_count and last_error_code is not None
-                else ("recovery_pending" if pending_count else None)
-            ),
-        }
-
-    def open_incident_summary(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            """
-            SELECT cause_class, count(*)::int AS count, min(opened_at_ms) AS oldest_opened_at_ms
-              FROM news_opennews_incidents
-             WHERE closed_at_ms IS NULL
-             GROUP BY cause_class
-             ORDER BY cause_class
-            """
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-    def record_recovery_error(self, *, incident_id: int, error_code: str, now_ms: int) -> bool:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_opennews_incidents
-               SET last_error_code = %s, updated_at_ms = %s
-             WHERE incident_id = %s AND recovery_status = 'pending'
-            """,
-            (str(error_code)[:200], int(now_ms), int(incident_id)),
-        )
-        return bool(cursor.rowcount)
-
-    def complete_recovery(
-        self,
-        *,
-        incident_id: int,
-        status: str,
-        recovered_count: int,
-        error_code: str | None,
-        recovery_from_at_ms: int | None,
-        recovery_to_at_ms: int | None,
-        now_ms: int,
-    ) -> bool:
-        cursor = self.conn.execute(
-            """
-            UPDATE news_opennews_incidents
-               SET recovery_status = %s, recovered_count = recovered_count + %s, last_error_code = %s,
-                   recovery_from_at_ms = COALESCE(%s, recovery_from_at_ms),
-                   recovery_to_at_ms = COALESCE(%s, recovery_to_at_ms), updated_at_ms = %s
-             WHERE incident_id = %s AND recovery_status = 'pending'
-            """,
-            (
-                status,
-                int(recovered_count),
-                error_code,
-                recovery_from_at_ms,
-                recovery_to_at_ms,
-                int(now_ms),
-                int(incident_id),
-            ),
-        )
-        return bool(cursor.rowcount)
-
-    def open_incidents(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute(OPEN_INCIDENTS_SQL).fetchall()
-        return [dict(r) for r in rows]
-
     def expire_bands(self, *, now_ms: int, batch_size: int = 500) -> int:
         size = int(batch_size)
         if not 1 <= size <= RAW_RETENTION_BATCH_MAX:
@@ -492,27 +255,27 @@ class OperationsStorage:
         false or its turn budget is exhausted.
 
         Deleting `news_items` cascades to their Events and dependent evidence, updates, and deliveries.
-        It also cascades to market facts whose source Item is removed. An Item is evidence when any Event
-        it belongs to, as leader or later member, has an adopted update. A market Item is kept for the
-        adopted period outright. Passing no ``judged_cutoff_ms`` uses the raw cutoff alone.
+        An Item is evidence when any Event
+        it belongs to, as leader or later member, has an adopted update. Passing no ``judged_cutoff_ms`` uses the
+            raw cutoff alone.
         """
 
         size = int(batch_size)
         if not 1 <= size <= RAW_RETENTION_BATCH_MAX:
             raise ValueError("news_raw_retention_batch_invalid")
         judged = None if judged_cutoff_ms is None else int(judged_cutoff_ms)
-        candidate_params = (int(cutoff_ms), judged, judged, judged, judged, judged, size)
+        candidate_params = (int(cutoff_ms), judged, judged, judged, size)
         candidates = self.conn.execute(RAW_RETENTION_CANDIDATE_SQL, candidate_params).fetchall()
         candidate_ids = [str(row["item_id"]) for row in candidates]
         deleted = []
         if candidate_ids:
             deleted = self.conn.execute(
                 _RAW_RETENTION_DELETE_SQL,
-                (candidate_ids, int(cutoff_ms), judged, judged, judged, judged, judged),
+                (candidate_ids, int(cutoff_ms), judged, judged, judged),
             ).fetchall()
         backlog = self.conn.execute(
             RAW_RETENTION_CANDIDATE_SQL,
-            (int(cutoff_ms), judged, judged, judged, judged, judged, size + 1),
+            (int(cutoff_ms), judged, judged, judged, size + 1),
         ).fetchall()
         return {
             "candidate_items": len(candidate_ids),
@@ -520,4 +283,31 @@ class OperationsStorage:
             "backlog_items": len(backlog),
             "backlog_capped": len(backlog) > size,
             "oldest_observed_at_ms": None if not backlog else int(backlog[0]["observed_at_ms"]),
+        }
+
+    def purge_market_observations(self, *, cutoff_ms: int, batch_size: int = 500) -> dict[str, Any]:
+        size = int(batch_size)
+        if not 1 <= size <= RAW_RETENTION_BATCH_MAX:
+            raise ValueError("news_market_retention_batch_invalid")
+        deleted = self.conn.execute(
+            """
+            DELETE FROM news_market_observations WHERE observation_id IN (
+              SELECT observation_id FROM news_market_observations WHERE received_at_ms < %s
+              ORDER BY received_at_ms,observation_id LIMIT %s)
+            RETURNING observation_id
+        """,
+            (cutoff_ms, size),
+        ).fetchall()
+        backlog = self.conn.execute(
+            """
+            SELECT received_at_ms FROM news_market_observations WHERE received_at_ms < %s
+            ORDER BY received_at_ms,observation_id LIMIT %s
+        """,
+            (cutoff_ms, size + 1),
+        ).fetchall()
+        return {
+            "deleted_items": len(deleted),
+            "backlog_items": len(backlog),
+            "backlog_capped": len(backlog) > size,
+            "oldest_observed_at_ms": None if not backlog else backlog[0]["received_at_ms"],
         }

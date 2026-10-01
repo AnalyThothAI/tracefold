@@ -15,7 +15,7 @@ from tests.news.net_buy_fixtures import movement, roster, snapshot
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame, admit_market_item, prepare_wallet_observation, wallet_item_id
-from tracefold.news.wallet_contracts import WalletEvent, WalletOutcome
+from tracefold.news.wallet_contracts import WalletEvent
 from tracefold.platform.market_identity import AssetId, InstrumentRef
 from tracefold.trading.engine.target import TargetSelection
 
@@ -66,26 +66,10 @@ def seed_research(dsn: str) -> None:
                 notification_eligible=False,
                 notification_reason="wallet_notifications_disabled",
                 initial_snapshot=snapshot(fills, members=members, cutoff_at_ms=stamp, coverage_from_ms=stamp - 3600000),
-                reference_price=Decimal("2"),
-                reference_at_ms=stamp,
-                reference_source="recorded_fixture",
             )
             prepared = prepare_wallet_observation(replace(event, item_id=wallet_item_id(event)))
             admit_market_item(repos, prepared, ingest_mode="live", trace_id="browser-wallet", now_ms=stamp)
             repos.news.chain_tape_record_fills(fills)
-            repos.news.chain_tape_record_outcome(
-                WalletOutcome(
-                    item_id=prepared.item_id,
-                    horizon="15m",
-                    price=Decimal("2.2"),
-                    at_ms=stamp + 900000,
-                    source="recorded_fixture",
-                    reference_price=Decimal("2"),
-                    reference_at_ms=stamp,
-                    target_at_ms=stamp + 900000,
-                    status="comparable",
-                )
-            )
             asset = AssetId("crypto", "BTC")
             instrument = InstrumentRef(
                 venue="binance.usdm",

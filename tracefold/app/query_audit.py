@@ -64,7 +64,6 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_feed_text_search_counts",
         "news_feed_text_search_cursor",
         "news_event_asset_projection",
-        "news_reaction_attach",
     ),
     "/api/news/quotes": ("news_quote_snapshot_read",),
     # #553. Three statements per list request -- the collapsed page, the per-kind intake summary and
@@ -84,7 +83,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     ),
     "/api/news/wallets": ("news_wallet_roster", "news_wallet_tape_state", "news_wallet_notification_funnel"),
     "/api/news/wallets/events": ("news_wallet_events", "news_wallet_event_totals"),
-    "/api/news/wallets/events/{episode_id}": ("news_wallet_event", "news_wallet_event_fills", "news_wallet_outcomes"),
+    "/api/news/wallets/events/{episode_id}": ("news_wallet_event", "news_wallet_event_fills"),
     # Three reads per request, and all three are named: `is_tradeable` runs its own statement and a
     # manifest that omitted it would let `db query-audit --analyze` report full coverage of a public route
     # while never planning one of its queries.
@@ -102,7 +101,6 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_event_semantic_observations",
         "news_event_notification_work",
         "news_event_asset_projection",
-        "news_reaction_attach",
     ),
     "/api/news/items/{item_id}/events": (
         "news_item_related_count",

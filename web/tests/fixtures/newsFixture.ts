@@ -10,9 +10,7 @@ import type {
   NewsProcessing,
   NewsStatus,
   NewsTimelineStep,
-  NewsEventReaction,
   NewsQuote,
-  NewsReaction,
   NewsSymbol,
   NewsMarket,
   NewsMarketGroup,
@@ -87,9 +85,6 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
     provenance: ["opennews:1018"],
     provider_score_max: 88,
     published_at_ms: NEWS_NOW_MS - 25_000,
-    // #207 PR-W1: the feed row carries the Event Reaction in its own column. A row whose horizons have not
-    // matured overrides `state` — it must read 未到期, never 0.00%.
-    reaction: newsReactionFixture(),
     reporting_origin: "Reuters World",
     storyline_key: "asset:BTC",
     update: {
@@ -952,9 +947,6 @@ export function newsWalletEventFixture(overrides: Partial<NewsWalletEvent> = {})
     first_attempt_at_ms: NEWS_NOW_MS - 86_000,
     settled_at_ms: NEWS_NOW_MS - 85_000,
     attempts: 1,
-    reference_price: null,
-    reference_at_ms: null,
-    reference_source: null,
     ...overrides,
   };
 }
@@ -1018,7 +1010,6 @@ export function newsWalletEventDetailFixture(
       roster_version: 3,
     })),
     next_fills_cursor: null,
-    outcomes: [],
     ...overrides,
   };
 }
@@ -1124,56 +1115,6 @@ export function newsQuoteFixture(overrides: Partial<NewsQuote> = {}): NewsQuote 
   };
 }
 
-export function newsReactionFixture(overrides: Partial<NewsReaction> = {}): NewsReaction {
-  return {
-    asset_n: 1,
-    metric_version: "reaction_v2",
-    priced_n: 1,
-    return_1h_bps: 152,
-    return_4h_bps: -87,
-    state: "complete",
-    state_zh: "已完成",
-    unavailable_reason: null,
-    unavailable_reason_zh: "",
-    ...overrides,
-  };
-}
-
-export function newsEventReactionFixture(
-  overrides: Partial<NewsEventReaction> = {},
-): NewsEventReaction {
-  return {
-    anchor_at_ms: NEWS_NOW_MS - 6 * 3_600_000,
-    instrument_class: "crypto",
-    is_primary: true,
-    metric_version: "reaction_v2",
-    p0: "68000.0",
-    p0_at_ms: NEWS_NOW_MS - 6 * 3_600_000,
-    p1: "69033.6",
-    p1_at_ms: NEWS_NOW_MS - 5 * 3_600_000,
-    p4: "67408.4",
-    p4_at_ms: NEWS_NOW_MS - 2 * 3_600_000,
-    return_1h_bps: 152,
-    return_4h_bps: -87,
-    state: "complete",
-    state_zh: "已完成",
-    symbol: "BTC",
-    unavailable_reason: null,
-    unavailable_reason_zh: "",
-    updated_at_ms: NEWS_NOW_MS,
-    venue: "binance.perp",
-    venue_symbol: "BTCUSDT",
-    ...overrides,
-  };
-}
-
-/**
- * One `base_symbol`'s identity card (#207 PR-W1).
- *
- * `us.listed` is in the contracts on purpose: it is what makes `known` and `tradeable` two different
- * answers, and a fixture that only ever shipped tradeable venues could not tell them apart. A test that
- * wants the name-nothing-lists case passes `{ contracts: [], known: false, tradeable: false, venues: [] }`.
- */
 export function newsSymbolFixture(overrides: Partial<NewsSymbol> = {}): NewsSymbol {
   return {
     base_symbol: "WIF",
@@ -1204,9 +1145,6 @@ export function newsSymbolFixture(overrides: Partial<NewsSymbol> = {}): NewsSymb
 export function newsWalletDecimalDetailFixture(): NewsWalletEventDetail {
   const data = newsWalletEventDetailFixture();
   const event = data.event;
-  event.reference_price = "1.23e-28";
-  event.reference_at_ms = event.triggered_at_ms;
-  event.reference_source = "recorded";
   const window = event.latest_snapshot.window;
   window.members[0] = {
     ...window.members[0],
@@ -1221,18 +1159,5 @@ export function newsWalletDecimalDetailFixture(): NewsWalletEventDetail {
   window.buy_usd = "9000";
   window.sell_usd = "1000";
   window.net_usd = "8000";
-  data.outcomes = [
-    {
-      horizon: "15m",
-      target_at_ms: event.triggered_at_ms + 900000,
-      at_ms: event.triggered_at_ms + 900000,
-      price: "1.23e-28",
-      source: "recorded",
-      reference_price: "1.23e-28",
-      reference_at_ms: event.triggered_at_ms,
-      status: "comparable",
-      change_percent: "0",
-    },
-  ];
   return data;
 }

@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import replace
-from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -22,7 +21,7 @@ from tracefold.news.market_contracts import REASON_UNPROCESSED
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame, admit_market_item, prepare_wallet_observation
 from tracefold.news.storage.market import _OBSERVATION_KEYS, INTERNAL_OBSERVATION_KEYS
-from tracefold.news.wallet_contracts import WalletEvent, WalletReference
+from tracefold.news.wallet_contracts import WalletEvent
 from tracefold.platform.config.models import NewsSettings, Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -246,14 +245,14 @@ def test_the_market_surface_answers_when_the_pipeline_status_read_cannot(app, co
         ),
         at_ms=NOW,
     )
-    conn.execute("DROP TABLE IF EXISTS news_ingest_state_backup")
-    conn.execute("ALTER TABLE news_ingest_state RENAME TO news_ingest_state_backup")
+    conn.execute("DROP TABLE IF EXISTS news_collectors_backup")
+    conn.execute("ALTER TABLE news_collectors RENAME TO news_collectors_backup")
     conn.commit()
     try:
         with TestClient(app) as client:
             market = client.get(f"/api/news/market?from_ms={NOW - 1}&to_ms={NOW + 1}", headers=AUTH)
     finally:
-        conn.execute("ALTER TABLE news_ingest_state_backup RENAME TO news_ingest_state")
+        conn.execute("ALTER TABLE news_collectors_backup RENAME TO news_collectors")
         conn.commit()
 
     body = market.json()["data"]
@@ -474,25 +473,8 @@ def test_wallet_events_paging_totals_deep_link_and_old_contract_rejection(app, c
         assert direct.status_code == 200, direct.text
         detail = direct.json()["data"]
         assert detail["event"]["initial_snapshot"]["window"]["net_usd"] == "6000"
-        # The sampler's t0 stage is the only writer of the baseline, and the detail projects what it
-        # wrote -- price, moment and source together, with no horizon receipt yet (#649 §8).
-        assert detail["event"]["reference_price"] is None and detail["outcomes"] == []
-        repos = repositories_for_connection(conn)
-        with repos.transaction():
-            assert repos.news.chain_tape_record_reference(
-                WalletReference(
-                    item_id=ids[0],
-                    price=Decimal("1.25"),
-                    at_ms=stamp + 4000,
-                    source="dexscreener_robinhood_chain_base_token",
-                    trigger_at_ms=stamp,
-                )
-            )
-        conn.commit()
-        baseline = client.get(f"/api/news/wallets/events/{ids[0]}", headers=AUTH).json()["data"]["event"]
-        assert baseline["reference_price"] == "1.25"
-        assert baseline["reference_at_ms"] == stamp + 4000
-        assert baseline["reference_source"] == "dexscreener_robinhood_chain_base_token"
+        assert "outcomes" not in detail
+        assert not ({"reference_price", "reference_at_ms", "reference_source"} & detail["event"].keys())
         assert client.get("/api/news/wallets/cards", headers=AUTH).status_code == 404
         for params in (
             {"window": "24h"},
@@ -566,7 +548,7 @@ def _roster_and_tape(conn: Any, *, quality: int, whale: int, at_ms: int, monitor
             gap_at_ms=None,
             wallets=snapshot.wallets,
         )
-        conn.execute("UPDATE news_market_wallet_roster SET monitoring_from_ms = %s", (monitoring_from_ms,))
+        conn.execute("UPDATE news_market_wallets SET monitoring_from_ms = %s", (monitoring_from_ms,))
         # The refresh task's own record, which is what the page reads since #649 §5.1: this list was
         # published by a refresh that completed, so both stamps are that refresh's.
         repos.news.chain_tape_save_roster_refresh(now_ms=at_ms - 600_000, succeeded=True, error=None)
@@ -640,7 +622,11 @@ def test_wallet_status_reports_a_roster_refresh_failure_without_moving_the_publi
 def test_wallet_status_calls_a_stale_collection_cutoff_lagging(app, conn):
     now = int(time.time() * 1000)
     _roster_and_tape(conn, quality=6, whale=6, at_ms=now, monitoring_from_ms=now - 3_600_000)
-    conn.execute("UPDATE news_market_wallet_tape_state SET scanned_at_ms = %s", (now - 120_000,))
+    conn.execute(
+        "UPDATE news_collectors SET state=jsonb_set(state,'{scanned_at_ms}',to_jsonb(%s::bigint)) "
+        " WHERE collector_id='chain_tape'",
+        (now - 120_000,),
+    )
     conn.commit()
     with TestClient(app) as client:
         status = client.get("/api/news/wallets", headers=AUTH).json()["data"]
@@ -678,7 +664,11 @@ def test_wallet_detail_timeline_exact_cutoff_and_keyset_include_small_sell_and_t
 def test_wallet_status_does_not_call_a_gapped_monitoring_window_supported(app, conn):
     now = int(time.time() * 1000)
     _roster_and_tape(conn, quality=0, whale=147, at_ms=now, monitoring_from_ms=now - 3_600_000)
-    conn.execute("UPDATE news_market_wallet_tape_state SET gap_at_ms = %s", (now - 1000,))
+    conn.execute(
+        "UPDATE news_collectors SET state=jsonb_set(state,'{gap_at_ms}',to_jsonb(%s::bigint)) "
+        " WHERE collector_id='chain_tape'",
+        (now - 1000,),
+    )
     conn.commit()
     with TestClient(app) as client:
         status = client.get("/api/news/wallets", headers=AUTH).json()["data"]

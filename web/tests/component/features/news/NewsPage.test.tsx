@@ -6,7 +6,6 @@ import {
   NEWS_NOW_MS,
   newsDeliveryFixture,
   newsEventDetailFixture,
-  newsEventReactionFixture,
   newsFeedEventFixture,
   newsFeedFixture,
   newsOutcomeFixture,
@@ -1171,34 +1170,14 @@ describe("NewsPage", () => {
     }
   });
 
-  it("hides same-name non-primary market candidates from Event evidence", async () => {
-    server.use(
-      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsEventDetailFixture({
-            reaction: null,
-            reactions: [
-              newsEventReactionFixture({ is_primary: true, symbol: "NVDA" }),
-              newsEventReactionFixture({
-                is_primary: false,
-                symbol: "GLM",
-                venue_symbol: "GLMUSDT",
-              }),
-            ],
-          }),
-        }),
-      ),
-    );
+  it("keeps current quotes after retiring event returns", async () => {
     renderNews(
       <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
       "/news/events/evt-global-policy",
     );
-
     await screen.findByRole("heading", { level: 1, name: "钢铁进口关税上调至 50%" });
-    expect(screen.getByText("NVDA")).toBeInTheDocument();
-    expect(screen.queryByText("GLM")).not.toBeInTheDocument();
-    expect(screen.getByText(/已隐藏 1 个同名但非主标的/)).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "当前行情" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("事件后反应")).not.toBeInTheDocument();
   });
 
   it("explains a degraded, throttled, and failed-delivery Event without inventing state", async () => {

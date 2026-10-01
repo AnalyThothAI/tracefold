@@ -27,6 +27,7 @@ from ..update_view import (
     sent_headline,
 )
 from . import update_reads
+from .collectors import STATUS_INGEST_SQL
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_SQL,
@@ -42,7 +43,6 @@ from .feed_sql import (
     STATUS_FUNNEL_REVIEW_RATIOS_SQL,
     STATUS_FUNNEL_REVIEWS_SQL,
     STATUS_FUNNEL_TOTALS_SQL,
-    STATUS_INGEST_SQL,
     STATUS_PIPELINE_SQL,
     STATUS_SOURCE_CONTRACTS_SQL,
     SUBJECT_CODE_PREDICATE,

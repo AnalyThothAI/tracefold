@@ -61,7 +61,7 @@ def test_alias_change_is_not_membership_change_and_preserves_monitoring(conn: An
     site, clock = Site(5), [NOW]
     task = loop(conn, site, clock)
     asyncio.run(task.advance())
-    conn.execute("UPDATE news_market_wallet_roster SET monitoring_from_ms = %s", (NOW,))
+    conn.execute("UPDATE news_market_wallets SET monitoring_from_ms = %s", (NOW,))
     conn.commit()
     site.rows = tuple(replace(m, handle="new alias") for m in site.rows)
     clock[0] += 3_600_000
@@ -139,7 +139,13 @@ def test_membership_change_and_rejoin_only_inherit_continuous_collection(conn: A
     assert {r["monitoring_from_ms"] for r in news.chain_tape_members(3)} == {NOW}
     with conn.transaction():
         news.chain_tape_store_roster((a,), now_ms=NOW + 3000)
-        conn.execute("UPDATE news_market_wallet_tape_state SET scanned_at_ms=%s", (NOW + 1_900_000,))
+        conn.execute(
+            (
+                "UPDATE news_collectors SET state=state || "
+                "jsonb_build_object('scanned_at_ms',%s::bigint) WHERE collector_id='chain_tape'"
+            ),
+            (NOW + 1_900_000,),
+        )
         news.chain_tape_store_roster((a, b), now_ms=NOW + 2_000_000)
     rows = {r["wallet"]: r for r in news.chain_tape_members(5)}
     assert rows[a.wallet]["monitoring_from_ms"] == NOW
@@ -162,4 +168,5 @@ def test_old_collection_turn_cannot_mark_concurrently_added_version_monitored(co
             wallets=(a.wallet,),
             roster_version=1,
         )
-    assert all(r["monitoring_from_ms"] is None for r in news.chain_tape_members(2))
+    monitoring = {r["wallet"]: r["monitoring_from_ms"] for r in news.chain_tape_members(2)}
+    assert monitoring == {a.wallet: NOW, b.wallet: None}

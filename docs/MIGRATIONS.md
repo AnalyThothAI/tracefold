@@ -10,6 +10,12 @@
 
 本地行为证明由 [P0 迁移测试](../tests/integration/test_p0_migration.py)、[待处置消费测试](../tests/integration/test_p0_executor_pending.py) 和 [状态缓存测试](../tests/test_measured_once.py)维护。
 
+`20261001_0421`（#764 P1）从 `0420` 升级：市场 Item 与三类事实并入 `news_market_observations`，保留观测 ID、分组键、通知标记和 OI outbox 身份；钱包快照转换为 `news_market_wallets` 成员区间；四个采集器状态与事故归 `news_collectors`。编辑 `news_items` 删除七个市场列，反应与钱包 outcome 表和字段删除。迁移内冻结旧投影并双向 `EXCEPT ALL`，核对事实数、历史成员、当前监控值、链游标与未完成事故。
+
+P1 停 Serve、Workers、Analysis 后执行。备份外另导出 `news_oi_signals`、`news_market_liquidations`、`news_market_smart_money`、`news_market_wallet_roster`、`news_market_wallet_tape_state`、`news_market_instrument_snapshot_state`、`news_opennews_incidents`、`news_ingest_state`、`news_event_reactions`、`news_market_wallet_outcomes`，以及 `news_items` 和 `news_market_wallet_events`；记录 sha256 并验证 `pg_restore -l` 可读。市场行成为编辑证据、来源事实不匹配、语义常量或派生身份不一致时拒绝升级。backlog、未开始卡片、游标与待恢复事故保留；残留 `sending` 由启动扫描标记 `unknown`。恢复后核对 kind / notify_state 分布、当前名单与 `scanned_block`；回滚使用已验证备份和旧镜像。
+
+[P1 迁移测试](../tests/integration/test_p1_migration.py)用 P0 固定市场 JSON 证明分组、详情、时间线不变；[采集器与重放测试](../tests/integration/test_p1_market_collectors.py)覆盖 `xmin`、outbox、成员区间与并发事故。生产导出、恢复彩排、部署后性能与三天写入观测属于上线验收，尚未由这些本地测试证明。
+
 <details>
 <summary><strong>本页目录</strong></summary>
 
@@ -37,7 +43,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20261001_0420`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20261001_0421`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序
