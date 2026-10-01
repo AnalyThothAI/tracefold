@@ -32,12 +32,15 @@ from tests.support.scripted_lm import ScriptedLM
 from tracefold.app.cli.commands import news_diagnostics
 from tracefold.app.cli.parser import build_parser
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.adapters.extraction import DspyExtractor
 from tracefold.news.bus import BusMessage
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.semantic import SemanticWorker
-from tracefold.news.storage.event_update_store import PgJudgmentCache, PgNewsStore, PgSourceReader
-from tracefold.news.storage.event_updates import JUDGMENT_CACHE_RETENTION_MS, SEMANTIC_ATTEMPTS_MAX
+from tracefold.news.storage.judgment_cache import JUDGMENT_CACHE_RETENTION_MS
+from tracefold.news.storage.judgment_store import PgJudgmentCache
+from tracefold.news.storage.semantic_store import PgSemanticStore, PgSourceReader
+from tracefold.news.storage.semantic_work import SEMANTIC_ATTEMPTS_MAX
 from tracefold.news.updates.contracts import (
     Citation,
     ClaimFields,
@@ -48,7 +51,6 @@ from tracefold.news.updates.contracts import (
     RelationDraft,
     SupportDraft,
 )
-from tracefold.news.updates.dspy_backend import DspyExtractor
 from tracefold.news.updates.judgment import (
     Answer,
     BatchResult,
@@ -88,7 +90,7 @@ def test_a_body_revision_of_one_provider_record_is_new_evidence_and_new_semantic
     assert [row["evidence_version"] for row in snapshots(event_id)] == [1]
     assert work(event_id)["wanted_revision"] == 1 and len(bus.wakes()) == 1
     assert sql("SELECT count(*) AS n FROM news_item_revisions")[0]["n"] == 0
-    store = PgNewsStore(ThreadedDb(), clock=Clock(STAMP + 6_000))
+    store = PgSemanticStore(ThreadedDb(), clock=Clock(STAMP + 6_000))
     assert asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p"), event_id)) == "adopted"
     original = asyncio.run(store.head(event_id))
     assert original is not None and original.input_revision == 1
@@ -107,7 +109,7 @@ def test_a_body_revision_of_one_provider_record_is_new_evidence_and_new_semantic
     assert work(event_id)["wanted_revision"] == 2
     assert bus.wakes() == [f"event:{event_id}:1", f"event:{event_id}:2"]
 
-    source = asyncio.run(PgNewsStore(ThreadedDb(), clock=Clock(STAMP + 20_000)).input_for(event_id))
+    source = asyncio.run(PgSemanticStore(ThreadedDb(), clock=Clock(STAMP + 20_000)).input_for(event_id))
     assert source.revision == 2
     texts = {evidence.text: evidence.source for evidence in source.evidence}
     assert set(texts) == {revision[0]["evidence_text"]}
@@ -128,7 +130,7 @@ def test_an_attribution_only_revision_is_new_evidence_with_the_new_source() -> N
     asyncio.run(deduper.handle(raw(7051, TITLE, stamp=STAMP, source="Reuters")))
     event_id = event_of(7051)
     clock = Clock(STAMP + 5_000)
-    store = PgNewsStore(ThreadedDb(), clock=clock)
+    store = PgSemanticStore(ThreadedDb(), clock=clock)
     agent = NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock)
     assert asyncio.run(run_agent(agent, event_id)) == "adopted"
     first = asyncio.run(store.head(event_id))
@@ -165,7 +167,7 @@ def test_a_near_match_joins_as_a_member_and_wakes_semantics_instead_of_settling(
 
 def test_consecutive_members_extract_only_the_unadopted_material_and_carry_old_claims() -> None:
     clock = Clock(STAMP + 60_000)
-    store = PgNewsStore(ThreadedDb(), clock=clock)
+    store = PgSemanticStore(ThreadedDb(), clock=clock)
     seed_event()
     first_analyzer = StubAnalyzer()
     assert (
@@ -207,7 +209,7 @@ def test_consecutive_members_extract_only_the_unadopted_material_and_carry_old_c
 
 def test_equivalent_new_member_amends_the_source_without_a_new_claim() -> None:
     clock = Clock(STAMP + 60_000)
-    store = PgNewsStore(ThreadedDb(), clock=clock)
+    store = PgSemanticStore(ThreadedDb(), clock=clock)
     seed_event()
     assert (
         asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock), EVENT)) == "adopted"
@@ -235,7 +237,7 @@ def test_equivalent_new_member_amends_the_source_without_a_new_claim() -> None:
 
 def test_no_new_source_identity_settles_the_revision_without_reextracting() -> None:
     clock = Clock(STAMP + 60_000)
-    store = PgNewsStore(ThreadedDb(), clock=clock)
+    store = PgSemanticStore(ThreadedDb(), clock=clock)
     seed_event()
     analyzer = StubAnalyzer()
     agent = NewsAgent(store, analyzer, program_identity="p", clock=clock)
@@ -253,7 +255,7 @@ def test_no_new_source_identity_settles_the_revision_without_reextracting() -> N
 
 def test_analyzed_material_without_a_claim_is_not_reextracted_on_the_next_revision() -> None:
     clock = Clock(STAMP + 60_000)
-    store = PgNewsStore(ThreadedDb(), clock=clock)
+    store = PgSemanticStore(ThreadedDb(), clock=clock)
     seed_event()
     first_agent = NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock)
     assert asyncio.run(run_agent(first_agent, EVENT)) == "adopted"
@@ -339,7 +341,7 @@ class LeaderExtractor:
 def test_provider_failures_defer_and_only_the_last_attempt_adopts_an_unresolved_comparison() -> None:
     clock = Clock(STAMP + 60_000)
     db = ThreadedDb()
-    store = PgNewsStore(db, clock=clock)
+    store = PgSemanticStore(db, clock=clock)
     backend = RelationBackend()
     analyzer = SemanticAnalyzer(LeaderExtractor(), NewsJudgments(generated=backend, cache=PgJudgmentCache(db)))
     agent = NewsAgent(store, analyzer, program_identity="program-test", clock=clock)
@@ -351,7 +353,6 @@ def test_provider_failures_defer_and_only_the_last_attempt_adopts_an_unresolved_
         concurrency=1,
         circuit_failures=10,
         circuit_open_seconds=60.0,
-        program_identity="program-test",
         clock=clock,
     )
     wake = BusMessage("event", f"event:{EVENT}:1", "event.general.normal", {"event_id": EVENT}, "t", STAMP)
@@ -392,10 +393,10 @@ def test_provider_failures_defer_and_only_the_last_attempt_adopts_an_unresolved_
 
 
 def test_a_reclaimed_slow_turn_cannot_regress_the_head_or_settle_the_new_owner() -> None:
-    from tracefold.news.storage.event_updates import SemanticLeaseLost
+    from tracefold.news.storage.errors import SemanticLeaseLost
 
     clock = Clock(STAMP + 60_000)
-    store = PgNewsStore(ThreadedDb(), clock=clock)
+    store = PgSemanticStore(ThreadedDb(), clock=clock)
     seed_event()
     stale = asyncio.run(store.claim_semantic_work(EVENT, lease_ms=10))
     assert stale is not None
@@ -416,7 +417,7 @@ def test_a_reclaimed_slow_turn_cannot_regress_the_head_or_settle_the_new_owner()
 def test_input_recalls_related_heads_and_prepares_read_targets_from_stored_material() -> None:
     clock = Clock(STAMP + 60_000)
     db = ThreadedDb()
-    store = PgNewsStore(db, clock=clock)
+    store = PgSemanticStore(db, clock=clock)
     seed_event("ev-related", text="Agency previously proposed a 10% tariff on $BTC miners.", fingerprint="fp-a")
     assert asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock), "ev-related"))
     seed_event(EVENT, text="Agency orders a 25% tariff on $BTC miners.", fingerprint="fp-b")
@@ -439,7 +440,8 @@ def test_input_recalls_related_heads_and_prepares_read_targets_from_stored_mater
     assert {row.claim.ref for row in source.prior} == {claim.ref for claim in related.claims}
     assert [target.ref for target in source.read_targets] == ["news_item:it-ev-related"]
     assert source.read_targets[0].action == "load_prior_statement"
-    assert [(hint.key, hint.value, hint.surface) for hint in source.identity_hints] == [("subject_id", "BTC", "$BTC")]
+    # A cashtag supplies a retrieval feature, not proof that the referenced asset is this claim's actor.
+    assert source.identity_hints == ()
     read = asyncio.run(PgSourceReader(db).read(source.read_targets[0]))
     assert [item.text for item in read] == ["Agency previously proposed a 10% tariff on $BTC miners."]
     unknown = ReadTarget(ref="https://example.org/anything", action="read_current_artifact", description="x")
@@ -450,7 +452,8 @@ def test_the_janitor_re_wakes_stale_pending_work_and_drops_expired_judgment_answ
     monkeypatch.setattr("tracefold.news.pipeline.admission.now_ms", lambda: STAMP + 60_000)
     monkeypatch.setattr("tracefold.news.pipeline.maintenance.now_ms", lambda: STAMP + 60_000)
     monkeypatch.setattr(
-        "tracefold.news.pipeline.maintenance.PgNewsStore", lambda db: PgNewsStore(db, clock=Clock(STAMP + 60_000))
+        "tracefold.news.pipeline.maintenance.PgSemanticStore",
+        lambda db: PgSemanticStore(db, clock=Clock(STAMP + 60_000)),
     )
     seed_event()
     old = STAMP - JUDGMENT_CACHE_RETENTION_MS - 1
@@ -546,7 +549,7 @@ class PoisonExtractor:
         return Extraction(claims=claims)
 
 
-def _worker(db: ThreadedDb, store: PgNewsStore, analyzer: SemanticAnalyzer, clock: Clock) -> SemanticWorker:
+def _worker(db: ThreadedDb, store: PgSemanticStore, analyzer: SemanticAnalyzer, clock: Clock) -> SemanticWorker:
     return SemanticWorker(
         bus=RecordingBus(),
         db=db,
@@ -555,7 +558,6 @@ def _worker(db: ThreadedDb, store: PgNewsStore, analyzer: SemanticAnalyzer, cloc
         concurrency=1,
         circuit_failures=10,
         circuit_open_seconds=60.0,
-        program_identity="program-test",
         clock=clock,
     )
 
@@ -567,7 +569,7 @@ def _wake(event_id: str) -> BusMessage:
 def test_failed_material_is_quarantined_and_a_later_member_is_still_adopted() -> None:
     clock = Clock(STAMP + 60_000)
     db = ThreadedDb()
-    store = PgNewsStore(db, clock=clock)
+    store = PgSemanticStore(db, clock=clock)
     extractor = PoisonExtractor()
     analyzer = SemanticAnalyzer(extractor, NewsJudgments(generated=RelationBackend(), cache=PgJudgmentCache(db)))
     worker = _worker(db, store, analyzer, clock)
@@ -598,7 +600,9 @@ def test_failed_material_is_quarantined_and_a_later_member_is_still_adopted() ->
     try:
         with conn.transaction():
             news = repositories_for_connection(conn).news
-            listing = news.reanalysis_scope_list(event_id=EVENT, now_ms=clock.now_ms)
+            listing = news.semantic_work.reanalysis_scope_list(
+                event_id=EVENT, now_ms=clock.now_ms, input=news.semantic_input
+            )
             assert [scope["failed"] for scope in listing["scopes"]] == [True, False]
     finally:
         conn.close()
@@ -607,7 +611,7 @@ def test_failed_material_is_quarantined_and_a_later_member_is_still_adopted() ->
 def test_a_failed_revision_can_be_reanalysed_by_its_exact_revision() -> None:
     clock = Clock(STAMP + 60_000)
     db = ThreadedDb()
-    store = PgNewsStore(db, clock=clock)
+    store = PgSemanticStore(db, clock=clock)
     analyzer = SemanticAnalyzer(
         PoisonExtractor(), NewsJudgments(generated=RelationBackend(), cache=PgJudgmentCache(db))
     )
@@ -617,15 +621,18 @@ def test_a_failed_revision_can_be_reanalysed_by_its_exact_revision() -> None:
     try:
         with conn.transaction():
             news = repositories_for_connection(conn).news
-            listing = news.reanalysis_scope_list(event_id=EVENT, now_ms=clock.now_ms)
+            listing = news.semantic_work.reanalysis_scope_list(
+                event_id=EVENT, now_ms=clock.now_ms, input=news.semantic_input
+            )
             assert listing["failed"] and listing["last_error_code"] == "news_citation_not_in_frozen_source"
-            revision = news.request_reanalysis(
+            revision = news.semantic_work.request_reanalysis(
                 event_id=EVENT,
                 expected_wanted_revision=1,
                 expected_head_revision=None,
                 read_ref=listing["scopes"][0]["read_ref"],
                 reason="operator checked the quote",
                 now_ms=clock.now_ms,
+                input=news.semantic_input,
             )
     finally:
         conn.close()
@@ -643,7 +650,7 @@ def test_a_revision_failed_by_unusable_claims_is_rerun_by_the_retry_work_command
     # read again and adopted.
     clock = Clock(STAMP + 60_000)
     db = ThreadedDb()
-    store = PgNewsStore(db, clock=clock)
+    store = PgSemanticStore(db, clock=clock)
     seed_event()
     claim = {
         "slot": "a",
@@ -698,7 +705,7 @@ def test_a_revision_failed_by_unusable_claims_is_rerun_by_the_retry_work_command
 def test_an_input_that_cannot_be_built_fails_only_its_own_work() -> None:
     clock = Clock(STAMP + 60_000)
     db = ThreadedDb()
-    store = PgNewsStore(db, clock=clock)
+    store = PgSemanticStore(db, clock=clock)
     analyzer = SemanticAnalyzer(
         LeaderExtractor(), NewsJudgments(generated=RelationBackend(), cache=PgJudgmentCache(db))
     )
@@ -728,7 +735,7 @@ def _notification_work() -> dict[str, Any]:
 
 def test_only_substantive_changes_open_notification_work_while_unfinished_work_follows_the_head() -> None:
     clock = Clock(STAMP + 60_000)
-    store = PgNewsStore(ThreadedDb(), clock=clock)
+    store = PgSemanticStore(ThreadedDb(), clock=clock)
     seed_event()
     assert asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock), EVENT)) == (
         "adopted"

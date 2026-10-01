@@ -25,6 +25,7 @@ from typing import Any, Literal
 from .card_format import LINKABLE_TICKER_RE, LINKABLE_VENUE_SYMBOL_RE
 from .market_review.pricing import parse_price, quote_change_24h_bps, return_bps
 from .models import MarketAsset, ReaderMarketMovement, ReaderTradeTarget, base_symbol, market_type_of
+from .notifications.contracts import FrozenCard, NotificationPlan
 from .reader_card import (
     CARD_ASSETS_MAX,
     ChangeLabel,
@@ -37,7 +38,6 @@ from .reader_card import (
     reader_quotes,
 )
 from .updates.contracts import Claim, EventUpdate, Evidence
-from .updates.notification import FrozenCard, NotificationPlan
 
 # How many assets a card names, owned by the card model: the facts line and the quote line are two
 # views of one bound.

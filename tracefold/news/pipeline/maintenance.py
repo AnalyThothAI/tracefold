@@ -9,16 +9,9 @@ import time
 from collections.abc import Callable, Sequence
 from typing import Any, ClassVar, Literal, cast
 
-from ..bus import (
-    BrokerBackpressure,
-    BrokerPublishFailure,
-    BrokerUnavailable,
-    DeferError,
-    TransientError,
-    now_ms,
-)
-from ..storage.event_update_store import PgNewsStore
-from ..storage.event_updates import PURGE_BATCH_MAX
+from ..bus import BrokerBackpressure, BrokerPublishFailure, BrokerUnavailable, DeferError, TransientError, now_ms
+from ..storage.judgment_cache import PURGE_BATCH_MAX
+from ..storage.semantic_store import PgSemanticStore
 from ..telemetry import (
     NewsDurableEventTelemetryPort,
     NewsExternalDataSource,
@@ -277,7 +270,7 @@ class JanitorLoop:
         try:
             purged = await self.cold_db.tx(
                 "news_semantic_cache_retention",
-                lambda repos: repos.news.purge_semantic_caches(now_ms=stamp, limit=PURGE_BATCH_MAX),
+                lambda repos: repos.news.judgment_cache.purge_semantic_caches(now_ms=stamp, limit=PURGE_BATCH_MAX),
                 timeout_seconds=3.0,
             )
             if purged:
@@ -475,9 +468,13 @@ class JanitorLoop:
         stamp = now_ms()
         await self.db.tx(
             "news_semantic_terminalize_exhausted",
-            lambda repos: repos.news.terminalize_exhausted_semantic_work(now_ms=stamp, limit=_REPAIR_LIMIT),
+            lambda repos: repos.news.semantic_work.terminalize_exhausted_semantic_work(
+                now_ms=stamp, limit=_REPAIR_LIMIT
+            ),
         )
-        state = await self.db.read("news_semantic_wake_state", lambda repos: repos.news.semantic_wake_state())
+        state = await self.db.read(
+            "news_semantic_wake_state", lambda repos: repos.news.semantic_work.semantic_wake_state()
+        )
         self._record_handoff_state("event", state, stamp)
         expired = int(state.get("expired") or 0)
         if expired:
@@ -487,7 +484,7 @@ class JanitorLoop:
         async def wake(event_id: str) -> None:
             nonlocal woken
             route = await self.db.read(
-                "news_semantic_wake_route", lambda repos: repos.news.semantic_wake_route(event_id)
+                "news_semantic_wake_route", lambda repos: repos.news.semantic_work.semantic_wake_route(event_id)
             )
             if route is None:
                 return
@@ -495,5 +492,5 @@ class JanitorLoop:
             self._record_handoff_repair("event", outcome)
             woken += 1
 
-        await Repair(PgNewsStore(self.db), wake_semantic=wake).advance(limit=_REPAIR_LIMIT)
+        await Repair(PgSemanticStore(self.db), wake_semantic=wake).advance(limit=_REPAIR_LIMIT)
         return woken

@@ -1,4 +1,4 @@
-import { newsEventPath, newsSymbolPath } from "@shared/routing/paths";
+import { canOpenNewsSymbol, newsEventPath, newsSymbolPath } from "@shared/routing/paths";
 import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { Drawer } from "@shared/ui/Drawer";
 import { IconButton } from "@shared/ui/IconButton";
@@ -6,8 +6,8 @@ import * as PageState from "@shared/ui/PageState";
 import { ChevronRight, X } from "lucide-react";
 import { Link } from "react-router-dom";
 
-import { useNewsEventWithToken, useNewsQuotesWithToken } from "../../api/newsQueries";
-import { clockTime, displayAssetRefs, displayAssets, eventHeadline } from "../../model/newsLabels";
+import { newsAssetKey, useNewsEventWithToken, useNewsQuotesWithToken } from "../../api/newsQueries";
+import { clockTime, eventHeadline } from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
@@ -46,26 +46,21 @@ export function NewsEventDrawer({
   const detail = eventId ? query.data : undefined;
   const event = detail?.event;
   const update = detail?.event_update;
-  const assets = displayAssetRefs(event?.grounded_assets ?? [], event?.assets);
-  const quotesQuery = useNewsQuotesWithToken(
-    token,
-    assets.filter((asset) => asset.listed).map((asset) => asset.symbol),
-  );
+  const assets = event?.assets ?? [];
+  const quotesQuery = useNewsQuotesWithToken(token, assets);
   const quotes = (quotesQuery.data?.quotes ?? []).filter((quote) =>
-    assets.some((asset) => asset.symbol === quote.requested_symbol),
+    assets.some(
+      (asset) =>
+        newsAssetKey(asset.market_type, asset.symbol) ===
+        newsAssetKey(quote.market_type, quote.requested_symbol),
+    ),
   );
-  const quotesBySymbol = Object.fromEntries(quotes.map((quote) => [quote.requested_symbol, quote]));
-  const judgedAssets =
-    update?.claims.filter((claim) => !claim.retired).flatMap((claim) => claim.assets ?? []) ?? [];
-  const primaryTag = displayAssets(
-    judgedAssets.filter((asset) => asset.role === "primary").map((asset) => asset.symbol),
-  )[0];
-  const primarySymbol = primaryTag
-    ? assets.find(
-        (asset) =>
-          asset.listed && displayAssets([asset.symbol, asset.base_symbol]).includes(primaryTag),
-      )?.base_symbol
-    : undefined;
+  const quotesBySymbol = Object.fromEntries(
+    quotes.map((quote) => [newsAssetKey(quote.market_type, quote.requested_symbol), quote]),
+  );
+  const primarySymbol = assets.find(
+    (asset) => asset.market_type !== "unknown" && canOpenNewsSymbol(asset.base_symbol),
+  )?.base_symbol;
   const headline = event ? eventHeadline({ leader_title: event.leader_title, update }) : "事件";
   return (
     <Drawer

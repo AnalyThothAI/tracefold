@@ -40,7 +40,7 @@ from tracefold.news.market_notifications import (
     SEND_RETRY_BACKOFF_MS,
     classify_send_failure,
 )
-from tracefold.news.pipeline.delivery import InitialSendEntry
+from tracefold.news.pipeline.send_entry import InitialSendEntry
 from tracefold.news.reader_card import ReaderCard, ReaderCardHeader
 from tracefold.platform.observability import TelemetryRegistry
 

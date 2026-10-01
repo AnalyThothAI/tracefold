@@ -3,6 +3,7 @@
 import pytest
 
 from tests.support.news_event_updates import STAMP, _draft, first_update, material, raised_update
+from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
     Citation,
     Evidence,
@@ -16,7 +17,6 @@ from tracefold.news.updates.contracts import (
 )
 from tracefold.news.updates.judgment import ContractFault
 from tracefold.news.updates.public import public_updates
-from tracefold.news.updates.semantics import assemble_update
 
 
 def source_for(head, evidence, *, event_id=None):

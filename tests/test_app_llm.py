@@ -13,7 +13,7 @@ from dspy.lm15 import Message, Request, Response, Usage, response_to_events
 from tracefold.app import learning_runtime
 from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.wiring import news as workers
-from tracefold.news.updates.dspy_backend import CopySignature
+from tracefold.news.adapters.card_copy import CopySignature
 from tracefold.platform.config.models import LlmRequestConfig, Settings
 
 
@@ -330,6 +330,21 @@ def test_news_jev_is_opt_in() -> None:
     assert native.status()["judgment_backend"] == "native"
     assert native.status()["judgment_model"] == "jev-1.13"
     assert native.program_identity != trading_only.program_identity
+
+
+def test_card_model_changes_do_not_change_the_semantic_program() -> None:
+    routes = [
+        learning_runtime.compose_news_models(
+            _news_settings(news_reader_card={"api_key": "card-key", "base_url": "https://card.test/v1", "model": model})
+        )
+        for model in ("copy-one", "copy-two")
+    ]
+    first, second = routes
+    assert first is not None and second is not None
+    assert first.card.identity != second.card.identity
+    assert first.extraction.identity == second.extraction.identity
+    assert first.judgment.identity == second.judgment.identity
+    assert first.program_identity == second.program_identity
 
 
 def test_generative_lm_states_the_structured_output_capability_of_its_endpoint() -> None:

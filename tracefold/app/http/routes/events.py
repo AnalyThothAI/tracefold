@@ -5,8 +5,11 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
+from pydantic import TypeAdapter, ValidationError
 
+from tracefold.news.market_review.instruments import normalize_symbol
 from tracefold.news.market_review.pricing import QUOTE_REQUEST_SYMBOL_MAX, QuoteRequest
+from tracefold.news.models import market_type_of
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
@@ -64,72 +67,90 @@ def get_news_item_related_events(
 @router.get("/news/quotes", response_model=_QuotesEnvelope)
 def get_news_quotes(
     request: Request,
-    symbols: Annotated[str, Query(max_length=2000)] = "",
+    assets: Annotated[str, Query(max_length=12000)] = "[]",
 ) -> Response:
-    """Current quotes for a bounded symbol batch (#88).
+    """Current quotes for a bounded typed asset batch (#88).
 
     Deliberately not part of `/api/news/feed`: a price that changes every few seconds would invalidate the
     feed's ETag on every poll and drag the feed and count queries along with it. The browser derives this
     batch from the `assets[]` the feed already returned, so one query serves every row on screen.
     """
 
-    _validate_query_params(request, supported={"symbols", "token"})
-    requested = _requested_symbols(symbols)
+    _validate_query_params(request, supported={"assets", "token"})
+    requested = _requested_assets(assets)
     runtime = _authenticated_runtime(request)
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
-        # The operator console asks by symbol alone, so the question stays untyped and resolves exactly as
-        # it did before #651 §6.2. A typed answer needs the Event the symbol came from, which this batch
-        # endpoint deliberately does not have -- the card and the Reaction, which do, are typed.
-        quotes = repos.price.quotes_for_symbols([QuoteRequest(symbol) for symbol in requested], now_ms=now_ms)
+        quotes = repos.price.quotes_for_symbols(
+            [asset for asset in requested if asset.market_type != "unknown"], now_ms=now_ms
+        )
+        by_request = {(row["market_type"], row["requested_symbol"]): row for row in quotes}
+        quotes = [
+            event_schemas.NewsQuoteData(
+                requested_symbol=asset.symbol,
+                market_type=asset.market_type,
+                symbol=normalize_symbol(asset.symbol),
+                base_symbol=normalize_symbol(asset.symbol),
+                received_age_ms=None,
+                source_age_ms=None,
+                effective_age_ms=None,
+                freshness_basis=None,
+                reference_at_ms=None,
+                reference_age_ms=None,
+                state="unavailable",
+                state_zh="市场未确定",
+            ).model_dump(mode="json")
+            if asset.market_type == "unknown"
+            else by_request[(asset.market_type, asset.symbol)]
+            for asset in requested
+        ]
     return _etagged({"quotes": quotes, "measured_at_ms": now_ms}, request, envelope=_QuotesEnvelope)
 
 
 def _attach_asset_refs(events: list[dict[str, Any]], news: Any, instruments: Any) -> None:
-    """Resolve every Event's durable asset ledger against the instrument universe, in two bounded batches.
+    """Resolve current primary assets, or the source ledger before adoption, in bounded owner reads.
 
     Assembly lives in the route because the two halves have different owners: `NewsRepository` reads which assets
     concern each Event, `InstrumentsRepository` reads what they name. One round trip per owner and response, not
     one per Event. `grounded_assets` remains the provider/Gate evidence and is deliberately untouched (#287).
     """
 
-    symbols_by_event = news.event_asset_symbols([str(event["event_id"]) for event in events])
-    refs = instruments.asset_refs({symbol for symbols in symbols_by_event.values() for symbol in symbols})
+    source_events = [str(event["event_id"]) for event in events if "assets" not in event]
+    symbols_by_event = news.event_asset_symbols(source_events) if source_events else {}
+    assets_by_event = {
+        str(event["event_id"]): tuple(
+            dict.fromkeys(
+                QuoteRequest(str(asset["symbol"]).strip(), market_type_of(asset.get("market_type")))
+                for asset in event.get(
+                    "assets",
+                    [
+                        {"symbol": symbol, "market_type": "unknown"}
+                        for symbol in symbols_by_event.get(str(event["event_id"]), ())
+                    ],
+                )
+                if str(asset.get("symbol") or "").strip()
+            )
+        )
+        for event in events
+    }
+    refs = instruments.asset_refs(asset for assets in assets_by_event.values() for asset in assets)
     for event in events:
-        # One entry per instrument named. Old Gate rows may contain both `CL` and `XYZ-CL`; once those resolve
-        # they are byte-identical. The browser happens to dedupe before rendering, but a payload that hands out
-        # the same chip twice is the API's fault, not the client's.
-        seen: set[str] = set()
-        assets: list[dict[str, Any]] = []
-        for symbol in symbols_by_event.get(str(event["event_id"]), []):
-            # Keyed by the ledger symbol, exactly as `asset_refs` returns it.
-            ref = refs.get(str(symbol)) or {
-                "symbol": str(symbol).upper(),
-                "base_symbol": str(symbol).upper(),
-                "venue": None,
-                "listed": False,
-            }
-            if str(ref["symbol"]) in seen:
-                continue
-            seen.add(str(ref["symbol"]))
-            assets.append(ref)
-        event["assets"] = assets
+        # Distinct typed questions remain distinct even when their spelling or preferred venue matches.
+        event["assets"] = [refs[asset] for asset in assets_by_event[str(event["event_id"])]]
 
 
-def _requested_symbols(raw: str) -> list[str]:
-    """A deduplicated, bounded symbol list. The server deduplicates again so a noisy client cannot amplify work."""
+def _requested_assets(raw: str) -> list[QuoteRequest]:
+    """A bounded typed batch, deduplicated by the complete question rather than its ticker."""
 
-    out: list[str] = []
-    for part in str(raw or "").split(","):
-        symbol = part.strip()
-        if not symbol:
-            continue
-        if len(symbol) > 32:
-            raise ApiBadRequest("news_quotes_symbol_invalid", field="symbols")
-        if symbol not in out:
-            out.append(symbol)
+    try:
+        parsed = TypeAdapter(list[event_schemas.NewsQuoteRequestData]).validate_json(raw)
+    except ValidationError as exc:
+        raise ApiBadRequest("news_quotes_assets_invalid", field="assets") from exc
+    out = list(dict.fromkeys(QuoteRequest(asset.symbol.strip(), asset.market_type) for asset in parsed))
+    if any(not asset.symbol or any(character.isspace() for character in asset.symbol) for asset in out):
+        raise ApiBadRequest("news_quotes_assets_invalid", field="assets")
     if len(out) > QUOTE_REQUEST_SYMBOL_MAX:
-        raise ApiBadRequest("news_quotes_symbols_too_many", field="symbols")
+        raise ApiBadRequest("news_quotes_assets_too_many", field="assets")
     return out
 
 

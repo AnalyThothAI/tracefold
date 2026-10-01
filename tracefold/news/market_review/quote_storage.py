@@ -393,6 +393,8 @@ class QuoteStorage:
                     "state_zh": quote_state_zh(freshness.state),
                 }
             )
+        for request, row in zip(requested, out, strict=True):
+            row["market_type"] = request.market_type
         return out
 
     def due_reactions(self, *, now_ms: int, limit: int) -> list[dict[str, Any]]:

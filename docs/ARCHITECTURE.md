@@ -156,8 +156,10 @@ class Trading research;
 | --- | --- | --- |
 | [news/pipeline](../tracefold/news/pipeline/) | 接收、恢复、准入、语义 Worker、投递与维护 | [新闻](modules/news.md) |
 | [news/events](../tracefold/news/events/) | FactUnit 范围、实体 grounding、候选归组、去重辅助 | [新闻输入](modules/news.md#input) |
-| [news/updates](../tracefold/news/updates/) | 增量命题理解、版本化采用、通知选择、DSPy 适配、公开更新 | [新闻 Agent](modules/news.md#agent) |
-| [news/storage](../tracefold/news/storage/) | News 事实、工作、更新、回执及查询投影 | [新闻状态](modules/news.md#state) |
+| [news/updates](../tracefold/news/updates/) | 增量命题提取、关系判断、版本化采用与公开更新；`NewsAgent` 拥有语义工作流 | [新闻 Agent](modules/news.md#agent) |
+| [news/notifications](../tracefold/news/notifications/) | 回执召回、通知政策、卡片与发送状态；`Notifications` 拥有通知工作流 | [通知链路](modules/news.md#notification) |
+| [news/adapters](../tracefold/news/adapters/) | DSPy 提取、语义判断、读者判断与文案的具体模型适配 | [模型边界](modules/news.md#agent) |
+| [news/storage](../tracefold/news/storage/) | News 事实与短事务；语义、通知使用各自存储接口和显式 SQL 协作者 | [新闻状态](modules/news.md#state) |
 | [market_notifications.py](../tracefold/news/market_notifications.py) | OI / 清算 / 大户 / 钱包通知的确定性分支与发送循环 | [市场观察](modules/oi.md) |
 | [news/market_review](../tracefold/news/market_review/) | 标的目录、当前报价、固定期限 Event Reaction | [行情复盘](modules/market-review.md) |
 | [news/chain_tape](../tracefold/news/chain_tape/) | 名单、回执完整前缀、成交解释、净买入与价格采样 | [钱包](modules/wallets.md) |
@@ -182,6 +184,8 @@ class Trading research;
 | 链上回执 | 已发布名单 → 完整回执前缀 → 成交解释 → 净买入 episode | 钱包通知、详情与独立价格观察 |
 
 OI 不先通过编辑型新闻模型；钱包首报不先经过 LLM 或价格收益评估。三者共用必要基础设施和发送适配，但不共用一套虚构的“总评分”或 Event 状态。
+
+编辑型新闻保留三个逻辑职责，只有两个业务工作流所有者：`NewsAgent` 提取与采用事实，`Notifications` 选择通知并完成持久发送。执行由 `NotificationSender`、行情查询与回执编辑协作者承担，经唯一 `InitialSendEntry` 共享发送时隙；`DelivererLoop` 只调度。实体特征由纯 [entities.py](../tracefold/news/entities.py) 提供，严格身份与关联召回分开。具体文件、数据契约和事务时序见 [News 手册](modules/news.md)。
 
 <a id="handoff"></a>
 <a id="section-news--trading先持久接收再确认来源"></a>

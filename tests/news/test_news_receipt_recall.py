@@ -15,20 +15,21 @@ from tests.support.news_recall_window import (
     probe_window,
 )
 from tests.support.news_update_semantic import draft, material
-from tracefold.news.updates import receipt_recall
-from tracefold.news.updates.contracts import Asset, Claim, Extraction, FrozenInput, IdentityHint
-from tracefold.news.updates.identity import digest
-from tracefold.news.updates.reader_judgments import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
-from tracefold.news.updates.receipt_recall import (
+from tracefold.news.entities import asset_retrieval_symbols
+from tracefold.news.notifications import recall as receipt_recall
+from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
+from tracefold.news.notifications.recall import (
     RecallCandidate,
     RouteEvidence,
-    asset_symbols,
     lexical_evidence,
     query_for_claim,
     reader_context_revision,
     select_for_claim,
 )
-from tracefold.news.updates.semantics import assemble_update
+from tracefold.news.storage.notification_context import listing_compatible_links
+from tracefold.news.updates.assembly import assemble_update
+from tracefold.news.updates.contracts import Asset, Claim, Extraction, FrozenInput, IdentityHint
+from tracefold.news.updates.identity import digest
 
 STAMP = 1_790_405_000_000
 
@@ -106,11 +107,15 @@ def test_silver_history_is_recalled_across_spellings_and_languages() -> None:
 
 
 def test_asset_spelling_is_canonical_but_market_type_still_separates() -> None:
-    assert asset_symbols("$OKLO", "crypto") == asset_symbols(" oklo ", "crypto") == {"OKLO"}
-    assert asset_symbols("xyz:GOLD", "commodity") >= {"GOLD"} and "GOLD" in asset_symbols("spot gold", "commodity")
-    assert asset_symbols("WTI", "commodity") == asset_symbols("oil", "commodity") == {"CL"}
+    assert asset_retrieval_symbols("$OKLO", "crypto") == asset_retrieval_symbols(" oklo ", "crypto") == {"OKLO"}
+    assert asset_retrieval_symbols("xyz:GOLD", "commodity") >= {"GOLD"} and "GOLD" in asset_retrieval_symbols(
+        "spot gold", "commodity"
+    )
+    assert "CL" in asset_retrieval_symbols("WTI", "commodity") & asset_retrieval_symbols("oil", "commodity")
     # A commodity word names the commodity only on a commodity asset.
-    assert asset_symbols("Silver", "equity") == {"SILVER"} and asset_symbols("白银", "equity") == {"白银"}
+    assert asset_retrieval_symbols("Silver", "equity") == {"SILVER"} and asset_retrieval_symbols("白银", "equity") == {
+        "白银"
+    }
     oklo = claim("Oklo shares jump", asset="OKLO", market="equity")
     listed = claim("Oklo token listed", asset="$OKLO", market="crypto")
     assert select(oklo, [receipt("listing", "代币上线", STAMP - 1, listed)]).intent_ids == ()
@@ -134,6 +139,91 @@ def test_sql_lexical_rank_is_preserved_by_final_fusion() -> None:
         },
     )
     assert selected.intent_ids == ("ranked-first", "recent")
+
+
+def test_hot_actor_and_mentioned_asset_do_not_crowd_out_concrete_receipts() -> None:
+    current = claim("Aster lists CTUSDT perpetual", asset="CTUSDT", market="crypto", subject="Aster")
+    current = current.model_copy(update={"fields": current.fields.model_copy(update={"object": "CTUSDT perpetual"})})
+    exact_object = claim("An earlier contract announcement", subject="Other spelling")
+    exact_object = exact_object.model_copy(
+        update={"fields": exact_object.fields.model_copy(update={"object": "CTUSDT perpetual"})}
+    )
+    primary = claim("同一标的的另一阶段", asset="CTUSDT", market="crypto", subject="另一个写法")
+    mentioned = claim("Aster discusses an unrelated product", asset="CTUSDT", market="crypto", subject="Aster")
+    mentioned = mentioned.model_copy(
+        update={
+            "fields": mentioned.fields.model_copy(
+                update={
+                    "assets": tuple(asset.model_copy(update={"role": "mentioned"}) for asset in mentioned.fields.assets)
+                }
+            )
+        }
+    )
+    noise = claim("An unrelated venue action", asset="SIUSDT", market="crypto", subject="Aster")
+    candidates = [
+        receipt("body", "CTUSDT perpetual announcement", STAMP - 6000),
+        receipt("object", "此前宣布具体合约", STAMP - 5000, exact_object),
+        receipt("primary", "同一标的较早推送", STAMP - 4000, primary),
+        receipt("mentioned", "仅作为背景提及", STAMP - 1, mentioned),
+        *(receipt(f"actor-{index:02}", f"不同动作{index}", STAMP - 100 - index, noise) for index in range(40)),
+    ]
+    chosen = select(current, candidates)
+    assert chosen.intent_ids[:3] == ("object", "body", "primary")
+    assert len(chosen.intent_ids) == 16
+    assert "mentioned" in chosen.intent_ids  # useful background still fills spare slots
+
+
+def test_aster_pair_and_cross_language_issuer_features_recall_without_asserting_same_fact() -> None:
+    # Frozen source case: Aster/SIUSDT vs Aster DEX/$SI. Neither text proves the same venue contract.
+    current = claim("Aster DEX上线$SI，最大5倍杠杆", asset="$SI", market="crypto", subject="Aster DEX")
+    previous = claim("Aster lists SIUSDT perpetual", asset="SIUSDT", market="crypto", subject="Aster")
+    novelty = ReaderNovelty(novelty="unlinked")
+    assert select(current, [receipt("aster", "此前永续上线报道", STAMP - 1, previous)], novelty=novelty).intent_ids == (
+        "aster",
+    )
+    assert novelty.novelty == "unlinked"
+    # A source/Claim asset tag is usable as a related query feature across languages; no actor dictionary or
+    # stronger subject_id is fabricated from a mentioned asset.
+    chinese = claim("英伟达发布下一代产品", asset="NVDA", market="equity", subject="英伟达")
+    english = claim("Nvidia introduces a different chip", asset="$NVDA", market="equity", subject="Nvidia")
+    assert select(chinese, [receipt("issuer", "芯片报道", STAMP - 2, english)]).intent_ids == ("issuer",)
+    assert not chinese.known_identity and not english.known_identity
+
+
+def test_shared_generic_object_with_explicit_other_assets_does_not_crowd_out_primary() -> None:
+    current = claim("ACME reports earnings", asset="ACME", market="equity", subject="ACME")
+    current = current.model_copy(update={"fields": current.fields.model_copy(update={"object": "earnings"})})
+    previous = claim("艾克米此前发布财报", asset="ACME", market="equity", subject="艾克米")
+    noise = claim("Another issuer reports earnings", asset="OTHER", market="equity", subject="Other issuer")
+    noise = noise.model_copy(update={"fields": noise.fields.model_copy(update={"object": "earnings"})})
+    candidates = (
+        receipt("actual-primary", "艾克米财报消息", STAMP - 5000, previous),
+        *(receipt(f"noise-{index:02}", f"其他公司消息{index}", STAMP - index - 1, noise) for index in range(40)),
+    )
+    chosen = select(current, candidates)
+    assert chosen.intent_ids[0] == "actual-primary"
+    assert len(chosen.intent_ids) == 16
+    assert "object_background:earnings" in dict(chosen.reasons)["noise-00"]
+    # Grounded identities and an object whose assets are unknown remain specific evidence.
+    hint = IdentityHint(key="object_id", value="report:123", evidence_ref="ev:fixture", surface="earnings")
+    current = current.model_copy(update={"known_identity": (hint,)})
+    proven = noise.model_copy(update={"known_identity": (hint,)})
+    missing = noise.model_copy(update={"fields": noise.fields.model_copy(update={"assets": ()})})
+    preferred = select(
+        current,
+        (
+            candidates[0],
+            receipt("proven-object", "具体报告证据", STAMP - 4000, proven),
+            receipt("missing-assets", "未指明标的的较早报道", STAMP - 3000, missing),
+        ),
+    )
+    assert preferred.intent_ids == ("missing-assets", "proven-object", "actual-primary")
+
+
+def test_unresolved_chain_addresses_remain_case_sensitive_retrieval_features() -> None:
+    first = claim("Current update", asset="solana:AbCdEFGh123456789", market="crypto", subject="Current actor")
+    other = claim("Earlier account", asset="solana:abcdefgh123456789", market="crypto", subject="Earlier actor")
+    assert select(first, [receipt("different-address", "Earlier", STAMP - 1, other)]).intent_ids == ()
 
 
 def test_a_lexical_rank_without_two_qualifying_terms_is_not_evidence() -> None:
@@ -206,13 +296,61 @@ def test_context_revision_tracks_order_body_and_semantic_state() -> None:
             blocked=(),
             ambiguous=(),
             invalidated=(),
-            watch_symbols=(),
         )
 
     assert revision((a, b)) == revision((a, b))
     assert revision((a, b)) != revision((b, a), selected=selection.__class__(("b", "a"), ()))
     assert revision((a, b)) != revision((receipt("a", "changed", STAMP - 1), b))
     assert revision((a, b)) != revision((a, b), state="ambiguous")
+
+
+def listing_claim(symbol: str):
+    original = claim(f"Aster lists {symbol} perpetual", asset=symbol, market="crypto", subject="Aster")
+    return original.model_copy(update={"fields": original.fields.model_copy(update={"action": "listed"})})
+
+
+@pytest.mark.parametrize("relation", ["equivalent", "adds_information", "real_world_change"])
+def test_proven_different_old_listing_links_no_longer_establish_reader_novelty(relation) -> None:
+    ct, si = listing_claim("CTUSDT"), listing_claim("SIUSDT")
+    links = (ClaimLink(current_ref=ct.ref, previous_ref=si.ref, relation=relation, asserted_at_ms=STAMP - 1),)
+    receipts = (LinkedReceipt(intent_id="si", state="sent", claim_refs=(si.ref,), settled_at_ms=STAMP - 2),)
+    assert reader_novelty(ct.ref, links, receipts).novelty != "unlinked"
+    valid = listing_compatible_links(links, {ct.ref: ct, si.ref: si})
+    assert reader_novelty(ct.ref, valid, receipts).novelty == "unlinked"
+    # Removing either original claim loses the proof; free-text differences alone cannot retract a link.
+    assert listing_compatible_links(links, {ct.ref: ct}) == links
+    assert listing_compatible_links(links, {si.ref: si}) == links
+
+
+def test_two_hop_listing_protection_uses_known_intermediate_claim_and_keeps_unknowns() -> None:
+    ct, si = listing_claim("CTUSDT"), listing_claim("SIUSDT")
+    middle = ct.model_copy(update={"ref": "cl:intermediate-ct"})
+    links = (
+        ClaimLink(current_ref=ct.ref, previous_ref=middle.ref, relation="equivalent", asserted_at_ms=STAMP - 2),
+        ClaimLink(current_ref=middle.ref, previous_ref=si.ref, relation="adds_information", asserted_at_ms=STAMP - 1),
+    )
+    receipts = (LinkedReceipt(intent_id="si", state="sent", claim_refs=(si.ref,), settled_at_ms=STAMP - 3),)
+    assert reader_novelty(ct.ref, links, receipts).novelty == "increment"
+    valid = listing_compatible_links(links, {ct.ref: ct, middle.ref: middle, si.ref: si})
+    assert reader_novelty(ct.ref, valid, receipts).novelty == "unlinked"
+    unknown = listing_compatible_links(links, {ct.ref: ct, si.ref: si})
+    assert reader_novelty(ct.ref, unknown, receipts).novelty == "increment"
+
+
+def test_listing_link_filter_does_not_revive_older_assertions_or_remove_corrections() -> None:
+    ct, si = listing_claim("CTUSDT"), listing_claim("SIUSDT")
+    correction = ClaimLink(current_ref=ct.ref, previous_ref=si.ref, relation="corrects", asserted_at_ms=STAMP - 2)
+    wrong = ClaimLink(current_ref=ct.ref, previous_ref=si.ref, relation="equivalent", asserted_at_ms=STAMP - 1)
+    claims = {ct.ref: ct, si.ref: si}
+    assert listing_compatible_links((correction,), claims) == (correction,)
+    assert listing_compatible_links((correction, wrong), claims) == ()
+    effective = ct.model_copy(
+        update={"ref": "cl:effective-ct", "fields": ct.fields.model_copy(update={"phase": "effective"})}
+    )
+    development = ClaimLink(
+        current_ref=effective.ref, previous_ref=ct.ref, relation="real_world_change", asserted_at_ms=STAMP - 1
+    )
+    assert listing_compatible_links((development,), {effective.ref: effective, ct.ref: ct}) == (development,)
 
 
 def test_issue_750_gold_frozen_production_recall() -> None:

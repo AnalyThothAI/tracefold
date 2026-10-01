@@ -19,8 +19,8 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.search import compile_news_search
-from tracefold.news.storage.event_update_store import PgNewsStore
 from tracefold.news.storage.operations import RECOVERY_BACKLOG_LIMIT
+from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.updates.contracts import Extraction
 from tracefold.news.updates.judgment import ProviderUnavailable
 from tracefold.news.updates.service import NewsAgent
@@ -842,7 +842,7 @@ def test_fourteen_fact_events_keep_the_last_task_and_adopt_independently(conn) -
                 raise ProviderUnavailable("controlled_one_event_failure")
             return await super().extract(source, budget)
 
-    store = PgNewsStore(ThreadedDb(), clock=Clock(stamp + 60_000))
+    store = PgSemanticStore(ThreadedDb(), clock=Clock(stamp + 60_000))
     # Each task asserts its own numbered fact; a first read without claims would not be adopted (#742 W1).
     analyzer = OneFailure(
         lambda source: Extraction(claims=(draft(source.evidence[0], quote=source.extraction_scopes[0].fact_text),))

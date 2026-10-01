@@ -288,7 +288,7 @@ def test_a_sender_that_cannot_be_constructed_leaves_the_fact_chain_composed_and_
 
     pipeline = _composed_pipeline(_settings(tmp_path), capabilities)
 
-    assert pipeline.deliverer.sender is None
+    assert not pipeline.send_entry.available
     assert capabilities.payload()[NEWS_DELIVERY] == {
         "state": "unavailable",
         "reason": "news_item_push_telegram_bot_token_unavailable",
@@ -443,7 +443,7 @@ def test_configured_models_compose_the_semantic_worker_as_a_confined_editorial_t
 
     assert wiring.news_updates is not None
     assert wiring.pipeline.semantic.agent is wiring.news_updates.agent
-    assert wiring.pipeline.semantic.program_identity == wiring.news_updates.program_identity
+    assert wiring.news_updates.agent.program_identity == wiring.news_updates.program_identity
     # News Jev remains opt-in.
     assert wiring.news_updates.judgment_connection is None
     assert capabilities.payload()[NEWS_EDITORIAL] == {"state": "running", "reason": None}

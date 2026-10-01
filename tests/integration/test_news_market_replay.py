@@ -44,7 +44,7 @@ from tracefold.news.market_notifications import (
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import Quote
 from tracefold.news.oi_signals import measurement_definition, oi_source_contract, parse_oi_signal
-from tracefold.news.pipeline.delivery import read_display_quotes
+from tracefold.news.pipeline.delivery_quotes import read_display_quotes
 from tracefold.news.reader_card import QUOTE_LINE_PREFIX
 from tracefold.news.smart_money import parse_smart_money
 from tracefold.news.source_contracts import MARKET_PROVIDER

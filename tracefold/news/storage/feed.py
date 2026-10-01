@@ -260,6 +260,15 @@ class FeedStorage:
             ]
             event_update = event_update_view(head, previous_claims=prior, sent_headline=sent_headline(current_intents))
             update_error_code = UPDATE_DECODE_ERROR if event_update is None else None
+            # Once an adopted head exists its current primary assets own the reader projection. An
+            # empty or undecodable head never falls back to unrelated provider tags.
+            event["assets"] = [
+                asset
+                for claim in (event_update or {}).get("claims", [])
+                if not claim["retired"] and not claim["superseded"]
+                for asset in claim["assets"]
+                if asset["role"] == "primary"
+            ]
         statements = {str(claim["ref"]): str(claim["statement"]) for claim in (event_update or {}).get("claims", [])}
         current_notification = (
             notification
@@ -590,6 +599,7 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
     )
     return {
         **_event_public(row),
+        **({"assets": list(row.get("update_primary_assets") or [])} if update is not None else {}),
         "outcome": outcome.as_dict(),
         "update": update,
         "delivery": delivery,

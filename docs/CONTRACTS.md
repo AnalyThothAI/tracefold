@@ -27,7 +27,7 @@
 | CLI | [parsers](../tracefold/app/cli/parsers/)、[commands](../tracefold/app/cli/commands/) | [生成帮助](generated/cli-help.md) |
 | 配置 | [models.py](../tracefold/platform/config/models.py)、[loader.py](../tracefold/platform/config/loader.py) | 初始化生成配置与校验测试 |
 | 数据库 | [Alembic versions](../tracefold/platform/postgres/alembic/versions/) | [db-schema.md](generated/db-schema.md)，隔离迁移数据库生成 |
-| News 知识与通知 | [updates/contracts.py](../tracefold/news/updates/contracts.py)、[notification.py](../tracefold/news/updates/notification.py) | 引用、版本、采用、实际正文与发送测试 |
+| News 知识与通知 | [updates/contracts.py](../tracefold/news/updates/contracts.py)、[notifications/contracts.py](../tracefold/news/notifications/contracts.py) | 引用、版本、采用、实际正文与发送测试 |
 | Trading 执行交接 | [executor/core.py](../tracefold/trading/executor/core.py)、[operator_control.py](../tracefold/trading/operator_control.py) | Signal v4、操作员意图与执行决策 |
 
 生成物保留机器标识和源语法；文档中文化不改变 JSON 字段、CLI 参数、错误码或协议版本。
@@ -123,6 +123,8 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 | `reaction_v2` | 类型化标的、固定 5m K 线、1h / 4h 新闻后价格反应 |
 
 符号必须结合资产类别与交易所原生身份。基础币符号、股票 ticker、倍数合约和 USDT / USDC 市场不能靠字符串相等推断经济等价。
+
+新闻报价使用 GET /api/news/quotes 的 assets 参数：JSON 数组，每项包含 symbol 与 market_type，例如 [{"symbol":"V","market_type":"equity"}]。请求、响应和客户端缓存按市场类型与符号区分，返回实际 venue/venue_symbol；不保留旧 symbol-only 参数。未知市场不选同名合约报价。Feed/Detail 有语义 head 时展示 current 有效命题的 primary，未采用时显示已有来源资产；来源 grounded_assets 仍供证据查看。仅参考目录、未知或缺行情都保留新闻与资产，不充当准入条件。
 
 <a id="section-trading操作与执行"></a>
 ## 05 · Trading、操作与执行

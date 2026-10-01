@@ -49,16 +49,22 @@ from tracefold.news.chain_tape.rules import WalletRules
 from tracefold.news.market_notifications import TICK_SECONDS, MarketNotificationLoop
 from tracefold.news.market_review.loops import QuoteDatabasePort, ReactionDatabasePort
 from tracefold.news.market_review.pricing import QuoteRequest
+from tracefold.news.notifications.service import Notifications
 from tracefold.news.pipeline.admission import DeduperConsumer
-from tracefold.news.pipeline.delivery import DelivererLoop, read_display_quotes, read_pushed_news
+from tracefold.news.pipeline.delivery import DelivererLoop
+from tracefold.news.pipeline.delivery_enrichment import DeliveryEnrichment
+from tracefold.news.pipeline.delivery_quotes import read_display_quotes, read_pushed_news
 from tracefold.news.pipeline.maintenance import JanitorLoop
+from tracefold.news.pipeline.notification_sender import NotificationSender
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.news.pipeline.runtime import NewsDatabasePort
 from tracefold.news.pipeline.semantic import SemanticWorker
-from tracefold.news.storage.event_update_store import PgJudgmentCache, PgNewsStore, PgSourceReader
-from tracefold.news.updates.service import Notifications
+from tracefold.news.pipeline.send_entry import InitialSendEntry
+from tracefold.news.storage.judgment_store import PgJudgmentCache
+from tracefold.news.storage.notification_store import PgNotificationStore
+from tracefold.news.storage.semantic_store import PgSemanticStore, PgSourceReader
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.observability import TelemetryRegistry
@@ -218,7 +224,7 @@ async def _wire_news_pipeline(
     # the card carries its 打开明细 button, without one the card carries the item id instead (#553).
     market_notifications = MarketNotificationLoop(
         db=_MarketNotificationDatabase(news_db),
-        sender=pipeline.deliverer.send_entry,
+        sender=pipeline.send_entry,
         console_base_url=settings.api.public_url,
         wallet_notifications_enabled=settings.news.chain_tape.notifications_enabled,
         # One set of thresholds for the whole flow: the detector opens an episode with these, and the
@@ -305,7 +311,8 @@ def _news_updates_or_fault(
             capabilities.disabled(NEWS_EDITORIAL, "news_models_not_configured")
             return None
         runtime = compose_news_updates(
-            store=PgNewsStore(news_db, watch_symbols=settings.news.watchlist_symbols),
+            semantic_store=PgSemanticStore(news_db),
+            notification_store=PgNotificationStore(news_db),
             relation_cache=PgJudgmentCache(news_db),
             extraction_lm_factory=_route_factory(models.extraction),
             card_lm_factory=_route_factory(models.card),
@@ -479,12 +486,34 @@ def _compose_news_pipeline(
 ) -> NewsPipeline:
     """Compose the News pipeline. `notifications` is the EventUpdate notification service (#706).
 
-    The Deliverer is its channel side: it plans each pending head, and sends the frozen card through the
-    one configured sender. Without it, or without a sender, notification work stays pending and visible.
+    The Deliverer schedules bounded Notifications turns; the workflow owns planning and durable
+    settlement. NotificationSender executes through the shared provider entry, and enrichment edits
+    only settled receipts. Without Notifications or a sender, work stays pending and visible.
     """
 
     watchlist_symbols = settings.news.watchlist_symbols
+    send_entry = InitialSendEntry(
+        sender=sender,
+        finite_operations=finite,
+        min_interval_seconds=settings.news.push.min_interval_seconds,
+    )
+    enrichment = DeliveryEnrichment(
+        db=news_db,
+        send_entry=send_entry,
+        price_fetcher_for=functools.partial(_delivery_price_fetcher_for, settings),
+        tradability_verifier=(
+            VenueCatalogTradabilityVerifier()
+            if settings.news.venues.enabled
+            and settings.news.venues.binance
+            and settings.news.venues.hyperliquid
+            and settings.news.venues.okx
+            and settings.news.venues.lighter
+            and settings.news.venues.bitget
+            else None
+        ),
+    )
     return NewsPipeline(
+        send_entry=send_entry,
         receiver=receiver,
         recovery=recovery,
         deduper=DeduperConsumer(
@@ -495,31 +524,18 @@ def _compose_news_pipeline(
         semantic=SemanticWorker(
             bus=bus,
             db=news_db,
-            store=PgNewsStore(news_db, watch_symbols=watchlist_symbols),
+            store=PgSemanticStore(news_db),
             agent=None if news_updates is None else news_updates.agent,
             concurrency=settings.news.triage.concurrency,
             circuit_failures=settings.news.triage.circuit_failures,
             circuit_open_seconds=settings.news.triage.circuit_open_seconds,
-            program_identity=None if news_updates is None else news_updates.program_identity,
         ),
         deliverer=DelivererLoop(
             db=news_db,
-            sender=sender,
-            finite_operations=finite,
-            min_interval_seconds=settings.news.push.min_interval_seconds,
+            notification_sender=NotificationSender(send_entry, enrichment),
+            enrichment=enrichment,
             notification_prepare_limit=settings.news.push.notification_prepare_limit,
-            price_fetcher_for=functools.partial(_delivery_price_fetcher_for, settings),
             notifications=notifications,
-            tradability_verifier=(
-                VenueCatalogTradabilityVerifier()
-                if settings.news.venues.enabled
-                and settings.news.venues.binance
-                and settings.news.venues.hyperliquid
-                and settings.news.venues.okx
-                and settings.news.venues.lighter
-                and settings.news.venues.bitget
-                else None
-            ),
         ),
         janitor=JanitorLoop(
             db=news_db,

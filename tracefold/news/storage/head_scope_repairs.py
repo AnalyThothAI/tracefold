@@ -10,6 +10,7 @@ from ..updates.identity import digest, identity
 from ..updates.projection import PROJECTION_VERSION, extraction_scopes, reading_view
 from ..updates.public import public_updates
 from ..updates.scope_repair import retract_out_of_scope
+from .trade_projection import TradeProjectionStorage
 from .update_commit import PUBLIC_TRADE_KINDS, ScopeProofSource, commit_update, lock_event
 
 HEAD_SCOPE_MATERIAL_SQL = """
@@ -106,7 +107,9 @@ def audit_scope_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 class HeadScopeRepairStorage:
-    conn: Any
+    def __init__(self, conn: Any, *, outbox: TradeProjectionStorage) -> None:
+        self.conn = conn
+        self.outbox = outbox
 
     def head_scope_material(self, *, after: str = "", limit: int = 100) -> list[dict[str, Any]]:
         if not 1 <= limit <= 501:
@@ -136,7 +139,8 @@ class HeadScopeRepairStorage:
             for row in public_updates(update, semantic_completed_at_ms=now_ms)
         ]
         if not commit_update(
-            self,
+            self.conn,
+            outbox=self.outbox,
             expected_head_ref=head.ref,
             update=update,
             document_json=update.model_dump_json(),

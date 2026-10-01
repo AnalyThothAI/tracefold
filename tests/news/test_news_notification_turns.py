@@ -23,21 +23,30 @@ import pytest
 from tests.support.news_update_cards import READER_REVISION, copy_for, nvda_update
 from tracefold.news.bus import TransientError
 from tracefold.news.models import ReaderDeliveryPresentation
-from tracefold.news.pipeline.delivery import DelivererLoop
-from tracefold.news.reader_card import ReaderCard
-from tracefold.news.updates.contracts import EventUpdate
-from tracefold.news.updates.judgment import Budget, ContractFault, ProviderUnavailable
-from tracefold.news.updates.notification import (
+from tracefold.news.notifications.card import freeze_card
+from tracefold.news.notifications.contracts import (
     CardCopy,
     CardLine,
     ClaimDecision,
     FrozenCard,
     NotificationPlan,
     ReaderSnapshot,
-    freeze_card,
 )
-from tracefold.news.updates.ports import DeliveryTimings, IntentLease, NotificationSnapshot, PlanCommit, SendOutcome
-from tracefold.news.updates.service import Notifications
+from tracefold.news.notifications.ports import (
+    DeliveryTimings,
+    IntentLease,
+    NotificationSnapshot,
+    PlanCommit,
+    SendOutcome,
+)
+from tracefold.news.notifications.service import Notifications
+from tracefold.news.pipeline.delivery import DelivererLoop
+from tracefold.news.pipeline.delivery_enrichment import DeliveryEnrichment
+from tracefold.news.pipeline.notification_sender import NotificationSender
+from tracefold.news.pipeline.send_entry import InitialSendEntry
+from tracefold.news.reader_card import ReaderCard
+from tracefold.news.updates.contracts import EventUpdate
+from tracefold.news.updates.judgment import Budget, ContractFault, ProviderUnavailable
 
 
 def _plan(update: EventUpdate, *, notify: bool = True) -> NotificationPlan:
@@ -466,11 +475,13 @@ def test_one_events_database_failure_never_turns_another_events_delivered_card_a
 
     provider = _BlockingProvider()
     notifications = Notifications(store, SecondFails(), Composer(), clock=lambda: 1)  # type: ignore[arg-type]
+    db = _NoQuotes()
+    entry = InitialSendEntry(sender=provider, finite_operations=_ThreadedFinite(), min_interval_seconds=0.0)
+    enrichment = DeliveryEnrichment(db=db, send_entry=entry)  # type: ignore[arg-type]
     loop = DelivererLoop(
-        db=_NoQuotes(),  # type: ignore[arg-type]
-        sender=provider,
-        finite_operations=_ThreadedFinite(),
-        min_interval_seconds=0.0,
+        db=db,  # type: ignore[arg-type]
+        notification_sender=NotificationSender(entry, enrichment),
+        enrichment=enrichment,
         notifications=notifications,
     )
 
@@ -494,3 +505,38 @@ def test_one_events_database_failure_never_turns_another_events_delivered_card_a
     settled = [call for name, call in store.calls if name == "settle"]
     assert settled == [("sent", None)], "the delivered card is recorded sent, never ambiguous"
     assert ("postpone_notification", "event-b") in store.calls
+
+
+def test_shared_provider_slot_is_held_until_editorial_receipt_settlement() -> None:
+    """A market send cannot enter while the editorial workflow still settles provider evidence."""
+
+    async def scenario() -> None:
+        update = nvda_update()
+        settling, release_settlement = asyncio.Event(), asyncio.Event()
+
+        class SettlementWaits(Store):
+            async def settle_send(self, lease, card, outcome, *, settled_at_ms):
+                settling.set()
+                await release_settlement.wait()
+                return await super().settle_send(lease, card, outcome, settled_at_ms=settled_at_ms)
+
+        provider = _BlockingProvider()
+        provider.release.set()
+        store = SettlementWaits(update)
+        notifications = Notifications(store, Planner(), Composer(), clock=lambda: 1)
+        entry = InitialSendEntry(sender=provider, finite_operations=_ThreadedFinite(), min_interval_seconds=0.0)
+        enrichment = DeliveryEnrichment(db=_NoQuotes(), send_entry=entry)  # type: ignore[arg-type]
+        adapter = NotificationSender(entry, enrichment)
+        editorial = asyncio.create_task(notifications.process(update.event_id, "news", adapter))
+        await asyncio.wait_for(settling.wait(), 1)
+        assert len(provider.sent) == 1
+        market = asyncio.create_task(entry.send_prepared_card(provider.sent[0], channel_payload={}))
+        await asyncio.sleep(0.02)
+        assert not market.done() and len(provider.sent) == 1
+        release_settlement.set()
+        turn = await asyncio.wait_for(editorial, 1)
+        await asyncio.wait_for(market, 1)
+        assert turn.status == "sent" and len(provider.sent) == 2
+        await entry.close()
+
+    asyncio.run(scenario())

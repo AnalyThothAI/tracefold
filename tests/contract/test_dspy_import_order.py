@@ -9,12 +9,19 @@ import pytest
 
 pytestmark = pytest.mark.contract
 
+ADAPTER_IMPORTS = (
+    "import tracefold.news.adapters.extraction"
+    "; import tracefold.news.adapters.semantic_judgments"
+    "; import tracefold.news.adapters.reader_judge"
+    "; import tracefold.news.adapters.card_copy"
+)
+
 
 @pytest.mark.parametrize(
     "imports",
     [
-        "import tracefold.news.updates.dspy_backend; import fastapi",
-        "import tracefold.app.http.responses; import tracefold.news.updates.dspy_backend",
+        ADAPTER_IMPORTS + "; import fastapi",
+        "import tracefold.app.http.responses; " + ADAPTER_IMPORTS,
     ],
 )
 def test_dspy_and_fastapi_import_order_is_safe(imports: str) -> None:

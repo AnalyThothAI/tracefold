@@ -20,7 +20,7 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..artifact_identity import canonical_json, canonical_sha
-from ..updates.notification import CardCopy
+from ..notifications.contracts import CardCopy
 
 JUDGE_ID: Final = "tracefold.news.card_evidence_judge_v6"
 JUDGE_PROGRAM_VERSION: Final = "news_card_evidence_judge_v6"

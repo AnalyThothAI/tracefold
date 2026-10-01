@@ -1085,7 +1085,7 @@ def append_admission_evidence(
         return None
     if str(event["event_kind"]) not in EVENT_KINDS:
         return None
-    news.request_semantic_revision(
+    news.semantic_work.request_semantic_revision(
         event_id=event_id,
         # A new organic revision starts a new lineage: its attempts and one-read budget are its own.
         lineage_id=content_identity(
@@ -1093,7 +1093,7 @@ def append_admission_evidence(
         ),
         now_ms=now_ms,
     )
-    return cast(dict[str, Any] | None, news.semantic_wake_route(event_id))
+    return cast(dict[str, Any] | None, news.semantic_work.semantic_wake_route(event_id))
 
 
 def _member_result(
@@ -1200,7 +1200,7 @@ async def publish_semantic_wake(
     )
 
     def _mark(repos: Any) -> None:
-        repos.news.mark_semantic_work_published(event_id=event_id, revision=revision, now_ms=stamp)
+        repos.news.semantic_work.mark_semantic_work_published(event_id=event_id, revision=revision, now_ms=stamp)
         # The Event's first handoff time; later wakes keep it.
         repos.news.mark_event_published(event_id=event_id, now_ms=stamp)
 

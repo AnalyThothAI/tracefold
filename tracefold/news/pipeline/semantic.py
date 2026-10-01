@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Final, Literal, Protocol
 
 from ..bus import Q_TRIAGE, BusMessage, DeferError, PermanentError, TransientError, now_ms
-from ..storage.event_updates import SEMANTIC_ATTEMPTS_MAX, EventUpdateConflict, SemanticLeaseLost
+from ..storage.errors import EventUpdateConflict, SemanticLeaseLost
+from ..storage.semantic_work import SEMANTIC_ATTEMPTS_MAX
 from ..telemetry import NewsWorkSemantics
 from ..updates.contracts import SemanticLease
 from ..updates.judgment import ConfigurationFault, ContractFault, ProviderUnavailable, error_code
@@ -92,7 +93,6 @@ class SemanticWorker:
         concurrency: int,
         circuit_failures: int,
         circuit_open_seconds: float,
-        program_identity: str | None,
         lease_ms: int = SEMANTIC_LEASE_MS,
         clock: Callable[[], int] = now_ms,
     ) -> None:
@@ -102,7 +102,6 @@ class SemanticWorker:
         self.agent = agent
         self.concurrency = int(concurrency)
         self.breaker = ProviderBreaker(threshold=int(circuit_failures), open_seconds=float(circuit_open_seconds))
-        self.program_identity = program_identity
         self.lease_ms = int(lease_ms)
         self.clock = clock
         self._incident_open = False

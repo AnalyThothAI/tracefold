@@ -48,11 +48,11 @@ from tracefold.news.models import (
     ReaderTradeTarget,
     TelegramDeliveryReceipt,
 )
+from tracefold.news.notifications.card import freeze_card
 from tracefold.news.opennews import source_artifact_identity
 from tracefold.news.outcome import storyline_key_zh
 from tracefold.news.pipeline.admission import _event_identity
 from tracefold.news.reader_card import quote_line, reader_quotes
-from tracefold.news.updates.notification import freeze_card
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 

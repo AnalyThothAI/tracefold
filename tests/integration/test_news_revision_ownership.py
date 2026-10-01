@@ -24,12 +24,13 @@ from tests.support.news_update_pg import (
     sql,
 )
 from tests.support.news_update_semantic import prior_of
+from tracefold.news.notifications.card import freeze_card
 from tracefold.news.pipeline.admission import DeduperConsumer
-from tracefold.news.storage.event_update_store import PgNewsStore
-from tracefold.news.storage.event_updates import SemanticLeaseLost
+from tracefold.news.storage.errors import SemanticLeaseLost
+from tracefold.news.storage.notification_store import PgNotificationStore
+from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.updates.contracts import Extraction, FrozenInput, PriorClaim, RelationDraft
 from tracefold.news.updates.judgment import ProviderUnavailable
-from tracefold.news.updates.notification import freeze_card
 from tracefold.news.updates.projection import reading_views
 from tracefold.news.updates.service import NewsAgent
 
@@ -40,7 +41,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_d
 def test_old_last_attempt_cannot_spend_or_delay_new_revision(outcome):
     seed_event()
     clock = Clock(STAMP + 10)
-    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
     sql("UPDATE news_semantic_work SET attempts=2")
     old = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
     assert old is not None and old.attempts == 3 and old.source.revision == 1
@@ -63,7 +64,7 @@ def test_old_last_attempt_cannot_spend_or_delay_new_revision(outcome):
 def test_new_evidence_does_not_starve_valid_old_adoption():
     seed_event()
     clock = Clock(STAMP + 10)
-    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
     old = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
     assert old is not None
     add_member_evidence(EVENT, "new-material", "Agency adds a new exemption.", now_ms=clock.now_ms)
@@ -78,7 +79,7 @@ def test_new_evidence_does_not_starve_valid_old_adoption():
 def test_old_adopt_and_finish_cannot_clear_a_replacement_owner():
     seed_event()
     clock = Clock(STAMP + 10)
-    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
     old = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=10))
     assert old is not None
     clock.now_ms += 11
@@ -100,7 +101,7 @@ def test_same_record_reversal_reaches_frozen_input_and_old_envelope_replay_is_in
     clock = Clock(STAMP)
     monkeypatch.setattr("tracefold.news.pipeline.admission.now_ms", clock)
     bus = RecordingBus()
-    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
     consumer = DeduperConsumer(bus=bus, db=pg.db, watchlist_symbols=frozenset({"BTC"}))
     texts = [
         TITLE + "<br/>The opening is this month.",
@@ -139,19 +140,20 @@ def test_same_record_reversal_reaches_frozen_input_and_old_envelope_replay_is_in
 
 def test_cross_event_correction_invalidates_frozen_unsent_card():
     clock = Clock(STAMP + 60_000)
-    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
+    notification_store = PgNotificationStore(pg.db, clock=clock)
     seed_event()
     agent = NewsAgent(pg, StubAnalyzer(), program_identity="p", clock=clock)
     assert asyncio.run(run_agent(agent, EVENT)) == "adopted"
     head = asyncio.run(pg.head(EVENT))
-    snapshot = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    snapshot = asyncio.run(notification_store.notification_snapshot(EVENT, "news"))
     assert head is not None and snapshot is not None
     plan = notify_plan(head, snapshot.reader.revision)
-    lease = asyncio.run(pg.atomic_record_plan(plan)).lease
+    lease = asyncio.run(notification_store.atomic_record_plan(plan)).lease
     assert lease is not None
     copy = asyncio.run(Composer().compose(head.claims, sources={}))
     card = freeze_card(plan, head, copy)
-    asyncio.run(save_card(pg, lease, card))
+    asyncio.run(save_card(notification_store, lease, card))
     seed_event("correction", fingerprint="correction")
     ev = material("Correction: Agency did not order the tariff.", publisher="correction")
     source = FrozenInput(
@@ -168,8 +170,8 @@ def test_cross_event_correction_invalidates_frozen_unsent_card():
         ),
     )
     assert asyncio.run(adopt_next(pg, None, source, extraction))[0]
-    assert asyncio.run(pg.atomic_begin_send(lease, card)) == "reader_changed"
-    fresh = asyncio.run(pg.notification_snapshot(EVENT, "news"))
+    assert asyncio.run(notification_store.atomic_begin_send(lease, card)) == "reader_changed"
+    fresh = asyncio.run(notification_store.notification_snapshot(EVENT, "news"))
     assert fresh is not None and fresh.reader.invalidated_claim_refs == (head.claims[0].ref,)
     assert sql("SELECT count(*) AS n FROM news_deliveries WHERE kind='update'")[0]["n"] == 0
 
@@ -189,7 +191,7 @@ class FailsFirstUnderstanding(StubAnalyzer):
 def test_retry_re_extracts_when_a_new_related_event_adds_a_read_target():
     seed_event()
     clock = Clock(STAMP + 60_000)
-    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
     analyzer = FailsFirstUnderstanding()
     agent = NewsAgent(pg, analyzer, program_identity="p", clock=clock)
     old = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
@@ -216,7 +218,7 @@ def test_retry_reuses_the_extraction_when_only_a_related_head_changes():
     # again between two attempts changes the comparisons, not the stored extraction.
     seed_event("ev-other", text="Agency orders a 25% tariff on steel.", fingerprint="fp-other")
     clock = Clock(STAMP + 60_000)
-    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
     related = asyncio.run(adopt_other_event(pg))
     sql("UPDATE news_items SET provider_params_available_at_ms=%s WHERE item_id='it-ev-other'", (STAMP,))
     seed_event()
@@ -259,7 +261,7 @@ def test_a_crashed_final_attempt_quarantines_exactly_the_reads_it_was_given():
 
     seed_event()
     clock = Clock(STAMP + 10)
-    pg = PgNewsStore(ThreadedDb(), clock=clock)
+    pg = PgSemanticStore(ThreadedDb(), clock=clock)
     sql("UPDATE news_semantic_work SET attempts=2")
     crashed = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=10))
     assert crashed is not None and crashed.attempts == 3
@@ -269,7 +271,7 @@ def test_a_crashed_final_attempt_quarantines_exactly_the_reads_it_was_given():
     try:
         with conn.transaction():
             news = repositories_for_connection(conn).news
-            assert news.terminalize_exhausted_semantic_work(now_ms=clock.now_ms + 11, limit=10) == 1
+            assert news.semantic_work.terminalize_exhausted_semantic_work(now_ms=clock.now_ms + 11, limit=10) == 1
     finally:
         conn.close()
     row = work(EVENT)

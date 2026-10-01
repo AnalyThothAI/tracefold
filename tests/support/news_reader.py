@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from tracefold.news.updates.judgment import Budget
-from tracefold.news.updates.reader_judgments import (
+from tracefold.news.notifications.reader import (
     AnchorEvidence,
     ImportanceEvidence,
     ReaderInput,
     ReaderJudgment,
     anchor_options,
 )
+from tracefold.news.updates.judgment import Budget
 
 
 class FixedReader:

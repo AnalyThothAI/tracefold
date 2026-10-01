@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from tests.support.news_update_semantic import update_one
+from tracefold.news.notifications.reader import ReaderInput
+from tracefold.news.updates.assembly import proven_mismatches
 from tracefold.news.updates.contracts import Change
-from tracefold.news.updates.reader_judgments import ReaderInput
-from tracefold.news.updates.semantics import proven_mismatches
 
 
 def pair():
