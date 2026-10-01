@@ -1,9 +1,9 @@
 """Program identities, with a fixed model identity, and the signature schemas they include.
 
-#765 moved every generative role to the compact JSON adapter (`news_generated_transport_v8`), so the
-extractor, card copy, generated judgment and generated reader identities changed together; its asset rule
-(tradable instruments only) changed the extractor instruction as well. The native judgment does not use
-that adapter and keeps its identity; no signature schema changed.
+#770 bound `adds_information` to the same core fact and moved the questions to `news_questions_v4`, so the
+generated and native judgment identities and the native relation signature schema changed together. The
+extractor, card copy and reader programs carry no relation option and keep their identities; the generated
+judgment signature schema is unchanged.
 """
 
 from __future__ import annotations
@@ -60,8 +60,8 @@ def test_program_and_signature_schema_identities_are_pinned() -> None:
     assert actual == {
         "extractor": "extractor:c51e23b3dcc6717a901346797fa0a53c7485d4db16570d8995ecb71b72137ee6",
         "copy": "news_card_copy:410f061c5d2ead4ecb1011ed64d4895d831266aceb836a446cf5225fc8125876",
-        "generated": "generated_judgment:acdaa52b89c67f7f12833369dbbbb1e7609d9a84d01cdc7d916d35cb60906df7",
-        "native": "native_judgment:763a95518060a756b572c0163fcb4f35b5fbc556daf46dd9e295cfa71bc08fca",
+        "generated": "generated_judgment:a28f6ab99c87f0a20a5e7572179bc7226ac2f16399628e52b6babf710f01c27c",
+        "native": "native_judgment:84fe75cb1b310f683dae0d73a5bda7e670ce5ecd787959ac5acc356e40cf75de",
         "reader": "news_reader_judge:3af8592d934a884e6fcc685fcf090dd6a050b2675fffc58c3195d6f6fd7f388a",
     }
     assert {
@@ -74,6 +74,6 @@ def test_program_and_signature_schema_identities_are_pinned() -> None:
         "extract": "16ba4f38c98237cb65f6c3087d3da7956021d8bb9ab7edef11e433d96f23e7e1",
         "copy": "27c46b662ab3832abc75669acea346cc3a4dbecbed1a7675cfcddad287e5b64e",
         "judge": "a0878d7aef415b4f4dfe64a0ff99adc03a86bfb3aa3e0448b2efa5e9d038e42e",
-        "native": "53d60e9e8714d736b5018db89f0ea762267e6dd814d00c513867474d951c341d",
+        "native": "f3a475e9ce2ee597e078d877cdbefa79acc41550caaf7180cd48534e6fc6abd6",
         "reader": "8846b2f568693f554e058b0fae6479fbd57985b81aa7527a7a7a23c6ff94172f",
     }

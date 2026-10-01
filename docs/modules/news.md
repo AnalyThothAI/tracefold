@@ -257,6 +257,8 @@ sequenceDiagram
 
 当前独立判断任务包括 `relation`、`support`、`next_read`，并非每条消息都需要全部任务。通知侧的读者判断不在这张任务表里，修改它不会让语义检查点失效。关系始终逐对判断：#742 曾重放“先分诊、再细判”，在本地生成式模型上无法做到关系召回不降（通知侧读者新颖度依赖 `equivalent` / `adds_information` 链接，Trading 依赖更正与替代），且只省约 5% 调用，因此未采用。
 
+关系以**同一核心事实**为界，说法与读者锚点题（[reader.py](../../tracefold/news/notifications/reader.py) 的 `ANCHOR_QUESTION`）一致：同一行为者、同一动作或事件、同一对象。`adds_information`（补充）只表示在同一核心事实上多出旧命题没有的细节、数字、条件或背景，且不更正它；同一份报告、发布或交易里的另一个数字也算补充，没有新增内容的复述是 `equivalent`。同一故事里的另一个动作、场所、标的、产品或另一起事件不是补充，即使主体、话题相同也判 `unrelated`。`real_world_change` 同样限于该核心事实本身的实际变化（含撤销），不是同一故事里的新事件。通知侧把补充读作读者可能已有事实的增量，通常要达到 KEY_CUT 才推送，所以过宽的补充会把新事实压成信息流（#770）。题目文本变化时 `QUESTION_VERSION` 一起升级（当前 `news_questions_v4`），旧版本的缓存答案不再复用；已写入的旧链接不改写：新颖度只把链接连到 48 小时窗口内的回执，旧链接两天后自然不再起作用。
+
 可选原生判断通过 DSPy 的有限输出类型连接 Jev / System One。未配置该后端时使用生成式判断；已成功缓存的答案不再找另一个模型投票。一组问题的缓存读取是一条 SQL，每个批次的写入是一条 SQL；批次有界并行（至多 3 个），一个批次响应不可用只让它自己的问题不可得，不连累其他批次或整个修订。选项标签按大小写与分隔符规范化，无法识别的标签只让该条不可得。失败回退、批次与缓存身份由 [judgment.py](../../tracefold/news/updates/judgment.py)及 [模型适配](../../tracefold/news/adapters/)控制。
 
 生成式判断（含读者判断的生成式回退）默认与抽取共用 `llm.news_triage_model`；可选 `llm.news_triage_judgment_model` 让它们在同一 endpoint、密钥与请求配置下改问另一个模型名，例如代理以温度 0 提供的同权重确定性变体（#770 重放：温度 0.7 下同一关系问题重问约 14–21% 翻转，温度 0 约 3%）。抽取、卡片文案和 fallback 不变；判断路由 identity 跟随实际所问的模型，program identity 与判断缓存键随之变化，未设置时都与原来相同。
@@ -428,7 +430,7 @@ stateDiagram-v2
     - 具体的监管措施、黑客或宕机事件，以及影响能源、航运或供应的具体事件。
   - 4 档：可能立即影响大盘的事件。
 
-**定向增量修正**（[policy.py](../../tracefold/news/notifications/policy.py)）：语义 `adds_information` 可能把事故与之后恢复、计划与实际执行连在一起。只有当核心锚点为 none，且当前命题为 `state_change/official_measure`、`mode=observation/decision`、`phase=ordered/effective/executing/completed/cancelled`，才让 linked increment 按普通 PUSH_CUT 评分；仍需 importance 达到原门槛。未知/缺失阶段、承诺、预测、数量与资金流细节保持原 KEY_CUT；已知、发送中、更正与核心锚点保护保持原规则。阈值未全局降低，也不以这个分支强制推送。
+**定向增量修正**（[policy.py](../../tracefold/news/notifications/policy.py)）：语义 `adds_information` 可能把事故与之后恢复、计划与实际执行连在一起。只有当核心锚点为 none，且当前命题为 `state_change/official_measure`、`mode=observation/decision`、`phase=ordered/effective/executing/completed/cancelled`，才让 linked increment 按普通 PUSH_CUT 评分；仍需 importance 达到原门槛。未知/缺失阶段、承诺、预测、数量与资金流细节保持原 KEY_CUT；已知、发送中、更正与核心锚点保护保持原规则。阈值未全局降低，也不以这个分支强制推送。#770 把补充收紧为同一核心事实后仍保留本规则：重放 2026-09-30 的决定，它会改变的 17 条决定中有 10 条所依据的链接在新定义下仍是补充（同一事实上的实际状态变化，如 CT-USD 进入完整交易、PayPay 接入 Binance Pay），删除它会把这些命题重新压到 KEY_CUT。
 
 原生判断走通知决策层独用的 `llm.news_reader_judgment`（System One）；不可用或超时则同一签名一次回退到生成式 News 路由，两者切点分别测定。答案按“判断器身份 + 冻结输入摘要”写入 `news_judgment_cache`，兄弟命题变化或 CAS 失败都不重问；不可用的答案不缓存。
 
