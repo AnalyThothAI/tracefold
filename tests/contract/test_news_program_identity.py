@@ -7,6 +7,11 @@ the unrelated judgment and copy programs retain their original identities.
 
 from __future__ import annotations
 
+import re
+import subprocess
+import sys
+from pathlib import Path
+
 from tracefold.news.adapters.card_copy import CopySignature, DspyCardComposer
 from tracefold.news.adapters.extraction import DspyExtractor, ExtractSignature
 from tracefold.news.adapters.reader_judge import DspyReaderJudge, reader_signature
@@ -19,6 +24,22 @@ from tracefold.news.adapters.semantic_judgments import (
 from tracefold.news.updates.identity import digest
 from tracefold.news.updates.judgment import QUESTION_VERSION
 from tracefold.news.updates.topics import CODEBOOK
+
+
+def test_image_news_identity_probe_executes_its_actual_build_call() -> None:
+    root = Path(__file__).resolve().parents[2]
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    probe = re.search(r"^RUN /app/\.venv/bin/python -c \\\n\s+'([^']+)'", dockerfile, flags=re.MULTILINE)
+    assert probe is not None, "the image must validate its News program identity"
+    result = subprocess.run(
+        [sys.executable, "-c", probe.group(1)],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_extraction_contract_change_preserves_unrelated_program_and_schema_identities() -> None:
