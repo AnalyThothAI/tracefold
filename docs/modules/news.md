@@ -153,6 +153,8 @@ Claim ref 指向一个命题或真实世界中的一次发生。新增支持、�
 
 来源资产采用来源优先的简单链路：Item 的 provider_metadata.coins 保留原始标签；[semantic_input.py](../../tracefold/news/storage/semantic_input.py) 按 evidence_ref 投影为 FrozenInput.asset_candidates（symbol、market_type、grade），随同一次抽取输入冻结。现有抽取器针对每条命题选择相关候选及 primary/mentioned，不把整篇标签复制给所有命题；接地时只恢复被选中、被引用来源候选的拼写与已知市场，跨来源冲突保留未知。正文明确 ticker、公司或产品名称时允许有限补充，不要求 ticker 字面出现；不从 URL、related prior 或泛主题补资产。空资产、目录未收录或缺行情都不阻止事实采用与通知判断，不新增资产表、实体服务或模型轮次。
 
+若本次任务所有可见来源片段都只有 HTTP(S) 链接，抽取器直接返回空命题，不调用模型，也不从 URL slug、旧命题或来源资产标签补造新闻正文。只要任一可见片段包含真实标题或正文，仍走正常抽取和严格引用校验。纯链接的首次读取完成语义工作但不建立 head；已有命题保留，新的来源读取可记录内容版本但不产生命题变化或通知增量。来源证据与 read_ref 均保留，后续真实正文修订仍按正常链路处理。
+
 资产市场词表复用现有 MarketType。历史读取显式把 forex 解释为 fx；旧 fund 没有证明其市场类别，保留为 unknown，不猜 equity。原始来源、已存 Claim/ref、内容版本与真实回执不重写。
 
 ```mermaid

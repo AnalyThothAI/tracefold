@@ -2,7 +2,8 @@
 
 The values are captured from main 3c429fc before #759's responsibility move, with a fixed model
 identity. Extraction intentionally adds source candidates and uses the shared MarketType vocabulary;
-the unrelated judgment and copy programs retain their original identities.
+its pure-link empty-result contract also changes the extractor identity. The unrelated judgment and
+copy programs retain their original identities, and transport schemas are unchanged.
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ def test_extraction_contract_change_preserves_unrelated_program_and_schema_ident
         ).identity,
     }
     assert actual == {
-        "extractor": "extractor:5b24af81420fef3a7127b722d4e911a6e01d0bc0314d87f88f449b0934faf3ba",
+        "extractor": "extractor:07f639d7dbb24b6c524392859c925439536ffecc26a7efdbd318f3f951ca91e6",
         "copy": "news_card_copy:d0a6746bae6657d750165ab78db10ffd4ef4838b69ed2f8c191acb90c0037261",
         "generated": "generated_judgment:0ff4b04ea2eb0f1f01890b7d21d1705b86284f1801c367ace51677c7da4be460",
         "native": "native_judgment:763a95518060a756b572c0163fcb4f35b5fbc556daf46dd9e295cfa71bc08fca",

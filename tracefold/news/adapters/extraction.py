@@ -6,6 +6,7 @@ import copy
 import logging
 from collections.abc import Callable, Mapping
 from typing import Any, Final
+from urllib.parse import urlsplit
 
 import dspy  # type: ignore[import-untyped]
 from pydantic import ConfigDict, Field, ValidationError
@@ -25,7 +26,7 @@ from ..updates.contracts import (
 )
 from ..updates.identity import canonical_json, identity
 from ..updates.judgment import CLAIM_READING_TASKS, OPTIONS, ContractFault
-from ..updates.projection import PROJECTION_VERSION, extraction_input
+from ..updates.projection import PROJECTION_VERSION, extraction_input, reading_views
 from ..updates.topics import MAX_TOPICS
 from . import generation
 from .generation import ADAPTER_VERSION, references
@@ -50,6 +51,7 @@ Extract the underlying domain assertions, not the act of sharing an article, int
 "Read the full report here" with no stated findings yields claims=[]; never invent a publication claim
 just to attach an open question. Official decisions and substantive new report findings remain claims.
 A URL or its slug locates material; its words alone do not establish a partnership or executed action.
+When all visible source segments contain only URLs, there is no assertion to extract: return claims=[].
 Do not infer missing actors, assets or outcomes from a URL or prior context.
 asset_candidates is the existing provider's source-wide tag list keyed by evidence_ref. It supplies
 possible assets, not claim assignments: for each claim choose only the tags relevant to that assertion
@@ -359,6 +361,18 @@ class ExtractSignature(dspy.Signature):  # type: ignore[misc]
     )
 
 
+def _bare_url(token: str) -> bool:
+    # Unencoded markup may join a link to real text without whitespace. Ambiguous input must
+    # still be read, rather than dropping a title/body as though it were part of the URL.
+    if any(character in token for character in "<>\"'`{}[]()"):
+        return False
+    try:
+        url = urlsplit(token)
+        return url.scheme.casefold() in {"http", "https"} and bool(url.hostname)
+    except ValueError:
+        return False
+
+
 class DspyExtractor:
     def __init__(self, lm_factory: Callable[[], Any], *, model_identity: str, topics: dict[str, str]) -> None:
         self.lm_factory = lm_factory
@@ -376,6 +390,11 @@ class DspyExtractor:
         )
 
     async def extract(self, source: FrozenInput) -> Extraction:
+        # Inspect the same source spans the model sees. Prior claims and source tags cannot turn
+        # bare links into new evidence; any visible title or body still needs normal extraction.
+        texts = [span.text.strip() for view in reading_views(source) for span in view.spans if span.text.strip()]
+        if texts and all(_bare_url(token) for text in texts for token in text.split()):
+            return Extraction(claims=())
         aliases = _input_aliases(source)
         extraction: Extraction = await generation.generate(
             ExtractSignature.with_instructions(EXTRACTION_INSTRUCTION),

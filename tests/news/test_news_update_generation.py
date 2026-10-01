@@ -143,6 +143,80 @@ def test_a_first_read_without_claims_is_not_adopted(monkeypatch: pytest.MonkeyPa
     assert assemble_update(source, value, None, adopted_at_ms=STAMP + 10) is None
 
 
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ("https://www.bloomberg.com/news/articles/2026-09-30/trump-to-unveil-54-billion-alaska-lng-plan",),
+        ("  https://example.org/report\nHTTPS://example.org/another-report  ",),
+        ("https://example.org/report", "https://example.org/another-report"),
+    ],
+)
+def test_bare_links_complete_without_model_claims_or_a_new_head(
+    monkeypatch: pytest.MonkeyPatch, texts: tuple[str, ...]
+) -> None:
+    source = FrozenInput(
+        event_id="link", revision=1, lineage_id="link", evidence=tuple(material(text) for text in texts)
+    )
+    calls = generated(monkeypatch, {"claims": []})
+    extractor = DspyExtractor(
+        lambda: pytest.fail("bare links must not call the model"), model_identity="fixture", topics={}
+    )
+    value = asyncio.run(extractor.extract(source))
+    assert value == Extraction(claims=()) and calls == []
+    assert assemble_update(source, value, None, adopted_at_ms=STAMP + 10) is None
+
+
+def test_prior_claims_cannot_turn_a_bare_link_into_new_source_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    _source, _extraction, head = update_one()
+    source = FrozenInput(
+        event_id=head.event_id,
+        revision=2,
+        lineage_id="link",
+        evidence=(material("https://example.org/new-report", revision=2),),
+        prior=prior_of(head),
+    )
+    calls = generated(monkeypatch, {"claims": []})
+    value = asyncio.run(DspyExtractor(lambda: None, model_identity="fixture", topics={}).extract(source))
+    assert value == Extraction(claims=()) and calls == []
+    updated = assemble_update(source, value, head, adopted_at_ms=STAMP + 10)
+    assert updated is not None and updated.claims == head.claims
+    assert updated.changes == () and updated.retired_claim_refs == () and updated.superseded_claim_refs == ()
+
+
+@pytest.mark.parametrize("separate_body", [False, True])
+def test_a_link_with_any_visible_title_or_body_still_uses_normal_extraction(
+    monkeypatch: pytest.MonkeyPatch, separate_body: bool
+) -> None:
+    body = material(
+        "Agency announces a tariff." if separate_body else "Agency announces a tariff. https://example.org/report"
+    )
+    evidence = (material("https://example.org/report"), body) if separate_body else (body,)
+    source = FrozenInput(event_id="linked-report", revision=1, lineage_id="linked-report", evidence=evidence)
+    reply = draft(body).model_dump(mode="json")
+    reply["citations"][0]["evidence_ref"] = "e2" if separate_body else "e1"
+    calls = generated(monkeypatch, {"claims": [reply]})
+    value = asyncio.run(DspyExtractor(lambda: None, model_identity="fixture", topics={}).extract(source))
+    assert len(value.claims) == 1 and len(calls) == 1
+    assert value.claims[0].citations[0].evidence_ref == body.ref
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "https://example.org/report<br>特朗普宣布新措施",
+        "https://example.org/report[特朗普宣布新措施]",
+        "https://?not-a-host",
+    ],
+)
+def test_ambiguous_link_markup_or_invalid_url_still_uses_normal_extraction(
+    monkeypatch: pytest.MonkeyPatch, text: str
+) -> None:
+    source = FrozenInput(event_id="ambiguous-link", revision=1, lineage_id="ambiguous-link", evidence=(material(text),))
+    calls = generated(monkeypatch, {"claims": []})
+    asyncio.run(DspyExtractor(lambda: None, model_identity="fixture", topics={}).extract(source))
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("answer", ["decision", "unknown", None])
 @pytest.mark.parametrize("use_native", [False, True])
 def test_mode_is_clarified_and_cached_before_adoption_never_in_notification(
