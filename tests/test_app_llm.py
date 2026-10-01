@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Iterator
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -305,6 +306,41 @@ def test_extraction_and_judgment_share_the_triage_route_and_cards_use_the_reader
     assert models.news_judgment is None
     assert models.status()["judgment_backend"] == "generated"
     assert models.status()["judgment_model"] == "triage-model"
+
+
+def test_the_judgment_model_moves_only_the_judgment_primary() -> None:
+    """#770: semantic judgments ask a deterministic variant by name; extraction and cards keep the triage model."""
+
+    fallback = {"api_key": "fb-key", "base_url": "https://fallback.test/v1", "model": "fb-model"}
+    shared = learning_runtime.compose_news_models(_news_settings(news_triage_fallback=fallback))
+    judge = learning_runtime.compose_news_models(
+        _news_settings(news_triage_fallback=fallback, news_triage_judgment_model="triage-model:judge")
+    )
+    assert shared is not None and judge is not None
+    assert judge.judgment.primary.model_name == "openai/triage-model:judge"
+    assert judge.extraction.primary.model_name == "openai/triage-model"
+    assert judge.card.primary is judge.extraction.primary
+    # Same endpoint, key and request envelope; only the model name differs. The fallback is unchanged.
+    assert judge.judgment.primary == replace(judge.extraction.primary, model_name="openai/triage-model:judge")
+    assert judge.judgment.fallback is judge.extraction.fallback
+    assert [lm.model for lm in judge.judgment.lms()] == ["openai/triage-model:judge", "openai/fb-model"]
+    assert [lm.model for lm in judge.extraction.lms()] == ["openai/triage-model", "openai/fb-model"]
+    # The judgment identity (and so the program, its caches and the runtime manifest) follows the model asked.
+    assert judge.judgment.identity != shared.judgment.identity
+    assert judge.program_identity != shared.program_identity
+    assert judge.extraction.identity == shared.extraction.identity
+    assert judge.card.identity == shared.card.identity
+    assert judge.status()["judgment_backend"] == "generated"
+    assert judge.status()["judgment_model"] == "triage-model:judge"
+    assert judge.status()["extraction_model"] == judge.status()["card_model"] == "triage-model"
+    # Naming the triage model itself is the unset route.
+    same = learning_runtime.compose_news_models(
+        _news_settings(news_triage_fallback=fallback, news_triage_judgment_model="triage-model")
+    )
+    assert same is not None
+    assert same.judgment.primary is same.extraction.primary
+    assert same.judgment.identity == shared.judgment.identity
+    assert same.program_identity == shared.program_identity
 
 
 def test_route_identities_are_secret_free_and_ignore_key_rotation() -> None:

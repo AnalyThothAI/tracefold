@@ -70,7 +70,8 @@ def get_news_status(request: Request) -> Response:
         # The EventUpdate stage (#706): model health is judged on these, not on legacy verdicts.
         **semantic,
         # The configured model routes, secret-free: extraction and generative judgments share one
-        # endpoint, cards another, and News Jev is an optional judgment backend of its own.
+        # endpoint (the judgments may ask their own model name there, #770), cards another, and News
+        # Jev is an optional judgment backend of its own.
         "extraction_model": models.extraction_model,
         "extraction_fallback_model": models.extraction_fallback_model,
         "card_model": models.card_model,
@@ -84,7 +85,7 @@ def get_news_status(request: Request) -> Response:
             None if runtime_models is None else "native" if models.news_reader_judgment_model else "generated"
         ),
         "reader_judgment_model": (
-            None if runtime_models is None else models.news_reader_judgment_model or models.extraction_model
+            None if runtime_models is None else models.news_reader_judgment_model or models.generated_judgment_model
         ),
         "news_program_identity": None if runtime_models is None else runtime_models.program_identity,
     }

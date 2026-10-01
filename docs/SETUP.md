@@ -141,6 +141,7 @@ make help
 | --- | --- | --- |
 | News 接收 | `news.enabled`、`news.opennews_token`、`news.broker` | News 默认 enabled，但没有外部 token 不会产生来源数据 |
 | 编辑型模型 | `llm.api_key`、`llm.base_url`、`llm.news_triage_model` | 完整一组；字段名保留历史拼写，但当前调用 EventUpdate Agent |
+| 语义判断模型名 | `llm.news_triage_judgment_model` | 可选；在编辑型模型同一 endpoint、密钥与请求配置下，只让语义判断（含读者判断的生成式回退）改问这个模型名，例如代理提供的温度 0 确定性变体。未设置时与抽取同一模型；fallback、抽取与卡片不变 |
 | 中文卡片路由 | `llm.news_reader_card` 及对应 fallback | 可选独立完整 endpoint；未配置时按实际装配复用默认生成能力 |
 | News 有界原生判断 | `llm.news_judgment` | 可选完整 `api_key / base_url / model`，不从 Trading 路由推断 |
 | News 通知决策原生判断 | `llm.news_reader_judgment` | 可选完整 `api_key_file / base_url / model`：`api_key_file: news_reader_judgment_api_key`（初始化建好的空 `0600` 文件，Compose 只读挂载给 Workers；换别的文件名不会被挂载），key 写进该文件，不接受内联 `api_key`。只回答锚点与增量重要性两题，不从 `news_judgment` 或 Trading 路由推断；未配置或 key 文件为空时由生成式 News 路由按其自己的切点回答（Workers 日志 `news_reader_judgment_key_empty`），文件不可读则 editorial 能力以 `news_reader_judgment_key_*` 故障 |

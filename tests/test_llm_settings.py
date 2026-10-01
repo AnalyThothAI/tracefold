@@ -50,6 +50,7 @@ def test_availability_without_fallback_is_unchanged() -> None:
     llm = LlmConfig(api_key="k", base_url="https://api.deepseek.com/v1", news_triage_model="deepseek-chat")
     models = _availability(llm)
     assert models.extraction_model == "deepseek-chat" and models.extraction_fallback_model is None
+    assert models.generated_judgment_model == "deepseek-chat"
     assert models.card_model == "deepseek-chat"
     assert models.card_dedicated is False
     assert models.configured is True
@@ -236,3 +237,24 @@ def test_news_reader_judgment_is_never_inferred_from_news_judgment() -> None:
     assert llm.news_reader_judgment.configured is False
     with pytest.raises(ValidationError, match="trading_semantics"):
         LlmConfig.model_validate({"trading_semantics": route})
+
+
+def test_the_judgment_model_names_a_model_on_the_extraction_endpoint() -> None:
+    """#770: the semantic judgments may ask a deterministic variant of the same weights by its own name."""
+
+    llm = LlmConfig(
+        api_key="k",
+        base_url="http://192.168.0.2:8080/v1",
+        news_triage_model="qwen3.8-27b",
+        news_triage_judgment_model="  qwen3.8-27b:judge ",
+    )
+    models = _availability(llm)
+    assert models.extraction_model == "qwen3.8-27b"
+    assert models.generated_judgment_model == "qwen3.8-27b:judge"
+    assert models.card_model == "qwen3.8-27b"
+    assert LlmConfig(news_triage_judgment_model="  ").news_triage_judgment_model is None
+
+
+def test_a_judgment_model_without_the_primary_endpoint_fails_validation() -> None:
+    with pytest.raises(ValidationError, match="llm_judgment_model_without_primary"):
+        LlmConfig(news_triage_judgment_model="qwen3.8-27b:judge")
