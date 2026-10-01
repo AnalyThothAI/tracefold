@@ -145,11 +145,32 @@ Claim ref 指向一个命题或真实世界中的一次发生。新增支持、�
 
 [Gate](../../tracefold/news/events/gate.py)与[准入](../../tracefold/news/pipeline/admission.py)负责确定性证据、grounded assets 与队列优先级。来源标签、显式 cashtag、交易标的目录与规则匹配各有作用；并非所有实体都由一次模型调用凭空产生。
 
-精确身份和有界近似匹配用于找到可能归到一起的输入。强事实如 ticker、数字及 token 兼容性可以阻止错误合并；MinHash、标题相似或同一个资产只能帮助召回，**不能证明两个命题相同**。真正的等价、补充、更正与阶段变化在 Claim 层判断。实时稿只按文本并入已准入的 Event：断线补抄开出的 recovery Event 不产生语义、卡片或 catalyst，不能吞掉之后的实时稿；补抄稿仍可并入它作为历史。
+精确身份和有界近似匹配用于找到可能归到一起的输入。强事实如 ticker、数字及 token 兼容性可以阻止错误合并；MinHash、标题相似或同一个资产只能帮助召回，**不能证明两个命题相同**。真正的等价、补充、更正与阶段变化在 Claim 层判断。对引文明示的不同 crypto 上币 ticker 或同报价币的不同完整合约，代码阻止错误的等价、增量或阶段关系；ticker 与交易对、未引证标签、自由文字差异保留未知，同标的不同阶段仍交原关系判断。通知读取还用当前 head 与实际回执的原始命题检查最新链接断言：两端证据足够时忽略同类错链，缺任一端时保留，真实更正不受影响；它不改写历史图，也不重新打开已完成工作。实时稿只按文本并入已准入的 Event：断线补抄开出的 recovery Event 不产生语义、卡片或 catalyst，不能吞掉之后的实时稿；补抄稿仍可并入它作为历史。
 
 证据快照记录成员的来源、策略与 provenance，但只有语义材料变化（任务范围、成员记录与事实、正文修订、grounded assets）才请求语义工作；同一记录换策略重发只更新快照，不触发空转。
 
 ### 实体依据与相关召回
+
+来源资产采用来源优先的简单链路：Item 的 provider_metadata.coins 保留原始标签；[semantic_input.py](../../tracefold/news/storage/semantic_input.py) 按 evidence_ref 投影为 FrozenInput.asset_candidates（symbol、market_type、grade），随同一次抽取输入冻结。现有抽取器针对每条命题选择相关候选及 primary/mentioned，不把整篇标签复制给所有命题；接地时只恢复被选中、被引用来源候选的拼写与已知市场，跨来源冲突保留未知。正文明确 ticker、公司或产品名称时允许有限补充，不要求 ticker 字面出现；不从 URL、related prior 或泛主题补资产。空资产、目录未收录或缺行情都不阻止事实采用与通知判断，不新增资产表、实体服务或模型轮次。
+
+资产市场词表复用现有 MarketType。历史读取显式把 forex 解释为 fx；旧 fund 没有证明其市场类别，保留为 unknown，不猜 equity。原始来源、已存 Claim/ref、内容版本与真实回执不重写。
+
+```mermaid
+flowchart TB
+    accTitle: 来源资产到命题、通知与前端的处理链路
+    accDescr: 来源标签随证据冻结，在现有抽取中逐命题选择，类型化主资产用于通知和前端，行情目录不决定新闻准入。
+    Source["Item 原文 / provider coins"] --> Frozen["FrozenInput / ReadingView<br/>按 evidence_ref 绑定候选"]
+    Frozen --> Extract["现有抽取调用<br/>逐命题选择资产与角色"]
+    Extract --> Adopted["Claim / EventUpdate / head"]
+    Adopted --> Recall["回执召回<br/>具体证据优先，背景后排"]
+    Recall --> Notify["Reader / policy / 持久发送"]
+    Notify --> Card["选中命题 primary / typed 行情"]
+    Adopted --> Feed["Feed / Detail 有效命题 primary"]
+    Feed --> Quotes["typed 资产批次 → 既有市场目录"]
+    Source --> Evidence["原始标签保留供证据阅读"]
+```
+
+*数据流 · 候选是原始来源的冻结投影；报价仍使用既有目录，不构造另一套资产身份账本。*
 
 [entities.py](../../tracefold/news/entities.py)提供有依据的候选检索特征。`EntityKey(namespace, identifier)` 与 `EntityFeature(key, kind, basis_ref, surface)` 分开：出处和原始写法不会改变 key 的比较结果，但 key 的相同也不会替代命题关系判断。
 
@@ -202,7 +223,7 @@ sequenceDiagram
 
 ### 冻结输入与增量范围
 
-`FrozenInput` 绑定 Event、输入修订、证据范围、prior claims、候选关系和来源时钟；工作身份另外绑定 analyzer 身份，观察身份另外绑定语义 program 身份。prior claims 只取**当前有效**命题（未被更正退休、未被真实变化替代），先本 Event，后召回的相关 Event；“当前有效”只由 `EventUpdate.current_claims` 一处推导。输入身份 `input_sha` 只含本 Event 的命题：相关 Event 再次采用不改变身份，重试复用已保存的抽取，只重问比较（答案按内容缓存）；相关 Event 的命题也不进入抽取输入。每个来源的当前 Event 阅读范围产生 `read_ref`，由任务边界、实际片段和投影版本决定。先构造阅读视图再比较已处理的 `processed_read_refs` 与已隔离的 `failed_read_refs`；同一来源新增范围或条件仍需处理，重投相同任务不重算。旧命题用于比较与延续，不是每次把全部历史成员重新抽取。
+`FrozenInput` 绑定 Event、输入修订、证据范围、prior claims、候选关系和来源时钟；工作身份另外绑定 analyzer 身份，观察身份另外绑定语义 program 身份。prior claims 只取**当前有效**命题（未被更正退休、未被真实变化替代），先本 Event，后召回的相关 Event；“当前有效”只由 `EventUpdate.current_claims` 一处推导。输入身份 `input_sha` 只含本 Event 的命题：相关 Event 再次采用不改变身份，重试复用已保存的抽取，只重问比较（答案按内容缓存）；相关 Event 的命题也不进入抽取输入。每个来源的当前 Event 阅读范围产生 `read_ref`，由任务边界、实际片段、非空来源资产候选和投影版本决定。先构造阅读视图再比较已处理的 `processed_read_refs` 与已隔离的 `failed_read_refs`；同一来源新增范围或条件仍需处理，重投相同任务不重算。旧命题用于比较与延续，不是每次把全部历史成员重新抽取。
 
 “读过但没有命题”的材料也必须记入任务级处理身份。否则同一段空内容会不断进入下一轮。没有新证据或没有实质变化，可以推进 done，而不制造新的内容版本；首个版本没有命题时不采纳 EventUpdate。以失败结束的修订把它读过的范围隔离，之后的新成员只读新材料。对已完成或已失败、确认需要重读的 Event，使用精确 wanted/head/read 身份的 `news reanalyze`；它不伪造来源修订或自动重发历史通知。
 
@@ -369,7 +390,7 @@ stateDiagram-v2
 
 **读者判断**是一次请求两道题（[reader.py](../../tracefold/news/notifications/reader.py)），每条命题有自己的冻结 `ReaderInput`：命题字段与可读主题、来源，以及至多 16 条实际已送正文。输入不含未指向某条已送消息的单个 `change` 类型；`EventUpdate.changes` 和持久命题链接仍决定更正、增量与新颖度。
 
-回执召回（[recall.py](../../tracefold/news/notifications/recall.py)）从已送 `news_deliveries` 出发，普通窗口按 `settled_at_ms` 连续覆盖过去 48 小时。每条当前命题独立查询历史已送版本 `(event_id, content_revision)` 中该回执的 `claim_refs`：有效语义代表优先，结构身份 / 主资产与同语言实义词项两路各取最多 32 个候选，确定性融合后可返回 0–16 条。资产保留 `market_type` 和 primary / mentioned 角色，相关检索按 [entities.py](../../tracefold/news/entities.py) 同一组目录/商品/venue/报价对特征扩展；精确 key 与 related 特征分开，SQL 路线和纯函数采用相同规则。地址保持大小写，检索重合不证明同一合约或同一事实。词项路线没有停用词表：英文按同一正则取词，中文取相邻汉字 bigram，一个共享词项只有在同一 48 小时窗口里至多 1% 的已送回执（`LEXICAL_DF_MAX`，至少 1 条）出现时才算证据，同一语言至少 2 个这样的词项才入选，按词项数与新近度排序。文档频率由 SQL 在同一次查询的窗口上计算，并把每条命题的合格词项随路线排名返回；纯函数以传入的候选池为窗口，按同一规则计算。二者不提供无共同实体的通用跨语言语义匹配。共享 SQL 批次和正文缓存，但兄弟命题不共享截断后的列表。缺少历史投影时只可使用真实已送正文的合法词项路径，不借当前 head 补造历史。
+回执召回（[recall.py](../../tracefold/news/notifications/recall.py)）从已送 `news_deliveries` 出发，普通窗口按 `settled_at_ms` 连续覆盖过去 48 小时。每条当前命题独立查询历史已送版本 `(event_id, content_revision)` 中该回执的 `claim_refs`：有效语义代表优先，结构与同语言实义词项两路各取最多 32 个候选，确定性融合后可返回 0–16 条。结构路线在截断前按有证身份/明确对象、已知市场的 primary、仅共享主体/背景角色排序；最终融合也让合格正文线索优先于弱背景，组内沿用 RRF 与新近度。弱背景仍可填剩余名额，召回策略版本为 claim_receipts_v3；相关候选不能证明已覆盖。资产保留 `market_type` 和 primary / mentioned 角色，相关检索按 [entities.py](../../tracefold/news/entities.py) 同一组目录/商品/venue/报价对特征扩展；精确 key 与 related 特征分开，SQL 路线和纯函数采用相同规则。地址保持大小写，检索重合不证明同一合约或同一事实。词项路线没有停用词表：英文按同一正则取词，中文取相邻汉字 bigram，一个共享词项只有在同一 48 小时窗口里至多 1% 的已送回执（`LEXICAL_DF_MAX`，至少 1 条）出现时才算证据，同一语言至少 2 个这样的词项才入选，按词项数与新近度排序。文档频率由 SQL 在同一次查询的窗口上计算，并把每条命题的合格词项随路线排名返回；纯函数以传入的候选池为窗口，按同一规则计算。二者不提供无共同实体的通用跨语言语义匹配。共享 SQL 批次和正文缓存，但兄弟命题不共享截断后的列表。缺少历史投影时只可使用真实已送正文的合法词项路径，不借当前 head 补造历史。
 
 同一 reader context 同时生成模型正文与 revision，由快照、记录计划、开始发送前两处校验复用。正文必须与已送 payload digest 一致；`sending` 不当作已读，`ambiguous` 保留去重保护。召回依据仅选上下文，是否已覆盖仍由持久关系、新颖度和 reader 判断决定。等价比较只用可证明的身份、枚举、同口径数量及少数可解析绝对时段冲突否决模型的 equivalent；同口径数量指同一指标与单位（忽略大小写与首尾空白）、周期可对齐，不要求主体或对象文本一致，主体不同须由 `subject_id` / `object_id` 证明。自由文本差异返回未知，不代表已经证明等价。
 

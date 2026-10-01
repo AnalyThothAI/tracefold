@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..events.facts import FactUnit, extract_fact_units, source_blocks
-from .contracts import Evidence, ExtractionScope, FrozenInput
+from .contracts import Evidence, ExtractionScope, FrozenInput, SourceAssetCandidate
 from .identity import digest, identity
 
 log = logging.getLogger("tracefold.news")
@@ -115,7 +115,12 @@ class ReadingView:
         }
 
 
-def reading_view(event_id: str, evidence: Evidence, scopes: tuple[ExtractionScope, ...]) -> ReadingView:
+def reading_view(
+    event_id: str,
+    evidence: Evidence,
+    scopes: tuple[ExtractionScope, ...],
+    asset_candidates: tuple[SourceAssetCandidate, ...] = (),
+) -> ReadingView:
     """Locate complete task blocks in this exact source version or show it whole."""
 
     scopes = tuple(scope for scope in scopes if scope.evidence_ref == evidence.ref)
@@ -178,6 +183,10 @@ def reading_view(event_id: str, evidence: Evidence, scopes: tuple[ExtractionScop
         "reason": reason,
         "segments": [span.as_dict() for span in spans],
     }
+    # Preserve existing read refs for sources with no tags. A changed nonempty candidate list is
+    # new model-visible source material even when the immutable body and task spans are unchanged.
+    if asset_candidates:
+        material["asset_candidates"] = [candidate.model_dump(mode="json") for candidate in asset_candidates]
     material_sha = digest(material)
     return ReadingView(
         evidence_ref=evidence.ref,
@@ -191,7 +200,10 @@ def reading_view(event_id: str, evidence: Evidence, scopes: tuple[ExtractionScop
 
 
 def reading_views(source: FrozenInput) -> tuple[ReadingView, ...]:
-    return tuple(reading_view(source.event_id, item, source.extraction_scopes) for item in source.evidence)
+    return tuple(
+        reading_view(source.event_id, item, source.extraction_scopes, source.asset_candidates.get(item.ref, ()))
+        for item in source.evidence
+    )
 
 
 def extraction_input(source: FrozenInput) -> dict[str, object]:

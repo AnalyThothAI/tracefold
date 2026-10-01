@@ -28,10 +28,13 @@ export function newsWalletsPath(): string {
 }
 
 /**
- * The token page (#207 PR-W1). Every `base_symbol` on the console routes here, including one the universe
- * has never listed — the endpoint answers `known: false` rather than 404, so a struck-through chip is a
- * link like any other.
+ * The token page (#207 PR-W1) accepts catalogue base symbols, including unlisted tickers. A source may
+ * also name a contract address: keep that visible without offering a catalogue URL it cannot answer.
  */
+export function canOpenNewsSymbol(base: string): boolean {
+  return /^[A-Z0-9._-]{1,24}$/.test(base);
+}
+
 export function newsSymbolPath(base: string): string {
   return `/news/symbols/${encodeURIComponent(base)}`;
 }

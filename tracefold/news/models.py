@@ -178,11 +178,13 @@ def market_type_of(value: Any) -> MarketType:
     """The vocabulary value a stored or supplied market position carries, or ``unknown``.
 
     One normalizer, shared by the typed contracts and by every projection that reads verdict JSONB
-    directly. Anything outside the vocabulary — a pre-#651 free string, ``null``, a misspelling — is
-    ``unknown``: the code does not know, and saying so is the only honest answer. Never guessed.
+    directly. Historical ``forex`` explicitly names ``fx``; ``fund`` does not establish the underlying
+    market and remains ``unknown``. Other values outside the vocabulary — a free string, ``null``, a
+    misspelling — are ``unknown``: the code does not know, and saying so is the only honest answer.
     """
 
     text = str(value or "").strip().lower()
+    text = {"forex": "fx", "fund": "unknown"}.get(text, text)
     return cast(MarketType, text) if text in MARKET_TYPES else "unknown"
 
 

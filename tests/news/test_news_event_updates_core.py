@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from tests.support.news_update_semantic import STAMP, draft, material, prior_of, update_one
+from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, reader_novelty
 from tracefold.news.updates.assembly import assemble_update, proven_mismatches
 from tracefold.news.updates.contracts import (
     Asset,
@@ -85,6 +86,134 @@ def test_known_different_subject_identity_cannot_be_equivalent() -> None:
     prior = head.claims[0].model_copy(update={"known_identity": (prior_hint,)})
     hints = (IdentityHint(key="subject_id", value="TR", evidence_ref=source.evidence[0].ref, surface=quote),)
     assert proven_mismatches(extraction.claims[0], prior, hints) == ("subject_id",)
+
+
+def crypto_listing(symbol: str, *, revision: int = 1, phase: str = "announced"):
+    evidence = material(f"Aster listing: {symbol}", revision=revision)
+    original = draft(evidence)
+    fields = original.fields.model_copy(
+        update={
+            "subject": "Aster",
+            "action": "listed",
+            "object": f"{symbol} perpetual contract",
+            "mode": "observation",
+            "phase": phase,
+            "content_kind": "state_change",
+            "assets": (Asset(symbol=symbol, market_type="crypto", role="primary"),),
+            "quantities": (),
+            "effective_at": None,
+        }
+    )
+    return evidence, original.model_copy(update={"fields": fields})
+
+
+@pytest.mark.parametrize("symbols", [("SIUSDT", "CTUSDT"), ("SI", "CT")])
+@pytest.mark.parametrize(
+    "relation,kind", [("equivalent", None), ("adds_information", "new_fact"), ("real_world_change", "scope_change")]
+)
+def test_different_explicit_crypto_listings_are_independent_facts(symbols, relation, kind) -> None:
+    earlier_evidence, earlier = crypto_listing(symbols[0])
+    first_source = FrozenInput(event_id="aster", revision=1, lineage_id="aster", evidence=(earlier_evidence,))
+    head = assemble_update(first_source, Extraction(claims=(earlier,)), None, adopted_at_ms=STAMP)
+    assert head is not None
+    current_evidence, current = crypto_listing(symbols[1], revision=2)
+    source = FrozenInput(
+        event_id="aster", revision=2, lineage_id="aster", evidence=(current_evidence,), prior=prior_of(head)
+    )
+    assert "listing_asset" in proven_mismatches(current, head.claims[0])
+    updated = assemble_update(
+        source,
+        Extraction(
+            claims=(current,),
+            relations=(
+                RelationDraft(slot=current.slot, previous_ref=head.claims[0].ref, relation=relation, change_kind=kind),
+            ),
+        ),
+        head,
+        adopted_at_ms=STAMP + 10,
+    )
+    assert updated is not None
+    new = updated.claims[-1]
+    assert new.ref != head.claims[0].ref
+    assert [(change.kind, change.previous_ref) for change in updated.changes] == [("new_fact", None)]
+    assert (
+        reader_novelty(
+            new.ref,
+            (),
+            (
+                LinkedReceipt(
+                    intent_id="si",
+                    state="sent",
+                    claim_refs=(head.claims[0].ref,),
+                    settled_at_ms=STAMP,
+                ),
+            ),
+        ).novelty
+        == "unlinked"
+    )
+
+
+def test_same_crypto_listing_stage_change_remains_a_development() -> None:
+    earlier_evidence, earlier = crypto_listing("CTUSDT")
+    source = FrozenInput(event_id="aster", revision=1, lineage_id="aster", evidence=(earlier_evidence,))
+    head = assemble_update(source, Extraction(claims=(earlier,)), None, adopted_at_ms=STAMP)
+    assert head is not None
+    current_evidence, current = crypto_listing("CTUSDT", revision=2, phase="effective")
+    source = FrozenInput(
+        event_id="aster", revision=2, lineage_id="aster", evidence=(current_evidence,), prior=prior_of(head)
+    )
+    updated = assemble_update(
+        source,
+        Extraction(
+            claims=(current,),
+            relations=(
+                RelationDraft(
+                    slot=current.slot,
+                    previous_ref=head.claims[0].ref,
+                    relation="real_world_change",
+                    change_kind="phase_change",
+                ),
+            ),
+        ),
+        head,
+        adopted_at_ms=STAMP + 10,
+    )
+    assert updated is not None
+    links = tuple(
+        ClaimLink(
+            current_ref=change.current_ref,
+            previous_ref=change.previous_ref,
+            relation=change.relation,
+            asserted_at_ms=STAMP + 10,
+        )
+        for change in updated.changes
+        if change.previous_ref is not None
+    )
+    novelty = reader_novelty(
+        updated.claims[-1].ref,
+        links,
+        (
+            LinkedReceipt(
+                intent_id="announcement",
+                state="sent",
+                claim_refs=(head.claims[0].ref,),
+                settled_at_ms=STAMP,
+            ),
+        ),
+    )
+    assert novelty.novelty == "development"
+
+
+def test_a_ticker_versus_pair_or_unquoted_asset_stays_an_unknown_identity() -> None:
+    earlier_evidence, earlier = crypto_listing("CTUSDT")
+    source = FrozenInput(event_id="aster", revision=1, lineage_id="aster", evidence=(earlier_evidence,))
+    head = assemble_update(source, Extraction(claims=(earlier,)), None, adopted_at_ms=STAMP)
+    assert head is not None
+    _, current = crypto_listing("CT", revision=2)
+    assert "listing_asset" not in proven_mismatches(current, head.claims[0])
+    _, current = crypto_listing("SIUSDT", revision=2)
+    unquoted = current.model_copy(update={"citations": earlier.citations})
+    assert "listing_asset" not in proven_mismatches(unquoted, head.claims[0])
 
 
 def correction_update() -> tuple[EventUpdate, EventUpdate]:

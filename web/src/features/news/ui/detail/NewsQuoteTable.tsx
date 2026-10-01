@@ -1,6 +1,6 @@
 import { EmptyNote } from "@shared/ui/EmptyNote";
 
-import type { NewsQuote } from "../../api/newsQueries";
+import { newsAssetKey, type NewsQuote } from "../../api/newsQueries";
 import { quoteAgeLabel } from "../../model/newsPrice";
 import { NewsQuoteChange, NewsQuotePrice } from "../chrome/NewsQuoteValue";
 
@@ -34,8 +34,12 @@ export function NewsQuoteTable({
         <span>24H</span>
       </div>
       {quotes.map((quote) => (
-        <div className="news-quote-table-row" key={quote.requested_symbol}>
+        <div
+          className="news-quote-table-row"
+          key={newsAssetKey(quote.market_type, quote.requested_symbol)}
+        >
           <code>
+            <span>{quote.market_type} · </span>
             {quote.venue && !compact ? <span>{quote.venue}:</span> : null}
             <b>{quote.venue_symbol ?? quote.symbol}</b>
             {quote.venue && compact ? <span>{quote.venue}</span> : null}

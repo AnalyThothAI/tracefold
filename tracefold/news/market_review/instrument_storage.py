@@ -27,7 +27,7 @@ from .instruments import (
     pair_base_symbol,
     resolve_base_symbol,
 )
-from .pricing import source_rank_sql
+from .pricing import QuoteRequest, quote_asset_rank_sql, source_rank_sql
 
 SEARCH_IDENTITY_SQL = """
     SELECT base_symbol, priority
@@ -261,64 +261,62 @@ class InstrumentsRepository:
             for row in rows
         ]
 
-    def asset_refs(self, symbols: Iterable[str]) -> dict[str, dict[str, Any]]:
-        """Provider coin tags -> what each one actually names on a venue, for one bounded batch (#87).
+    def asset_refs(self, requests: Iterable[QuoteRequest]) -> dict[QuoteRequest, dict[str, Any]]:
+        """Resolve typed reader assets in one catalogue read, without guessing an unknown market.
 
-        The console shows a grounded asset as `hl.perp:HYPE`, and shows a tag that resolves to nothing as struck
-        through — that is the only place a reader sees the difference between "the provider tagged a token" and
-        "the token exists". Resolution is the same two steps the Gate takes: alias first, then existence.
-
-        A batch, never one query per symbol: the feed serves up to 100 Events on a three-second poll. Loading
-        the whole universe (`tradeable_base_symbols`) instead would be ~1.3k rows per poll to answer at most a
-        few dozen questions.
-
-        `venue` is the *preferred* venue when a base trades on several — deepest first, HIP-3 builder DEXs last —
-        so a chip is stable across polls rather than reshuffling with whatever the planner returned.
-
-        Input is the raw provider tag and the result is keyed by it, so a caller needs no normalization
-        knowledge of its own; the returned ``symbol`` is the normalized form. Normalizing matters twice: the
-        provider ships both `UNITREE` and `XYZ-UNITREE` for one instrument, and `news_event_assets` stores the
-        stripped form — so resolving the raw tag would miss every builder-DEX symbol whose `XYZ-` alias row
-        happens not to exist, and would print `hl.xyz:XYZ-UNITREE` on the chip (#87 review).
-
-        Reference venues are excluded (#91). The chip and the funnel segment it feeds both mean "names something
-        on a venue we poll"; letting a US-listed-only ticker light them up would quietly widen the console's
-        `符号落表` count by ~95 Events a week and claim a tradeable instrument that does not exist. The reference
-        tier answers a different question, and only `instrument_classes()` asks it.
+        A reference directory establishes existence but supplies no priceable contract. Exact base
+        symbols precede issuer aliases, matching quote resolution. Unknown requests can report that a
+        spelling exists; they cannot select one of its markets or contracts.
         """
 
-        normalized = {str(symbol): normalize_symbol(symbol) for symbol in symbols if str(symbol).strip()}
-        wanted = sorted(set(normalized.values()))
+        wanted = tuple(dict.fromkeys(request for request in requests if request.symbol.strip()))
         if not wanted:
             return {}
+        normalized = {request: normalize_symbol(request.symbol) for request in wanted}
+        symbols = sorted(set(normalized.values()))
+        alias_rows = self.conn.execute(
+            "SELECT alias, base_symbol FROM news_symbol_aliases WHERE alias = ANY(%s)", (symbols,)
+        ).fetchall()
+        aliases = {str(row["alias"]): str(row["base_symbol"]) for row in alias_rows}
+        bases = sorted({*symbols, *(aliases.get(symbol, symbol) for symbol in symbols)})
         rows = self.conn.execute(
             f"""
-            SELECT s.symbol,
-                   COALESCE(a.base_symbol, s.symbol) AS base_symbol,
-                   m.venue
-              FROM unnest(%s::text[]) AS s(symbol)
-              LEFT JOIN news_symbol_aliases a ON a.alias = s.symbol
-              LEFT JOIN LATERAL (
-                SELECT i.venue
-                  FROM news_market_instruments i
-                 WHERE i.base_symbol = COALESCE(a.base_symbol, s.symbol) AND i.status = 'trading'
-                   AND NOT (i.venue = ANY(%s))
-                 ORDER BY {source_rank_sql()}, i.venue
-                 LIMIT 1
-              ) m ON true
+            SELECT i.venue, i.venue_symbol, i.base_symbol, i.instrument_class, i.quote_asset
+              FROM news_market_instruments i
+             WHERE i.status = 'trading' AND i.base_symbol = ANY(%s)
+             ORDER BY (i.venue = ANY(%s)), {source_rank_sql()}, {quote_asset_rank_sql()},
+                      i.venue, i.venue_symbol
             """,  # noqa: S608
-            (wanted, sorted(REFERENCE_VENUES)),
+            (bases, sorted(REFERENCE_VENUES)),
         ).fetchall()
-        resolved = {
-            str(row["symbol"]): {
-                "symbol": str(row["symbol"]),
-                "base_symbol": str(row["base_symbol"]),
-                "venue": str(row["venue"]) if row["venue"] else None,
-                "listed": row["venue"] is not None,
+        grouped: dict[str, list[Mapping[str, Any]]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["base_symbol"]), []).append(row)
+        result: dict[QuoteRequest, dict[str, Any]] = {}
+        for request, symbol in normalized.items():
+            base = symbol if symbol in grouped else aliases.get(symbol, symbol)
+            matches = [row for row in grouped.get(base, ()) if request.accepts(str(row["instrument_class"]))]
+            traded = [row for row in matches if str(row["venue"]) not in REFERENCE_VENUES]
+            chosen = matches[0] if matches and request.market_type != "unknown" else None
+            state = (
+                "unresolved_market"
+                if request.market_type == "unknown"
+                else "resolved"
+                if traded
+                else "reference_only"
+                if matches
+                else "unlisted"
+            )
+            result[request] = {
+                "symbol": request.symbol,
+                "market_type": request.market_type,
+                "base_symbol": base,
+                "listed": bool(traded),
+                "venue": str(chosen["venue"]) if chosen is not None else None,
+                "venue_symbol": str(chosen["venue_symbol"]) if chosen is not None else None,
+                "resolution_state": state,
             }
-            for row in rows
-        }
-        return {raw: resolved[norm] for raw, norm in normalized.items() if norm in resolved}
+        return result
 
     def aliases_by_base(
         self, base_symbols: Iterable[str], *, sources: Sequence[str] | None = None

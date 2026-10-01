@@ -347,6 +347,14 @@ def feed_page_sql(where_sql: str) -> str:
                sw.last_error_code AS semantic_last_error_code,
                h.content_revision AS update_content_revision, h.adopted_at_ms AS update_adopted_at_ms,
                jsonb_array_length(u.document -> 'claims') AS update_claim_n,
+               (SELECT COALESCE(jsonb_agg(asset ORDER BY claim_position, asset_position), '[]'::jsonb)
+                  FROM jsonb_array_elements(u.document -> 'claims') WITH ORDINALITY AS listed(claim, claim_position)
+                  CROSS JOIN LATERAL jsonb_array_elements(claim -> 'fields' -> 'assets')
+                    WITH ORDINALITY AS named(asset, asset_position)
+                 WHERE asset ->> 'role' = 'primary'
+                   AND NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+                   AND NOT (COALESCE(u.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
+               ) AS update_primary_assets,
                -- Twin of `update_view.headline_claim_statement`: what a later revision changed, else the lead claim.
                COALESCE(
                  (SELECT claim ->> 'statement'

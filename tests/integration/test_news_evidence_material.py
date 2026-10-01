@@ -117,6 +117,36 @@ def test_real_candidate_channels_keep_unknown_and_exclude_known_symbol_conflict(
         assert plan["Plan"]["Actual Rows"] <= 64
 
 
+def test_empty_asset_query_skips_entity_scan_and_keeps_text_candidates(postgres_clone_dsn):
+    from tracefold.news.storage.evidence import BACKGROUND_CANDIDATES_SQL, background_parameters
+
+    with closing(connect_postgres_test(read_only=False)) as conn:
+        repos = repositories_for_connection(conn)
+        first = admit(repos, "Business acquisition agreement announced; approval pending.", record=23, stamp=1000)
+        query = query_for(
+            event_id="later",
+            task_texts=("Business acquisition agreement announced; approval pending.",),
+            cutoff=2000,
+        )
+        assert not query.assets
+        candidates = repos.news.evidence_candidates(query)
+        assert first.item_id in {row["item_id"] for row in candidates}
+        plan = conn.execute(
+            "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + BACKGROUND_CANDIDATES_SQL, background_parameters(query)
+        ).fetchone()["QUERY PLAN"][0]["Plan"]
+
+        def nodes(node):
+            yield node
+            for child in node.get("Plans", ()):
+                yield from nodes(child)
+
+        # Returned candidates still need their source tags projected. No other asset scan is
+        # owed by an empty query, including when PostgreSQL inlines or removes the entity CTE.
+        assert sum(
+            node["Actual Loops"] for node in nodes(plan) if node.get("Relation Name") == "news_event_assets"
+        ) <= len(candidates)
+
+
 def test_archived_webpage_rows_remain_append_only_and_new_details_never_query_them(postgres_clone_dsn):
     from psycopg.errors import RaiseException
 

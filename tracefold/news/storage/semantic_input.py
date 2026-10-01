@@ -23,6 +23,7 @@ from ..updates.contracts import (
     PriorClaim,
     ReadTarget,
     Source,
+    SourceAssetCandidate,
 )
 from ..updates.identity import identity
 from ..updates.projection import extraction_scopes, item_text, reading_view, reading_views
@@ -109,6 +110,47 @@ def read_target_item_id(ref: str) -> str | None:
     return value if ref.startswith(READ_TARGET_PREFIX) and value else None
 
 
+def _provider_metadata(material: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    """Provider tags remain attached to their own stored Item or frozen member snapshot."""
+
+    metadata = {str(row["item_id"]): row.get("provider_metadata") or {} for row in material.get("items") or ()}
+    card = material.get("card") or {}
+    if card.get("leader_item_id") and card.get("provider_metadata"):
+        metadata[str(card["leader_item_id"])] = card["provider_metadata"]
+    metadata.update(
+        {
+            str(member["item_id"]): member["provider_metadata"]
+            for member in material.get("members") or ()
+            if member.get("provider_metadata")
+        }
+    )
+    return metadata
+
+
+def _source_asset_candidates(
+    material: Mapping[str, Any], evidence: Sequence[Evidence]
+) -> dict[str, tuple[SourceAssetCandidate, ...]]:
+    metadata = _provider_metadata(material)
+    candidates = {}
+    for item in evidence:
+        rows = []
+        for coin in metadata.get(item.source.record_id or "", {}).get("coins") or ():
+            if not isinstance(coin, Mapping) or not isinstance(coin.get("symbol"), str) or not coin["symbol"].strip():
+                continue
+            # A grade is source context, never an admission rule. Preserve the provider spelling;
+            # legacy forex is an explicit synonym, while fund alone establishes no market class.
+            rows.append(
+                SourceAssetCandidate(
+                    symbol=coin["symbol"],
+                    market_type=market_type_of(coin.get("market_type")),
+                    grade=None if coin.get("grade") is None else str(coin["grade"]),
+                )
+            )
+        if rows:
+            candidates[item.ref] = tuple(rows)
+    return candidates
+
+
 def _related_prior(
     documents: Sequence[Mapping[str, Any]],
     own: set[str],
@@ -192,13 +234,14 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
     if not evidence:
         raise LookupError("news_event_input_missing")
     complete = tuple({row.ref: row for row in evidence}.values())
+    all_candidates = _source_asset_candidates(material, complete)
     all_scopes = () if attached else extraction_scopes(material, complete)
     # A source ref proves only which body was stored, not which task boundary
     # was read.  Construct the current view before comparing completed reads.
     # A read that failed is settled too: it is quarantined until an exact reanalysis names it.
     completed = set((work or {}).get("processed_read_refs") or ()) | set((work or {}).get("failed_read_refs") or ())
     requested_read = (work or {}).get("reanalysis_read_ref")
-    views = tuple(reading_view(event_id, row, all_scopes) for row in complete)
+    views = tuple(reading_view(event_id, row, all_scopes, all_candidates.get(row.ref, ())) for row in complete)
     unique = tuple(
         row
         for row, view in zip(complete, views, strict=True)
@@ -244,6 +287,7 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
         revision=wanted,
         lineage_id=lineage,
         evidence=unique,
+        asset_candidates={ref: rows for ref, rows in all_candidates.items() if ref in selected},
         extraction_scopes=scopes,
         prior=prior,
         read_targets=read_targets,
@@ -315,17 +359,26 @@ class SemanticInputStorage:
             for member in members
             for revision_sha in member.get("evidence_revisions") or ()
         ]
+        read_item_ids = list(
+            dict.fromkeys(
+                (
+                    *item_ids,
+                    *(row.get("source", {}).get("record_id") for row in (work or {}).get("attached_evidence") or ()),
+                )
+            )
+        )
+        read_item_ids = [value for value in read_item_ids if value]
         items = (
             self.conn.execute(
                 """
                 SELECT item_id, source_id, source_item_key, source_artifact_id, title, description,
                        canonical_url, reporting_origin, published_at_ms, observed_at_ms,
-                       evidence_text, evidence_text_sha256
+                       evidence_text, evidence_text_sha256, provider_metadata
                   FROM news_items WHERE item_id = ANY(%s)
                 """,
-                (item_ids,),
+                (read_item_ids,),
             ).fetchall()
-            if item_ids
+            if read_item_ids
             else []
         )
         revisions = (
@@ -347,6 +400,7 @@ class SemanticInputStorage:
             "work": None if work is None else dict(work),
             "evidence_version": None if snapshot is None else int(snapshot["evidence_version"]),
             "item_ids": item_ids,
+            "card": card,
             "members": members,
             "fact_scopes": {} if snapshot is None else dict(snapshot["fact_scopes"] or {}),
             "items": [dict(row) for row in items],
@@ -365,14 +419,7 @@ class SemanticInputStorage:
         # Provider tags belong to their immutable source, not the Event's old leader. A numbered
         # reading scope also needs visible evidence for the tag; source-wide grades cannot assign a
         # sibling's asset to this task. Whole-item reads retain the established provider grounding.
-        metadata_by_item = {str(card.get("leader_item_id")): card.get("provider_metadata") or {}}
-        metadata_by_item.update(
-            {
-                str(member["item_id"]): member["provider_metadata"]
-                for member in members
-                if member.get("provider_metadata")
-            }
-        )
+        metadata_by_item = _provider_metadata({**material, "items": ()})
         evidence_by_ref = {row.ref: row for row in source.evidence}
         assets: list[MarketAsset] = []
         for view, text in zip(views, task_texts, strict=True):

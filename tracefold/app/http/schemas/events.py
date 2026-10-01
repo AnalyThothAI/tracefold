@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from tracefold.news import EventKind, SourceAuthority
+from tracefold.news.models import MarketType
 from tracefold.news.notifications.contracts import ClaimDecisionValue, ClaimReason, PlanAction, PlanReason
 from tracefold.news.notifications.novelty import Novelty, Render
 from tracefold.news.notifications.reader import ReaderBackend
@@ -88,8 +89,8 @@ class NewsEventData(ExactApiSchema):
     engine_type: str
     asset_class: str
     grounded_assets: list[str] = Field(default_factory=list)
-    # `grounded_assets` stays the raw provider/Gate evidence. `assets` resolves the Event's durable
-    # `news_event_assets` ledger, which also carries deterministic-judge assets when that evidence is empty.
+    # Raw provider/Gate evidence stays separate. Once adopted, assets are the current claims' primary
+    # assets, including unresolved ones; before adoption they come from the source asset ledger.
     assets: list[NewsAssetRefData] = Field(default_factory=list)
     watchlist_hits: list[str] = Field(default_factory=list)
     macro_lexicon: bool = False
@@ -191,7 +192,7 @@ class NewsClaimQuantityData(ExactApiSchema):
 
 class NewsClaimAssetData(ExactApiSchema):
     symbol: str
-    market_type: Literal["crypto", "equity", "commodity", "index", "forex", "fund", "unknown"]
+    market_type: MarketType
     role: Literal["primary", "mentioned"]
 
 
@@ -473,6 +474,11 @@ class NewsItemRelatedEventsData(ExactApiSchema):
     next_cursor: str | None = None
 
 
+class NewsQuoteRequestData(ExactApiSchema):
+    symbol: str = Field(min_length=1, max_length=32)
+    market_type: MarketType
+
+
 class NewsQuoteData(ExactApiSchema):
     """One current quote (#88). `state` is derived when read, never maintained by a timer write.
 
@@ -482,6 +488,7 @@ class NewsQuoteData(ExactApiSchema):
     """
 
     requested_symbol: str
+    market_type: MarketType
     symbol: str
     base_symbol: str
     venue: str | None = None
@@ -528,6 +535,7 @@ __all__ = [
     "NewsNotificationWorkData",
     "NewsProcessingData",
     "NewsQuoteData",
+    "NewsQuoteRequestData",
     "NewsQuotesData",
     "NewsReactionSummaryData",
     "NewsReaderReceiptData",

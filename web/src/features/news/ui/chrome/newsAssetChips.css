@@ -40,18 +40,18 @@
    * A tag that names nothing. The dashed amber box is the only frame allowed in a meta line, precisely so it
    * cannot be read as one more listing: `SPOT` was tagged 38 times in a day for the words "Spot Gold".
    */
-  .news-asset-chips code:not([data-listed]) {
+  .news-asset-chips code[data-resolution="unlisted"] {
     border-color: var(--signal-caution-border);
     border-style: dashed;
     background: var(--signal-caution-soft);
   }
 
-  .news-asset-chips code:not([data-listed]) .news-asset-venue,
-  .news-asset-chips code:not([data-listed]) .news-asset-symbol {
+  .news-asset-chips code[data-resolution="unlisted"] .news-asset-venue,
+  .news-asset-chips code[data-resolution="unlisted"] .news-asset-symbol {
     color: var(--signal-caution);
   }
 
-  .news-asset-chips code:not([data-listed]) .news-asset-symbol {
+  .news-asset-chips code[data-resolution="unlisted"] .news-asset-symbol {
     text-decoration: line-through;
   }
 

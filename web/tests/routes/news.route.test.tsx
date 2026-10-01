@@ -188,8 +188,15 @@ describe("news route", () => {
             event: {
               ...detail.event,
               assets: [
-                { base_symbol: "BTC", listed: true, symbol: "BTC", venue: "binance.perp" },
-                { base_symbol: "SKHY", listed: true, symbol: "SKHX", venue: "nasdaq" },
+                {
+                  base_symbol: "SKHY",
+                  market_type: "equity" as const,
+                  resolution_state: "resolved" as const,
+                  listed: true,
+                  symbol: "SKHX",
+                  venue: "hl.xyz",
+                  venue_symbol: "xyz:SKHY",
+                },
               ],
               grounded_assets: ["BTC", "SKHX"],
             },

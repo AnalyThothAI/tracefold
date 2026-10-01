@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from typing import Final, Protocol
 
+from ..entities import ADDRESS_PATTERN
 from .contracts import (
+    Asset,
     Citation,
     DiscardedClaim,
     Evidence,
@@ -118,6 +121,37 @@ def _grounded(
     return tuple(grounded), None
 
 
+def _asset_key(symbol: str) -> str:
+    value = symbol.strip().removeprefix("$")
+    return value if re.fullmatch(ADDRESS_PATTERN, value) else value.casefold()
+
+
+def _ground_assets(
+    source: FrozenInput, assets: tuple[Asset, ...], citations: tuple[Citation, ...]
+) -> tuple[Asset, ...]:
+    """Restore only selected cited-source tags, retaining source spelling and established markets.
+
+    Tags never add assets to a claim. Supplements still use the extractor's source-text reading;
+    matching does not infer aliases, pair bases or issuer relationships.
+    """
+
+    candidates = [row for citation in citations for row in source.asset_candidates.get(citation.evidence_ref, ())]
+    result = []
+    for asset in assets:
+        matched = [row for row in candidates if _asset_key(row.symbol) == _asset_key(asset.symbol)]
+        if not matched:
+            result.append(asset)
+            continue
+        markets = {row.market_type for row in matched if row.market_type != "unknown"}
+        # Multiple cited sources may disagree. Do not arbitrarily choose one source's market;
+        # the untouched input candidates retain the disagreement for the source-text reader.
+        market = next(iter(markets)) if len(markets) == 1 else "unknown" if markets else asset.market_type
+        spellings = {row.symbol for row in matched}
+        symbol = next(iter(spellings)) if len(spellings) == 1 else asset.symbol
+        result.append(asset.model_copy(update={"symbol": symbol, "market_type": market}))
+    return tuple(result)
+
+
 def ground_extraction(source: FrozenInput, extraction: Extraction) -> Extraction:
     """Keep every claim whose quotes name visible source text, each quote replaced by that exact text.
 
@@ -133,7 +167,8 @@ def ground_extraction(source: FrozenInput, extraction: Extraction) -> Extraction
     for claim in extraction.claims:
         citations, code = _grounded(claim.citations, evidence, visible)
         if code is None:
-            claims.append(claim.model_copy(update={"citations": citations}))
+            fields = claim.fields.model_copy(update={"assets": _ground_assets(source, claim.fields.assets, citations)})
+            claims.append(claim.model_copy(update={"citations": citations, "fields": fields}))
         else:
             discarded.append(DiscardedClaim(slot=claim.slot, code=code))
             log.warning("news_extraction_claim_discarded", extra={"slot": claim.slot, "error_code": code})

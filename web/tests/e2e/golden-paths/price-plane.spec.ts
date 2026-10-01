@@ -56,20 +56,21 @@ test("the topbar never promotes post-event price into a learning score", async (
 
 test("keeps a stale quote explicit and the dense Feed inside every viewport", async ({ page }) => {
   await page.route("**/api/news/quotes?**", async (route) => {
-    const symbols = (new URL(route.request().url()).searchParams.get("symbols") ?? "")
-      .split(",")
-      .filter(Boolean);
+    const assets = JSON.parse(
+      new URL(route.request().url()).searchParams.get("assets") ?? "[]",
+    ) as Array<{ symbol: string; market_type: ReturnType<typeof newsQuoteFixture>["market_type"] }>;
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         ok: true,
         data: {
           measured_at_ms: Date.now(),
-          quotes: symbols.map((symbol) =>
+          quotes: assets.map(({ symbol, market_type }) =>
             newsQuoteFixture({
               base_symbol: symbol,
               effective_age_ms: 90_000,
               received_age_ms: 90_000,
+              market_type,
               requested_symbol: symbol,
               state: "stale",
               state_zh: "报价陈旧",
@@ -101,18 +102,19 @@ test("marks a failed quote refresh without rewriting its fresh LKG state", async
       });
       return;
     }
-    const symbols = (new URL(route.request().url()).searchParams.get("symbols") ?? "")
-      .split(",")
-      .filter(Boolean);
+    const assets = JSON.parse(
+      new URL(route.request().url()).searchParams.get("assets") ?? "[]",
+    ) as Array<{ symbol: string; market_type: ReturnType<typeof newsQuoteFixture>["market_type"] }>;
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         ok: true,
         data: {
           measured_at_ms: Date.now(),
-          quotes: symbols.map((symbol) =>
+          quotes: assets.map(({ symbol, market_type }) =>
             newsQuoteFixture({
               base_symbol: symbol,
+              market_type,
               requested_symbol: symbol,
               symbol,
               venue_symbol: `${symbol}USDT`,

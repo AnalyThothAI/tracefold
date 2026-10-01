@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
+from ..entities import CRYPTO_QUOTE_SUFFIXES
 from .contracts import (
     Change,
     ChangeKind,
@@ -101,6 +102,42 @@ def _comparable_quantities(quantities: tuple[Quantity, ...]) -> dict[tuple[str, 
     }
 
 
+def different_listing_assets(current: DraftClaim | Claim, previous: Claim) -> bool:
+    """Two explicitly quoted crypto listings name different tickers or different same-quote contracts.
+
+    This narrow object mismatch uses literal source spellings, never catalogue aliases or a chosen price
+    venue. A ticker versus a pair, missing tags, or a free-text object difference remains unknown.
+    """
+
+    symbols = []
+    for claim in (current, previous):
+        if not re.search(
+            r"\b(?:list(?:s|ed|ing)?|delist(?:s|ed|ing)?)\b|上币|上线|挂牌|下架", claim.fields.action, re.I
+        ):
+            return False
+        primary = [asset for asset in claim.fields.assets if asset.role == "primary"]
+        if len(primary) != 1 or primary[0].market_type != "crypto":
+            return False
+        symbol = primary[0].symbol.strip().removeprefix("$")
+        if not re.fullmatch(r"[A-Z][A-Z0-9]{1,14}", symbol):
+            return False
+        symbols.append(symbol)
+    left, right = symbols
+    if left == right:
+        return False
+    # Pair names of the same explicit quote are comparable; otherwise both must be bare tickers.
+    quotes = [next((quote for quote in CRYPTO_QUOTE_SUFFIXES if symbol.endswith(quote)), None) for symbol in symbols]
+    if quotes[0] != quotes[1]:
+        return False
+    for claim, own, other in ((current, left, right), (previous, right, left)):
+        text = " ".join(citation.quote for citation in claim.citations)
+        if not re.search(rf"(?<![A-Za-z0-9])\$?{re.escape(own)}(?![A-Za-z0-9])", text):
+            return False
+        if re.search(rf"(?<![A-Za-z0-9])\$?{re.escape(other)}(?![A-Za-z0-9])", text):
+            return False
+    return True
+
+
 def proven_mismatches(current: DraftClaim, previous: Claim, hints: tuple[IdentityHint, ...] = ()) -> tuple[str, ...]:
     """Return only differences established by comparable evidence, never prose inequality.
 
@@ -109,6 +146,8 @@ def proven_mismatches(current: DraftClaim, previous: Claim, hints: tuple[Identit
     """
 
     mismatches: list[str] = []
+    if different_listing_assets(current, previous):
+        mismatches.append("listing_asset")
     current_facts: dict[str, set[str]] = {}
     previous_facts: dict[str, set[str]] = {}
     for hint in _known_identity(current, hints):
@@ -398,7 +437,13 @@ def assemble_update(
         relations_by_slot.setdefault(relation.slot, []).append(relation)
     established = {(row.current_ref, row.previous_ref, row.relation) for row in source.established_relations}
     for draft in extraction.claims:
-        relations = relations_by_slot.get(draft.slot, [])
+        relations = [
+            RelationDraft(slot=row.slot, previous_ref=row.previous_ref, relation="unrelated")
+            if row.relation in {"equivalent", "adds_information", "real_world_change"}
+            and different_listing_assets(draft, previous[row.previous_ref].claim)
+            else row
+            for row in relations_by_slot.get(draft.slot, [])
+        ]
         occurrence_previous = {row.previous_ref for row in relations if row.relation == "real_world_change"}
         same = _equivalent_prior(draft, relations, occurrence_previous, previous, source, evidence)
         ordered = _in_order(draft, relations, same, previous, source, evidence)

@@ -16,11 +16,11 @@ from tracefold.news.storage.errors import EventUpdateConflict
 from tracefold.news.storage.evidence import EvidenceStorage
 from tracefold.news.storage.semantic_input import SemanticInputStorage, frozen_input
 from tracefold.news.updates.assembly import assemble_update
-from tracefold.news.updates.contracts import Citation, Extraction, FrozenInput
+from tracefold.news.updates.contracts import Citation, Extraction, FrozenInput, SourceAssetCandidate
 from tracefold.news.updates.extraction import validate_extraction
 from tracefold.news.updates.identity import canonical_json
 from tracefold.news.updates.judgment import ContractFault
-from tracefold.news.updates.projection import extraction_input, reading_views
+from tracefold.news.updates.projection import extraction_input, reading_view, reading_views
 
 BODY = "1. Exchange suspends $NEAR withdrawals.\n2. Beta announces earnings.\n3. Gamma launches a product."
 
@@ -47,6 +47,63 @@ def input_material() -> dict[str, Any]:
             "network": {"method": "whole_item", "context": ""},
         },
     }
+
+
+def test_provider_candidates_reach_model_by_source_without_grade_or_literal_ticker_admission(monkeypatch) -> None:
+    data = input_material()
+    data["members"][0]["provider_metadata"] = {
+        "coins": [
+            {"symbol": "xyz-NEARUSDT", "market_type": "crypto", "grade": "1"},
+            {"symbol": "BETA", "market_type": "equity", "grade": "2"},
+            {"symbol": "EURUSD", "market_type": "forex", "grade": "3"},
+            {"symbol": "FUND", "market_type": "fund"},
+        ]
+    }
+    data["members"][1]["provider_metadata"] = {"coins": [{"symbol": "NEAR", "market_type": "crypto"}]}
+    source = frozen_input("event", data)
+    first, second = source.evidence
+    assert [row.symbol for row in source.asset_candidates[first.ref]] == ["xyz-NEARUSDT", "BETA", "EURUSD", "FUND"]
+    assert [row.market_type for row in source.asset_candidates[first.ref]] == ["crypto", "equity", "fx", "unknown"]
+    assert source.asset_candidates[first.ref][0].grade == "1"
+    assert [row.symbol for row in source.asset_candidates[second.ref]] == ["NEAR"]
+    calls = generated(monkeypatch, {"claims": []})
+    asyncio.run(DspyExtractor(lambda: None, model_identity="test", topics={}).extract(source))
+    sent = json.loads(calls[0]["evidence_json"])
+    assert list(sent["asset_candidates"]) == ["e1", "e2"]
+    assert sent["asset_candidates"]["e1"][0] == {"symbol": "xyz-NEARUSDT", "market_type": "crypto", "grade": "1"}
+    assert "Beta announces" not in json.dumps(sent["evidence"][0]["segments"])
+
+
+def test_candidate_changes_bind_only_current_pending_sources_and_keep_empty_read_identity() -> None:
+    data = input_material()
+    empty = frozen_input("event", data)
+    first, second = empty.evidence
+    empty_views = reading_views(empty)
+    assert empty_views[0].read_ref == reading_view("event", first, empty.extraction_scopes, ()).read_ref
+    data["members"][0]["provider_metadata"] = {"coins": [{"symbol": "NEAR", "market_type": "crypto", "grade": "1"}]}
+    tagged = frozen_input("event", data)
+    assert tagged.input_sha != empty.input_sha
+    assert reading_views(tagged)[0].read_ref != empty_views[0].read_ref
+    assert reading_views(tagged)[1].read_ref == empty_views[1].read_ref
+    data["work"] = {"wanted_revision": 2, "lineage_id": "lineage", "processed_read_refs": [empty_views[1].read_ref]}
+    pending = frozen_input("event", data)
+    assert pending.evidence == (first,) and set(pending.asset_candidates) == {first.ref}
+    # Tags on a source already settled for this task are absent from this round's input identity.
+    data["members"][1]["provider_metadata"] = {"coins": []}
+    assert frozen_input("event", data).input_sha == pending.input_sha
+    data["members"][0]["provider_metadata"]["coins"][0]["grade"] = "3"
+    changed = frozen_input("event", data)
+    assert changed.input_sha != pending.input_sha
+    assert reading_views(changed)[0].read_ref != reading_views(pending)[0].read_ref
+    assert second.ref not in changed.asset_candidates
+
+
+def test_source_candidate_keys_must_name_current_evidence() -> None:
+    source = frozen_input("event", input_material())
+    with pytest.raises(ValueError, match="news_asset_candidate_evidence_missing"):
+        FrozenInput.model_validate(
+            {**source.model_dump(), "asset_candidates": {"other": (SourceAssetCandidate(symbol="BTC"),)}}
+        )
 
 
 def test_member_scopes_preserve_whole_sources_and_do_not_scope_other_members(monkeypatch) -> None:
@@ -298,6 +355,12 @@ def test_explicit_cashtag_survives_collision_but_plain_word_does_not(strong_only
 @pytest.mark.parametrize("case", ["new_member", "numbered_task", "changed_body", "whole_item"])
 def test_semantic_prior_query_uses_actual_pending_task_scope(case: str) -> None:
     data = input_material()
+    # The already read leader had these same tags; newly attaching a candidate would correctly
+    # make its unchanged body a new reading input rather than leave it settled.
+    data["card"] = {
+        "leader_item_id": "digest",
+        "provider_metadata": {"coins": [{"symbol": "OLD", "grade": "A", "market_type": "equity"}]},
+    }
     completed = [view.read_ref for view in reading_views(frozen_input("event", data))]
     data["work"] = {"wanted_revision": 2, "lineage_id": "l2", "processed_read_refs": []}
     if case == "new_member":

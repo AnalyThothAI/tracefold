@@ -17,7 +17,7 @@ from ..updates.identity import digest
 from .novelty import LinkedReceipt, ReaderNovelty
 from .reader import READER_INPUT_VERSION, READER_MESSAGES_MAX
 
-RECALL_POLICY: Final = "claim_receipts_v2"
+RECALL_POLICY: Final = "claim_receipts_v3"
 RECALL_WINDOW_MS: Final = 48 * 60 * 60 * 1000
 LINKED_RECEIPT_WINDOW_MS: Final = 48 * 60 * 60 * 1000
 ROUTE_CANDIDATES_MAX: Final = 32
@@ -126,7 +126,16 @@ def _structure(query: ClaimRecallQuery, candidate: RecallCandidate) -> tuple[str
         if query.subject and query.subject == retrieval_name(fields.subject):
             reasons.add(f"subject:{query.subject}")
         if query.object and query.object == retrieval_name(fields.object):
-            reasons.add(f"object:{query.object}")
+            typed_current = {asset for asset in query.primary_assets if asset[1] != "unknown"}
+            typed_previous = {asset for asset in primary if asset[1] != "unknown"}
+            # An object like "earnings" still retrieves background, but cannot outrank the actual asset
+            # when both accounts explicitly identify non-overlapping typed primary retrieval features.
+            prefix = (
+                "object_background"
+                if typed_current and typed_previous and not typed_current & typed_previous
+                else "object"
+            )
+            reasons.add(f"{prefix}:{query.object}")
     return tuple(sorted(reasons))
 
 
@@ -187,6 +196,17 @@ def select_for_claim(
         candidate for candidate in by_id.values() if as_of_ms - RECALL_WINDOW_MS <= candidate.settled_at_ms < as_of_ms
     )
     structure = {candidate.intent_id: _structure(query, candidate) for candidate in ordinary}
+    specific = {
+        intent: any(reason.startswith(("identity:", "object:")) for reason in reasons)
+        for intent, reasons in structure.items()
+    }
+    primary = {
+        intent: any(
+            reason.startswith("primary_asset:") and not reason.startswith("primary_asset:unknown:")
+            for reason in reasons
+        )
+        for intent, reasons in structure.items()
+    }
     lexical: dict[str, int]
     ranked_routes: tuple[tuple[str, tuple[tuple[RecallCandidate, int], ...]], ...]
     if routes is None:
@@ -194,7 +214,12 @@ def select_for_claim(
         lexical = {intent: len(terms) for intent, (_, terms) in evidence.items()}
         structural_rank = sorted(
             (candidate for candidate in ordinary if structure[candidate.intent_id]),
-            key=lambda candidate: (-candidate.settled_at_ms, candidate.intent_id),
+            key=lambda candidate: (
+                not specific[candidate.intent_id],
+                not primary[candidate.intent_id],
+                -candidate.settled_at_ms,
+                candidate.intent_id,
+            ),
         )[:ROUTE_CANDIDATES_MAX]
         lexical_rank = sorted(
             (candidate for candidate in ordinary if candidate.intent_id in evidence),
@@ -239,7 +264,14 @@ def select_for_claim(
             reasons.setdefault(candidate.intent_id, set()).update((route, *details))
     ranked_ids = sorted(
         scores,
-        key=lambda intent: (-scores[intent], -by_id[intent].settled_at_ms, intent),
+        # A hot actor or a passing asset mention may supply useful cross-language background, but
+        # cannot crowd a concrete primary/identity/object or qualifying body match out of 16 slots.
+        key=lambda intent: (
+            0 if specific[intent] or lexical.get(intent, 0) >= LEXICAL_SHARED_MIN else 1 if primary[intent] else 2,
+            -scores[intent],
+            -by_id[intent].settled_at_ms,
+            intent,
+        ),
     )
     selected = tuple(dict.fromkeys((*linked, *ranked_ids)))[:READER_MESSAGES_MAX]
     return ClaimSelection(

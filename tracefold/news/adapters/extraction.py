@@ -51,6 +51,16 @@ Extract the underlying domain assertions, not the act of sharing an article, int
 just to attach an open question. Official decisions and substantive new report findings remain claims.
 A URL or its slug locates material; its words alone do not establish a partnership or executed action.
 Do not infer missing actors, assets or outcomes from a URL or prior context.
+asset_candidates is the existing provider's source-wide tag list keyed by evidence_ref. It supplies
+possible assets, not claim assignments: for each claim choose only the tags relevant to that assertion
+in its cited task text, with role primary for its central asset and mentioned for a secondary reference.
+Do not copy every source tag into every claim. Grade is context, not a requirement or relevance proof.
+Prefer a relevant supplied candidate and preserve its exact symbol and known market_type; a source may
+name the company or product without spelling its ticker. If no supplied tag covers an explicitly named
+asset in the cited source text, you may add that asset using the source's ticker or unambiguous name;
+do not infer an unnamed ecosystem token, issuer asset or related instrument. Use unknown when the text
+does not establish its market type. Conflicting source markets cannot be resolved by guessing.
+Claims without relevant assets remain valid with assets=[].
 Keep the named speaker and scope of attribution in both fields.speaker and the statement. A publisher
 is not automatically the speaker. Keep material qualifiers in the quoted span, including who said it.
 Source publication/observation timestamps are not occurrence times: use null unless the text establishes

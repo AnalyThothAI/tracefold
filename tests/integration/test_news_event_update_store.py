@@ -50,15 +50,22 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.entities import asset_retrieval_symbols, commodity_name_patterns
 from tracefold.news.market_review.instruments import COMMODITY_SYMBOLS
 from tracefold.news.notifications.contracts import ClaimDecision, FrozenCard, NotificationPlan
-from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, reader_novelty
+from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
 from tracefold.news.notifications.planner import NotificationPlanner
 from tracefold.news.notifications.ports import SendOutcome
-from tracefold.news.notifications.recall import RecallCandidate, lexical_evidence, query_for_claim, select_for_claim
+from tracefold.news.notifications.recall import (
+    RecallCandidate,
+    RouteEvidence,
+    lexical_evidence,
+    query_for_claim,
+    select_for_claim,
+)
 from tracefold.news.notifications.service import Notifications
 from tracefold.news.storage.errors import EventUpdateConflict, IntentLeaseLost
 from tracefold.news.storage.judgment_store import PgJudgmentCache
 from tracefold.news.storage.semantic_input import frozen_input
 from tracefold.news.updates.contracts import (
+    Asset,
     Citation,
     Claim,
     DraftClaim,
@@ -1302,6 +1309,377 @@ def test_a_later_head_of_the_historical_event_does_not_change_its_receipt() -> N
     for event_id, claims in later.items():
         seed_update_version(event_id, content_revision=digest(f"{event_id}:2"), claims=claims, head=True)
     assert seen() == before
+
+
+def test_hot_actor_cannot_exhaust_the_sql_route_before_concrete_matches() -> None:
+    pg, db, clock = store()
+    adopted_head(pg.semantic, clock)
+    current = Claim.model_validate(
+        head_claim(
+            "cl:ct-current",
+            statement="Aster lists CTUSDT perpetual",
+            subject="Aster",
+            action="listed",
+            object="CTUSDT perpetual",
+            assets=[{"symbol": "CTUSDT", "market_type": "crypto", "role": "primary"}],
+        )
+    )
+    historical = [
+        ("body", "Other spelling", "", [], "CTUSDT perpetual announcement", clock() - 6000),
+        ("object", "Other spelling", "CTUSDT perpetual", [], "此前宣布具体合约", clock() - 5000),
+        (
+            "primary",
+            "另一个写法",
+            "",
+            [{"symbol": "CTUSDT", "market_type": "crypto", "role": "primary"}],
+            "同一标的较早推送",
+            clock() - 4000,
+        ),
+        (
+            "mentioned",
+            "Aster",
+            "unrelated product",
+            [{"symbol": "CTUSDT", "market_type": "crypto", "role": "mentioned"}],
+            "仅作为背景提及",
+            clock() - 1,
+        ),
+        *(
+            (
+                f"actor-{index:02}",
+                "Aster",
+                f"other product {index}",
+                [{"symbol": "SIUSDT", "market_type": "crypto", "role": "primary"}],
+                f"不同动作{index}",
+                clock() - 100 - index,
+            )
+            for index in range(40)
+        ),
+    ]
+    candidates = []
+    for key, subject, object_, assets, body, stamp in historical:
+        event_id = f"hot-actor:{key}"
+        historical_claim = head_claim(
+            f"cl:{key}", statement=f"Earlier account {key}", subject=subject, object=object_, assets=assets
+        )
+        seed_event(event_id, title=body, fingerprint=event_id, at_ms=stamp - 100)
+        seed_update_version(event_id, content_revision=digest(event_id), claims=[historical_claim])
+        intent = identity("intent", event_id)
+        seed_sent_receipt(
+            event_id,
+            intent_id=intent,
+            content_revision=digest(event_id),
+            claim_refs=[historical_claim["ref"]],
+            body=body,
+            settled_at_ms=stamp,
+        )
+        candidates.append(RecallCandidate(intent, digest(body), body, stamp, (Claim.model_validate(historical_claim),)))
+    query = query_for_claim(current)
+    routed = asyncio.run(
+        db.read(
+            "test_hot_actor_route",
+            lambda repos: repos.news.notification_context._recall_receipt_rows((query,), now_ms=clock()),
+        )
+    )
+    ranks = {row["intent_id"]: row["structure_rank"] for row in routed}
+    assert ranks[identity("intent", "hot-actor:object")] == 1
+    assert ranks[identity("intent", "hot-actor:primary")] == 2
+    routes = {
+        row["intent_id"]: RouteEvidence(
+            structure_rank=row["structure_rank"],
+            lexical_rank=row["lexical_rank"],
+            lexical_terms=tuple(row["lexical_terms"] or ()),
+        )
+        for row in routed
+    }
+    sql_selected = select_for_claim(
+        query, ReaderNovelty(novelty="unlinked"), tuple(candidates), as_of_ms=clock(), routes=routes
+    )
+    pure_selected = select_for_claim(query, ReaderNovelty(novelty="unlinked"), tuple(candidates), as_of_ms=clock())
+    assert sql_selected.intent_ids == pure_selected.intent_ids
+    assert sql_selected.intent_ids[:3] == (
+        identity("intent", "hot-actor:object"),
+        identity("intent", "hot-actor:body"),
+        identity("intent", "hot-actor:primary"),
+    )
+    assert len(sql_selected.intent_ids) == 16
+
+
+def test_sql_asset_route_reads_legacy_markets_like_claim_validation() -> None:
+    pg, db, clock = store()
+    adopted_head(pg.semantic, clock)
+    currents = {
+        "fx": Claim.model_validate(
+            head_claim(
+                "cl:fx-current",
+                statement="Euro strengthens after the central bank decision",
+                subject="European Central Bank",
+                object="currency decision",
+                assets=[{"symbol": "EURUSD", "market_type": "fx", "role": "primary"}],
+            )
+        ),
+        "fund": Claim.model_validate(
+            head_claim(
+                "cl:fund-current",
+                statement="Portfolio rebalances after a notice",
+                subject="Portfolio",
+                object="rebalancing",
+                assets=[{"symbol": "ABC", "market_type": "unknown", "role": "primary"}],
+            )
+        ),
+    }
+    historical = [
+        ("forex", "forex", "EURUSD", "欧洲央行", "外汇利率", "欧元此前走弱", clock() - 5000),
+        ("actor", "equity", "OTHER", "Portfolio", "different action", "同一主体另一动作", clock() - 2000),
+        ("fund", "fund", "ABC", "基金经理", "组合变更", "基金调仓消息", clock() - 1000),
+    ]
+    candidates = []
+    for key, market, symbol, subject, object_, body, stamp in historical:
+        event_id = f"legacy-market:{key}"
+        historical_claim = head_claim(
+            f"cl:legacy-{key}",
+            statement=body,
+            subject=subject,
+            object=object_,
+            assets=[{"symbol": symbol, "market_type": market, "role": "primary"}],
+        )
+        seed_event(event_id, title=body, fingerprint=event_id, at_ms=stamp - 100)
+        seed_update_version(event_id, content_revision=digest(event_id), claims=[historical_claim])
+        intent = identity("intent", event_id)
+        seed_sent_receipt(
+            event_id,
+            intent_id=intent,
+            content_revision=digest(event_id),
+            claim_refs=[historical_claim["ref"]],
+            body=body,
+            settled_at_ms=stamp,
+        )
+        candidates.append(RecallCandidate(intent, digest(body), body, stamp, (Claim.model_validate(historical_claim),)))
+    queries = {key: query_for_claim(claim) for key, claim in currents.items()}
+    routed = asyncio.run(
+        db.read(
+            "test_legacy_market_route",
+            lambda repos: repos.news.notification_context._recall_receipt_rows(tuple(queries.values()), now_ms=clock()),
+        )
+    )
+    for key, query in queries.items():
+        routes = {
+            row["intent_id"]: RouteEvidence(
+                structure_rank=row["structure_rank"],
+                lexical_rank=row["lexical_rank"],
+                lexical_terms=tuple(row["lexical_terms"] or ()),
+            )
+            for row in routed
+            if row["current_ref"] == query.ref
+        }
+        assert all(route.lexical_rank is None for route in routes.values())
+        sql_selected = select_for_claim(
+            query, ReaderNovelty(novelty="unlinked"), tuple(candidates), as_of_ms=clock(), routes=routes
+        )
+        pure_selected = select_for_claim(query, ReaderNovelty(novelty="unlinked"), tuple(candidates), as_of_ms=clock())
+        assert sql_selected == pure_selected
+        if key == "fx":
+            assert sql_selected.intent_ids == (identity("intent", "legacy-market:forex"),)
+        else:
+            # A legacy fund is unknown, so it shares the weak tier with the actor-only candidate.
+            assert routes[identity("intent", "legacy-market:fund")].structure_rank == 1
+            assert routes[identity("intent", "legacy-market:actor")].structure_rank == 2
+            assert sql_selected.intent_ids == (
+                identity("intent", "legacy-market:fund"),
+                identity("intent", "legacy-market:actor"),
+            )
+    # The canonical read is a projection; adopted legacy JSON remains untouched.
+    assert sql(
+        "SELECT document->'claims'->0->'fields'->'assets'->0->>'market_type' AS market "
+        "FROM news_event_updates WHERE event_id='legacy-market:forex'"
+    ) == [{"market": "forex"}]
+
+
+def test_sql_generic_object_with_other_primary_assets_cannot_exhaust_the_route() -> None:
+    pg, db, clock = store()
+    adopted_head(pg.semantic, clock)
+    current = Claim.model_validate(
+        head_claim(
+            "cl:acme-current",
+            statement="ACME reports earnings",
+            subject="ACME",
+            object="earnings",
+            assets=[{"symbol": "ACME", "market_type": "equity", "role": "primary"}],
+        )
+    )
+    historical = [
+        ("actual", "艾克米", "财报", "ACME", "艾克米此前发布财报", clock() - 5000),
+        *(
+            (f"noise-{index:02}", f"Other issuer {index}", "earnings", "OTHER", "其他公司财报", clock() - index - 1)
+            for index in range(40)
+        ),
+    ]
+    candidates = []
+    for key, subject, object_, symbol, body, stamp in historical:
+        event_id = f"generic-object:{key}"
+        historical_claim = head_claim(
+            f"cl:{event_id}",
+            statement=body,
+            subject=subject,
+            object=object_,
+            assets=[{"symbol": symbol, "market_type": "equity", "role": "primary"}],
+        )
+        seed_event(event_id, title=body, fingerprint=event_id, at_ms=stamp - 100)
+        seed_update_version(event_id, content_revision=digest(event_id), claims=[historical_claim])
+        intent = identity("intent", event_id)
+        seed_sent_receipt(
+            event_id,
+            intent_id=intent,
+            content_revision=digest(event_id),
+            claim_refs=[historical_claim["ref"]],
+            body=body,
+            settled_at_ms=stamp,
+        )
+        candidates.append(RecallCandidate(intent, digest(body), body, stamp, (Claim.model_validate(historical_claim),)))
+    query = query_for_claim(current)
+    routed = asyncio.run(
+        db.read(
+            "test_generic_object_route",
+            lambda repos: repos.news.notification_context._recall_receipt_rows((query,), now_ms=clock()),
+        )
+    )
+    routes = {
+        row["intent_id"]: RouteEvidence(
+            structure_rank=row["structure_rank"],
+            lexical_rank=row["lexical_rank"],
+            lexical_terms=tuple(row["lexical_terms"] or ()),
+        )
+        for row in routed
+    }
+    assert routes[identity("intent", "generic-object:actual")].structure_rank == 1
+    sql_selected = select_for_claim(
+        query, ReaderNovelty(novelty="unlinked"), tuple(candidates), as_of_ms=clock(), routes=routes
+    )
+    pure_selected = select_for_claim(query, ReaderNovelty(novelty="unlinked"), tuple(candidates), as_of_ms=clock())
+    assert sql_selected == pure_selected
+    assert sql_selected.intent_ids[0] == identity("intent", "generic-object:actual")
+    assert len(sql_selected.intent_ids) == 16
+
+
+@pytest.mark.parametrize(
+    ("previous_symbol", "relation", "missing_projection", "expected"),
+    [
+        ("SIUSDT", "equivalent", False, "unlinked"),
+        ("SIUSDT", "adds_information", False, "unlinked"),
+        ("SIUSDT", "real_world_change", False, "unlinked"),
+        ("SIUSDT", "equivalent", True, "known"),
+        ("SIUSDT", "adds_information", True, "increment"),
+        ("SIUSDT", "corrects", False, "development"),
+        ("CTUSDT", "real_world_change", False, "development"),
+    ],
+)
+def test_reader_filters_old_listing_links_using_the_receipts_sent_claim_version(
+    previous_symbol: str,
+    relation: str,
+    missing_projection: bool,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pg, db, clock = store()
+
+    def adopt_listing(event_id: str, symbol: str, phase: str) -> EventUpdate:
+        text = f"Aster lists {symbol} perpetual ({phase})."
+        seed_event(event_id, text=text, title=text, fingerprint=event_id)
+
+        def build(source: FrozenInput) -> Extraction:
+            original = draft(source.evidence[0], action="listed")
+            original = original.model_copy(
+                update={
+                    "fields": original.fields.model_copy(
+                        update={
+                            "subject": "Aster",
+                            "object": f"{symbol} perpetual",
+                            "mode": "observation",
+                            "phase": phase,
+                            "content_kind": "state_change",
+                            "assets": (Asset(symbol=symbol, market_type="crypto", role="primary"),),
+                        }
+                    )
+                }
+            )
+            return Extraction(
+                claims=(original,),
+                supports=(SupportDraft(slot=original.slot, evidence_ref=source.evidence[0].ref, relation="supports"),),
+                relations=tuple(
+                    RelationDraft(slot=original.slot, previous_ref=prior.claim.ref, relation="unrelated")
+                    for prior in source.prior
+                ),
+            )
+
+        assert asyncio.run(run_agent(agent(pg.semantic, clock, StubAnalyzer(build)), event_id)) == "adopted"
+        head = asyncio.run(pg.semantic.head(event_id))
+        assert head is not None
+        return head
+
+    previous = adopt_listing("old-listing", previous_symbol, "announced")
+    clock.now_ms += 1000
+    old_intent = identity("intent", "old-listing")
+    seed_sent_receipt(
+        "old-listing",
+        intent_id=old_intent,
+        content_revision=digest("missing-version") if missing_projection else previous.content_revision,
+        claim_refs=[previous.claims[0].ref],
+        body="此前已推送上币公告",
+        settled_at_ms=clock() - 500,
+    )
+    head = adopt_listing(EVENT, "CTUSDT", "effective")
+    # A later unpushed CT claim in the historical Event is not the SI claim its receipt carried.
+    seed_update_version(
+        "old-listing",
+        content_revision=digest("old-listing:later"),
+        claims=[head.claims[0].model_dump(mode="json")],
+        head=True,
+    )
+    current_ref, previous_ref = head.claims[0].ref, previous.claims[0].ref
+    for update_ref, asserted_relation, asserted_at in (
+        (identity("update", "older-assertion"), "corrects", head.adopted_at_ms - 1),
+        (head.ref, relation, head.adopted_at_ms),
+    ):
+        sql(
+            """INSERT INTO news_claim_links
+                 (update_ref,current_ref,previous_ref,relation,current_event_id,previous_event_id,asserted_at_ms)
+               VALUES (%s,%s,%s,%s,%s,'old-listing',%s)""",
+            (update_ref, current_ref, previous_ref, asserted_relation, EVENT, asserted_at),
+        )
+    clock.now_ms += 1000
+    ledger_before = sql("SELECT * FROM news_claim_links ORDER BY asserted_at_ms")
+    with monkeypatch.context() as legacy:
+        legacy.setattr("tracefold.news.storage.notification_context.different_listing_assets", lambda *_: False)
+        old_material = reader_material(db, clock)
+    material = reader_material(db, clock)
+    links = tuple(
+        ClaimLink.model_validate({key: row[key] for key in ClaimLink.model_fields}) for row in material["links"]
+    )
+    receipts = tuple(
+        LinkedReceipt(
+            intent_id=row["intent_id"],
+            state=row["state"],
+            claim_refs=tuple(row["claim_refs"]),
+            settled_at_ms=row["settled_at_ms"],
+        )
+        for row in material["link_receipts"]
+    )
+    assert reader_novelty(current_ref, links, receipts).novelty == expected
+    if expected == "unlinked":
+        assert material["links"] == []  # dropping the latest assertion does not revive the older correction
+        assert material["revision"] != old_material["revision"]
+    else:
+        assert len(material["links"]) == 1 and material["links"][0]["relation"] == relation
+        assert material["revision"] == old_material["revision"]
+    assert material["revision"] == reader_material(db, clock)["revision"]
+    snapshot = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
+    assert snapshot is not None
+    assert snapshot.reader.links == links
+    assert snapshot.reader.revision == material["revision"]
+    linked_row = next(row for row in material["link_receipts"] if row["intent_id"] == old_intent)
+    assert [Claim.model_validate(claim).ref for claim in linked_row["historical_claims"]] == (
+        [] if missing_projection else [previous_ref]
+    )
+    assert sql("SELECT * FROM news_claim_links ORDER BY asserted_at_ms") == ledger_before
 
 
 def test_gold_claim_recalls_its_history_through_the_real_sql_routes() -> None:

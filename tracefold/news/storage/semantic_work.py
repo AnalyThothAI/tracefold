@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Final
 from ..updates.contracts import SemanticLease
 from ..updates.identity import identity
 from ..updates.judgment import error_code
-from ..updates.projection import reading_view, reading_views
+from ..updates.projection import reading_views
 from .errors import EventUpdateConflict, SemanticLeaseLost
 from .semantic_input import frozen_input
 from .sql_values import _dumps, _retry_delay
@@ -388,7 +388,7 @@ class SemanticWorkStorage:
                     "completed": view.read_ref in completed,
                     "failed": view.read_ref in failed,
                 }
-                for view in (reading_view(event_id, item, source.extraction_scopes) for item in source.evidence)
+                for view in reading_views(source)
             ],
         }
 

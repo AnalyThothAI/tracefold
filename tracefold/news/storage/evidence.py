@@ -70,7 +70,7 @@ BACKGROUND_CANDIDATES_SQL = (
             ),
             _channel_sql(
                 "entity",
-                predicate="""EXISTS (
+                predicate="""cardinality(%(symbols)s::text[]) > 0 AND EXISTS (
                      SELECT 1 FROM news_event_assets a
                       CROSS JOIN LATERAL (
                         SELECT regexp_replace(a.symbol, '^[[:space:]$]+|[[:space:]]+$', '', 'g') AS text

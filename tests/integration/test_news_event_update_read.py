@@ -26,10 +26,20 @@ from tests.support.news_event_updates import (
     settle_intent,
     silent_plan,
 )
+from tests.support.news_update_cards import adopted, asset, draft, source
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_json
 from tracefold.news.updates.assembly import assemble_update
-from tracefold.news.updates.contracts import Extraction, FrozenInput, PriorClaim, RelationDraft, SupportDraft
+from tracefold.news.updates.contracts import (
+    EventUpdate,
+    Extraction,
+    FrozenInput,
+    PriorClaim,
+    RelationDraft,
+    SupportDraft,
+    content_revision_for,
+)
+from tracefold.news.updates.identity import digest
 
 pytestmark = pytest.mark.integration
 
@@ -155,6 +165,73 @@ def _feed(news: Any, **over: Any) -> dict[str, Any]:
     }
     params.update(over)
     return news.list_feed(**params)
+
+
+def test_feed_and_detail_assets_follow_current_primary_claims_not_source_tags(conn) -> None:
+    repos = repositories_for_connection(conn)
+    event_id = "typed-primary"
+    item = source("Visa approves a crypto partnership; the separate V token launches staking.")
+    head = adopted(
+        (draft("visa", item, assets=(asset("V", "equity"), asset("CRCL", "equity", "mentioned"))), item),
+        (draft("token", item, assets=(asset("V", "crypto"),)), item),
+        (draft("unknown", item, assets=(asset("NEWS", "unknown"),)), item),
+        (draft("retired", item, assets=(asset("BTC", "crypto"),)), item),
+        (draft("superseded", item, assets=(asset("ETH", "crypto"),)), item),
+        event_id=event_id,
+    )
+    head = head.model_copy(
+        update={"retired_claim_refs": (head.claims[3].ref,), "superseded_claim_refs": (head.claims[4].ref,)}
+    )
+    content_sha = digest(head.content_material())
+    head = EventUpdate.model_validate(
+        {
+            **head.model_dump(mode="json"),
+            "content_sha": content_sha,
+            "content_revision": content_revision_for(content_sha, None),
+        }
+    )
+    with repos.transaction():
+        _event(repos.news, event_id, opened_at_ms=NOW)
+        conn.execute(
+            "INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms) VALUES (%s, %s, %s, %s)",
+            ("CRCL", event_id, "equity", NOW),
+        )
+        persist_update(conn, head)
+
+    feed_event = _feed(repos.news)["events"][0]
+    detail = repos.news.event_detail(event_id)
+    assert detail is not None
+    expected = [("V", "equity", "primary"), ("V", "crypto", "primary"), ("NEWS", "unknown", "primary")]
+    assert [(row["symbol"], row["market_type"], row["role"]) for row in feed_event["assets"]] == expected
+    assert detail["event"]["assets"] == feed_event["assets"]
+    assert repos.news.event_asset_symbols([event_id]) == {event_id: ["CRCL"]}
+    assert feed_event["grounded_assets"] == detail["event"]["grounded_assets"] == []
+
+
+def test_adopted_head_without_primary_assets_never_falls_back_to_source_ledger(conn) -> None:
+    repos = repositories_for_connection(conn)
+    item = source("Regulators discuss market-wide rules and mention Bitcoin as one example.")
+    head = adopted(
+        (draft("rules", item, assets=(asset("BTC", "crypto", "mentioned"),)), item), event_id="empty-primary"
+    )
+    with repos.transaction():
+        for event_id in ("source-assets", "empty-primary"):
+            _event(repos.news, event_id, opened_at_ms=NOW)
+            conn.execute(
+                "INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms) VALUES (%s, %s, %s, %s)",
+                ("BTC", event_id, "crypto", NOW),
+            )
+        persist_update(conn, head)
+
+    by_event = {row["event_id"]: row for row in _feed(repos.news)["events"]}
+    assert by_event["empty-primary"]["assets"] == []
+    detail = repos.news.event_detail("empty-primary")
+    assert detail is not None and detail["event"]["assets"] == []
+    # Before adoption the route can still use the durable source ledger; an empty projection is authoritative.
+    assert "assets" not in by_event["source-assets"]
+    source_detail = repos.news.event_detail("source-assets")
+    assert source_detail is not None and "assets" not in source_detail["event"]
+    assert repos.news.event_asset_symbols(["source-assets"]) == {"source-assets": ["BTC"]}
 
 
 def test_a_news_agent_event_detail_reads_its_update_processing_and_timeline(conn) -> None:

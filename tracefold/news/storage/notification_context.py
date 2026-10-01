@@ -11,7 +11,7 @@ from typing import Any, Final
 
 from ..entities import ADDRESS_PATTERN, CRYPTO_QUOTE_SUFFIXES, RELATED_ASSET_ALIASES, commodity_name_patterns
 from ..notifications.contracts import NEWS_CHANNEL, DeliveredText
-from ..notifications.novelty import ClaimLink, LinkedReceipt, reader_novelty
+from ..notifications.novelty import ClaimLink, LinkedReceipt, current_links, reader_novelty
 from ..notifications.recall import (
     LEXICAL_DF_MAX,
     LEXICAL_SHARED_MIN,
@@ -27,6 +27,7 @@ from ..notifications.recall import (
     select_for_claim,
 )
 from ..source_contracts import classify_source_contracts
+from ..updates.assembly import different_listing_assets
 from ..updates.contracts import Claim, EventUpdate
 from ..updates.identity import digest
 from .semantic_updates import SemanticUpdateStorage
@@ -69,6 +70,23 @@ def delivered_text(row: Mapping[str, Any]) -> DeliveredText | None:
         payload_sha256=payload_sha256,
         received_at_ms=int(row["settled_at_ms"]) if state == "sent" else None,
         provider_message_id=message_id,
+    )
+
+
+def listing_compatible_links(links: Iterable[ClaimLink], claims: Mapping[str, Claim]) -> tuple[ClaimLink, ...]:
+    """Keep latest assertions except links joining provably different quoted crypto listings.
+
+    Missing either original claim is unknown. Select the latest assertion before checking its evidence:
+    discarding a bad new link must not revive an older assertion about that pair. Corrections stay intact.
+    """
+
+    return tuple(
+        link
+        for link in current_links(links)
+        if link.relation not in {"equivalent", "adds_information", "real_world_change"}
+        or link.current_ref not in claims
+        or link.previous_ref not in claims
+        or not different_listing_assets(claims[link.current_ref], claims[link.previous_ref])
     )
 
 
@@ -173,24 +191,51 @@ class NotificationContextStorage:
                        AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
                        AND d.body IS NOT NULL AND d.payload_sha256 IS NOT NULL
                 ), structured AS (
-                    SELECT q.ref AS current_ref, b.*, 'structure' AS route, 0.0::real AS route_score,
+                    SELECT q.ref AS current_ref, b.*, 'structure' AS route, matched.priority::real AS route_score,
                            NULL::text[] AS lexical_terms,
-                           row_number() OVER (PARTITION BY q.ref ORDER BY b.settled_at_ms DESC, b.intent_id) AS rn
-                      FROM queries q JOIN window_receipts b ON EXISTS (
-                          SELECT 1 FROM jsonb_array_elements(b.historical_claims) hc
-                           WHERE (q.subject <> '' AND lower(btrim(hc -> 'fields' ->> 'subject')) = q.subject)
-                              OR (q.object <> '' AND lower(btrim(hc -> 'fields' ->> 'object')) = q.object)
-                              OR EXISTS (
+                           row_number() OVER (
+                               PARTITION BY q.ref ORDER BY matched.priority DESC, b.settled_at_ms DESC, b.intent_id
+                           ) AS rn
+                      FROM queries q CROSS JOIN window_receipts b
+                     CROSS JOIN LATERAL (
+                          -- The same preference as select_for_claim, before this route's 32-row cap:
+                          -- object/grounded identity, then typed primary, then actor/role-cross background.
+                          SELECT CASE WHEN bool_or(names.identity_match OR (
+                                               names.object_match AND NOT COALESCE(assets.typed_primary_disjoint, FALSE)
+                                           )) THEN 2 + CASE WHEN bool_or(assets.primary_match) THEN 1 ELSE 0 END
+                                      WHEN bool_or(assets.primary_match) THEN 1
+                                      WHEN count(*) > 0 THEN 0 END AS priority
+                            FROM jsonb_array_elements(b.historical_claims) hc
+                           CROSS JOIN LATERAL (
+                               SELECT (q.subject <> '' AND lower(btrim(hc -> 'fields' ->> 'subject')) = q.subject)
+                                          AS subject_match,
+                                      (q.object <> '' AND lower(btrim(hc -> 'fields' ->> 'object')) = q.object)
+                                          AS object_match,
+                                      EXISTS (
                                   SELECT 1
                                     FROM jsonb_array_elements(COALESCE(hc -> 'known_identity', '[]'::jsonb)) hi
                                     JOIN jsonb_array_elements(q.known_identity) qi
                                       ON hi ->> 'key' = qi ->> 'key'
                                      AND btrim(hi ->> 'value') = qi ->> 'value'
-                              )
-                              OR EXISTS (
+                                      ) AS identity_match
+                           ) names
+                            LEFT JOIN LATERAL (
                                   -- The shared entity features widen candidates only. Exact address spelling
                                   -- stays case-sensitive; catalogue/venue/quote-base features prove no identity.
-                                  SELECT 1
+                                  SELECT bool_or(qa IS NOT NULL) AS asset_match,
+                                         bool_or(ha ->> 'role' = 'primary' AND qa ->> 'role' = 'primary'
+                                                 AND hn.market_type <> 'unknown') FILTER (WHERE qa IS NOT NULL)
+                                             AS primary_match,
+                                         bool_or(ha ->> 'role' = 'primary' AND hn.market_type <> 'unknown')
+                                         AND EXISTS (
+                                             SELECT 1 FROM jsonb_array_elements(q.assets) current_asset
+                                              WHERE current_asset ->> 'role' = 'primary'
+                                                AND current_asset ->> 'market_type' <> 'unknown'
+                                         ) AND NOT COALESCE(
+                                             bool_or(ha ->> 'role' = 'primary' AND qa ->> 'role' = 'primary'
+                                                     AND hn.market_type <> 'unknown') FILTER (WHERE qa IS NOT NULL),
+                                             FALSE
+                                         ) AS typed_primary_disjoint
                                     FROM jsonb_array_elements(
                                         COALESCE(hc -> 'fields' -> 'assets', '[]'::jsonb)
                                     ) ha
@@ -202,15 +247,18 @@ class NotificationContextStorage:
                                    CROSS JOIN LATERAL (
                                        SELECT CASE WHEN ht.text ~ %s THEN ht.text ELSE regexp_replace(
                                                   regexp_replace(upper(ht.text), '^XYZ-', ''), '^[^:]*:', ''
-                                              ) END AS symbol
+                                              ) END AS symbol,
+                                              CASE ha ->> 'market_type'
+                                                  WHEN 'forex' THEN 'fx' WHEN 'fund' THEN 'unknown'
+                                                  ELSE ha ->> 'market_type' END AS market_type
                                    ) hn
-                                   JOIN jsonb_array_elements(q.assets) qa
-                                     ON ha ->> 'market_type' = qa ->> 'market_type'
+                                   LEFT JOIN jsonb_array_elements(q.assets) qa
+                                     ON hn.market_type = qa ->> 'market_type'
                                     AND (ha ->> 'role' = 'primary' OR qa ->> 'role' = 'primary')
                                     AND (
                                         hn.symbol = qa ->> 'symbol'
                                         OR COALESCE(%s::jsonb ->> hn.symbol, hn.symbol) = qa ->> 'symbol'
-                                        OR (ha ->> 'market_type' IN ('crypto','unknown') AND ht.text !~ %s
+                                        OR (hn.market_type IN ('crypto','unknown') AND ht.text !~ %s
                                             AND (
                                                 SELECT left(hn.symbol, length(hn.symbol)-length(quote))
                                                   FROM unnest(%s::text[]) WITH ORDINALITY quotes(quote, rank)
@@ -223,8 +271,11 @@ class NotificationContextStorage:
                                              WHERE ht.text ~* pattern
                                         )
                                     )
-                              )
-                      )
+                            ) assets ON TRUE
+                           WHERE names.subject_match OR names.object_match OR names.identity_match
+                              OR assets.asset_match
+                      ) matched
+                     WHERE matched.priority IS NOT NULL
                 ), query_terms AS MATERIALIZED (
                     SELECT q.ref, 'word' AS kind, term
                       FROM queries q CROSS JOIN LATERAL jsonb_array_elements_text(q.words) term
@@ -328,7 +379,15 @@ class NotificationContextStorage:
             dict(row)
             for row in self.conn.execute(
                 f"""
-                SELECT {_RECEIPT_COLUMNS}, d.state FROM news_deliveries d
+                SELECT {_RECEIPT_COLUMNS}, d.state, COALESCE(h.claims, '[]'::jsonb) AS historical_claims
+                  FROM news_deliveries d
+                  LEFT JOIN news_event_updates u
+                    ON u.event_id = d.event_id AND u.content_revision = d.content_revision
+                  LEFT JOIN LATERAL (
+                      SELECT jsonb_agg(claim) AS claims
+                        FROM jsonb_array_elements(COALESCE(u.document -> 'claims', '[]'::jsonb)) claim
+                       WHERE d.claim_refs ? (claim ->> 'ref')
+                  ) h ON TRUE
                  WHERE d.kind = 'update' AND d.delete_state IS DISTINCT FROM 'deleted'
                    AND d.claim_refs ?| %s::text[]
                    AND (d.state = 'sending'
@@ -393,15 +452,33 @@ class NotificationContextStorage:
         links = self._claim_links(sorted(active), as_of_ms=now_ms)
         reached = active | {str(row[key]) for row in links for key in ("current_ref", "previous_ref")}
         linked = self._link_receipt_rows(sorted(reached), now_ms=now_ms, until_ms=now_ms)
-        link_models = tuple(
-            ClaimLink(
-                current_ref=str(row["current_ref"]),
-                previous_ref=str(row["previous_ref"]),
-                relation=row["relation"],
-                asserted_at_ms=int(row["asserted_at_ms"]),
-            )
-            for row in links
+        original_claims = {
+            claim.ref: claim
+            for row in (*ordinary, *linked)
+            for value in row.get("historical_claims") or ()
+            for claim in (Claim.model_validate(value),)
+        }
+        original_claims.update((claim.ref, claim) for claim in head.claims)
+        link_models = listing_compatible_links(
+            (
+                ClaimLink(
+                    current_ref=str(row["current_ref"]),
+                    previous_ref=str(row["previous_ref"]),
+                    relation=row["relation"],
+                    asserted_at_ms=int(row["asserted_at_ms"]),
+                )
+                for row in links
+            ),
+            original_claims,
         )
+        active_assertions = {
+            (link.current_ref, link.previous_ref, link.relation, link.asserted_at_ms) for link in link_models
+        }
+        links = [
+            row
+            for row in links
+            if (row["current_ref"], row["previous_ref"], row["relation"], row["asserted_at_ms"]) in active_assertions
+        ]
         receipt_models = tuple(
             LinkedReceipt(
                 intent_id=str(row["intent_id"]),

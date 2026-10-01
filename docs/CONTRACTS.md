@@ -124,6 +124,8 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 
 符号必须结合资产类别与交易所原生身份。基础币符号、股票 ticker、倍数合约和 USDT / USDC 市场不能靠字符串相等推断经济等价。
 
+新闻报价使用 GET /api/news/quotes 的 assets 参数：JSON 数组，每项包含 symbol 与 market_type，例如 [{"symbol":"V","market_type":"equity"}]。请求、响应和客户端缓存按市场类型与符号区分，返回实际 venue/venue_symbol；不保留旧 symbol-only 参数。未知市场不选同名合约报价。Feed/Detail 有语义 head 时展示 current 有效命题的 primary，未采用时显示已有来源资产；来源 grounded_assets 仍供证据查看。仅参考目录、未知或缺行情都保留新闻与资产，不充当准入条件。
+
 <a id="section-trading操作与执行"></a>
 ## 05 · Trading、操作与执行
 

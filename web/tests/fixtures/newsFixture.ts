@@ -46,8 +46,22 @@ export function newsFeedEventFixture(overrides: Partial<NewsFeedEvent> = {}): Ne
     // #87: the same two tags the Gate grounded on, resolved against the instrument universe. A test that
     // needs the other case — a tag that names nothing — overrides one entry with `listed: false`.
     assets: [
-      { base_symbol: "BTC", listed: true, symbol: "BTC", venue: "binance.perp" },
-      { base_symbol: "ETH", listed: true, symbol: "ETH", venue: "binance.perp" },
+      {
+        base_symbol: "BTC",
+        market_type: "crypto" as const,
+        resolution_state: "resolved" as const,
+        listed: true,
+        symbol: "BTC",
+        venue: "binance.perp",
+      },
+      {
+        base_symbol: "ETH",
+        market_type: "crypto" as const,
+        resolution_state: "resolved" as const,
+        listed: true,
+        symbol: "ETH",
+        venue: "binance.perp",
+      },
     ],
     context_line: "BTC · 首次出现 · 同 storyline 24h 内 1 条",
     delivery: { error_code: null, settled_at_ms: NEWS_NOW_MS - 20_000, state: "sent" },
@@ -1097,6 +1111,7 @@ export function newsQuoteFixture(overrides: Partial<NewsQuote> = {}): NewsQuote 
     received_at_ms: NEWS_NOW_MS - 2_000,
     reference_age_ms: 5_000,
     reference_at_ms: NEWS_NOW_MS - 5_000,
+    market_type: "crypto",
     requested_symbol: "BTC",
     source_at_ms: NEWS_NOW_MS - 2_100,
     source_age_ms: 2_100,

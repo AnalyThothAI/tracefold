@@ -30,6 +30,9 @@ export function uniqueFeedEvents(pages: readonly NewsFeed[]): NewsFeedEvent[] {
 export type NewsFeedCounts = NewsSchemas["NewsFeedCountsData"];
 export type NewsFeedSearch = NewsSchemas["NewsFeedSearchData"];
 export type NewsAssetRef = NewsSchemas["NewsAssetRefData"];
+export type NewsQuoteRequest = Pick<NewsAssetRef, "symbol" | "market_type">;
+export const newsAssetKey = (marketType: string, symbol: string) =>
+  JSON.stringify([marketType, symbol]);
 export type NewsSymbolNormalization = NewsSchemas["NewsSymbolNormalizationData"];
 export type NewsEventDetail = NewsSchemas["NewsEventDetailData"];
 export type NewsItemRelatedEvents = NewsSchemas["NewsItemRelatedEventsData"];
@@ -111,8 +114,10 @@ export const NEWS_EVENT_REFETCH_MS = 15_000;
  * for the same bytes.
  */
 export const NEWS_QUOTES_REFETCH_MS = 15_000;
-/** `/api/news/quotes` accepts at most this many symbols; the hook batches the visible rows into one call. */
+/** `/api/news/quotes` accepts at most this many typed assets; visible rows share one call. */
 export const NEWS_QUOTES_SYMBOL_MAX = 100;
+/** The quote request contract accepts catalogue symbols up to 32 characters, with no whitespace. */
+export const NEWS_QUOTES_SYMBOL_LENGTH_MAX = 32;
 
 export type NewsFeedFilters = {
   admission: string | null;
@@ -458,25 +463,42 @@ export const useNewsSymbolWithToken = (token: string, base: string) => {
 };
 
 /**
- * Current quotes for the first 100 distinct symbols in Feed order (#304).
+ * Current quotes for the first 100 distinct typed assets in Feed order (#304).
  *
  * Selection happens before sorting so old alphabetical symbols cannot displace the newest Events. Only the
- * selected batch is sorted for a stable query/ETag key shared by surfaces asking for the same symbols.
+ * selected batch is sorted for a stable query/ETag key shared by surfaces asking for the same assets.
  */
-export const useNewsQuotesWithToken = (token: string, symbols: readonly string[]) => {
-  const selected = [...new Set(symbols.map((symbol) => symbol.trim()).filter(Boolean))].slice(
-    0,
-    NEWS_QUOTES_SYMBOL_MAX,
+export const useNewsQuotesWithToken = (token: string, assets: readonly NewsQuoteRequest[]) => {
+  const distinct = new Map<string, NewsQuoteRequest>();
+  for (const asset of assets) {
+    const symbol = asset.symbol.trim();
+    if (
+      symbol &&
+      symbol.length <= NEWS_QUOTES_SYMBOL_LENGTH_MAX &&
+      !/\s/.test(symbol) &&
+      asset.market_type !== "unknown"
+    ) {
+      distinct.set(newsAssetKey(asset.market_type, symbol), {
+        symbol,
+        market_type: asset.market_type,
+      });
+    }
+  }
+  const selected = [...distinct.values()].slice(0, NEWS_QUOTES_SYMBOL_MAX);
+  const batch = selected.sort((left, right) =>
+    newsAssetKey(left.market_type, left.symbol).localeCompare(
+      newsAssetKey(right.market_type, right.symbol),
+    ),
   );
-  const batch = selected.sort();
+  const serialized = JSON.stringify(batch);
   return useQuery({
     enabled: Boolean(token && batch.length),
     queryKey: queryKeys.newsQuotes(batch),
     queryFn: async () =>
       (
         await getApi<NewsQuotes>("/api/news/quotes", {
-          etagKey: `news-quotes:${batch.join(",")}`,
-          params: { symbols: batch.join(",") },
+          etagKey: `news-quotes:${serialized}`,
+          params: { assets: serialized },
           token,
         })
       ).data,

@@ -18,6 +18,7 @@ import {
   type NewsQuote,
   type NewsReaction,
   type NewsSymbolNormalization,
+  newsAssetKey,
   useNewsEventWithToken,
   useNewsItemRelatedEventsWithToken,
   useNewsQuotesWithToken,
@@ -25,7 +26,6 @@ import {
 import {
   absoluteTime,
   clockTime,
-  displayAssetRefs,
   eventHeadline,
   optionalTime,
   timelineEndToEnd,
@@ -58,12 +58,12 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
   const feedSearch = (useLocation().state as { feedSearch?: string } | null)?.feedSearch ?? null;
   // The same batched quote query the feed uses (#88); on this route the batch is one Event's assets, and
   // React Query serves both from one cache entry when the symbols happen to match.
-  const quotesQuery = useNewsQuotesWithToken(
-    token,
-    (detail?.event.assets ?? []).filter((asset) => asset.listed).map((asset) => asset.symbol),
-  );
+  const quotesQuery = useNewsQuotesWithToken(token, detail?.event.assets ?? []);
   const quotes = Object.fromEntries(
-    (quotesQuery.data?.quotes ?? []).map((quote) => [quote.requested_symbol, quote]),
+    (quotesQuery.data?.quotes ?? []).map((quote) => [
+      newsAssetKey(quote.market_type, quote.requested_symbol),
+      quote,
+    ]),
   );
   return (
     <PageShell archetype="case" className="news-detail-shell" label="新闻事件详情">
@@ -108,8 +108,10 @@ function EventDocument({
     update,
   });
   const url = validExternalUrl(event.leader_url);
-  const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
-  const quoteList = assets.map((asset) => quotes[asset.symbol]).filter(Boolean);
+  const assets = event.assets ?? [];
+  const quoteList = assets
+    .map((asset) => quotes[newsAssetKey(asset.market_type, asset.symbol)])
+    .filter(Boolean);
   const steps = detail.timeline ?? [];
   const priorComparisonCount = update?.changes?.filter((change) => change.previous_ref).length ?? 0;
   return (
