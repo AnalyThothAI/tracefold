@@ -251,6 +251,10 @@ class LlmConfig(BaseModel):
     api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = Field(default=None, repr=False)
     news_triage_model: str | None = None
+    # Optional model name for the generative semantic judgments on the same endpoint, key and request
+    # envelope as `news_triage_model`; unset, they run on `news_triage_model` itself. A proxy can serve a
+    # deterministic-decoding variant of the same weights under its own name (#770).
+    news_triage_judgment_model: str | None = None
     request: LlmRequestConfig = Field(default_factory=LlmRequestConfig)
     # Three optional endpoints with one shape. Only the triage fallback names its own incomplete-
     # configuration code, because `llm_fallback_without_primary` reads next to it; the other two
@@ -262,7 +266,7 @@ class LlmConfig(BaseModel):
     news_judgment: NewsJudgmentConfig = Field(default_factory=NewsJudgmentConfig)
     news_reader_judgment: NewsReaderJudgmentConfig = Field(default_factory=NewsReaderJudgmentConfig)
 
-    @field_validator("api_key", "news_triage_model", mode="before")
+    @field_validator("api_key", "news_triage_model", "news_triage_judgment_model", mode="before")
     @classmethod
     def parse_optional_string(cls, value: Any) -> str | None:
         if value is None:
@@ -281,6 +285,8 @@ class LlmConfig(BaseModel):
         configured = (self.api_key, self.base_url, self.news_triage_model)
         if any(configured) and not all(configured):
             raise ValueError("llm_direct_configuration_incomplete")
+        if self.news_triage_judgment_model and not all(configured):
+            raise ValueError("llm_judgment_model_without_primary")
         if self.news_triage_fallback.configured and not all(configured):
             raise ValueError("llm_fallback_without_primary")
         if self.news_reader_card.configured and not all(configured):
@@ -904,7 +910,9 @@ class NewsModelAvailability:
     """The News model routes a valid configuration describes, secret-free.
 
     Extraction and the generative judgments run on the `news_triage_model` endpoint (and its fallback);
-    cards run on `news_reader_card`, or on the extraction endpoint when no dedicated one is configured.
+    `generated_judgment_model` is the model name the judgments ask there: `news_triage_judgment_model`
+    when set, else the extraction model. Cards run on `news_reader_card`, or on the extraction endpoint
+    when no dedicated one is configured.
     `news_judgment_model` is the optional Jev route; `None` means generative judgments.
     `news_reader_judgment_model` is the notification decision layer's own System One route; `None` means
     the generative News route answers the reader questions.
@@ -914,6 +922,7 @@ class NewsModelAvailability:
     card_model: str | None
     card_dedicated: bool
     extraction_fallback_model: str | None = None
+    generated_judgment_model: str | None = None
     card_fallback_model: str | None = None
     card_fallback_dedicated: bool = False
     news_judgment_model: str | None = None
@@ -941,6 +950,9 @@ def news_model_availability(settings: Settings) -> NewsModelAvailability:
         ),
         card_dedicated=bool(reader_ok),
         extraction_fallback_model=fallback.model if fallback_ok else None,
+        generated_judgment_model=(
+            (settings.llm.news_triage_judgment_model or settings.llm.news_triage_model) if triage else None
+        ),
         card_fallback_model=(
             reader_fallback.model
             if reader_fallback_ok

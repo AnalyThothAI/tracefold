@@ -2,9 +2,9 @@
 
 One seam resolves operator settings into three generative DSPy routes -- extraction, generative
 judgments and cards -- plus the optional News Jev endpoint, with secret-free identities for each.
-Extraction and the generative judgments share the `news_triage_model` endpoint and its fallback;
-cards use `news_reader_card` (or the extraction endpoint) and its fallback. No taxonomy slot, no
-progression slot.
+Extraction and the generative judgments share the `news_triage_model` endpoint and its fallback; the
+judgments ask `news_triage_judgment_model` there when it is set (#770). Cards use `news_reader_card`
+(or the extraction endpoint) and its fallback. No taxonomy slot, no progression slot.
 """
 
 from __future__ import annotations
@@ -131,7 +131,9 @@ class NewsRuntimeModels:
             "extraction_fallback_model": self.availability.extraction_fallback_model,
             "judgment_backend": "native" if self.news_judgment is not None else "generated",
             "judgment_model": (
-                self.news_judgment.model if self.news_judgment is not None else self.availability.extraction_model
+                self.news_judgment.model
+                if self.news_judgment is not None
+                else self.availability.generated_judgment_model
             ),
             "news_judgment_configured": self.news_judgment is not None,
             "card_model": self.availability.card_model,
@@ -145,9 +147,23 @@ def compose_news_models(settings: Any) -> NewsRuntimeModels | None:
     """Resolve operator settings once. None when no complete News generative route is configured."""
 
     availability = news_model_availability(settings)
-    if not availability.configured or availability.extraction_model is None or availability.card_model is None:
+    extraction_model = availability.extraction_model
+    judgment_model = availability.generated_judgment_model
+    if (
+        not availability.configured
+        or extraction_model is None
+        or judgment_model is None
+        or availability.card_model is None
+    ):
         return None
-    extraction_primary = configured_lm_endpoint(settings, model_name=availability.extraction_model)
+    extraction_primary = configured_lm_endpoint(settings, model_name=extraction_model)
+    # The judgments ask their own model name on the extraction endpoint, key and request envelope when
+    # one is configured (#770); otherwise they share the extraction endpoint itself.
+    judgment_primary = (
+        extraction_primary
+        if judgment_model == extraction_model
+        else configured_lm_endpoint(settings, model_name=judgment_model)
+    )
     extraction_fallback: ConfiguredLMEndpoint | None = None
     if availability.extraction_fallback_model:
         fallback = settings.llm.news_triage_fallback
@@ -195,7 +211,7 @@ def compose_news_models(settings: Any) -> NewsRuntimeModels | None:
             EXTRACTION_MAX_TOKENS,
             fallback_max_tokens=EXTRACTION_FALLBACK_MAX_TOKENS,
         ),
-        judgment=NewsModelRoute("judgment", extraction_primary, extraction_fallback, JUDGMENT_MAX_TOKENS),
+        judgment=NewsModelRoute("judgment", judgment_primary, extraction_fallback, JUDGMENT_MAX_TOKENS),
         card=NewsModelRoute("card", card_primary, card_fallback, CARD_MAX_TOKENS),
         news_judgment=news_judgment,
         availability=availability,

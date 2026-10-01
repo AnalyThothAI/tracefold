@@ -362,6 +362,7 @@ class CliTests(unittest.TestCase):
         self.assertFalse(news["broker"]["url_configured"])
         self.assertTrue(news["models"]["configured"])
         self.assertEqual(news["models"]["extraction_model"], "deepseek-chat")
+        self.assertEqual(news["models"]["generated_judgment_model"], "deepseek-chat")
         self.assertEqual(news["models"]["card_model"], "deepseek-chat")
         self.assertIs(news["models"]["card_dedicated"], False)
         self.assertIsNone(news["models"]["card_fallback_model"])
@@ -441,6 +442,8 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("rss_enabled", payload["news"])
         self.assertNotIn("title_presentation", payload["news"])
         self.assertNotIn("news_brief_model", payload.get("llm") or {})
+        self.assertIn("news_triage_judgment_model", payload["llm"])
+        self.assertIsNone(settings.llm.news_triage_judgment_model)
         self.assertEqual(
             payload["llm"]["news_reader_card"],
             {
