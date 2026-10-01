@@ -28,24 +28,24 @@ class OpenNewsState(CollectorState):
 
 
 class ChainTapeState(CollectorState):
-    high_water_block: int = 0
-    high_water_tx_index: int = -1
-    roster_version: int = 0
-    last_outcome: str = ""
+    high_water_block: int = Field(default=0, ge=0)
+    high_water_tx_index: int = Field(default=-1, ge=-1)
+    roster_version: int = Field(default=0, ge=0)
+    last_outcome: Literal["", "success", "partial", "error"] = ""
     last_error: str | None = None
-    last_success_at_ms: int | None = None
-    ignored_inbound_total: int = 0
-    unknown_total: int = 0
-    noise_through_block: int = 0
-    noise_through_tx_index: int = -1
+    last_success_at_ms: int | None = Field(default=None, gt=0)
+    ignored_inbound_total: int = Field(default=0, ge=0)
+    unknown_total: int = Field(default=0, ge=0)
+    noise_through_block: int = Field(default=0, ge=0)
+    noise_through_tx_index: int = Field(default=-1, ge=-1)
     detection_cutover_at_ms: int = 0
     coverage_from_ms: int | None = None
     scanned_at_ms: int | None = None
     scanned_block: int | None = None
     scanned_log: int | None = None
     gap_at_ms: int | None = None
-    next_attempt_at_ms: int = 0
-    consecutive_failures: int = 0
+    next_attempt_at_ms: int = Field(default=0, ge=0)
+    consecutive_failures: int = Field(default=0, ge=0)
     blocked_tx_hash: str | None = None
     enrichment_error: str | None = None
 
@@ -54,8 +54,8 @@ class WalletRosterState(CollectorState):
     last_attempt_at_ms: int | None = None
     last_success_at_ms: int | None = None
     last_error: str | None = None
-    next_attempt_at_ms: int = 0
-    consecutive_failures: int = 0
+    next_attempt_at_ms: int = Field(default=0, ge=0)
+    consecutive_failures: int = Field(default=0, ge=0)
 
 
 class InstrumentCatalogState(CollectorState):

@@ -12,7 +12,7 @@ from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.chain_tape.contracts import RosterMember, TapeCursor
 from tracefold.news.market_observations import MarketObservation
-from tracefold.news.storage.collectors import OpenNewsIncident, OpenNewsState
+from tracefold.news.storage.collectors import ChainTapeState, OpenNewsIncident, OpenNewsState, WalletRosterState
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 WALLETS = tuple("0x" + str(n) * 40 for n in range(1, 4))
@@ -200,6 +200,36 @@ def test_collector_validation_rolls_back_invalid_document(failure):
         assert (
             conn.execute(
                 "SELECT state,incidents,updated_at_ms FROM news_collectors WHERE collector_id='opennews'"
+            ).fetchone()
+            == before
+        )
+
+
+@pytest.mark.parametrize(
+    ("collector_id", "model", "field", "invalid"),
+    [
+        ("chain_tape", ChainTapeState, "high_water_block", -1),
+        ("chain_tape", ChainTapeState, "high_water_tx_index", -2),
+        ("chain_tape", ChainTapeState, "noise_through_tx_index", -2),
+        ("chain_tape", ChainTapeState, "roster_version", -1),
+        ("chain_tape", ChainTapeState, "ignored_inbound_total", -1),
+        ("chain_tape", ChainTapeState, "last_outcome", "invalid"),
+        ("chain_tape", ChainTapeState, "last_success_at_ms", 0),
+        ("chain_tape", ChainTapeState, "next_attempt_at_ms", -1),
+        ("wallet_roster", WalletRosterState, "consecutive_failures", -1),
+    ],
+)
+def test_typed_collector_preserves_cursor_and_retry_constraints(collector_id, model, field, invalid):
+    with closing(connect_postgres_test()) as conn:
+        news = repositories_for_connection(conn).news
+        before = conn.execute(
+            "SELECT state,updated_at_ms FROM news_collectors WHERE collector_id=%s", (collector_id,)
+        ).fetchone()
+        with pytest.raises(ValidationError), news.mutate_collector(collector_id, model, now_ms=2000) as (state, _):
+            setattr(state, field, invalid)
+        assert (
+            conn.execute(
+                "SELECT state,updated_at_ms FROM news_collectors WHERE collector_id=%s", (collector_id,)
             ).fetchone()
             == before
         )

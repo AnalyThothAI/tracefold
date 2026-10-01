@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from decimal import Decimal
-from typing import Any, Final, TypedDict
+from typing import Any, Final, Literal, TypedDict
 
 from ..chain_tape.contracts import (
     CHAIN_TAPE_PROVIDER,
@@ -228,7 +228,7 @@ class ChainTapeStorage:
         *,
         cursor: TapeCursor,
         roster_version: int,
-        outcome: str,
+        outcome: Literal["", "success", "partial", "error"],
         error: str | None,
         now_ms: int,
         succeeded: bool,
