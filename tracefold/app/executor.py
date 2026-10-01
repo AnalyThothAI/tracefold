@@ -9,12 +9,14 @@ import time
 from contextlib import suppress
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Literal, cast
+from uuid import uuid4
 
 import httpx
 from psycopg.errors import UniqueViolation
 
 from tracefold.app.repository_session import postgres_connection
 from tracefold.integrations.trading.binance import BinanceFailure, DemoBinance
+from tracefold.platform.postgres.runtime_processes import RuntimeProcesses
 from tracefold.trading.executor.core import EntryFacts, PlanFacts, SignalV4, admit, client_order_id, step
 from tracefold.trading.storage.executor import ExecutorStorage
 
@@ -69,13 +71,32 @@ class ExecutorRunner:
         self.db = ExecutorStorage(conn)
         self.venue = venue
         self.account_slot = settings.trading.execution.account_slot
+        self.instance_id = str(uuid4())
+        self.runtime = RuntimeProcesses(conn, kind="executor", key=self.account_slot)
+        self._runtime_started = False
         self._last_active_read_ns = 0
         self._last_full_read_ns = 0
+
+    def heartbeat(self, *, now_ns: int, fault_code: str | None = None) -> None:
+        self.db.ensure_account(self.account_slot)
+        now_ms = now_ns // 1_000_000
+        if not self._runtime_started:
+            if not self.runtime.begin(instance_id=self.instance_id, started_at_ms=now_ms, now_ms=now_ms):
+                raise RuntimeError("executor_account_slot_already_owned")
+            self.runtime.transition(instance_id=self.instance_id, lifecycle_state="running", now_ms=now_ms)
+            self._runtime_started = True
+        self.runtime.heartbeat(instance_id=self.instance_id, now_ms=now_ms, fault_code=fault_code)
+
+    def stop_runtime(self) -> None:
+        if self._runtime_started:
+            self.runtime.transition(
+                instance_id=self.instance_id, lifecycle_state="stopped", now_ms=_now_ns() // 1_000_000
+            )
 
     async def tick(self) -> None:
         now = _now_ns()
         with self.conn.transaction():
-            self.db.heartbeat(account_slot=self.account_slot, now_ns=now)
+            self.heartbeat(now_ns=now)
         if now - self._last_full_read_ns >= 60 * _NS_PER_SECOND:
             await self._full_account_check(now)
             self._last_full_read_ns = now
@@ -85,11 +106,11 @@ class ExecutorRunner:
         await self._one_intent(now)
         await self._one_signal(now)
         with self.conn.transaction():
-            for plan in self.db.pending_pnl_plans(self.account_slot):
+            for plan in self.db.pending_pnl_entries(self.account_slot):
                 self.db.settle_pnl(plan=plan, now_ns=now)
 
     async def _one_signal(self, now: int) -> None:
-        state = self.db.state(self.account_slot)
+        state = self.db.account(self.account_slot)
         if state is None:
             raise RuntimeError("executor_state_missing")
         signal = self.db.next_signal(account_slot=self.account_slot)
@@ -114,9 +135,8 @@ class ExecutorRunner:
         entry_id = client_order_id(namespace=self.account_slot, entry_id=signal.signal_id, leg="entry", attempt=1)
         try:
             with self.conn.transaction():
-                self.db.create_plan(
-                    plan_id=signal.signal_id,
-                    signal_id=signal.signal_id,
+                if not self.db.accept_entry(
+                    entry_id=signal.signal_id,
                     command_id=None,
                     account_slot=self.account_slot,
                     native_symbol=signal.native_symbol,
@@ -127,29 +147,21 @@ class ExecutorRunner:
                     tp_bps=signal.tp_bps,
                     max_hold_s=signal.max_hold_s,
                     now_ns=now,
-                )
+                ):
+                    return
                 self.db.reserve_order(
                     client_id=entry_id,
-                    plan_id=signal.signal_id,
+                    entry_id=signal.signal_id,
                     native_symbol=signal.native_symbol,
                     leg="entry",
                     attempt=1,
-                    now_ns=now,
-                )
-                self.db.record_disposition(
-                    kind="signal",
-                    input_id=signal.signal_id,
-                    account_slot=self.account_slot,
-                    disposition="accepted",
-                    reason="accepted",
-                    plan_id=signal.signal_id,
                     now_ns=now,
                 )
         except UniqueViolation:
             self._refuse_signal(signal, now=now, disposition="refused", reason="symbol_exposure")
             return
         await self._send_market(
-            plan_id=signal.signal_id,
+            entry_id=signal.signal_id,
             symbol=signal.native_symbol,
             side="BUY" if signal.side == "long" else "SELL",
             quantity=verdict.quantity,
@@ -190,7 +202,7 @@ class ExecutorRunner:
         rules = _symbol_rules(catalogue, signal.native_symbol)
         if rules is None:
             return None
-        active = self.db.active_plans(self.account_slot)
+        active = self.db.active_entries(self.account_slot)
         position_by_symbol = {row["symbol"]: row for row in positions if Decimal(str(row["positionAmt"])) != 0}
         notional = sum(
             abs(Decimal(str(row["positionAmt"])) * Decimal(str(row["markPrice"])))
@@ -199,7 +211,7 @@ class ExecutorRunner:
         notional += sum(plan["reserved_notional"] for plan in active if plan["native_symbol"] not in position_by_symbol)
         risk = self.settings.trading.execution.risk
         control = self.db.control(self.account_slot)
-        state = self.db.state(self.account_slot)
+        state = self.db.account(self.account_slot)
         return EntryFacts(
             now_ns=_now_ns(),
             entries_paused=bool(control["entries_paused"]) or bool(state and state["unexpected_exposure"]),
@@ -228,7 +240,7 @@ class ExecutorRunner:
     async def _send_market(
         self,
         *,
-        plan_id: str | None,
+        entry_id: str | None,
         symbol: str,
         side: Literal["BUY", "SELL"],
         quantity: Decimal,
@@ -249,9 +261,9 @@ class ExecutorRunner:
             status = "unknown" if exc.transient else "rejected"
             with self.conn.transaction():
                 self.db.update_order(client_id=client_id, status=status, now_ns=now, error_code=exc.code)
-                if plan_id is not None and not reduce_only and status == "rejected":
-                    self.db.set_plan_status(
-                        plan_id=plan_id, status="terminal", now_ns=now, terminal_reason="entry_rejected"
+                if entry_id is not None and not reduce_only and status == "rejected":
+                    self.db.set_entry_state(
+                        entry_id=entry_id, status="terminal", now_ns=now, terminal_reason="entry_rejected"
                     )
             return
         status = "filled" if result.get("status") == "FILLED" else "working"
@@ -263,11 +275,11 @@ class ExecutorRunner:
                 venue_order_id=str(result["orderId"]),
                 evidence=result,
             )
-            if plan_id is not None and not reduce_only and status == "filled":
-                self.db.set_plan_status(plan_id=plan_id, status="open", now_ns=now, opened_at_ns=now)
+            if entry_id is not None and not reduce_only and status == "filled":
+                self.db.set_entry_state(entry_id=entry_id, status="open", now_ns=now, opened_at_ns=now)
 
     async def _one_intent(self, now: int) -> None:
-        state = self.db.state(self.account_slot)
+        state = self.db.account(self.account_slot)
         if state is None:
             raise RuntimeError("executor_state_missing")
         intent = self.db.next_intent(account_slot=self.account_slot)
@@ -346,7 +358,6 @@ class ExecutorRunner:
             risk = self.settings.trading.execution.risk
             exit_policy = self.settings.trading.execution.exit_policy
             signal = SignalV4(
-                seq=1,
                 signal_id=command_id,
                 decision_id=command_id,
                 case_id="manual:" + command_id,
@@ -381,9 +392,8 @@ class ExecutorRunner:
         entry_id = client_order_id(namespace=self.account_slot, entry_id=command_id, leg="entry", attempt=1)
         try:
             with self.conn.transaction():
-                self.db.create_plan(
-                    plan_id=command_id,
-                    signal_id=None,
+                if not self.db.accept_entry(
+                    entry_id=command_id,
                     command_id=command_id,
                     account_slot=self.account_slot,
                     native_symbol=symbol,
@@ -394,29 +404,21 @@ class ExecutorRunner:
                     tp_bps=signal.tp_bps,
                     max_hold_s=signal.max_hold_s,
                     now_ns=now,
-                )
+                ):
+                    return
                 self.db.reserve_order(
                     client_id=entry_id,
-                    plan_id=command_id,
+                    entry_id=command_id,
                     native_symbol=symbol,
                     leg="entry",
                     attempt=1,
-                    now_ns=now,
-                )
-                self.db.record_disposition(
-                    kind="intent",
-                    input_id=command_id,
-                    account_slot=self.account_slot,
-                    disposition="accepted",
-                    reason="accepted",
-                    plan_id=command_id,
                     now_ns=now,
                 )
         except UniqueViolation:
             self._refuse_intent(intent, now=now, reason="symbol_exposure")
             return
         await self._send_market(
-            plan_id=command_id,
+            entry_id=command_id,
             symbol=symbol,
             side="BUY" if side == "long" else "SELL",
             quantity=verdict.quantity,
@@ -440,9 +442,9 @@ class ExecutorRunner:
         positions, orders, algos, account = await asyncio.gather(
             self.venue.positions(), self.venue.open_orders(), self.venue.open_algo_orders(), self.venue.account()
         )
-        active_plans = self.db.active_plans(self.account_slot)
-        active_symbols = {plan["native_symbol"] for plan in active_plans}
-        plan_by_symbol = {plan["native_symbol"]: plan for plan in active_plans}
+        active_entries = self.db.active_entries(self.account_slot)
+        active_symbols = {plan["native_symbol"] for plan in active_entries}
+        plan_by_symbol = {plan["native_symbol"]: plan for plan in active_entries}
         known_client_ids = self.db.active_client_ids(self.account_slot)
         venue_symbols = {row["symbol"] for row in positions if Decimal(str(row["positionAmt"])) != 0} | {
             row["symbol"] for row in (*orders, *algos)
@@ -547,8 +549,8 @@ class ExecutorRunner:
             )
 
     async def _reconcile(self, now: int) -> None:
-        plans = self.db.active_plans(self.account_slot)
-        awaiting_fills = self.db.plans_awaiting_fills(self.account_slot)
+        plans = self.db.active_entries(self.account_slot)
+        awaiting_fills = self.db.entries_awaiting_fills(self.account_slot)
         control = self.db.control(self.account_slot)
         if control.get("flatten_command_id"):
             await self._reconcile_account_flatten(str(control["flatten_command_id"]), plans, now)
@@ -561,9 +563,9 @@ class ExecutorRunner:
         algos_by_client_id = {row["clientAlgoId"]: row for row in open_algos}
         for plan in plans:
             try:
-                await self._refresh_plan_orders(plan, algos_by_client_id, now)
+                await self._refresh_entry_orders(plan, algos_by_client_id, now)
             except (httpx.HTTPError, BinanceFailure) as exc:
-                _LOG.warning("executor_order_refresh_deferred %s: %s", plan["plan_id"], type(exc).__name__)
+                _LOG.warning("executor_order_refresh_deferred %s: %s", plan["entry_id"], type(exc).__name__)
         for symbol in sorted({plan["native_symbol"] for plan in (*plans, *awaiting_fills)}):
             await self._sync_trades(symbol, now)
         for plan in plans:
@@ -576,7 +578,7 @@ class ExecutorRunner:
                     now=now,
                 )
             except (httpx.HTTPError, BinanceFailure) as exc:
-                _LOG.warning("executor_reconcile_deferred %s: %s", plan["plan_id"], type(exc).__name__)
+                _LOG.warning("executor_reconcile_deferred %s: %s", plan["entry_id"], type(exc).__name__)
 
     async def _reconcile_account_flatten(self, command_id: str, plans: list[dict[str, Any]], now: int) -> None:
         positions, orders, algos = await asyncio.gather(
@@ -653,7 +655,7 @@ class ExecutorRunner:
                     client_id=client_id, command_id=command_id, symbol=symbol, attempt=attempt, now_ns=now
                 )
             await self._send_market(
-                plan_id=None,
+                entry_id=None,
                 symbol=symbol,
                 side="SELL" if amount > 0 else "BUY",
                 quantity=abs(amount),
@@ -675,7 +677,7 @@ class ExecutorRunner:
                 self.db.clear_flatten(account_slot=self.account_slot)
 
     async def _sync_trades(self, symbol: str, now: int) -> None:
-        cursor = self.db.trade_cursor(symbol)
+        cursor = self.db.trade_cursor(symbol, account_slot=self.account_slot)
         trades = await self.venue.user_trades(symbol, from_id=cursor)
         with self.conn.transaction():
             for trade in trades:
@@ -683,11 +685,16 @@ class ExecutorRunner:
             self.db.attribute_unbound_fills(symbol=symbol, now_ns=now)
             if trades:
                 self.db.advance_trade_cursor(
-                    symbol=symbol, next_id=max(int(row["id"]) for row in trades) + 1, now_ns=now
+                    account_slot=self.account_slot,
+                    symbol=symbol,
+                    next_id=max(int(row["id"]) for row in trades) + 1,
+                    now_ns=now,
                 )
 
-    async def _refresh_plan_orders(self, plan: dict[str, Any], open_algos: dict[str, dict[str, Any]], now: int) -> None:
-        for order in self.db.plan_orders(plan["plan_id"]):
+    async def _refresh_entry_orders(
+        self, plan: dict[str, Any], open_algos: dict[str, dict[str, Any]], now: int
+    ) -> None:
+        for order in self.db.entry_orders(plan["entry_id"]):
             client_id = order["client_order_id"]
             if order["leg"] in ("sl", "tp"):
                 evidence = open_algos.get(client_id)
@@ -747,18 +754,18 @@ class ExecutorRunner:
         force_flatten: bool,
         now: int,
     ) -> None:
-        current = self.db.plan(plan["plan_id"])
+        current = self.db.entry(plan["entry_id"])
         if current is None or current["terminal_at_ns"] is not None:
             return
-        orders = self.db.plan_orders(plan["plan_id"])
+        orders = self.db.entry_orders(plan["entry_id"])
         entry = next((order for order in orders if order["leg"] == "entry"), None)
         if entry is None:
             raise ValueError("plan_entry_order_missing")
         amount = Decimal(str(position["positionAmt"])) if position is not None else Decimal(0)
         if amount and entry["status"] in ("filled", "cancelled") and current["opened_at_ns"] is None:
             with self.conn.transaction():
-                self.db.set_plan_status(plan_id=plan["plan_id"], status="open", now_ns=now, opened_at_ns=now)
-            current = self.db.plan(plan["plan_id"])
+                self.db.set_entry_state(entry_id=plan["entry_id"], status="open", now_ns=now, opened_at_ns=now)
+            current = self.db.entry(plan["entry_id"])
             if current is None:
                 raise RuntimeError("plan_disappeared")
         latest: dict[str, dict[str, Any]] = {}
@@ -798,7 +805,7 @@ class ExecutorRunner:
             sl_submission_unknown=latest.get("sl", {}).get("status") in ("unknown", "reserved"),
             tp_submission_unknown=latest.get("tp", {}).get("status") in ("unknown", "reserved"),
             flatten_status=None if last_flatten is None else status(last_flatten["leg"]),
-            exit_fill_client_id=self.db.exit_fill_client_id(plan["plan_id"]),
+            exit_fill_client_id=self.db.exit_fill_client_id(plan["entry_id"]),
             sl_client_ids=frozenset(order["client_order_id"] for order in orders if order["leg"] == "sl"),
             tp_client_ids=frozenset(order["client_order_id"] for order in orders if order["leg"] == "tp"),
         )
@@ -813,8 +820,8 @@ class ExecutorRunner:
             await self._cancel_protection(current, open_algos, now)
         elif action.action == "terminal":
             with self.conn.transaction():
-                self.db.set_plan_status(
-                    plan_id=plan["plan_id"],
+                self.db.set_entry_state(
+                    entry_id=plan["entry_id"],
                     status="terminal",
                     now_ns=now,
                     terminal_reason=current["terminal_reason"] or action.reason,
@@ -825,7 +832,7 @@ class ExecutorRunner:
     ) -> None:
         if position is None or Decimal(str(position["positionAmt"])) == 0:
             return
-        orders = [order for order in self.db.plan_orders(plan["plan_id"]) if order["leg"] == leg]
+        orders = [order for order in self.db.entry_orders(plan["entry_id"]) if order["leg"] == leg]
         if orders and orders[-1]["status"] == "rejected":
             previous = orders[-1]
             if previous["error_code"] not in (-1102, -4136):
@@ -848,11 +855,11 @@ class ExecutorRunner:
             leg=leg,
             tick=rules["tick"],
         )
-        client_id = client_order_id(namespace=self.account_slot, entry_id=plan["plan_id"], leg=leg, attempt=attempt)
+        client_id = client_order_id(namespace=self.account_slot, entry_id=plan["entry_id"], leg=leg, attempt=attempt)
         with self.conn.transaction():
             self.db.reserve_order(
                 client_id=client_id,
-                plan_id=plan["plan_id"],
+                entry_id=plan["entry_id"],
                 native_symbol=plan["native_symbol"],
                 leg=leg,
                 attempt=attempt,
@@ -895,26 +902,26 @@ class ExecutorRunner:
         leg: Literal["time_exit", "safety_flatten"] = (
             "time_exit" if reason == "time_exit" or plan["terminal_reason"] == "time_exit" else "safety_flatten"
         )
-        prior = [order for order in self.db.plan_orders(plan["plan_id"]) if order["leg"] == leg]
+        prior = [order for order in self.db.entry_orders(plan["entry_id"]) if order["leg"] == leg]
         if prior and prior[-1]["status"] not in ("filled", "rejected", "not_submitted"):
             return
         attempt = len(prior) + 1
         if attempt > 3:
-            _LOG.critical("executor_flatten_exhausted %s", plan["plan_id"])
+            _LOG.critical("executor_flatten_exhausted %s", plan["entry_id"])
             return
-        client_id = client_order_id(namespace=self.account_slot, entry_id=plan["plan_id"], leg=leg, attempt=attempt)
+        client_id = client_order_id(namespace=self.account_slot, entry_id=plan["entry_id"], leg=leg, attempt=attempt)
         with self.conn.transaction():
             self.db.reserve_order(
                 client_id=client_id,
-                plan_id=plan["plan_id"],
+                entry_id=plan["entry_id"],
                 native_symbol=plan["native_symbol"],
                 leg=leg,
                 attempt=attempt,
                 now_ns=now,
             )
-            self.db.set_plan_status(plan_id=plan["plan_id"], status="closing", now_ns=now, terminal_reason=reason)
+            self.db.set_entry_state(entry_id=plan["entry_id"], status="closing", now_ns=now, terminal_reason=reason)
         await self._send_market(
-            plan_id=plan["plan_id"],
+            entry_id=plan["entry_id"],
             symbol=plan["native_symbol"],
             side="SELL" if amount > 0 else "BUY",
             quantity=abs(amount),
@@ -924,7 +931,7 @@ class ExecutorRunner:
         )
 
     async def _cancel_protection(self, plan: dict[str, Any], open_algos: dict[str, dict[str, Any]], now: int) -> None:
-        for order in self.db.plan_orders(plan["plan_id"]):
+        for order in self.db.entry_orders(plan["entry_id"]):
             client_id = order["client_order_id"]
             if client_id not in open_algos:
                 continue
@@ -958,20 +965,23 @@ async def run_executor(settings: Any, stop: asyncio.Event | None = None) -> None
             if not lock or not lock["acquired"]:
                 raise RuntimeError("executor_account_slot_already_owned")
             runner = ExecutorRunner(settings=settings, conn=conn, venue=venue)
-            while stop is None or not stop.is_set():
-                try:
-                    await runner.tick()
-                except Exception as exc:
-                    _LOG.exception("executor_tick_failed")
-                    with conn.transaction():
-                        runner.db.heartbeat(
-                            account_slot=runner.account_slot, now_ns=_now_ns(), error=type(exc).__name__
-                        )
-                if stop is None:
-                    await asyncio.sleep(1)
-                else:
-                    with suppress(TimeoutError):
-                        await asyncio.wait_for(stop.wait(), timeout=1)
+            try:
+                while stop is None or not stop.is_set():
+                    try:
+                        await runner.tick()
+                    except Exception as exc:
+                        _LOG.exception("executor_tick_failed")
+                        with conn.transaction():
+                            runner.heartbeat(now_ns=_now_ns(), fault_code=type(exc).__name__)
+                    if stop is None:
+                        await asyncio.sleep(1)
+                    else:
+                        with suppress(TimeoutError):
+                            await asyncio.wait_for(stop.wait(), timeout=1)
+            finally:
+                with conn.transaction():
+                    runner.stop_runtime()
+
     finally:
         await venue.aclose()
 

@@ -10,12 +10,12 @@ from typing import Any
 from psycopg_pool import PoolClosed, PoolTimeout
 
 from tracefold.app.repository_session import NewsSearchPlan, RepositorySession, repositories_for_connection
-from tracefold.app.workers.runtime import WorkersRuntimeRepository
 from tracefold.news.market_review.instrument_storage import InstrumentsRepository
 from tracefold.news.market_review.storage import PriceRepository
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.client import create_pool, postgres_health_check, with_password_from_file
+from tracefold.platform.postgres.runtime_processes import RuntimeProcesses
 from tracefold.trading.storage.root import TradingRepository
 
 _SERVE_POOL_SIZE = 7  # 6 ordinary read permits + 1 control permit
@@ -41,7 +41,7 @@ class ServeDatabaseBusy(RuntimeError):
 class ServeRepositories:
     """Read-only Serve capabilities with infrastructure probes instead of a public raw connection."""
 
-    __slots__ = ("_conn", "_session", "instruments", "news", "price", "trading")
+    __slots__ = ("_conn", "_session", "instruments", "news", "price", "runtime", "trading")
 
     def __init__(self, session: RepositorySession) -> None:
         self._conn = session.conn
@@ -50,12 +50,13 @@ class ServeRepositories:
         self.instruments: InstrumentsRepository = session.instruments
         self.price: PriceRepository = session.price
         self.trading: TradingRepository = session.trading
+        self.runtime: RuntimeProcesses = session.runtime
 
     def database_health(self, *, expected_migration_version: str) -> dict[str, Any]:
         return postgres_health_check(self._conn, expected_migration_version=expected_migration_version)
 
     def workers_runtime_row(self) -> dict[str, Any] | None:
-        return WorkersRuntimeRepository(self._conn).read()
+        return self.runtime.workers_row()
 
     def compile_news_search(self, *, q: str | None, symbol: str | None) -> NewsSearchPlan | None:
         return self._session.compile_news_search(q=q, symbol=symbol)

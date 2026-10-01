@@ -33,19 +33,20 @@ class _Repos:
         self.sql.append(statement)
         return _Rows()
 
-    def state(self, _slot: str) -> None:
+    def account(self, _slot: str) -> None:
         return None
 
     def control(self, _slot: str) -> dict[str, bool]:
         return {"entries_paused": True, "emergency_halted": False}
 
-    def active_plans(self, _slot: str) -> list[dict[str, int]]:
+    def console_open_plans(self, _slot: str) -> list[dict[str, int]]:
         return [{"n": n} for n in range(1001)]
 
 
 def test_diagnose_has_real_sample_bounds_and_independent_source_clocks(monkeypatch: Any) -> None:
     repos = _Repos()
     monkeypatch.setattr(trading, "repositories", lambda *_args, **_kwargs: repos)
+    monkeypatch.setattr(trading, "RuntimeProcesses", lambda *_args, **_kwargs: SimpleNamespace(read=lambda: None))
     settings = SimpleNamespace(
         trading=SimpleNamespace(
             execution=SimpleNamespace(

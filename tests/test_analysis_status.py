@@ -9,6 +9,7 @@ def test_analysis_status_tracks_model_and_heartbeat() -> None:
     settings.trading.enabled = True
     row = {
         "heartbeat_at_ms": 1_000,
+        "lifecycle_state": "running",
         "active_policy": "forecast",
         "model_name": None,
         "model_configured": False,

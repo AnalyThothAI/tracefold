@@ -63,10 +63,11 @@ def get_trading_status(request: Request) -> Response:
     now_ms = int(time.time() * 1_000)
     with runtime.repositories() as repos:
         execution = runtime.settings.trading.execution
-        analysis_runtime = repos.trading.analysis_runtime(execution.account_slot)
+        analysis_runtime = repos.runtime.analysis_detail(execution.account_slot)
         last_case_at_ms = repos.trading.latest_case_created_at_ms()
-        state = repos.trading.state(execution.account_slot)
+        state = repos.trading.account(execution.account_slot)
         control = repos.trading.control(execution.account_slot)
+        process = repos.runtime.process(kind="executor", key=execution.account_slot).read()
     response = _validated_json(
         _StatusEnvelope,
         {
@@ -75,7 +76,13 @@ def get_trading_status(request: Request) -> Response:
                 "decision": analysis_status_projection(
                     runtime.settings, analysis_runtime, now_ms=now_ms, last_case_at_ms=last_case_at_ms
                 ),
-                "execution": execution_readiness_projection(execution, state, control, now_ns=time.time_ns()),
+                "execution": execution_readiness_projection(
+                    execution,
+                    state,
+                    control,
+                    now_ns=time.time_ns(),
+                    process=process,
+                ),
             },
         },
     )

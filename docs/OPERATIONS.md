@@ -193,6 +193,10 @@ docker compose exec -T executor tracefold trading issue '/pause maintenance' \
 
 重试必须保留相同 request ID 和时间。`/pause` 不平仓；`/flatten account` 先暂停入场，再撤普通单、平仓、撤 Algo 单，并以签名场所读回验证。命令受理不等于场所动作完成。
 
+### #764 P4 账本收敛
+
+当前 head 为 `20261001_0424`。先保存应用状态和交易所持仓/挂单，停 Analysis 并在 300 秒内排空 pending，再停 Executor、Workers 和 Serve；完整备份和 14 张旧表导出应记录 sha256。迁移用 13 组校验确认事实与投影一致，启动后核对 pause/halt、订单身份与 70 秒内的账户对账。具体顺序及回滚见 [迁移手册](MIGRATIONS.md)。进程 UUID 与毫秒心跳属于平台，停止或过期的 executor 心跳不能证明可以发布 Signal；账户的签名对账证据仍属于 Trading。
+
 ### #746 Trading 硬切
 
 先停旧执行进程，确认 DEMO 仓位、普通单和 Algo 单均为零，再备份所有 `trading_*` 表及归档目录。迁移 `20260929_0417` 删除旧执行表、建立 Signal v4 与订单/成交账本；`20260929_0418` 删除旧 Analysis Case、Gate、WATCH、逐调用账本并建立冻结预测、六策略和纸面双腿账本。两者不可降级，也不回填旧 DEMO 数据。0418 要求 Signal 表为空；恢复只能使用已验证备份。迁移和新镜像须在同一维护窗口完成。不要把本地 Plan 的 terminal 当作场所平仓回执。保留签名账户检查与备份，直至 DEMO 生命周期回执通过。

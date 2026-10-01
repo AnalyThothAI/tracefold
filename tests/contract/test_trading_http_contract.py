@@ -27,7 +27,7 @@ class _Trading:
     def analysis_runtime(self, _account_slot: str) -> None:
         return None
 
-    def state(self, _account_slot: str) -> None:
+    def account(self, _account_slot: str) -> None:
         return None
 
     def control(self, _account_slot: str) -> None:
@@ -86,7 +86,13 @@ class _Runtime:
 
     @contextmanager
     def repositories(self):
-        yield SimpleNamespace(trading=self.trading)
+        yield SimpleNamespace(
+            trading=self.trading,
+            runtime=SimpleNamespace(
+                analysis_detail=lambda _key: None, process=lambda **_kwargs: SimpleNamespace(read=lambda: None)
+            ),
+            conn=SimpleNamespace(execute=lambda *_args: SimpleNamespace(fetchone=lambda: None)),
+        )
 
 
 @pytest.fixture()

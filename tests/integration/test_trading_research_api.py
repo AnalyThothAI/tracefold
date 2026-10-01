@@ -25,9 +25,9 @@ def test_selected_case_and_scoreboard_use_the_migrated_ledger(tmp_path, monkeypa
     try:
         with conn.transaction():
             conn.execute(
-                "INSERT INTO trading_triggers (trigger_id,kind,source_fact_key,source_revision,payload_sha256,"
+                "INSERT INTO trading_inputs (input_id,kind,source_fact_key,source_revision,payload_sha256,"
                 "payload,first_visible_at_ms,source_observed_at_ms,selected_asset_id,target_selection,"
-                "exclusion_reason,created_at_ms) VALUES (%s,'oi','api-source','v1',%s,%s::jsonb,%s,%s,"
+                "exclusion_reason,received_at_ms) VALUES (%s,'oi','api-source','v1',%s,%s::jsonb,%s,%s,"
                 "'crypto:SOL','{}'::jsonb,NULL,%s)",
                 (trigger_id, "c" * 64, '{"evidence_ref":"api-source-item"}', now, now, now),
             )

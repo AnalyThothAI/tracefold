@@ -17,6 +17,7 @@ from tracefold.platform.postgres.client import (
     transaction,
     with_password_from_file,
 )
+from tracefold.platform.postgres.runtime_processes import RuntimeProcesses
 from tracefold.trading.storage.root import TradingRepository
 
 
@@ -27,6 +28,7 @@ class RepositorySession:
     instruments: InstrumentsRepository
     price: PriceRepository
     trading: TradingRepository
+    runtime: RuntimeProcesses
 
     def transaction(self) -> AbstractContextManager[None]:
         return transaction(self.conn)
@@ -47,6 +49,7 @@ def repositories_for_connection(conn: Any) -> RepositorySession:
         instruments=InstrumentsRepository(conn),
         price=PriceRepository(conn),
         trading=TradingRepository(conn),
+        runtime=RuntimeProcesses(conn),
     )
 
 

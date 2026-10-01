@@ -1,3 +1,4 @@
+# ruff: noqa: S608 -- SQL composition uses owned constants and bound parameters.
 """One PostgreSQL-backed scoreboard query and projection shared by CLI and HTTP."""
 
 from __future__ import annotations
@@ -10,34 +11,34 @@ from typing import Any, Literal
 from tracefold.trading.engine.forecast import Driver, Forecast, LegProbabilities, PolicyDecision
 from tracefold.trading.engine.paper import PaperLeg
 from tracefold.trading.engine.scoreboard import ScoredCase, forecast_score, policy_scores
+from tracefold.trading.storage.case_rows import ACTION_ROWS_SQL, ASSESSMENT_ROWS_SQL, PAPER_ROWS_SQL
 
 SCOREBOARD_CASES_SQL = (
     "SELECT case_id,asset_id,trigger_kind,created_at_ms,view FROM trading_cases "
     "WHERE created_at_ms >= %s AND created_at_ms < %s"
 )
-SCOREBOARD_TRIGGER_COUNT_SQL = "SELECT count(*) AS n FROM trading_triggers WHERE created_at_ms>=%s AND created_at_ms<%s"
+SCOREBOARD_TRIGGER_COUNT_SQL = (
+    "SELECT count(*) AS n FROM trading_inputs WHERE kind IN ('oi','catalyst') AND "
+    "received_at_ms>=%s AND received_at_ms<%s"
+)
 SCOREBOARD_ASSESSMENTS_SQL = (
-    "SELECT case_id,program_sha,route,status,forecast,drivers FROM trading_assessments "
-    "WHERE case_id=ANY(%s) AND (%s::text IS NULL OR program_sha=%s)"
+    "SELECT * FROM (" + ASSESSMENT_ROWS_SQL + ") a WHERE case_id=ANY(%s) AND (%s::text IS NULL OR program_sha=%s)"
 )
 SCOREBOARD_ACTIONS_SQL = (
-    "SELECT case_id,program_sha,policy_id,policy_version,action,reason,expected_r,publish_status,signal_id "
-    "FROM trading_policy_actions WHERE case_id=ANY(%s) AND (%s::text IS NULL OR program_sha=%s)"
+    "SELECT * FROM (" + ACTION_ROWS_SQL + ") a WHERE case_id=ANY(%s) AND (%s::text IS NULL OR program_sha=%s)"
 )
 SCOREBOARD_LEGS_SQL = (
-    "SELECT case_id,side,status,outcome,reason,anchor_at_ms,exit_at_ms,anchor_price,exit_price,gross_bps,"
-    "cost_bps,net_r FROM trading_paper_legs WHERE case_id=ANY(%s) AND geometry_version='leg_geometry_v1'"
+    "SELECT * FROM (" + PAPER_ROWS_SQL + ") l WHERE case_id=ANY(%s) AND geometry_version='leg_geometry_v1'"
 )
 SCOREBOARD_EXECUTIONS_SQL = (
-    "SELECT a.program_sha,a.case_id,a.action,p.net_pnl,p.reserved_notional,p.stop_bps "
-    "FROM trading_policy_actions a JOIN trading_plans p ON p.signal_id=a.signal_id "
-    "WHERE a.case_id=ANY(%s) AND a.signal_id IS NOT NULL AND p.pnl_status='complete'"
+    "SELECT a.program_sha,a.case_id,a.action,e.net_pnl,e.reserved_notional,e.stop_bps "
+    "FROM (" + ACTION_ROWS_SQL + ") a JOIN trading_entries e ON e.entry_id=a.signal_id "
+    "WHERE a.case_id=ANY(%s) AND a.signal_id IS NOT NULL AND e.pnl_status='complete'"
 )
 SCOREBOARD_DISPOSITIONS_SQL = (
-    "SELECT count(*) FILTER (WHERE d.disposition='accepted') AS accepted, "
-    "count(*) FILTER (WHERE p.opened_at_ns IS NOT NULL) AS filled "
-    "FROM trading_dispositions d LEFT JOIN trading_plans p ON p.signal_id=d.input_id "
-    "WHERE d.input_kind='signal' AND d.input_id=ANY(%s)"
+    "SELECT count(*) FILTER (WHERE state IN ('accepted','open','closing','terminal')) AS accepted, "
+    "count(*) FILTER (WHERE opened_at_ns IS NOT NULL) AS filled "
+    "FROM trading_entries WHERE source='signal' AND entry_id=ANY(%s)"
 )
 
 

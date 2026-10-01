@@ -35,12 +35,11 @@ def test_executor_ledger_roundtrip(e2e_postgres: str) -> None:
         first = db.append_operator_intent(prepared)
         assert db.append_operator_intent(prepared) == first
         assert first[1]["action"] == "manual_entry"
-        db.heartbeat(account_slot="demo-test", now_ns=now)
+        db.ensure_account("demo-test")
         db.record_full_reconciliation(account_slot="demo-test", now_ns=now, unexpected=True)
-        assert db.state("demo-test")["unexpected_exposure"] is True
-        db.create_plan(
-            plan_id=command_id,
-            signal_id=None,
+        assert db.account("demo-test")["unexpected_exposure"] is True
+        db.accept_entry(
+            entry_id=command_id,
             command_id=command_id,
             account_slot="demo-test",
             native_symbol="ETHUSDT",
@@ -53,14 +52,14 @@ def test_executor_ledger_roundtrip(e2e_postgres: str) -> None:
             now_ns=now,
         )
         db.reserve_order(
-            client_id=entry_id, plan_id=command_id, native_symbol="ETHUSDT", leg="entry", attempt=1, now_ns=now
+            client_id=entry_id, entry_id=command_id, native_symbol="ETHUSDT", leg="entry", attempt=1, now_ns=now
         )
-        db.set_plan_status(plan_id=command_id, status="open", now_ns=now, opened_at_ns=now)
+        db.set_entry_state(entry_id=command_id, status="open", now_ns=now, opened_at_ns=now)
 
     # A fresh process reads the same reserved identity and native fill facts.
     with psycopg.connect(e2e_postgres, row_factory=dict_row) as conn:
         db = ExecutorStorage(conn)
-        assert db.plan(command_id)["status"] == "open"
+        assert db.entry(command_id)["state"] == "open"
         assert db.active_client_ids("demo-test") == {entry_id}
         entry_trade = {
             "id": 1,
@@ -79,7 +78,7 @@ def test_executor_ledger_roundtrip(e2e_postgres: str) -> None:
             client_id=entry_id, status="filled", now_ns=now, venue_order_id="123", evidence={"status": "FILLED"}
         )
         db.reserve_order(
-            client_id=exit_id, plan_id=command_id, native_symbol="ETHUSDT", leg="time_exit", attempt=1, now_ns=now
+            client_id=exit_id, entry_id=command_id, native_symbol="ETHUSDT", leg="time_exit", attempt=1, now_ns=now
         )
         db.update_order(
             client_id=exit_id, status="filled", now_ns=now, venue_order_id="124", evidence={"status": "FILLED"}
@@ -99,9 +98,9 @@ def test_executor_ledger_roundtrip(e2e_postgres: str) -> None:
         )
         assert db.attribute_unbound_fills(symbol="ETHUSDT", now_ns=now) == 2
         assert db.attribute_unbound_fills(symbol="ETHUSDT", now_ns=now) == 0
-        db.set_plan_status(plan_id=command_id, status="terminal", now_ns=now, terminal_reason="time_exit")
-        assert db.settle_pnl(plan=db.plan(command_id), now_ns=now) == "complete"
-        assert db.plan(command_id)["net_pnl"] == Decimal("9.8")
+        db.set_entry_state(entry_id=command_id, status="terminal", now_ns=now, terminal_reason="time_exit")
+        assert db.settle_pnl(plan=db.entry(command_id), now_ns=now) == "complete"
+        assert db.entry(command_id)["net_pnl"] == Decimal("9.8")
         rows = [row for row in db.console_executions(since_ns=0, limit=10) if row["entry_id"] == command_id]
         assert len(rows) == 1
         assert rows[0]["entry_id"] == command_id

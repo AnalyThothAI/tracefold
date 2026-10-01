@@ -39,7 +39,6 @@ def run_restore_drill(admin_dsn: str, migration_dsn: str) -> dict[str, Any]:
 
 def _seed_and_summarize(dsn: str) -> dict[str, Any]:
     signal = SignalV4(
-        seq=1,
         signal_id=_SIGNAL_ID,
         case_id=_CASE_ID,
         decision_id="b" * 64,
@@ -112,13 +111,13 @@ def _summary(conn: Any) -> dict[str, Any]:
                    (SELECT count(*) FROM trading_cases
                      WHERE case_id = %s AND state = 'complete') AS case_rows,
                    (SELECT max(view_sha256) FROM trading_cases WHERE case_id = %s) AS case_view_sha256,
-                   (SELECT count(*) FROM trading_signals
-                     WHERE signal_id = %s AND case_id = %s AND payload ->> 'signal_id' = signal_id) AS
+                   (SELECT count(*) FROM trading_entries
+                     WHERE entry_id = %s AND case_id = %s AND request ->> 'signal_id' = entry_id) AS
         signal_rows,
                    (SELECT count(*) FROM trading_operator_intents
                      WHERE command_id = %s AND payload ->> 'command_id' = command_id) AS command_rows,
-                   (SELECT count(*) FROM trading_dispositions
-                     WHERE input_kind='signal' AND input_id = %s AND disposition='expired') AS disposition_rows
+                   (SELECT count(*) FROM trading_entries
+                     WHERE source='signal' AND entry_id = %s AND state='expired') AS disposition_rows
             """,
             (
                 _CURRENT_EVENT_ID,

@@ -37,7 +37,6 @@ def intent(key: str, action: str, now: int):
 
 def signal(key: str, now: int) -> SignalV4:
     return SignalV4(
-        seq=1,
         signal_id=key * 64,
         decision_id=key * 64,
         case_id="c" * 64,
@@ -62,8 +61,8 @@ def signal(key: str, now: int) -> SignalV4:
 
 def seed_case(conn) -> None:
     conn.execute(
-        """INSERT INTO trading_triggers(trigger_id,kind,source_fact_key,source_revision,payload_sha256,payload,
-             first_visible_at_ms,source_observed_at_ms,selected_asset_id,target_selection,created_at_ms)
+        """INSERT INTO trading_inputs(input_id,kind,source_fact_key,source_revision,payload_sha256,payload,
+             first_visible_at_ms,source_observed_at_ms,selected_asset_id,target_selection,received_at_ms)
            VALUES (%s,'oi','p0-oi','v1',%s,'{}',1,1,'crypto:BTC','{}',1)""",
         ("c" * 64, "0" * 64),
     )
@@ -73,6 +72,7 @@ def seed_case(conn) -> None:
            VALUES (%s,%s,'oi','crypto:BTC','BTCUSDT','test',1,2,'pending',1)""",
         ("c" * 64, "c" * 64),
     )
+    ExecutorStorage(conn).ensure_account(SLOT)
     conn.commit()
 
 
@@ -116,7 +116,7 @@ def test_late_resume_cannot_reverse_newer_accepted_stop(postgres_clone_dsn, stop
         late.execute("BEGIN")
         ExecutorStorage(late).append_operator_intent(intent("a", "resume_entries", now))
         db = ExecutorStorage(conn)
-        db.heartbeat(account_slot=SLOT, now_ns=now)
+        db.ensure_account(SLOT)
         db.append_operator_intent(intent("b", stop, now))
         conn.commit()
         runner = ExecutorRunner(
@@ -144,7 +144,7 @@ def test_unavailable_venue_leaves_signal_pending(postgres_clone_dsn) -> None:
     with closing(connect_postgres_test()) as conn:
         seed_case(conn)
         db = ExecutorStorage(conn)
-        db.heartbeat(account_slot=SLOT, now_ns=now)
+        db.ensure_account(SLOT)
         db.append_signal(signal("a", now))
         conn.commit()
         runner = ExecutorRunner(

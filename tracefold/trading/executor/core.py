@@ -30,7 +30,6 @@ class SignalV4(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True, allow_inf_nan=False)
 
     signal_version: Literal["trade_signal_v4"] = "trade_signal_v4"
-    seq: int = Field(ge=1)
     signal_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     decision_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     case_id: str = Field(min_length=1, max_length=128)

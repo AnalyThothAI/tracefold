@@ -215,7 +215,7 @@ async def _exercise_recovery(e2e_postgres: str) -> None:
     with psycopg.connect(e2e_postgres, autocommit=True, row_factory=dict_row) as conn:
         db = ExecutorStorage(conn)
         with conn.transaction():
-            db.heartbeat(account_slot=settings.trading.execution.account_slot, now_ns=now)
+            db.ensure_account(settings.trading.execution.account_slot)
             db.set_control(account_slot=settings.trading.execution.account_slot, paused=False, halted=False, now_ns=now)
             db.record_full_reconciliation(
                 account_slot=settings.trading.execution.account_slot, now_ns=now, unexpected=False
@@ -223,8 +223,8 @@ async def _exercise_recovery(e2e_postgres: str) -> None:
             db.append_operator_intent(intent)
         first = ExecutorRunner(settings=settings, conn=conn, venue=venue)
         await first._one_intent(now)
-        assert db.plan(command_id)["status"] == "accepted"
-        assert db.plan_orders(command_id)[0]["status"] == "unknown"
+        assert db.entry(command_id)["state"] == "accepted"
+        assert db.entry_orders(command_id)[0]["status"] == "unknown"
 
     with psycopg.connect(e2e_postgres, autocommit=True, row_factory=dict_row) as conn:
         db = ExecutorStorage(conn)
@@ -234,18 +234,18 @@ async def _exercise_recovery(e2e_postgres: str) -> None:
         assert len(venue.market_calls) == 1
         assert {value["leg"] for value in venue.algos.values()} == {"sl", "tp"}
         assert all(len(value) == 32 for value in venue.algos)
-        assert len(db.plan_orders(command_id)) == 3
+        assert len(db.entry_orders(command_id)) == 3
         assert sum(row["native_symbol"] == "BTCUSDT" for row in db.fill_ledger(since_ns=0, limit=20)) == 12
         await recovered._full_account_check(now + 18_000_000_000)
-        snapshot = db.state(settings.trading.execution.account_slot)["account_snapshot"]
+        snapshot = db.account(settings.trading.execution.account_slot)["account_snapshot"]
         assert snapshot["positions_total"] == 1 and snapshot["algos_total"] == 2
         assert snapshot["positions"][0]["owned"] is True
 
         venue.trigger_stop()
         for seconds in (23, 28):
             await recovered._reconcile(now + seconds * 1_000_000_000)
-        plan = db.plan(command_id)
-        assert plan["status"] == "terminal" and plan["terminal_reason"] == "stop_filled"
+        plan = db.entry(command_id)
+        assert plan["state"] == "terminal" and plan["terminal_reason"] == "stop_filled"
         assert len(venue.cancelled) == 1
         assert db.settle_pnl(plan=plan, now_ns=now + 28_000_000_000) == "complete"
         assert sum(row["native_symbol"] == "BTCUSDT" for row in db.fill_ledger(since_ns=0, limit=20)) == 13
@@ -279,16 +279,16 @@ async def _exercise_absent_order(e2e_postgres: str) -> None:
     with psycopg.connect(e2e_postgres, autocommit=True, row_factory=dict_row) as conn:
         db = ExecutorStorage(conn)
         with conn.transaction():
-            db.heartbeat(account_slot=settings.trading.execution.account_slot, now_ns=now)
+            db.ensure_account(settings.trading.execution.account_slot)
             db.set_control(account_slot=settings.trading.execution.account_slot, paused=False, halted=False, now_ns=now)
             db.append_operator_intent(intent)
         runner = ExecutorRunner(settings=settings, conn=conn, venue=venue)
         await runner._one_intent(now)
-        assert db.plan_orders(command_id)[0]["status"] == "unknown"
+        assert db.entry_orders(command_id)[0]["status"] == "unknown"
         await runner._reconcile(now + 8_000_000_000)
-        plan = db.plan(command_id)
-        assert plan["status"] == "terminal" and plan["terminal_reason"] == "not_submitted"
-        assert db.plan_orders(command_id)[0]["status"] == "not_submitted"
+        plan = db.entry(command_id)
+        assert plan["state"] == "terminal" and plan["terminal_reason"] == "not_submitted"
+        assert db.entry_orders(command_id)[0]["status"] == "not_submitted"
         assert len(venue.market_calls) == 1
 
 
@@ -320,7 +320,7 @@ async def _exercise_account_flatten(e2e_postgres: str) -> None:
     with psycopg.connect(e2e_postgres, autocommit=True, row_factory=dict_row) as conn:
         db = ExecutorStorage(conn)
         with conn.transaction():
-            db.heartbeat(account_slot=settings.trading.execution.account_slot, now_ns=now)
+            db.ensure_account(settings.trading.execution.account_slot)
             db.append_operator_intent(intent)
         runner = ExecutorRunner(settings=settings, conn=conn, venue=venue)
         await runner._one_intent(now)

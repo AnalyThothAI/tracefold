@@ -30,10 +30,10 @@ from tests.postgres_test_utils import (
 from tests.support.rabbitmq import rabbitmq_management_url
 from tracefold.app.http.app import create_app
 from tracefold.app.worker_database import WorkerDatabase
-from tracefold.app.workers.runtime import WorkersRuntimeRepository
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.maintenance_gate import MAINTENANCE_GATE_LOCK_KEYS
+from tracefold.platform.postgres.runtime_processes import RuntimeProcesses
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -47,16 +47,16 @@ def test_serve_runtime_is_read_only_composition_and_status_uses_one_runtime_row(
     conn = connect_postgres_test(read_only=False)
     try:
         with conn.transaction():
-            repository = WorkersRuntimeRepository(conn)
+            repository = RuntimeProcesses(conn)
             assert repository.begin(
-                runtime_id=RUNTIME_ID,
+                instance_id=RUNTIME_ID,
                 runtime_version="v2",
                 runtime_revision="test-release",
                 image_digest="sha256:test",
                 started_at_ms=1_000,
                 now_ms=1_000,
             )
-            repository.transition(runtime_id=RUNTIME_ID, lifecycle_state="running", now_ms=2_000)
+            repository.transition(instance_id=RUNTIME_ID, lifecycle_state="running", now_ms=2_000)
     finally:
         conn.close()
     settings = Settings(ws_token="secret", storage=postgres_settings_storage())
@@ -134,10 +134,10 @@ def test_terminal_runtime_rows_allow_immediate_takeover(
 ) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
-        repository = WorkersRuntimeRepository(conn)
+        repository = RuntimeProcesses(conn)
         with conn.transaction():
             assert repository.begin(
-                runtime_id=RUNTIME_ID,
+                instance_id=RUNTIME_ID,
                 runtime_version="v2",
                 runtime_revision="test-release",
                 image_digest="sha256:test",
@@ -146,7 +146,7 @@ def test_terminal_runtime_rows_allow_immediate_takeover(
             )
         with conn.transaction():
             assert not repository.begin(
-                runtime_id=SECOND_RUNTIME_ID,
+                instance_id=SECOND_RUNTIME_ID,
                 runtime_version="v2",
                 runtime_revision="test-release",
                 image_digest="sha256:test",
@@ -155,14 +155,14 @@ def test_terminal_runtime_rows_allow_immediate_takeover(
             )
         with conn.transaction():
             repository.transition(
-                runtime_id=RUNTIME_ID,
+                instance_id=RUNTIME_ID,
                 lifecycle_state="failed",
                 fatal_code="child_failed",
                 now_ms=2_000,
             )
         with conn.transaction():
             assert repository.begin(
-                runtime_id=SECOND_RUNTIME_ID,
+                instance_id=SECOND_RUNTIME_ID,
                 runtime_version="v2",
                 runtime_revision="test-release",
                 image_digest="sha256:test",
@@ -173,10 +173,10 @@ def test_terminal_runtime_rows_allow_immediate_takeover(
             assert row is not None
             assert row["started_at_ms"] == 2_001
             assert row["heartbeat_at_ms"] == 2_001
-            repository.transition(runtime_id=SECOND_RUNTIME_ID, lifecycle_state="stopped", now_ms=2_002)
+            repository.transition(instance_id=SECOND_RUNTIME_ID, lifecycle_state="stopped", now_ms=2_002)
         with conn.transaction():
             assert repository.begin(
-                runtime_id=RUNTIME_ID,
+                instance_id=RUNTIME_ID,
                 runtime_version="v2",
                 runtime_revision="test-release",
                 image_digest="sha256:test",
@@ -1160,7 +1160,10 @@ def _unprocessed_backlog() -> int:
 def _runtime_capabilities() -> dict[str, dict[str, object]]:
     conn = connect_postgres_test(read_only=False)
     try:
-        row = conn.execute("SELECT capabilities FROM workers_runtime WHERE singleton_key").fetchone()
+        row = conn.execute(
+            "SELECT detail->'capabilities' AS capabilities FROM runtime_processes "
+            "WHERE process_kind='workers' AND process_key='singleton'"
+        ).fetchone()
         assert row is not None
         return dict(row["capabilities"])
     finally:
@@ -1171,7 +1174,8 @@ def _optional_runtime_row() -> dict[str, object] | None:
     conn = connect_postgres_test(read_only=False)
     try:
         row = conn.execute(
-            "SELECT runtime_id, lifecycle_state, fatal_code FROM workers_runtime WHERE singleton_key"
+            "SELECT instance_id AS runtime_id,lifecycle_state,fatal_code FROM runtime_processes "
+            "WHERE process_kind='workers' AND process_key='singleton'"
         ).fetchone()
         return None if row is None else dict(row)
     finally:

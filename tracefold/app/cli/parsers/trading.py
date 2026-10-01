@@ -29,11 +29,6 @@ def add_trading_commands(
     scoreboard.add_argument("--until", required=True, help="exclusive UTC date or ISO timestamp")
     scoreboard.add_argument("--program", help="optional 64-character program sha")
 
-    replay = commands.add_parser("replay", help="assess frozen CaseViews with a candidate DSPy program")
-    replay.add_argument("--program", required=True, help="candidate DSPy JSON file")
-    replay.add_argument("--since", required=True, help="UTC date or ISO timestamp")
-    replay.add_argument("--until", required=True, help="exclusive UTC date or ISO timestamp")
-
     operator_intents = commands.add_parser("commands", help="list authenticated OperatorIntentV1 rows")
     operator_intents.add_argument(
         "--action",

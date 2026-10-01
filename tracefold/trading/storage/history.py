@@ -21,9 +21,9 @@ class HistoricalCaseStorage:
     def seed_restore_drill_case(self, *, case_id: str) -> None:
         self.conn.execute(
             """
-            INSERT INTO trading_triggers (
-              trigger_id,kind,source_fact_key,source_revision,payload_sha256,payload,
-              first_visible_at_ms,source_observed_at_ms,selected_asset_id,target_selection,created_at_ms
+            INSERT INTO trading_inputs (
+              input_id,kind,source_fact_key,source_revision,payload_sha256,payload,
+              first_visible_at_ms,source_observed_at_ms,selected_asset_id,target_selection,received_at_ms
             ) VALUES (
               %s,'oi','restore-source','v1',%s,'{"kind":"oi"}'::jsonb,
               9,9,'crypto:RESTORE','{"reason":"selected"}'::jsonb,10

@@ -107,23 +107,13 @@ NEWS_TABLES = (
 # it, because "exactly these tables" is a per-capability claim: a trading table appearing under the
 # News heading would make the News schema audit pass for the wrong reason.
 TRADING_TABLES = (
-    "trading_analysis_runtime",
+    "trading_accounts",
+    "trading_inputs",
     "trading_cases",
-    "trading_triggers",
-    "trading_assessments",
-    "trading_policy_actions",
-    "trading_paper_legs",
-    "trading_signals",
-    "trading_dispositions",
-    "trading_plans",
+    "trading_entries",
     "trading_orders",
     "trading_fills",
-    "trading_fill_attributions",
-    "trading_trade_cursors",
     "trading_operator_intents",
-    "trading_control_state",
-    "trading_executor_state",
-    "trading_source_amendments",
 )
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
