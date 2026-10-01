@@ -21,7 +21,6 @@ from .instruments import (
     REFERENCE_VENUES,
     Instrument,
     InstrumentSearchIdentity,
-    InstrumentStatus,
     instruments_from_rows,
     normalize_symbol,
     pair_base_symbol,
@@ -520,7 +519,7 @@ class InstrumentsRepository:
         identity changed, a contract that came back from delisted, and a contract an answering venue no longer
         lists. An unchanged instrument is not written at all. Re-stamping the whole catalogue every six hours cost
         ~3.8M UPSERTs and 1.82 GB of WAL in production for a fact nobody read off the row (#570 A11), and the
-        comparison that made it unnecessary was already here — it decided the listing events.
+        comparison that makes it unnecessary compares the complete instrument identity.
 
         "This venue answered a complete catalogue at T" is a fact about the venue, not about each of its rows, so
         it lives in ``news_market_instrument_snapshot_state``: one row per answering venue, advanced on every
@@ -530,7 +529,7 @@ class InstrumentsRepository:
         mass delisting, and its snapshot state keeps the last time it did answer. Only symbols missing from a venue
         that *did* answer are marked delisted.
 
-        Every row write records exactly one listing event, so ``written`` counts both.
+        ``written`` counts changed catalogue rows; unchanged snapshots only advance the venue stamp.
         """
 
         answered = {i.venue for i in instruments}
@@ -568,7 +567,6 @@ class InstrumentsRepository:
                     int(now_ms),
                 ),
             )
-            self._record_listing_event(item, status="trading", observed_at_ms=now_ms)
             written += 1
 
         current_keys = {(i.venue, i.venue_symbol) for i in instruments}
@@ -579,7 +577,6 @@ class InstrumentsRepository:
                 " WHERE venue = %s AND venue_symbol = %s",
                 (int(now_ms), item.venue, item.venue_symbol),
             )
-            self._record_listing_event(item, status="delisted", observed_at_ms=now_ms)
             written += 1
 
         for venue in sorted(answered):
@@ -593,24 +590,6 @@ class InstrumentsRepository:
             )
         return SnapshotResult(
             total=len(instruments), venues=tuple(sorted(answered)), delisted=len(gone), written=written
-        )
-
-    def _record_listing_event(self, item: Instrument, *, status: InstrumentStatus, observed_at_ms: int) -> None:
-        self.conn.execute(
-            """
-            INSERT INTO news_market_instrument_listing_events (
-              venue, venue_symbol, observed_at_ms, base_symbol, instrument_class, quote_asset, status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                item.venue,
-                item.venue_symbol,
-                int(observed_at_ms),
-                item.base_symbol,
-                item.instrument_class,
-                item.quote_asset,
-                status,
-            ),
         )
 
     def learn_aliases_from_universe(self, *, now_ms: int) -> int:

@@ -6,7 +6,9 @@
 
 ## 输入与持久事实
 
-Analysis 发布的 Signal v4 和本地认证的 operator intent 都以序号读入。执行器为每个输入写入一条 `accepted`、`refused` 或 `expired` disposition，再推进游标。重启时会给缺席期间过期的 Signal 记 `expired`，不静默跳过。
+Analysis 发布的 Signal v4 和本地认证的 operator intent 按序号选择最早尚无 disposition 的行。执行器为每个输入写入一条 `accepted`、`refused` 或 `expired` disposition，不维护消费高水位，因此晚提交的较小序号仍会被处理。交易所暂时不可用时保持待处置；重启时会给缺席期间过期的 Signal 记 `expired`。
+
+同账户较新序号的 pause/halt 已接受时，晚到的 `resume_entries` 记为 `refused` / `superseded`，保持暂停或停止。相同状态和场所证据的订单对账不更新行，也不重写更新时间。
 
 PostgreSQL 保存 `trading_signals`、`trading_operator_intents`、`trading_dispositions`、`trading_plans`、`trading_orders`、`trading_fills`、`trading_fill_attributions` 和对账游标。成交事实只追加；若成交先于订单身份查询返回，之后追加归因行，不修改原生成交。订单行先于外部请求提交。每条腿的 client ID 由账户槽位、入场身份、腿与尝试序号的 SHA-256 确定，为 32 个 Binance 合法字符。订单超时或 503 后只按该 ID 查询；不能用相同 ID 盲目重发入场。
 

@@ -62,7 +62,7 @@ def test_membership_cutover_archives_statistics_repairs_unsafe_cursor_and_preser
                 (evidence["token"], "0x" + "a" * 64, *([json.dumps(evidence)] * 3)),
             )
         original = conn.execute("SELECT initial_snapshot,send_snapshot FROM news_market_wallet_events").fetchone()
-        command.upgrade(config, "head")
+        command.upgrade(config, "20261001_0419")
         current = conn.execute("SELECT initial_snapshot,send_snapshot FROM news_market_wallet_events").fetchone()
         for column in ("initial_snapshot", "send_snapshot"):
             assert "rank_quality" not in current[column]["window"]["members"][0]

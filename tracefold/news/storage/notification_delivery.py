@@ -99,7 +99,13 @@ class NotificationDeliveryStorage:
             return "head_changed" if head_changed else "reader_changed" if reader_changed else "overlap"
         inserted = self.conn.execute(
             """
-            WITH selected AS (
+            WITH frozen AS (
+              SELECT COALESCE(jsonb_agg(claim), '[]'::jsonb) AS claims
+                FROM news_event_updates u
+                CROSS JOIN LATERAL jsonb_array_elements(u.document -> 'claims') claim
+               WHERE u.event_id = %(event)s AND u.content_revision = %(revision)s
+                 AND claim ->> 'ref' = ANY(%(refs)s)
+            ), selected AS (
               SELECT DISTINCT upper(asset ->> 'symbol') AS symbol
                 FROM news_event_updates u
                 CROSS JOIN LATERAL jsonb_array_elements(u.document -> 'claims') claim
@@ -114,7 +120,7 @@ class NotificationDeliveryStorage:
             INSERT INTO news_deliveries (
               intent_id, event_id, kind, state, card, attempted_at_ms, created_at_ms,
               content_revision, claim_refs, body, payload_sha256, plan_key, decision_ref, history_context,
-              card_copy_input_digest, card_copy_document
+              card_copy_input_digest, card_copy_document, sent_claims
             )
             SELECT %(intent)s, e.event_id, 'update', 'sending', %(card)s::jsonb, %(now)s, %(now)s,
                    %(revision)s, %(claim_refs)s::jsonb, %(body)s, %(sha)s, %(key)s, %(decision)s,
@@ -128,8 +134,8 @@ class NotificationDeliveryStorage:
                      'storyline_key', e.storyline_key,
                      'canonical_assets', canonical.symbols,
                      'timings', %(timings)s::jsonb),
-                   %(copy_digest)s, %(copy_document)s::jsonb
-              FROM news_events e CROSS JOIN canonical
+                   %(copy_digest)s, %(copy_document)s::jsonb, frozen.claims
+              FROM news_events e CROSS JOIN canonical CROSS JOIN frozen
              WHERE e.event_id = %(event)s
             ON CONFLICT (intent_id) DO NOTHING
             RETURNING state

@@ -26,6 +26,18 @@ _StatusEnvelope = api_schemas.ApiEnvelope[status_schemas.NewsStatusData]
 def get_news_status(request: Request) -> Response:
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
+    data = runtime.news_status.get(lambda: _measure_news_status(runtime))
+    return _validated_etag_json(
+        _StatusEnvelope,
+        {"ok": True, "data": data},
+        data=data,
+        etag_data=_status_etag_basis(data),
+        request=request,
+        weak=True,
+    )
+
+
+def _measure_news_status(runtime: Any) -> dict[str, Any]:
     now_ms = int(time.time() * 1000)
     settings = runtime.settings
     with runtime.repositories() as repos:
@@ -130,14 +142,7 @@ def get_news_status(request: Request) -> Response:
         "price": price,
         "measured_at_ms": now_ms,
     }
-    return _validated_etag_json(
-        _StatusEnvelope,
-        {"ok": True, "data": data},
-        data=data,
-        etag_data=_status_etag_basis(data),
-        request=request,
-        weak=True,
-    )
+    return data
 
 
 def _derive_state(

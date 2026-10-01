@@ -18,6 +18,8 @@
 </details>
 
 <a id="section-事实来源"></a>
+`GET /api/news/status` 在每个 Serve 进程缓存成功计算 30 秒，并合并并发计算；失败不缓存。所有年龄和健康判断使用同一 `measured_at_ms`，缓存期间该时间与 ETag 稳定。Trading 操作员命令处置可返回 `refused` / `superseded`：晚到 resume 无法撤销更新且已接受的 pause/halt。
+
 ## 01 · 事实来源
 
 | 契约 | 权威来源 | 生成 / 验证 |

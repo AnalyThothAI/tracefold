@@ -92,13 +92,8 @@ class ExecutorRunner:
         state = self.db.state(self.account_slot)
         if state is None:
             raise RuntimeError("executor_state_missing")
-        signal = self.db.next_signal(account_slot=self.account_slot, after_seq=int(state["last_signal_seq"]))
+        signal = self.db.next_signal(account_slot=self.account_slot)
         if signal is None:
-            return
-        existing = self.db.disposition(kind="signal", input_id=signal.signal_id)
-        if existing is not None:
-            with self.conn.transaction():
-                self.db.advance_cursor(account_slot=self.account_slot, kind="signal", seq=signal.seq)
             return
         if now >= signal.expires_at_ns:
             self._refuse_signal(signal, now=now, disposition="expired", reason="expired")
@@ -150,7 +145,6 @@ class ExecutorRunner:
                     plan_id=signal.signal_id,
                     now_ns=now,
                 )
-                self.db.advance_cursor(account_slot=self.account_slot, kind="signal", seq=signal.seq)
         except UniqueViolation:
             self._refuse_signal(signal, now=now, disposition="refused", reason="symbol_exposure")
             return
@@ -174,7 +168,6 @@ class ExecutorRunner:
                 reason=reason,
                 now_ns=now,
             )
-            self.db.advance_cursor(account_slot=self.account_slot, kind="signal", seq=signal.seq)
 
     async def _entry_facts(self, signal: SignalV4) -> EntryFacts | None:
         quote_requested_at_ns = _now_ns()
@@ -277,14 +270,10 @@ class ExecutorRunner:
         state = self.db.state(self.account_slot)
         if state is None:
             raise RuntimeError("executor_state_missing")
-        intent = self.db.next_intent(account_slot=self.account_slot, after_seq=int(state["last_intent_seq"]))
+        intent = self.db.next_intent(account_slot=self.account_slot)
         if intent is None:
             return
         command_id = str(intent["command_id"])
-        if self.db.disposition(kind="intent", input_id=command_id) is not None:
-            with self.conn.transaction():
-                self.db.advance_cursor(account_slot=self.account_slot, kind="intent", seq=int(intent["seq"]))
-            return
         if now >= int(intent["expires_at_ns"]):
             with self.conn.transaction():
                 self.db.record_disposition(
@@ -295,7 +284,6 @@ class ExecutorRunner:
                     reason="expired",
                     now_ns=now,
                 )
-                self.db.advance_cursor(account_slot=self.account_slot, kind="intent", seq=int(intent["seq"]))
             return
         action = intent["action"]
         control = self.db.control(self.account_slot)
@@ -303,6 +291,18 @@ class ExecutorRunner:
             halted = action == "emergency_halt" or (action != "resume_entries" and bool(control["emergency_halted"]))
             paused = action != "resume_entries" or halted
             with self.conn.transaction():
+                if action == "resume_entries" and self.db.newer_entry_stop_applied(
+                    account_slot=self.account_slot, seq=int(intent["seq"])
+                ):
+                    self.db.record_disposition(
+                        kind="intent",
+                        input_id=command_id,
+                        account_slot=self.account_slot,
+                        disposition="refused",
+                        reason="superseded",
+                        now_ns=now,
+                    )
+                    return
                 self.db.set_control(account_slot=self.account_slot, paused=paused, halted=halted, now_ns=now)
                 self.db.record_disposition(
                     kind="intent",
@@ -312,7 +312,6 @@ class ExecutorRunner:
                     reason="control_applied",
                     now_ns=now,
                 )
-                self.db.advance_cursor(account_slot=self.account_slot, kind="intent", seq=int(intent["seq"]))
             return
         if action == "flatten":
             with self.conn.transaction():
@@ -325,7 +324,6 @@ class ExecutorRunner:
                     reason="flatten_requested",
                     now_ns=now,
                 )
-                self.db.advance_cursor(account_slot=self.account_slot, kind="intent", seq=int(intent["seq"]))
             return
         if action == "manual_entry":
             await self._manual_entry(intent, now)
@@ -414,7 +412,6 @@ class ExecutorRunner:
                     plan_id=command_id,
                     now_ns=now,
                 )
-                self.db.advance_cursor(account_slot=self.account_slot, kind="intent", seq=int(intent["seq"]))
         except UniqueViolation:
             self._refuse_intent(intent, now=now, reason="symbol_exposure")
             return
@@ -438,7 +435,6 @@ class ExecutorRunner:
                 reason=reason,
                 now_ns=now,
             )
-            self.db.advance_cursor(account_slot=self.account_slot, kind="intent", seq=int(intent["seq"]))
 
     async def _full_account_check(self, now: int) -> None:
         positions, orders, algos, account = await asyncio.gather(

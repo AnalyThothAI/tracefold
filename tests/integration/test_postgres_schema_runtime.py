@@ -71,12 +71,12 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         *TRADING_TABLES,
     }
     assert {
-        "news_strategy_provenance_valid",
         "reject_news_event_evidence_mutation",
         "reject_news_review_mutation",
     } <= functions
     assert "news_current_triage_verdict_valid" not in functions
     assert "purge_news_learning_retention" not in functions
+    assert "news_strategy_provenance_valid" not in functions
     assert {
         "event_id",
         "dedupe_family",
@@ -130,12 +130,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "edit_error_code",
         "edit_attempted_at_ms",
         "edit_settled_at_ms",
-        "delete_state",
-        "delete_evidence",
-        "delete_reason",
-        "delete_error_code",
-        "delete_attempted_at_ms",
-        "delete_settled_at_ms",
+        "sent_claims",
         # #706: the intent identity, and the exact frozen selection/body an update intent sent.
         "intent_id",
         "content_revision",
@@ -181,7 +176,6 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "ix_news_deliveries_state",
         "ix_news_deliveries_sent",
         "ix_news_deliveries_editing",
-        "ix_news_deliveries_deleting",
         "ix_news_event_evidence_created",
         "ix_news_external_miss_created",
     } <= set(news_v3_indexes)
@@ -195,7 +189,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
     assert "telemetry_deterministic" not in unpublished_index
     assert "liquidation_deterministic" not in unpublished_index
-    assert version == latest_migration_version() == "20261001_0419"
+    assert version == latest_migration_version() == "20261001_0420"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -220,7 +214,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20261001_0419"
+    assert version == latest_migration_version() == "20261001_0420"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:

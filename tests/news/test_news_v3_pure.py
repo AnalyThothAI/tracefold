@@ -268,15 +268,6 @@ def test_reader_receipt_never_confuses_decision_or_ambiguous_send_with_received(
         {"state": "sent", "settled_at_ms": 123, "card": {"header": {"title": {"content": "实际卡片"}}}}
     )
     assert sent.state == "received" and sent.received_at_ms == 123 and sent.rendered_card is not None
-    deleted = ReaderReceipt.from_delivery(
-        {
-            "state": "sent",
-            "settled_at_ms": 123,
-            "delete_state": "deleted",
-            "card": {"header": {"title": {"content": "已删除卡片"}}},
-        }
-    )
-    assert deleted.state == "not_received" and deleted.rendered_card is None
 
 
 # ---------------------------------------------------------------- tokens / minhash

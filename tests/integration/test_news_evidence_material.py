@@ -147,19 +147,10 @@ def test_empty_asset_query_skips_entity_scan_and_keeps_text_candidates(postgres_
         ) <= len(candidates)
 
 
-def test_archived_webpage_rows_remain_append_only_and_new_details_never_query_them(postgres_clone_dsn):
-    from psycopg.errors import RaiseException
-
+def test_new_details_never_query_retired_webpage_storage(postgres_clone_dsn):
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
         event = admit(repos, "BTC acquisition announced.").results[0].event_id
-        conn.execute("""INSERT INTO news_evidence_documents
-            (document_id, requested_url, final_url, normalized_url, response_sha256, extracted_text_sha256,
-             extractor_version, extracted_text, observed_at_ms, available_at_ms, content_type, extraction_status)
-            VALUES ('archive', 'https://archive.invalid', 'https://archive.invalid', 'https://archive.invalid',
-                    'old-response', 'old-text', 'old', 'Archived text', 1, 1, 'text/plain', 'success')""")
-        with pytest.raises(RaiseException, match="news_document_append_only"), repos.transaction():
-            conn.execute("UPDATE news_evidence_documents SET extracted_text='rewritten' WHERE document_id='archive'")
 
         class NoDocumentReads:
             def execute(self, sql, params=None):
@@ -168,12 +159,6 @@ def test_archived_webpage_rows_remain_append_only_and_new_details_never_query_th
 
         detail = repositories_for_connection(NoDocumentReads()).news.event_detail(event)
         assert detail["event"]["event_id"] == event
-        assert (
-            conn.execute("SELECT extracted_text FROM news_evidence_documents WHERE document_id='archive'").fetchone()[
-                "extracted_text"
-            ]
-            == "Archived text"
-        )
 
 
 def test_real_semantic_candidate_routes_recall_pair_spelling_and_member_topic(postgres_clone_dsn):

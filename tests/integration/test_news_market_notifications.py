@@ -1890,7 +1890,7 @@ def test_the_pushed_news_read_counts_only_cards_a_reader_actually_received(conn:
         settled_at_ms=NOW - 3_600_000 + 30_000,
         delivered_title="WIF 国库向交易所转入大额代币",
     )
-    # A card that was never delivered, one deleted after it was, and one settled before the window opened.
+    # A card that was never delivered, one with an ambiguous outcome, and one settled before the window opened.
     _news_event(
         conn,
         hit_id=582_301,
@@ -1901,14 +1901,15 @@ def test_the_pushed_news_read_counts_only_cards_a_reader_actually_received(conn:
         delivered_title="维护公告",
         state="terminal",
     )
-    deleted = _news_event(
+    _news_event(
         conn,
         hit_id=582_302,
         symbol="WIF",
         text="A newsroom retracts an earlier report about dogwifhat holders",
         opened_at_ms=NOW - 3_600_000,
         settled_at_ms=NOW - 3_600_000 + 30_000,
-        delivered_title="已撤回的报道",
+        delivered_title="结果不明的报道",
+        state="ambiguous",
     )
     _news_event(
         conn,
@@ -1918,11 +1919,6 @@ def test_the_pushed_news_read_counts_only_cards_a_reader_actually_received(conn:
         opened_at_ms=NOW - 50 * 3_600_000,
         settled_at_ms=NOW - 50 * 3_600_000 + 30_000,
         delivered_title="窗口之外的旧卡",
-    )
-    conn.execute(
-        "UPDATE news_deliveries SET delete_state = 'deleted', delete_evidence = '{}'::jsonb,"
-        " delete_reason = 'test', delete_attempted_at_ms = %s, delete_settled_at_ms = %s WHERE event_id = %s",
-        (NOW, NOW, deleted),
     )
     conn.commit()
 

@@ -194,12 +194,6 @@ class AnalysisStorage:
         if existing is not None:
             if existing["payload_sha256"] == payload_sha256:
                 return trigger_id, case_id, "duplicate"
-            self.conn.execute(
-                "INSERT INTO trading_trigger_conflicts "
-                "(kind,source_fact_key,source_revision,attempted_sha256,original_sha256,observed_at_ms) "
-                "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                (kind, source_fact_key, source_revision, payload_sha256, existing["payload_sha256"], now_ms),
-            )
             return trigger_id, case_id, "source_conflict"
         self.conn.execute(
             "INSERT INTO trading_triggers (trigger_id,kind,source_fact_key,source_revision,payload_sha256,"
@@ -281,12 +275,6 @@ class AnalysisStorage:
             raise RuntimeError("source_amendment_conflict_missing")
         if original["payload_sha256"] == payload_sha256:
             return "duplicate"
-        self.conn.execute(
-            "INSERT INTO trading_trigger_conflicts (kind,source_fact_key,source_revision,"
-            "attempted_sha256,original_sha256,observed_at_ms) "
-            "VALUES ('source_update',%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            (source_fact_key, content_revision, payload_sha256, original["payload_sha256"], now_ms),
-        )
         return "source_conflict"
 
     def claim_case(self, *, now_ms: int, lease_ms: int) -> dict[str, Any] | None:

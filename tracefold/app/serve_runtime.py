@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from threading import Condition
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -14,6 +15,40 @@ from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.runtime_identity import runtime_identity
+
+
+class MeasuredOnce:
+    """Process-local single-flight measurement; failed measurements are never cached."""
+
+    def __init__(self, *, ttl_s: float = 30, clock: Callable[[], float] = time.monotonic) -> None:
+        self._ttl_s = ttl_s
+        self._clock = clock
+        self._condition = Condition()
+        self._running = False
+        self._value: dict[str, Any] | None = None
+        self._expires_at = 0.0
+
+    def get(self, measure: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+        with self._condition:
+            while self._running:
+                self._condition.wait()
+            if self._value is not None and self._clock() < self._expires_at:
+                return self._value
+            self._running = True
+            expires_at = self._clock() + self._ttl_s
+        try:
+            value = measure()
+        except BaseException:
+            with self._condition:
+                self._running = False
+                self._condition.notify_all()
+            raise
+        with self._condition:
+            self._value = value
+            self._expires_at = expires_at
+            self._running = False
+            self._condition.notify_all()
+            return value
 
 
 @dataclass(slots=True)
@@ -27,6 +62,7 @@ class ServeRuntime:
     runtime_revision: str
     image_digest: str
     started_at_ms: int
+    news_status: MeasuredOnce = field(default_factory=MeasuredOnce)
 
     @contextmanager
     def repositories(self, *, lane: str = "ordinary") -> Iterator[ServeRepositories]:

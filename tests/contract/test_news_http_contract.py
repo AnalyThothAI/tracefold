@@ -17,6 +17,7 @@ from tracefold.app.http.schemas import events as event_schemas
 from tracefold.app.http.schemas import feed as feed_schemas
 from tracefold.app.http.schemas import news_common as news_common_schemas
 from tracefold.app.http.schemas import status as status_schemas
+from tracefold.app.serve_runtime import MeasuredOnce
 from tracefold.news import EVENT_KINDS, MARKET_KINDS
 from tracefold.news.market_review.instruments import InstrumentSearchIdentity
 from tracefold.news.market_review.pricing import REACTION_METRIC_VERSION
@@ -375,6 +376,7 @@ class _FakeRuntime:
         workers_runtime_row: dict[str, Any] | None = None,
     ) -> None:
         self.settings = settings
+        self.news_status = MeasuredOnce()
         self._news = news
         self.telemetry = TelemetryRegistry()
         self._workers_runtime_row = workers_runtime_row
@@ -1434,3 +1436,14 @@ def test_status_reports_the_price_plane_beside_the_pipeline(client) -> None:
     # The backlog SLO has to be *served*, not merely declared: the envelope drops unset fields, so a schema
     # default with no repository value disappears from the response entirely.
     assert data["price"]["oldest_due_age_ms"] == 0
+
+
+def test_news_status_reuses_measurement_and_etag_within_ttl(client) -> None:
+    http, news = client
+    first = http.get("/api/news/status", params={"token": TOKEN})
+    second = http.get("/api/news/status", params={"token": TOKEN})
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json()
+    assert first.headers["etag"] == second.headers["etag"]
+    assert sum(name == "status_snapshot" for name, _ in news.calls) == 1
+    assert sum(name == "semantic_status" for name, _ in news.calls) == 1

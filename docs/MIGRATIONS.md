@@ -4,6 +4,12 @@
 
 当前 schema 使用 [Alembic 单链](../tracefold/platform/postgres/alembic/versions/)，基线为 `20260831_0340`。已应用的迁移文件属于升级与恢复证据，**不是可随过时文档一起删除的文件**。
 
+`20261001_0420`（[#764 P0](https://github.com/AnalyThothAI/tracefold/issues/764)）从 `0419` 升级：压缩连续同成员钱包版本，保留每组最后一个版本 ID 与最早 `known_at_ms`，重映射成交和 tape 游标；冻结回执 `sent_claims`，收紧决策和 EventUpdate 的 NULL 检查；删除四张无读者表、两个执行消费游标、六个 delivery 删除字段、两列历史状态及六个孤儿函数。全部处于同一事务，成员、成交数、游标引用和 Claim 投影核对失败即回滚。
+
+此迁移先停全部进程，Analysis 先于 Executor；备份并导出 `news_market_wallet_archive`、`news_market_instrument_listing_events`、`news_market_wallet_roster`、`news_market_wallet_tape_state`、`news_market_wallet_fills`、`news_deliveries`、`news_notification_decisions`，记录 sha256 并核验归档可读。存在 Trading 写者会话、非空冲突/证据表、delivery 删除状态、无效文档/决策或版本内时间不一致时拒绝升级。停 Executor 会暂停 time exit 和 flatten，停前核对实际持仓、挂单及未处置输入；恢复后核对 pause/halt、待处置数和 `db audit`。仅支持已核验备份加旧镜像恢复；生产彩排、部署与 24 小时性能验收需要另行授权。
+
+本地行为证明由 [P0 迁移测试](../tests/integration/test_p0_migration.py)、[待处置消费测试](../tests/integration/test_p0_executor_pending.py) 和 [状态缓存测试](../tests/test_measured_once.py)维护。
+
 <details>
 <summary><strong>本页目录</strong></summary>
 
@@ -31,7 +37,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20261001_0419`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20261001_0420`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序
