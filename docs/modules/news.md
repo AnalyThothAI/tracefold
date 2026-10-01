@@ -191,7 +191,7 @@ flowchart TB
 
 `retrieval_symbol` 与 `retrieval_pair_base` 由数据库按 #761 的逐行规则写入时生成（去首尾空白与 `$`、地址保持原样、大写、去 `XYZ-` 与 venue `前缀:`；crypto / unknown 标签按 USDT、USDC、FDUSD、TUSD、BUSD、USD 取第一个报价后缀的基础符号）。目录别名不落列，由查询侧展开（`stored_asset_codes`），改种子不需要回填。分数仍是任一任务文本与标题或任一成员事实的最大三元组相似度；长文本只在其上界可能超过短文本最好分时才计算，结果与逐个计算相同。
 
-similarity 的探测文本有界：一次 GIN 探测在生产副本上约 20–150 ms，而相似度达到 0.3 要求两段文本三元组数量相近，超过 600 字的任务文本几乎不可能与事实相近，因此只探测前两段短文本，所有文本仍完整参与评分。对 131 个真实召回输入，explicit 与 entity 的候选集合与 #761 的窗口全扫完全一致，similarity 保留其 207 行中的 203 行、没有新增；召回 p50 约 90 ms、p95 约 0.27 s、最大约 0.45 s（4 路并发同样），远低于 News lane 默认 3 s 的 statement timeout（领取事务自 #774 起为 15 s）。该语句不在服务端预编译（`prepare=False`）：最佳计划取决于绑定的数组，缓存的通用计划实测慢 10–20 倍。[召回规模测试](../../tests/integration/test_news_recall_bounds.py)按生产规模播种窗口，用 EXPLAIN ANALYZE 约束计划不扫全表、Event 读取数不随窗口增长，并以 #761 的逐行规则为基准核对生成列。
+similarity 的探测文本有界：一次 GIN 探测在生产副本上约 20–150 ms，而相似度达到 0.3 要求两段文本三元组数量相近，超过 600 字的任务文本几乎不可能与事实相近，因此只探测前两段短文本，所有文本仍完整参与评分。对 131 个真实召回输入，explicit 与 entity 的候选集合与 #761 的窗口全扫完全一致，similarity 保留其 207 行中的 203 行、没有新增；召回 p50 约 90 ms、p95 约 0.27 s、最大约 0.45 s（4 路并发同样），远低于 News lane 默认 3 s 的 statement timeout，领取事务同样使用该默认预算。该语句不在服务端预编译（`prepare=False`）：最佳计划取决于绑定的数组，缓存的通用计划实测慢 10–20 倍。[召回规模测试](../../tests/integration/test_news_recall_bounds.py)按生产规模播种窗口，用 EXPLAIN ANALYZE 约束计划不扫全表、Event 读取数不随窗口增长，并以 #761 的逐行规则为基准核对生成列。
 
 读取输入时若仍遇 statement timeout 或取消，领取在 savepoint 里只回滚这次读取：尝试照常计数并按 15 s / 60 s / 300 s 退避、释放租约、记录 `news_semantic_input_timeout`，耗尽后进入可见失败；领取、输入与所记录的阅读范围仍同笔提交，一次尝试只读到一份一致输入。排查见[语义失败](../OPERATIONS.md#语义失败)。
 
