@@ -318,7 +318,9 @@ class SemanticInputStorage:
         self.evidence = evidence
         self.head_document = head_document
 
-    def semantic_input_material(self, event_id: str, *, now_ms: int) -> dict[str, Any]:
+    def semantic_source_material(self, event_id: str) -> dict[str, Any]:
+        """This Event's frozen sources and adopted state, without optional prior retrieval."""
+
         work = self.conn.execute(
             """
             SELECT wanted_revision, done_revision, lineage_id, attached_evidence, focus_claim_refs,
@@ -408,6 +410,12 @@ class SemanticInputStorage:
             "head": self.head_document(event_id),
             "established_relations": self._established_relations(event_id),
         }
+        return material
+
+    def semantic_input_material(self, event_id: str, *, now_ms: int) -> dict[str, Any]:
+        material = self.semantic_source_material(event_id)
+        work = material["work"]
+        item_ids = material["item_ids"]
         # Freeze pending reads before prior retrieval. An already processed leader or an unrelated
         # numbered sibling cannot supply the new task's text/source features.
         source = frozen_input(event_id, material)

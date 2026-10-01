@@ -37,6 +37,8 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
         return _handle_dlq(args)
     if args.news_command == "retry-work":
         return _handle_retry_work(args)
+    if args.news_command == "cancel-work":
+        return _handle_cancel_work(args)
     if args.news_command == "reanalyze":
         return _handle_reanalyze(args)
     if args.news_command == "repair-head-scopes":
@@ -71,6 +73,45 @@ def _handle_retry_work(args: Namespace) -> tuple[int, dict[str, Any]]:
         "kind": args.kind,
         "revision": args.revision,
         "status": "reopened" if reopened else "not_failed_or_version_changed",
+    }
+
+
+def _handle_cancel_work(args: Namespace) -> tuple[int, dict[str, Any]]:
+    from tracefold.app.repository_session import repositories
+    from tracefold.news.bus import now_ms
+
+    reason = str(args.reason).strip()
+    if not reason:
+        return 2, {"ok": False, "error": "news_cancel_reason_missing"}
+    settings = load_settings(require_ws_token=False)
+    stamp = now_ms()
+    with repositories(settings) as repos, repos.transaction():
+        work = repos.news.semantic_work
+        current = work.semantic_work(str(args.event))
+        cancellable = (
+            current is not None
+            and int(current["wanted_revision"]) == args.revision
+            and int(current.get("done_revision") or 0) < args.revision
+            and current.get("last_outcome") != "cancelled"
+            and int(current.get("leased_until_ms") or 0) <= stamp
+        )
+        cancelled = (
+            args.execute
+            and cancellable
+            and work.cancel_revision(
+                event_id=str(args.event), expected_revision=args.revision, now_ms=stamp, input=repos.news.semantic_input
+            )
+        )
+    ok = bool(cancelled if args.execute else cancellable)
+    return (0 if ok else 1), {
+        "ok": ok,
+        "event_id": args.event,
+        "revision": args.revision,
+        "reason": reason,
+        "execute": args.execute,
+        "status": "cancelled"
+        if cancelled
+        else ("cancellable" if ok else "not_outstanding_or_version_changed_or_leased"),
     }
 
 

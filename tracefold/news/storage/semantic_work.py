@@ -36,13 +36,17 @@ EXTRA_READ_OUTCOMES: Final = frozenset({"attached", "no_material", "unavailable_
 _WAKE_STATE_LIMIT: Final = 1_000
 
 
-_RUNNABLE: Final = f"attempts < {SEMANTIC_ATTEMPTS_MAX} AND last_outcome IS DISTINCT FROM 'failed'"
+_RUNNABLE: Final = (
+    f"attempts < {SEMANTIC_ATTEMPTS_MAX} AND last_outcome IS DISTINCT FROM 'failed'"
+    " AND last_outcome IS DISTINCT FROM 'cancelled'"
+)
 
 
 SEMANTIC_WAKE_STATE_SQL: Final = f"""
     WITH pending AS MATERIALIZED (
       SELECT attempts, last_outcome, updated_at_ms FROM news_semantic_work
-       WHERE done_revision IS NULL OR done_revision < wanted_revision
+       WHERE (done_revision IS NULL OR done_revision < wanted_revision)
+         AND last_outcome IS DISTINCT FROM 'cancelled'
        ORDER BY next_attempt_at_ms, event_id
        LIMIT {_WAKE_STATE_LIMIT}
     )
@@ -57,7 +61,8 @@ SEMANTIC_STATUS_SQL: Final = f"""
     WITH outstanding AS MATERIALIZED (
       SELECT attempts, last_outcome, next_attempt_at_ms, leased_until_ms
         FROM news_semantic_work
-       WHERE done_revision IS NULL OR done_revision < wanted_revision
+       WHERE (done_revision IS NULL OR done_revision < wanted_revision)
+         AND last_outcome IS DISTINCT FROM 'cancelled'
        ORDER BY next_attempt_at_ms, event_id
        LIMIT {_WAKE_STATE_LIMIT}
     )
@@ -133,6 +138,7 @@ class SemanticWorkStorage:
             """
             UPDATE news_semantic_work SET published_at_ms = %s
              WHERE event_id = %s AND wanted_revision = %s
+               AND last_outcome IS DISTINCT FROM 'cancelled'
             """,
             (int(now_ms), event_id, int(revision)),
         )
@@ -317,6 +323,7 @@ class SemanticWorkStorage:
               SELECT event_id FROM news_semantic_work
                WHERE (done_revision IS NULL OR done_revision < wanted_revision)
                  AND attempts >= %s AND last_outcome IS DISTINCT FROM 'failed'
+                 AND last_outcome IS DISTINCT FROM 'cancelled'
                  AND (leased_until_ms IS NULL OR leased_until_ms <= %s)
                ORDER BY updated_at_ms, event_id LIMIT %s FOR UPDATE SKIP LOCKED
             )
@@ -464,6 +471,7 @@ class SemanticWorkStorage:
             SELECT w.event_id, w.wanted_revision, e.dedupe_family, e.queue_priority, e.trace_id
               FROM news_semantic_work w JOIN news_events e ON e.event_id = w.event_id
              WHERE w.event_id = %s AND (w.done_revision IS NULL OR w.done_revision < w.wanted_revision)
+               AND w.last_outcome IS DISTINCT FROM 'cancelled'
             """,
             (event_id,),
         ).fetchone()
@@ -543,6 +551,57 @@ class SemanticWorkStorage:
             (evidence_json, _dumps(sorted(set(focus_claim_refs))), int(now_ms), int(now_ms), event_id, lineage_id),
         ).fetchone()
         return None if row is None else int(row["wanted_revision"])
+
+    def cancel_revision(
+        self, *, event_id: str, expected_revision: int, now_ms: int, input: SemanticInputStorage
+    ) -> bool:
+        """Cancel one inactive, unfinished revision and quarantine only its unprocessed task reads.
+
+        This is a terminal operator action, not a successful semantic observation: the revision counter,
+        completion, attempt count, error, adopted head and notification ledger remain unchanged. A later
+        organic revision starts normally while these old reads remain quarantined.
+        """
+
+        wanted = int(expected_revision)
+        if wanted < 1:
+            raise ValueError("news_cancel_work_revision_invalid")
+        row = self.conn.execute(
+            """
+            SELECT wanted_revision, done_revision, last_outcome, leased_until_ms
+              FROM news_semantic_work WHERE event_id = %s FOR UPDATE
+            """,
+            (event_id,),
+        ).fetchone()
+        if (
+            row is None
+            or int(row["wanted_revision"]) != wanted
+            or (row["done_revision"] is not None and int(row["done_revision"]) >= wanted)
+            or row["last_outcome"] == "cancelled"
+            or (row["leased_until_ms"] is not None and int(row["leased_until_ms"]) > int(now_ms))
+        ):
+            return False
+        material = input.semantic_source_material(event_id)
+        # Enumerate failed reads again only in memory. Processed reads and a targeted reanalysis
+        # scope remain excluded/restricted exactly as they were for this revision.
+        source = frozen_input(event_id, {**material, "work": {**material["work"], "failed_read_refs": ()}})
+        read_refs = [view.read_ref for view in reading_views(source)]
+        cursor = self.conn.execute(
+            """
+            UPDATE news_semantic_work
+               SET last_outcome = 'cancelled', lease_token = NULL, leased_until_ms = NULL,
+                   published_at_ms = NULL,
+                   failed_read_refs = ARRAY(
+                       SELECT DISTINCT ref FROM unnest(failed_read_refs || %s::text[]) AS ref
+                   ),
+                   updated_at_ms = %s
+             WHERE event_id = %s AND wanted_revision = %s
+               AND (done_revision IS NULL OR done_revision < wanted_revision)
+               AND last_outcome IS DISTINCT FROM 'cancelled'
+               AND (leased_until_ms IS NULL OR leased_until_ms <= %s)
+            """,
+            (read_refs, int(now_ms), event_id, wanted, int(now_ms)),
+        )
+        return bool(cursor.rowcount)
 
     def retry_failed_revision(self, *, event_id: str, revision: str, now_ms: int) -> bool:
         """Reopen only the requested visibly failed semantic input revision."""

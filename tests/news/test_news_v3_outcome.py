@@ -448,3 +448,15 @@ def test_a_failed_semantic_revision_is_a_named_parse_failure_and_keeps_the_model
     status = status_health(**_status_inputs(pipeline=pipeline))  # type: ignore[arg-type]
     assert status["health"]["model"]["level"] == "warn"
     assert "1 个事件解析失败待处理" in status["health"]["model"]["summary_zh"]
+
+
+def test_cancellation_names_the_old_task_and_preserves_an_existing_delivery() -> None:
+    from tracefold.news.outcome import event_outcome
+    from tracefold.news.update_view import semantic_state
+
+    semantic = {"wanted_revision": 2, "done_revision": 1, "last_outcome": "cancelled", "last_error_code": "old_error"}
+    assert semantic_state(semantic) == "cancelled"
+    cancelled = event_outcome(admission="candidate", delivery=None, semantic=semantic)
+    assert cancelled.kind == "semantic_cancelled" and cancelled.group == "held"
+    delivered = event_outcome(admission="candidate", delivery={"state": "sent"}, semantic=semantic, adopted=True)
+    assert delivered.kind == "delivered" and delivered.group == "pushed"

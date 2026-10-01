@@ -218,13 +218,16 @@ def _update_steps(
                 },
             }
         )
-    if semantic is not None and semantic_state(semantic) == "failed":
+    if semantic is not None and semantic_state(semantic) in {"failed", "cancelled"}:
+        cancelled = semantic_state(semantic) == "cancelled"
         steps.append(
             {
                 "stage": "semantic",
-                "title_zh": "语义处理失败",
+                "title_zh": "历史语义任务已取消" if cancelled else "语义处理失败",
                 "at_ms": int(semantic.get("updated_at_ms") or 0),
-                "summary_zh": error_code_zh(semantic.get("last_error_code")) or "多次尝试后失败，等待新的材料版本",
+                "summary_zh": "旧材料不再解析，保留来源与既有结果"
+                if cancelled
+                else (error_code_zh(semantic.get("last_error_code")) or "多次尝试后失败，等待新的材料版本"),
                 "facts": {
                     "wanted_revision": semantic.get("wanted_revision"),
                     "attempts": semantic.get("attempts"),

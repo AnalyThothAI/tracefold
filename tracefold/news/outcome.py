@@ -26,6 +26,7 @@ OutcomeKind = Literal[
     "delivery_failed",
     "queued_semantic",
     "semantic_failed",
+    "semantic_cancelled",
     "no_update",
     "queued_notification",
     "notification_deferred",
@@ -43,6 +44,7 @@ OUTCOME_GROUP: Final[dict[str, str]] = {
     "delivery_failed": "held",
     "queued_semantic": "pending",
     "semantic_failed": "held",
+    "semantic_cancelled": "held",
     "no_update": "held",
     "queued_notification": "pending",
     "notification_deferred": "pending",
@@ -182,7 +184,11 @@ def event_outcome(
         wanted = int(semantic.get("wanted_revision") or 0)
         done = int(semantic.get("done_revision") or 0)
         if wanted > done:
-            if semantic_state(semantic) == "failed":
+            state = semantic_state(semantic)
+            if state == "cancelled":
+                if not adopted and (delivery or {}).get("state") != "sent":
+                    return _outcome("semantic_cancelled", "历史任务已取消", "旧材料不再解析；新正文仍可正常处理")
+            elif state == "failed":
                 code = str(semantic.get("last_error_code") or "")
                 named = error_code_zh(code)
                 return _outcome(
@@ -190,7 +196,8 @@ def event_outcome(
                     "解析失败",
                     (f"{named}（{code}）" if named != code else code) if code else "解析失败，等待新材料或指定版本重试",
                 )
-            return _outcome("queued_semantic", "理解中", "等待语义处理新的材料版本")
+            else:
+                return _outcome("queued_semantic", "理解中", "等待语义处理新的材料版本")
     if not adopted:
         if (delivery or {}).get("state") == "sent":
             return _outcome("delivered", "已推送", "")

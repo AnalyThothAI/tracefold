@@ -930,6 +930,50 @@ def test_source_only_event_has_no_synthetic_legacy_judgment(client) -> None:
     assert "legacy_verdict" not in data and "verdicts" not in data
 
 
+@pytest.mark.parametrize("delivered", [False, True])
+def test_event_detail_serves_cancelled_work_without_losing_an_adopted_head(client, delivered: bool) -> None:
+    http, news = client
+    head = first_update("ev-1") if delivered else None
+    semantic = semantic_view(
+        {
+            "wanted_revision": 3,
+            "done_revision": 1 if delivered else 0,
+            "attempts": 3,
+            "last_outcome": "cancelled",
+            "updated_at_ms": 1_800_000_000_000,
+        }
+    )
+    outcome = {
+        "kind": "delivered" if delivered else "semantic_cancelled",
+        "text_zh": "已推送" if delivered else "历史任务已取消",
+        "reason_zh": "",
+        "group": "pushed" if delivered else "held",
+    }
+    news.detail_overrides["ev-1"] = {
+        "event_update": event_update_view(
+            {"document": json.loads(canonical_json(head))}, previous_claims={}, sent_headline=None
+        )
+        if head
+        else None,
+        "outcome": outcome,
+        "processing": {"semantic": semantic},
+    }
+
+    response = http.get("/api/news/events/ev-1", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["outcome"] == outcome
+    assert data["processing"]["semantic"]["state"] == "cancelled"
+    assert data["processing"]["semantic"]["state_zh"] == "已取消"
+    assert data["processing"]["semantic"]["wanted_revision"] == 3
+    assert data["processing"]["semantic"]["done_revision"] == (1 if delivered else 0)
+    if head:
+        assert data["event_update"]["content_revision"] == head.content_revision
+    else:
+        assert data["event_update"] is None
+
+
 def test_status_reports_unavailable_without_broker_or_token(client) -> None:
     http, _ = client
 

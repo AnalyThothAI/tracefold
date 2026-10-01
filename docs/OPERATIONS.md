@@ -96,6 +96,20 @@ docker compose exec -T workers tracefold news retry-work \
 
 以失败结束的修订（含 Janitor 结算的崩溃最终尝试）会把该次尝试实际送入的任务范围记为隔离（`failed_read_refs`，尝试所读范围在领取时记入 `attempt_read_refs`）：之后该 Event 的新成员只读新材料，不再被同一份坏材料拖累。`retry-work --kind semantic` 清空隔离、重新送入全部隔离材料；只想重读其中一段时，用下节的 `news reanalyze` 按精确修订指定该 `read_ref`。构建冻结输入本身失败（来源缺失、重读范围已变、head 无法解码）只让该 Event 的工作失败，错误码可见，不再让语义消费者故障。
 
+### 取消过时的历史语义工作
+
+旧材料已失去处理价值时，先归档精确 Event 的 wanted/done、错误、read refs、head 和发送回执，再取消当前未完成的语义修订：
+
+```bash
+# 默认预览；核对同一版本后加 --execute
+docker compose exec -T workers tracefold news cancel-work \
+  --event EVENT_ID --revision INPUT_REVISION --reason '用户要求清理过时历史任务'
+```
+
+命令只接受确切 wanted revision、未完成且没有有效 lease 的工作；`--execute` 记录真实的 `cancelled` 结果，保留 wanted/done、尝试次数、原始错误、来源、head 和回执，不创建模型观察或假装成功。取消时将当前未完成的任务 read refs 隔离，避免下一次新正文再次处理旧材料；该步骤只读取本 Event 的来源，不运行相关召回或模型。CLI 输出包含操作原因，维护方应与归档清单一起持久保存。
+
+取消工作不再被领取、重发、计为 pending/failed 告警或被耗尽清理改回失败；队列中的旧 wake 正常确认退出，不清空整条队列。新来源修订仍递增原 wanted 计数并重新开启工作，只处理未隔离的新材料。`retry-work` 和定向重读不会默认恢复取消的修订。
+
 ### 已完成或已失败工作的定向重读
 
 先从 Event 详情或 `news why EVENT_ID` 取得当前 wanted/head，再用 `tracefold news reanalyze --event EVENT_ID --wanted WANTED_REVISION --head HEAD_REVISION` 预览 wanted/done、是否失败及错误码、head 和各来源任务 `read_ref` 清单（`completed` 为已处理，`failed` 为已隔离）。没有 head 时 `--head none`。目标修订必须已完成或已失败。核对原文与确切漏读范围后，用清单中的 wanted、head、read 值提交定向处理修订：

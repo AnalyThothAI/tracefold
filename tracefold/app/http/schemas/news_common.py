@@ -21,6 +21,7 @@ class NewsOutcomeData(ExactApiSchema):
         # #706: the EventUpdate path's own conclusions.
         "queued_semantic",
         "semantic_failed",
+        "semantic_cancelled",
         "no_update",
         "queued_notification",
         "notification_deferred",

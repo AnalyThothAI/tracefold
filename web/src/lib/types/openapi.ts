@@ -2161,7 +2161,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "held_recovery" | "held_gate" | "pending_delivery" | "delivered" | "delivery_failed" | "queued_semantic" | "semantic_failed" | "no_update" | "queued_notification" | "notification_deferred" | "notification_failed" | "not_notified" | "delivery_ambiguous";
+            kind: "held_recovery" | "held_gate" | "pending_delivery" | "delivered" | "delivery_failed" | "queued_semantic" | "semantic_failed" | "semantic_cancelled" | "no_update" | "queued_notification" | "notification_deferred" | "notification_failed" | "not_notified" | "delivery_ambiguous";
             /**
              * Reason Zh
              * @default
@@ -2675,7 +2675,7 @@ export interface components {
              * State
              * @enum {string}
              */
-            state: "pending" | "done" | "failed";
+            state: "pending" | "done" | "failed" | "cancelled";
             /**
              * State Zh
              * @default

@@ -143,7 +143,12 @@ NOVELTY_ZH: Final[dict[str, str]] = {
     "unlinked": "未关联",
 }
 RENDER_ZH: Final[dict[str, str]] = {"full": "完整", "increment": "补充", "correction": "更正"}
-SEMANTIC_STATE_ZH: Final[dict[str, str]] = {"pending": "处理中", "done": "已完成", "failed": "失败"}
+SEMANTIC_STATE_ZH: Final[dict[str, str]] = {
+    "pending": "处理中",
+    "done": "已完成",
+    "failed": "失败",
+    "cancelled": "已取消",
+}
 NOTIFICATION_STATE_ZH: Final[dict[str, str]] = {"pending": "待决定", "done": "已决定", "failed": "通知失败"}
 EXTRA_READ_STATE_ZH: Final[dict[str, str]] = {
     "reserved": "补读已预留",
@@ -169,8 +174,9 @@ def _zh(table: Mapping[str, str], value: Any) -> str:
 def semantic_state(work: Mapping[str, Any]) -> str:
     """`failed` is the worker's own last outcome; pending is a wanted revision nothing has finished yet."""
 
-    if str(work.get("last_outcome") or "") == "failed":
-        return "failed"
+    outcome = str(work.get("last_outcome") or "")
+    if outcome in {"failed", "cancelled"}:
+        return outcome
     wanted = int(work.get("wanted_revision") or 0)
     done = int(work.get("done_revision") or 0)
     return "pending" if wanted > done else "done"

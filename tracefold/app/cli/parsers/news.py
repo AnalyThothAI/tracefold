@@ -98,6 +98,13 @@ def add_news_commands(
     retry.add_argument("--event", required=True, help="exact Event ID")
     retry.add_argument("--kind", required=True, choices=("semantic", "notification"))
     retry.add_argument("--revision", required=True, help="wanted input revision, or exact content revision")
+    cancel = news_subcommands.add_parser(
+        "cancel-work", help="cancel one obsolete semantic revision; retain facts, counters and receipts"
+    )
+    cancel.add_argument("--event", required=True, help="exact Event ID")
+    cancel.add_argument("--revision", type=_positive_int, required=True, help="expected wanted input revision")
+    cancel.add_argument("--reason", required=True, help="operator reason recorded in the operation result")
+    cancel.add_argument("--execute", action="store_true", help="cancel the inspected revision instead of previewing")
     reanalyze = news_subcommands.add_parser(
         "reanalyze", help="inspect or request one exact Event task read under wanted/head CAS"
     )

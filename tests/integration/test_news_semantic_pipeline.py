@@ -726,6 +726,123 @@ def test_an_input_that_cannot_be_built_fails_only_its_own_work() -> None:
     assert work(EVENT)["last_outcome"] == "adopted"
 
 
+@pytest.mark.parametrize("failed", [False, True])
+def test_cancelled_old_material_is_not_claimed_or_reintroduced_by_new_evidence(
+    monkeypatch: pytest.MonkeyPatch, failed: bool
+) -> None:
+    from tracefold.news.storage.semantic_input import SemanticInputStorage
+
+    seed_event()
+    if failed:
+        sql("UPDATE news_semantic_work SET last_outcome='failed', last_error_code='old_error', attempts=3")
+    before = work(EVENT)
+    monkeypatch.setattr(
+        SemanticInputStorage,
+        "_related_event_ids",
+        lambda *_args, **_kwargs: pytest.fail("cancellation must not retrieve priors"),
+    )
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            news = repositories_for_connection(conn).news
+            assert news.semantic_work.cancel_revision(
+                event_id=EVENT, expected_revision=1, now_ms=STAMP + 60_000, input=news.semantic_input
+            )
+            status = news.semantic_work.semantic_status(now_ms=STAMP + 60_000)
+            assert status["semantic_pending"] == status["semantic_failed_exhausted"] == status["semantic_deferred"] == 0
+            assert news.semantic_work.pending_semantic_event_ids(now_ms=STAMP + 60_000, limit=10) == []
+            assert news.semantic_work.semantic_wake_route(EVENT) is None
+            assert news.semantic_work.terminalize_exhausted_semantic_work(now_ms=STAMP + 60_000, limit=10) == 0
+    finally:
+        conn.close()
+    cancelled = work(EVENT)
+    assert cancelled["last_outcome"] == "cancelled" and len(cancelled["failed_read_refs"]) == 1
+    assert (
+        cancelled["wanted_revision"],
+        cancelled["done_revision"],
+        cancelled["attempts"],
+        cancelled["last_error_code"],
+    ) == (before["wanted_revision"], before["done_revision"], before["attempts"], before["last_error_code"])
+    assert sql("SELECT count(*) AS n FROM news_semantic_observations")[0]["n"] == 0
+    assert sql("SELECT count(*) AS n FROM news_items")[0]["n"] == 1
+    store = PgSemanticStore(ThreadedDb(), clock=Clock(STAMP + 60_000))
+    assert asyncio.run(store.claim_semantic_work(EVENT, lease_ms=180_000)) is None
+    add_member_evidence(EVENT, "it-new", "Agency confirms the order is effective.", now_ms=STAMP + 70_000)
+    assert work(EVENT)["wanted_revision"] == 2 and work(EVENT)["last_outcome"] is None
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            news = repositories_for_connection(conn).news
+            from tracefold.news.storage.semantic_input import frozen_input
+
+            material = news.semantic_input.semantic_source_material(EVENT)
+            source = frozen_input(EVENT, material)
+            assert [item.text for item in source.evidence] == ["Agency confirms the order is effective."]
+    finally:
+        conn.close()
+
+
+def test_cancel_command_previews_and_guards_revision_and_active_lease(monkeypatch: pytest.MonkeyPatch) -> None:
+    seed_event()
+    conn = connect_postgres_test(read_only=False)
+
+    @contextmanager
+    def test_database(*_args: Any, **_kwargs: Any) -> Iterator[Any]:
+        yield conn
+
+    monkeypatch.setattr(news_diagnostics, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", test_database)
+    monkeypatch.setattr("tracefold.news.bus.now_ms", Clock(STAMP + 60_000))
+    command = ["news", "cancel-work", "--event", EVENT, "--revision", "1", "--reason", "obsolete history"]
+    parser = build_parser()
+    try:
+        assert news_diagnostics.handle_news(parser.parse_args(command))[1]["status"] == "cancellable"
+        assert work(EVENT)["last_outcome"] is None
+        stale = [*command[:5], "2", *command[6:], "--execute"]
+        assert news_diagnostics.handle_news(parser.parse_args(stale))[0] == 1
+        sql("UPDATE news_semantic_work SET lease_token='active', leased_until_ms=%s", (STAMP + 120_000,))
+        assert news_diagnostics.handle_news(parser.parse_args([*command, "--execute"]))[0] == 1
+        sql("UPDATE news_semantic_work SET lease_token=NULL, leased_until_ms=NULL")
+        assert news_diagnostics.handle_news(parser.parse_args([*command, "--execute"]))[1]["status"] == "cancelled"
+        assert news_diagnostics.handle_news(parser.parse_args([*command, "--execute"]))[0] == 1
+    finally:
+        conn.close()
+
+
+def test_cancelling_a_later_revision_preserves_the_adopted_head_and_real_receipt() -> None:
+    from tests.support.news_update_pg import Sender, notifications
+    from tracefold.news.storage.notification_store import PgNotificationStore
+
+    seed_event()
+    clock = Clock(STAMP + 60_000)
+    db = ThreadedDb()
+    store = PgSemanticStore(db, clock=clock)
+    assert (
+        asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock), EVENT)) == "adopted"
+    )
+    head = asyncio.run(store.head(EVENT))
+    sender = Sender()
+    asyncio.run(notifications(PgNotificationStore(db, clock=clock), clock, sender).process(EVENT, "news"))
+    receipts = sql("SELECT * FROM news_deliveries WHERE event_id=%s", (EVENT,))
+    assert len(receipts) == 1 and receipts[0]["state"] == "sent"
+    add_member_evidence(EVENT, "it-obsolete", "Agency repeats its earlier tariff statement.", now_ms=STAMP + 70_000)
+    before = work(EVENT)
+    conn = connect_postgres_test(read_only=False)
+    try:
+        with conn.transaction():
+            news = repositories_for_connection(conn).news
+            assert news.semantic_work.cancel_revision(
+                event_id=EVENT, expected_revision=2, now_ms=STAMP + 80_000, input=news.semantic_input
+            )
+    finally:
+        conn.close()
+    assert asyncio.run(store.head(EVENT)) == head
+    assert sql("SELECT * FROM news_deliveries WHERE event_id=%s", (EVENT,)) == receipts
+    assert work(EVENT)["done_revision"] == before["done_revision"] == 1
+    assert work(EVENT)["wanted_revision"] == before["wanted_revision"] == 2
+    assert len(sender.cards) == 1
+
+
 # ------------------------------------------------------------------ #742 W1: notification obligations
 
 

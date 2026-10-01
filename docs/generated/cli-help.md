@@ -164,10 +164,10 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,reanalyze,repair-head-scopes,dlq} ...
+                      {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,cancel-work,reanalyze,repair-head-scopes,dlq} ...
 
 positional arguments:
-  {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,reanalyze,repair-head-scopes,dlq}
+  {bus-check,bus-policy,instruments,review,learning,replay,wallets,why,retry-work,cancel-work,reanalyze,repair-head-scopes,dlq}
     bus-check           declare the News topology and report queue state,
                         effective retry policy, and topology drift
     bus-policy          apply or verify the checked-in RabbitMQ retry/dead-
@@ -185,6 +185,8 @@ positional arguments:
                         update, notification and delivery
     retry-work          reopen one failed News work version; retain facts and
                         receipts
+    cancel-work         cancel one obsolete semantic revision; retain facts,
+                        counters and receipts
     reanalyze           inspect or request one exact Event task read under
                         wanted/head CAS
     repair-head-scopes  audit numbered Event heads and retire proven sibling-
@@ -409,6 +411,21 @@ options:
   --event EVENT         exact Event ID
   --kind {semantic,notification}
   --revision REVISION   wanted input revision, or exact content revision
+
+```
+
+## `news cancel-work`
+
+```
+usage: tracefold news cancel-work [-h] --event EVENT --revision REVISION
+                                  --reason REASON [--execute]
+
+options:
+  -h, --help           show this help message and exit
+  --event EVENT        exact Event ID
+  --revision REVISION  expected wanted input revision
+  --reason REASON      operator reason recorded in the operation result
+  --execute            cancel the inspected revision instead of previewing
 
 ```
 

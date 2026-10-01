@@ -43,7 +43,9 @@ READER_DELIVERY_KINDS_SQL: Final = "('update')"
 # beside both statement builders makes the page and count query share one definition.
 # The EventUpdate path (#706), after the ledger and the Gate: semantic work still owed a revision, or an
 # adopted head whose notification is undecided, deferred or decided to notify.
-_SEMANTIC_OWED_SQL: Final = "sw.wanted_revision > COALESCE(sw.done_revision, 0)"
+_SEMANTIC_OWED_SQL: Final = (
+    "(sw.wanted_revision > COALESCE(sw.done_revision, 0) AND sw.last_outcome IS DISTINCT FROM 'cancelled')"
+)
 _UPDATE_PENDING_SQL: Final = (
     f"({_SEMANTIC_OWED_SQL} AND sw.last_outcome IS DISTINCT FROM 'failed')"
     f" OR (NOT COALESCE({_SEMANTIC_OWED_SQL}, false) AND h.event_id IS NOT NULL"

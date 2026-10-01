@@ -5241,6 +5241,7 @@
               "delivery_failed",
               "queued_semantic",
               "semantic_failed",
+              "semantic_cancelled",
               "no_update",
               "queued_notification",
               "notification_deferred",
@@ -6439,7 +6440,8 @@
             "enum": [
               "pending",
               "done",
-              "failed"
+              "failed",
+              "cancelled"
             ],
             "title": "State",
             "type": "string"

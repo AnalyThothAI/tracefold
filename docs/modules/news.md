@@ -351,6 +351,8 @@ stateDiagram-v2
 
 `/api/news/status` 分别报告可领取的 `semantic_pending`、等待调度的 `semantic_deferred`、持有有效租约的 `semantic_in_progress` 和终结的 `semantic_failed_exhausted`。失败工作不再计为可运行 pending，并保留真实尝试次数（一次性的契约错误不伪装成用尽三次）；这些是有界工作集的状态计数，不是模型调用数。控制台把失败显示为“解析失败”并附中文原因与错误码；仍有失败待处理时模型健康至少为 warn。
 
+过时历史材料可按精确版本取消：`last_outcome=cancelled` 是人工取消，不代表模型处理完成。保留原 wanted/done、错误、尝试、来源和已采用 head / 发送回执；隔离该次未完成的任务 read refs。取消工作从领取、修复唤醒和健康的当前工作集移除，已有队列 wake 正常确认；新正文通过现有准入递增版本并重新启用工作。取消只读取本 Event 的来源材料，不运行相关召回。命令与归档要求见[运维指南](../OPERATIONS.md#取消过时的历史语义工作)。
+
 以失败结束的修订（含 Janitor 结算的崩溃最终尝试）只隔离该次尝试实际送入的任务范围，之后的修订不再重复送入；尝试开始后才加入的新成员不受影响，照常抽取与采用。构建冻结输入本身失败时只让该 Event 的工作失败，不让语义消费者故障。
 
 采用只有带新通知义务的变化（`new_fact`、`possible_new`、`parameter_change`、`phase_change`、`scope_change`、`correction`、`conflict`）才新建或重置通知工作；只新增证据、复述或空更新不建工作，但尚未完成的通知工作照常转向最新 head，保留已用尝试。

@@ -317,7 +317,7 @@ class NewsEventUpdateData(ExactApiSchema):
 
 
 class NewsSemanticWorkData(ExactApiSchema):
-    state: Literal["pending", "done", "failed"]
+    state: Literal["pending", "done", "failed", "cancelled"]
     state_zh: str = ""
     wanted_revision: int
     done_revision: int | None = None

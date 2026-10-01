@@ -1125,6 +1125,77 @@ describe("NewsPage", () => {
     expect(within(processing).getByText("【重点】钢铁进口关税上调至 50%")).toBeInTheDocument();
   });
 
+  it.each([false, true])(
+    "shows cancelled semantic work while preserving an adopted delivery: %s",
+    async (delivered) => {
+      const detail = newsUpdateDetailFixture();
+      const processing = detail.processing!;
+      detail.processing = {
+        ...processing,
+        intents: delivered ? processing.intents : [],
+        notification: delivered ? processing.notification : null,
+        semantic: {
+          ...processing.semantic!,
+          done_revision: delivered ? 2 : 0,
+          last_outcome: "cancelled",
+          state: "cancelled",
+          state_zh: "已取消",
+          wanted_revision: 3,
+        },
+      };
+      if (!delivered) {
+        detail.event_update = null;
+        detail.deliveries = [];
+        detail.reader_receipt = {
+          delivery_state: null,
+          error_code: null,
+          received_at_ms: null,
+          rendered_card: null,
+          state: "not_received",
+        };
+        detail.timeline = detail.timeline!.slice(0, 2);
+        detail.outcome = newsOutcomeFixture({
+          group: "held",
+          kind: "semantic_cancelled",
+          reason_zh: "旧材料不再解析；新正文仍可正常处理",
+          text_zh: "历史任务已取消",
+        });
+      }
+      server.use(
+        http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+          HttpResponse.json({ ok: true, data: detail }),
+        ),
+      );
+
+      renderNews(
+        <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+        "/news/events/evt-global-policy",
+      );
+
+      await screen.findByRole("heading", {
+        level: 1,
+        name: delivered
+          ? "钢铁进口关税上调至 50%"
+          : "Central banks respond to a new global policy shock",
+      });
+      const region = screen.getByRole("region", { name: "新闻事件详情" });
+      const badge = region.querySelector(".news-outcome");
+      expect(badge).toHaveAttribute("data-outcome", delivered ? "delivered" : "semantic_cancelled");
+      expect(badge).toHaveAttribute("data-tone", delivered ? "done" : "neutral");
+      expect(badge).toHaveTextContent(delivered ? "已推送" : "历史任务已取消");
+      const state = screen.getByRole("region", { name: "处理状态" });
+      expect(within(state).getByText("语义处理：已取消")).toBeVisible();
+      fireEvent.click(within(state).getByText("查看逐条决定和处理详情"));
+      expect(within(state).getByText(`已完成 ${delivered ? 2 : 0} / 最新 3`)).toBeVisible();
+      if (delivered) {
+        expect(within(state).getByText("【重点】钢铁进口关税上调至 50%")).toBeInTheDocument();
+      } else {
+        expect(screen.queryByRole("region", { name: "新增了什么" })).toBeNull();
+        expect(within(state).getByText("无发送记录")).toBeVisible();
+      }
+    },
+  );
+
   it("shows one changed claim with all its prior comparisons", async () => {
     const detail = newsUpdateDetailFixture();
     const update = detail.event_update!;
