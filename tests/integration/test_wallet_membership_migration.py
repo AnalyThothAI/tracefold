@@ -76,6 +76,16 @@ def test_membership_cutover_archives_statistics_repairs_unsafe_cursor_and_preser
         roster = conn.execute("SELECT * FROM news_market_wallet_roster").fetchone()
         assert roster["archived_source_statistics"]["profit_factor"] == 1.2
         assert roster["monitoring_from_ms"] == 1000 and "rank_quality" not in roster
+        # This pre-0399 fixture predates standalone market admission. Supply the modern
+        # editorial-free market shape before asking the current repository to read it.
+        with conn.transaction():
+            conn.execute("""
+                UPDATE news_items SET evidence_text=NULL,evidence_text_sha256=NULL,evidence_observed_at_ms=NULL,
+                    provider_params_sha256=NULL,provider_params_available_at_ms=NULL,
+                    market_source_strategy_id='net_buy',market_parse_status='parsed',market_parse_error=NULL
+                WHERE item_id='old-wallet'
+            """)
+        command.upgrade(config, "head")
         projected = repositories_for_connection(conn).news.wallet_event("old-wallet")
         assert "rank_quality" not in projected["initial_snapshot"]["window"]["members"][0]
         assert original["initial_snapshot"]["window"]["members"][0]["rank_quality"] == 1

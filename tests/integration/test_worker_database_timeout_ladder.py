@@ -12,7 +12,6 @@ from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers import root as workers_module
 from tracefold.app.workers.wiring.database import (
     WorkerQuoteDatabase,
-    WorkerReactionDatabase,
     WorkerTradingDatabase,
 )
 from tracefold.platform.observability import TelemetryRegistry
@@ -45,7 +44,6 @@ def test_quote_and_the_signal_lane_progress_while_reaction_holds_the_heavy_gate(
     pool.wait(timeout=5.0)
     database = WorkerDatabase(worker_pool=pool, telemetry=TelemetryRegistry())
     quote = WorkerQuoteDatabase(database)
-    reaction = WorkerReactionDatabase(database)
     trading = WorkerTradingDatabase(database)
     heavy_started = Event()
     second_heavy_started = Event()
@@ -68,8 +66,16 @@ def test_quote_and_the_signal_lane_progress_while_reaction_holds_the_heavy_gate(
         repos.trading.state("default")
         return 1
 
+    def _heavy_session(fn):
+        with database.worker_session("heavy_session", statement_timeout_seconds=3.0) as repos:
+            return fn(repos)
+
     async def scenario() -> None:
-        held = asyncio.create_task(reaction.read("reaction_hold", hold_heavy, timeout_seconds=3.0))
+        held = asyncio.create_task(
+            database.heavy_business().run_business(
+                "heavy_hold", lambda: _heavy_session(hold_heavy), operation_timeout_seconds=3.0
+            )
+        )
         waiting: asyncio.Task[int] | None = None
         try:
             for _ in range(100):
@@ -78,7 +84,11 @@ def test_quote_and_the_signal_lane_progress_while_reaction_holds_the_heavy_gate(
                 await asyncio.sleep(0.01)
             assert heavy_started.is_set()
 
-            waiting = asyncio.create_task(reaction.read("reaction_wait", read_second_heavy, timeout_seconds=3.0))
+            waiting = asyncio.create_task(
+                database.heavy_business().run_business(
+                    "heavy_wait", lambda: _heavy_session(read_second_heavy), operation_timeout_seconds=3.0
+                )
+            )
             await asyncio.sleep(0.05)
             assert not second_heavy_started.is_set()
 

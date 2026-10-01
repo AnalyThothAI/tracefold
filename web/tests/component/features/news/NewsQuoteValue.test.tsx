@@ -1,10 +1,6 @@
-import {
-  NewsQuoteChange,
-  NewsQuotePrice,
-  NewsReactionValue,
-} from "@features/news/ui/chrome/NewsQuoteValue";
+import { NewsQuoteChange, NewsQuotePrice } from "@features/news/ui/chrome/NewsQuoteValue";
 import { cleanup, render, screen } from "@testing-library/react";
-import { newsQuoteFixture, newsReactionFixture } from "@tests/fixtures/newsFixture";
+import { newsQuoteFixture } from "@tests/fixtures/newsFixture";
 import { afterEach, describe, expect, it } from "vitest";
 
 /**
@@ -106,56 +102,5 @@ describe("NewsQuotePrice / NewsQuoteChange", () => {
     );
 
     expect(container).toBeEmptyDOMElement();
-  });
-});
-
-describe("NewsReactionValue", () => {
-  afterEach(cleanup);
-
-  it("renders a completed horizon as a signed percentage", () => {
-    render(<NewsReactionValue horizon="1h" reaction={newsReactionFixture()} />);
-
-    expect(screen.getByText("1H")).toBeInTheDocument();
-    expect(screen.getByText("+1.52%")).toBeInTheDocument();
-  });
-
-  it("calls an unmatured horizon 未到期 instead of a zero return", () => {
-    render(
-      <NewsReactionValue
-        horizon="4h"
-        reaction={newsReactionFixture({
-          return_4h_bps: null,
-          state: "partial",
-          state_zh: "1H 已出",
-        })}
-      />,
-    );
-
-    expect(screen.getByText("未到期")).toBeInTheDocument();
-    expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
-  });
-
-  it("carries the server's reason when a horizon cannot be computed at all", () => {
-    render(
-      <NewsReactionValue
-        horizon="1h"
-        reaction={newsReactionFixture({
-          priced_n: 0,
-          return_1h_bps: null,
-          return_4h_bps: null,
-          state: "unavailable",
-          state_zh: "无法计算",
-          unavailable_reason: "no_candle_within_gap",
-          unavailable_reason_zh: "该时段没有成交 K 线，不做前向填充",
-        })}
-      />,
-    );
-
-    expect(screen.getByText("该时段没有成交 K 线，不做前向填充")).toBeInTheDocument();
-  });
-
-  it("renders nothing numeric when there is no reaction at all", () => {
-    render(<NewsReactionValue horizon="1h" reaction={null} />);
-    expect(screen.getByText("—")).toBeInTheDocument();
   });
 });

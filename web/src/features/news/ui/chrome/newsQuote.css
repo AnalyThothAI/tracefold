@@ -53,13 +53,11 @@
    * Red up, green down — the mainland convention the direction word uses. Applied to *actual* returns only:
    * the model's call is a word, the market's answer is a figure, and they never share a shape.
    */
-  .news-quote-change[data-tone="up"],
-  .news-reaction[data-tone="up"] b {
+  .news-quote-change[data-tone="up"] {
     color: var(--dir-bullish);
   }
 
-  .news-quote-change[data-tone="down"],
-  .news-reaction[data-tone="down"] b {
+  .news-quote-change[data-tone="down"] {
     color: var(--dir-bearish);
   }
 
@@ -67,30 +65,5 @@
   .news-quote-change[data-state="stale"],
   .news-quote-price[data-state="stale"] {
     opacity: 0.55;
-  }
-
-  .news-reaction {
-    display: inline-flex;
-    gap: 5px;
-    align-items: baseline;
-    white-space: nowrap;
-  }
-
-  .news-reaction small {
-    color: var(--text-subtle);
-    font: var(--type-eyebrow);
-    letter-spacing: 0.09em;
-  }
-
-  .news-reaction b {
-    color: var(--text-primary);
-    font: 640 var(--font-size-body)/1 var(--font-mono);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* Nothing missing is ever drawn as 0.00%: a horizon that has not matured says so, in words. */
-  .news-reaction-empty {
-    color: var(--text-faint);
-    font-size: var(--font-size-mono-meta);
   }
 }

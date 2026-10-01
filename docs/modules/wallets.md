@@ -7,7 +7,7 @@
 | 模块速览 | 说明 |
 | :--- | :--- |
 | **定位** | 信息产品 / 链上证据 |
-| **运行位置** | Workers · 名单、采集、Detector、价格四类任务 |
+| **运行位置** | Workers · 名单、采集、Detector 三类任务 |
 | **输入 → 产物** | 已发布名单、完整交易回执与连续完成前缀 → 净买入 episode、first / current / send 快照 |
 
 > [!IMPORTANT]
@@ -18,13 +18,13 @@
 <details>
 <summary><strong>本页目录</strong></summary>
 
-1. [四个独立任务](#section-四个独立任务)
+1. [三个独立任务](#section-三个独立任务)
 2. [名单不是成交](#section-名单不是成交)
 3. [完整前缀：不能跳过失败回执](#section-完整前缀不能跳过失败回执)
 4. [当前只有一条净买入规则](#section-当前只有一条净买入规则)
 5. [Episode、首次快照与当前快照](#section-episode首次快照与当前快照)
 6. [首报为什么还要做发送时检查](#section-首报为什么还要做发送时检查)
-7. [价格观察是独立后续](#section-价格观察是独立后续)
+7. [市场数据边界](#section-价格观察是独立后续)
 8. [页面与诊断](#section-页面与诊断)
 9. [验证入口](#section-验证入口)
 10. [源码责任地图](#section-源码责任地图)
@@ -32,15 +32,14 @@
 
 </details>
 
-<a id="section-四个独立任务"></a>
-## 01 · 四个独立任务
+<a id="section-三个独立任务"></a>
+## 01 · 三个独立任务
 
 | Workers 任务 | 职责 | 来源 / 产物 |
 | --- | --- | --- |
 | `news-wallet-roster` | 刷新并发布完整有效地址名单 | 名单提供商 → 版本化成员集 |
 | `news-chain-tape` | 扫描、获取完整回执、解释现金与代币变动 | RPC → receipt / fill 与连续已完成前缀 |
 | `news-wallet-net-buy` | 消费完整回执，评估单一净买入规则 | 成交事实 → episode 首报 / 当前快照 |
-| `news-wallet-prices` | 独立采样触发参考价与后续期限 | 公共价格 → 明确时点的价格观察 |
 
 任务由 [chain_tape wiring](../../tracefold/app/workers/wiring/chain_tape.py)与 [task_contract.py](../../tracefold/app/workers/task_contract.py)装配。名单服务变慢不应占住回执采集；价格失败不应延迟首次买入证据。
 
@@ -55,7 +54,7 @@ config:
 ---
 flowchart TB
     accTitle: 钱包证据到净买入警报
-    accDescr: 名单发布独立于回执采集；完整事实进入 detector 和 episode，再做发送时复查。价格采样是独立后续，不决定首报资格。
+    accDescr: 名单发布独立于回执采集；完整事实进入 detector 和 episode，再做发送时复查。页面读取首次、当前与发送快照。
     RosterProvider["地址名单提供商"] --> Roster["完整有效名单发布"]
     Roster --> RosterDB[("名单版本与开始监控时间")]
     RPC["链上日志、区块、交易回执"] --> Tape["采集与成交解释"]
@@ -65,8 +64,6 @@ flowchart TB
     Detector --> Episode[("代币 episode<br/>first / current snapshot")]
     Episode --> Check["发送时证据复查"]
     Check --> Notify["市场通知意图与回执"]
-    Episode --> Prices["独立价格采样"]
-    Prices --> UI["钱包列表与 episode 详情"]
     Episode --> UI
     Notify --> UI
 
@@ -76,11 +73,11 @@ flowchart TB
     classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
     classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
 class RosterProvider,RPC external;
-class Roster,Tape,Detector,Check,Notify,Prices news;
+class Roster,Tape,Detector,Check,Notify news;
 class RosterDB,Prefix,Episode,UI store;
 ```
 
-*数据流 · 名单不是成交；first、current 和实际发送证据不同。价格分支不阻断首报。*
+*数据流 · 名单不是成交；first、current 和实际发送证据不同。发送依据完整成交证据。*
 
 <a id="section-名单不是成交"></a>
 ## 02 · 名单不是成交
@@ -88,6 +85,8 @@ class RosterDB,Prefix,Episode,UI store;
 名单任务取回完整有效地址集后一次发布。成员版本表达**关注哪些地址**，不是每次 provider 的利润或排名变化都重置监控身份。采集器读取最近一次已发布名单，不在每次链扫描里同步请求名单网站。
 
 地址在名单中不代表它在当前窗口买入。`monitoring_from_ms`、名单已知时间和覆盖范围决定该地址是否具备完整可解释观察。排名、昵称和历史参与次数可展示，但不替代完整回执，更不能把 AI 猜测的钱包身份当作事实。
+
+名单持久化为 `news_market_wallets` 成员区间；成员集不变时只更新 handle 与刷新状态，不产生版本。变化时关闭离开成员、为新成员开区间，历史版本由区间边界还原。已离开的地址在采集器仍覆盖其离开后的 30 分钟窗口内重新加入时继承 `monitoring_from_ms`；否则从新覆盖重新建立监控。链进度与名单刷新状态分别归 `news_collectors.chain_tape` / `wallet_roster`，并以行锁防止并发覆盖。
 
 <a id="section-完整前缀不能跳过失败回执"></a>
 ## 03 · 完整前缀：不能跳过失败回执
@@ -169,16 +168,14 @@ Detector 达标后，发送可能排队。期间成员可能已卖出，或 coll
 这个检查只围绕 collector / detector 的完整证据边界：不能要求永远追上一个不断移动的未来最高区块，也不能为了首报再等价格、余额、模型解释或社交研究。缺少必要证据时具名暂缓；通过后冻结 payload，外部结果不明时不盲目重发。
 
 <a id="section-价格观察是独立后续"></a>
-## 07 · 价格观察是独立后续
+## 07 · 市场数据边界
 
-触发参考价最多在触发后 **5 分钟**内形成；更晚取得的价格不能回填成触发价。后续期限为 **15m、1h、4h**，保存目标时间和实际观察时间，期限采样还有自己的延迟限制。
-
-缺少参考价时收益为未知，不能计算成 0%；拿当前价格重新覆盖历史样本会破坏复盘含义。价格采样失败不改变已经保存的净买入证据，也不阻断首报。
+#764 P1 删除钱包参考价、期限价格采样与 outcome 字段。钱包警报以完整回执和净买入证据为准；当前行情仍由独立报价接口提供。
 
 <a id="section-页面与诊断"></a>
 ## 08 · 页面与诊断
 
-`/api/news/wallets` 回答名单和采集状态；`/api/news/wallets/events` 与详情接口回答 episode、成员、first / current、价格与历史。页面是只读投影，既不是另一份成交账本，也没有自动下单权限。
+`/api/news/wallets` 回答名单和采集状态；`/api/news/wallets/events` 与详情接口回答 episode、成员、first / current / send 与成交历史。页面是只读投影，既不是另一份成交账本，也没有自动下单权限。
 
 ```bash
 docker compose exec -T workers tracefold news wallets --hours 24 --queue-limit 10
@@ -203,8 +200,7 @@ docker compose exec -T workers tracefold news wallets --hours 24 --queue-limit 1
 | [evm.py](../../tracefold/news/chain_tape/evm.py)、[classify.py](../../tracefold/news/chain_tape/classify.py) | 日志解释、交易内资产流与 buy / sell / transfer 归属 |
 | [rules.py](../../tracefold/news/chain_tape/rules.py) | 无 I/O 的净买入窗口、成员排除原因与有效新增买入 |
 | [detect.py](../../tracefold/news/chain_tape/detect.py) | 回执推进、episode 创建 / 更新及滑动到期 |
-| [prices.py](../../tracefold/news/chain_tape/prices.py) | 触发参考与期限价格采样，不改变触发事实 |
-| [wallet_contracts.py](../../tracefold/news/wallet_contracts.py)、[chain_tape/contracts.py](../../tracefold/news/chain_tape/contracts.py) | 窗口、成员、快照、回执与价格的类型契约 |
+| [wallet_contracts.py](../../tracefold/news/wallet_contracts.py)、[chain_tape/contracts.py](../../tracefold/news/chain_tape/contracts.py) | 窗口、成员、快照与回执的类型契约 |
 | [storage/chain_tape.py](../../tracefold/news/storage/chain_tape.py)、[wallet_events.py](../../tracefold/news/storage/wallet_events.py)、[wallet_snapshots.py](../../tracefold/news/storage/wallet_snapshots.py) | 持久事实、episode 与快照读取 |
 | [market_notifications.py](../../tracefold/news/market_notifications.py) | 首报发送前复查、冻结正文、实际投递结果 |
 | [wallet_diagnostics.py](../../tracefold/news/storage/wallet_diagnostics.py) | 状态、覆盖、规则和队列的可解释诊断 |

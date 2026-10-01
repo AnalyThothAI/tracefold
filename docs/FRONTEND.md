@@ -111,7 +111,7 @@ News 状态还要分开 `semantic_pending`、`semantic_deferred`、`semantic_in_
 <a id="section-行情钱包和执行的状态展示"></a>
 ## 04 · 行情、钱包和执行的状态展示
 
-**未知不等于零，过期不等于缺失，部分完成不等于失败。** 行情应显示来源、价格种类和时钟；Reaction 应显示锚点 / 期限 / 覆盖；钱包应区分 first、current、send snapshot；执行页应区分研究 action、发布、受理、成交、保护与平仓。
+**未知不等于零，过期不等于缺失，部分完成不等于失败。** 行情应显示来源、价格种类和时钟；钱包应区分 first、current、send snapshot；执行页应区分研究 action、发布、受理、成交、保护与平仓。
 
 请求失败时可以保留最后成功缓存，但必须标记数据陈旧与错误，不突然把整页变成“没有数据”。同一查询的加载、空数据、失败、部分数据和正常状态保持可理解的布局与重试入口。
 
@@ -200,3 +200,5 @@ npm run build:checked
 ---
 
 [返回文档中心](README.md) · [架构图谱](ARCHITECTURE.md#atlas) · [返回顶部](#frontend中文只读工作台)
+
+#764 P1：Event 详情与标的行移除固定期限反应，钱包详情移除参考价格与 outcome。当前行情继续展示价格种类、来源、时钟、fresh / stale / unavailable 和 24H 参考；钱包 first、current、send 快照与每地址净流量保留。相应字段由 OpenAPI 和生成类型一并删除。

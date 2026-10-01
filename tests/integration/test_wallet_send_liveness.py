@@ -70,8 +70,11 @@ def _cut_off_at(conn: Any, *, block: int, log: int, at_ms: int) -> None:
     """Move the collector's committed cutoff, exactly as `chain_tape_record_coverage` does."""
 
     conn.execute(
-        "UPDATE news_market_wallet_tape_state SET scanned_block = %s, scanned_log = %s, scanned_at_ms = %s"
-        " WHERE state_id = 'chain_tape'",
+        (
+            "UPDATE news_collectors SET state=state || "
+            "jsonb_build_object('scanned_block',%s::bigint,'scanned_log',%s::bigint,'scanned_at_ms',%s::bigint)"
+            " WHERE collector_id='chain_tape'"
+        ),
         (block, log, at_ms),
     )
     conn.commit()
@@ -178,7 +181,9 @@ def test_no_committed_cutoff_defers_instead_of_declaring_the_evidence_wrong(conn
     seed(conn, [fill(i, wallet=i) for i in range(1, 6)])
     run(conn)
     conn.execute(
-        "UPDATE news_market_wallet_tape_state SET scanned_block = NULL, scanned_log = NULL, scanned_at_ms = NULL"
+        "UPDATE news_collectors SET state=state || "
+        "jsonb_build_object('scanned_block',NULL,'scanned_log',NULL,'scanned_at_ms',NULL) WHERE"
+        " collector_id='chain_tape'"
     )
     conn.commit()
     sender = Sender()

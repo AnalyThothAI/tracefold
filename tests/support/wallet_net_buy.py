@@ -113,7 +113,14 @@ def seed(conn: Any, fills: Sequence[ClassifiedFill], *, quality: bool = True) ->
             now_ms=NOW,
             succeeded=True,
         )
-        conn.execute("UPDATE news_market_wallet_tape_state SET detection_cutover_at_ms = %s", (NOW - 3_600_000,))
+        conn.execute(
+            (
+                "UPDATE news_collectors SET state=state || "
+                "jsonb_build_object('detection_cutover_at_ms',%s::bigint) WHERE "
+                "collector_id='chain_tape'"
+            ),
+            (NOW - 3_600_000,),
+        )
         repos.news.chain_tape_record_coverage(
             from_ms=NOW - 3_600_000,
             through_ms=NOW,

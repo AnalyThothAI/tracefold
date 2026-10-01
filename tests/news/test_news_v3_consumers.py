@@ -171,6 +171,8 @@ class RecordingNews:
     def _method(self, name: str) -> Any:
         def _call(*args: Any, **kwargs: Any) -> Any:
             self.calls.append((name, {**{f"arg{i}": a for i, a in enumerate(args)}, **kwargs}))
+            if name == "purge_market_observations" and name not in self.responses:
+                return {"deleted_items": 0, "backlog_items": 0}
             if name == "evidence_material" and name not in self.responses:
                 return []
             if name == "evidence_candidates" and name not in self.responses:
@@ -2163,6 +2165,7 @@ def test_janitor_runs_bounded_raw_batches_in_cold_transactions() -> None:
         "news_raw_retention",
         # #553 PR-2: one bounded batch per pass, beside the purge that made those observations
         # unreadable, so alerting state for a group nobody can read any more goes with them.
+        "news_market_retention",
         "news_market_track_retention",
         # #572 PR-1: the wallet tape's own bounded batch, on the same heavy slot and beside the other
         # sweeps rather than as a task of its own.
@@ -2745,16 +2748,16 @@ def test_an_oi_frame_is_stored_with_its_typed_fact_and_opens_no_event() -> None:
         _market_raw(strategy_id=1019, strategy_name="OI Event Monitor", source_type="market", text=_OI_TITLE)
     )
 
-    item = news.kwargs_of("upsert_item")
-    assert (item["market_kind"], item["market_parse_status"], item["market_parse_error"]) == ("oi", "parsed", None)
-    assert item["market_source_strategy_id"] == "1019"
-    signal = news.kwargs_of("insert_oi_signal")
+    item = news.kwargs_of("insert_market_observation")["arg0"].model_dump()
+    assert (item["kind"], item["parse_status"], item["parse_error"]) == ("oi", "parsed", None)
+    assert item["source_strategy_id"] == "1019"
+    signal = news.kwargs_of("insert_market_observation")["arg0"].model_dump()
     assert (signal["symbol"], signal["direction"], signal["oi_change_bps"]) == ("TRUMP", "rise", 455)
     assert signal["source_venue"] == "binance"
     assert signal["measurement_definition"] == "oi_signal_v1|opennews_oi_source_v1|300000"
     # No live writer can mark a fact as reconstructed: the column defaults to false and only the
     # migration ever sets it.
-    assert "historical" not in signal
+    assert signal["historical"] is False
     for editorial in ("insert_event", "add_member", "append_evidence_snapshot", "find_band_candidates"):
         assert editorial not in news.names(), editorial
     assert bus.published == []
@@ -2773,8 +2776,8 @@ def test_a_recovery_market_frame_is_stored_exactly_like_a_live_one() -> None:
         )
     )
 
-    assert news.kwargs_of("upsert_item")["ingest_mode"] == "recovery"
-    assert news.kwargs_of("insert_oi_signal")["symbol"] == "TRUMP"
+    assert news.kwargs_of("insert_market_observation")["arg0"].model_dump()["ingest_mode"] == "recovery"
+    assert news.kwargs_of("insert_market_observation")["arg0"].model_dump()["symbol"] == "TRUMP"
     assert bus.published == []
 
 
@@ -2792,8 +2795,8 @@ def test_both_liquidation_strategies_write_the_typed_fact_with_their_own_source_
         )
     )
 
-    assert news.kwargs_of("upsert_item")["market_kind"] == "liquidation"
-    fact = news.kwargs_of("insert_market_liquidation")["fact"]
+    assert news.kwargs_of("insert_market_observation")["arg0"].kind == "liquidation"
+    fact = news.kwargs_of("insert_market_observation")["arg0"]
     assert (fact.symbol, fact.source_venue, fact.source_strategy_id) == ("SOL", "okx", str(strategy_id))
     assert fact.liquidated_position_side == "short"
 
@@ -2818,12 +2821,12 @@ def test_a_wallet_report_is_parsed_into_an_account_action_with_its_address_and_m
         )
     )
 
-    item = news.kwargs_of("upsert_item")
-    assert (item["market_kind"], item["market_parse_status"]) == ("smart_money", "parsed")
-    payload = json.loads(item["provider_params_json"])
+    item = news.kwargs_of("insert_market_observation")["arg0"].model_dump()
+    assert (item["kind"], item["parse_status"]) == ("smart_money", "parsed")
+    payload = item["provider_params"]
     assert payload["relatedAddress"] == "0x" + "1" * 40
     assert payload["strategy"]["metrics"]["position_value"]["value"] == 482113.55
-    fact = news.kwargs_of("insert_market_smart_money")["fact"]
+    fact = news.kwargs_of("insert_market_observation")["arg0"]
     assert (fact.trader_label, fact.action, fact.position_side, fact.symbol) == ("js-2", "close", "short", "SOL")
     assert fact.account_address == "0x" + "1" * 40
     assert str(fact.pnl_usd) == "-8204.10"
@@ -2852,10 +2855,9 @@ def test_a_template_this_code_cannot_prove_is_stored_as_a_raw_card_with_its_reas
         _market_raw(strategy_id=strategy_id, strategy_name="whatever", source_type=source_type, text=text)
     )
 
-    item = news.kwargs_of("upsert_item")
-    assert (item["market_kind"], item["market_parse_status"], item["market_parse_error"]) == (kind, "raw", reason)
-    for writer in ("insert_oi_signal", "insert_market_liquidation", "insert_market_smart_money"):
-        assert writer not in news.names(), writer
+    item = news.kwargs_of("insert_market_observation")["arg0"].model_dump()
+    assert (item["kind"], item["parse_status"], item["parse_error"]) == (kind, "raw", reason)
+    assert "upsert_item" not in news.names()
     assert "insert_event" not in news.names()
     assert bus.published == []
 
@@ -2893,5 +2895,4 @@ def test_an_ordinary_news_frame_still_opens_an_event_and_never_reaches_the_marke
     # The editorial branch never names a market column, so the Item's market identity stays absent.
     assert news.kwargs_of("upsert_item").get("market_kind") is None
     assert news.kwargs_of("insert_event")["event_kind"] == "news"
-    for writer in ("insert_oi_signal", "insert_market_liquidation", "insert_market_smart_money"):
-        assert writer not in news.names(), writer
+    assert "insert_market_observation" not in news.names()

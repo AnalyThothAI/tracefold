@@ -238,10 +238,10 @@
   .news-symbol-head,
   .news-symbol-row {
     display: grid;
-    grid-template-columns: 62px 74px minmax(280px, 1fr) 104px 132px;
+    grid-template-columns: 62px 74px minmax(280px, 1fr) 104px;
     gap: 10px;
     align-items: center;
-    min-width: 780px;
+    min-width: 640px;
     padding: 0 14px;
   }
 
@@ -283,13 +283,6 @@
     font-size: var(--font-size-meta);
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .news-symbol-reaction {
-    display: flex;
-    gap: 10px;
-    justify-content: flex-end;
-    align-items: baseline;
   }
 
   .news-symbol-more {

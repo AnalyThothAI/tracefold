@@ -52,6 +52,7 @@ from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
+from tracefold.news.storage.collectors import _INCIDENTS_SQL
 
 pytestmark = pytest.mark.integration
 
@@ -124,7 +125,11 @@ def conn(_module_connection: Any):
     """
 
     _module_connection.execute(
-        "TRUNCATE news_items, news_opennews_incidents, news_event_evidence_snapshots RESTART IDENTITY CASCADE"
+        "TRUNCATE news_items, news_market_observations, news_event_evidence_snapshots RESTART IDENTITY CASCADE"
+    )
+    _module_connection.execute(
+        "UPDATE news_collectors SET incidents='[]',state=state || "
+        "'{\"next_incident_id\": 1}'::jsonb WHERE collector_id='opennews'"
     )
     _module_connection.commit()
     return _module_connection
@@ -263,7 +268,7 @@ def _closed_recovery_incident(conn: Any) -> int:
 
 def _recovery_incident(conn: Any, incident_id: int) -> dict[str, Any]:
     row = conn.execute(
-        "SELECT * FROM news_opennews_incidents WHERE incident_id = %s",
+        "SELECT * FROM (" + _INCIDENTS_SQL + ") incidents WHERE incident_id = %s",
         (incident_id,),
     ).fetchone()
     assert row is not None
@@ -356,7 +361,7 @@ def test_a_broker_outage_becomes_one_incident_that_official_recovery_settles_int
     conn.commit()
 
     assert bus.published == []
-    incidents = [dict(row) for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    incidents = [dict(row) for row in conn.execute("SELECT * FROM (" + _INCIDENTS_SQL + ") incidents").fetchall()]
     assert [row["cause_class"] for row in incidents] == ["broker_unavailable"]
     assert incidents[0]["closed_at_ms"] is None
     assert incidents[0]["recovery_status"] == "pending"
@@ -367,7 +372,7 @@ def test_a_broker_outage_becomes_one_incident_that_official_recovery_settles_int
     bus.fail_kinds = set()
     asyncio.run(receiver._publish_frame({"params": {**hit, "id": f"{hit['id']}-later"}}, strategy_id=strategy_id))
     conn.commit()
-    closed = [dict(row) for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    closed = [dict(row) for row in conn.execute("SELECT * FROM (" + _INCIDENTS_SQL + ") incidents").fetchall()]
     assert closed[0]["closed_at_ms"] is not None
 
     older = {
@@ -380,7 +385,7 @@ def test_a_broker_outage_becomes_one_incident_that_official_recovery_settles_int
     asyncio.run(recovery._recover_pending())
     conn.commit()
 
-    settled = [dict(row) for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    settled = [dict(row) for row in conn.execute("SELECT * FROM (" + _INCIDENTS_SQL + ") incidents").fetchall()]
     assert settled[0]["recovery_status"] == "recovered"
     assert settled[0]["recovered_count"] == 1
     recovered = [message for message in bus.of_kind("raw") if message.payload["ingest_mode"] == "recovery"]
@@ -435,7 +440,7 @@ def test_a_killed_receiver_becomes_a_process_outage_the_next_one_recovers_into_o
     asyncio.run(successor._record_a_predecessor_that_never_reported_a_disconnect())
     conn.commit()
 
-    opened = [dict(row) for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    opened = [dict(row) for row in conn.execute("SELECT * FROM (" + _INCIDENTS_SQL + ") incidents").fetchall()]
     assert [row["cause_class"] for row in opened] == ["process_outage"]
     assert opened[0]["opened_at_ms"] == alive_at_ms
     assert opened[0]["planned"] is False, "a kill is not a planned shutdown"
@@ -444,7 +449,7 @@ def test_a_killed_receiver_becomes_a_process_outage_the_next_one_recovers_into_o
     # The new connection closes the window; that is what makes it visible to Recovery.
     asyncio.run(successor._connected())
     conn.commit()
-    closed = [dict(row) for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    closed = [dict(row) for row in conn.execute("SELECT * FROM (" + _INCIDENTS_SQL + ") incidents").fetchall()]
     assert closed[0]["closed_at_ms"] is not None
 
     older = {
@@ -457,7 +462,7 @@ def test_a_killed_receiver_becomes_a_process_outage_the_next_one_recovers_into_o
     asyncio.run(recovery._recover_pending())
     conn.commit()
 
-    settled = [dict(row) for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    settled = [dict(row) for row in conn.execute("SELECT * FROM (" + _INCIDENTS_SQL + ") incidents").fetchall()]
     assert settled[0]["recovery_status"] == "recovered" and settled[0]["recovered_count"] == 1
     recovered = [message for message in bus.of_kind("raw") if message.payload["ingest_mode"] == "recovery"]
     assert len(recovered) == 1
@@ -530,7 +535,9 @@ def test_a_cancelled_receiver_leaves_the_liveness_row_connected_and_writes_no_di
     asyncio.run(killed())
     conn.commit()
 
-    causes = [dict(row)["cause_class"] for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    causes = [
+        dict(row)["cause_class"] for row in conn.execute("SELECT * FROM (" + _INCIDENTS_SQL + ") incidents").fetchall()
+    ]
     assert causes == [], "a kill writes no disconnect of any kind, and least of all a planned one"
     liveness = repos.news.ingest_liveness()
     assert liveness is not None and liveness["connected"] is True, "the last durable word is still `connected`"
@@ -558,14 +565,14 @@ def test_a_predecessor_whose_clock_ran_ahead_cannot_open_an_outage_in_the_future
     asyncio.run(successor._record_a_predecessor_that_never_reported_a_disconnect())
     conn.commit()
 
-    opened = [dict(row) for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    opened = [dict(row) for row in conn.execute("SELECT * FROM (" + _INCIDENTS_SQL + ") incidents").fetchall()]
     assert [row["cause_class"] for row in opened] == ["process_outage"]
     assert before <= int(opened[0]["opened_at_ms"]) <= now_ms(), "an outage cannot have begun in the future"
 
     # The proof that the clamp is load-bearing: this same process can close what it opened.
     asyncio.run(successor._connected())
     conn.commit()
-    closed = conn.execute("SELECT opened_at_ms, closed_at_ms FROM news_opennews_incidents").fetchone()
+    closed = conn.execute("SELECT opened_at_ms, closed_at_ms FROM (" + _INCIDENTS_SQL + ") incidents").fetchone()
     assert closed["closed_at_ms"] is not None and int(closed["closed_at_ms"]) >= int(closed["opened_at_ms"])
 
 

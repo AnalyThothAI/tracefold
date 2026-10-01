@@ -1,14 +1,11 @@
-import type { NewsEventReaction, NewsQuote, NewsReaction } from "../../api/newsQueries";
+import type { NewsQuote } from "../../api/newsQueries";
 import {
-  formatBps,
   formatChangePct,
   formatPrice,
   priceTone,
   quoteAgeLabel,
   quoteStaleLabel,
   quoteVenueLabel,
-  reactionPlaceholder,
-  reactionValue,
 } from "../../model/newsPrice";
 
 import "./newsQuote.css";
@@ -20,7 +17,6 @@ import "./newsQuote.css";
  * its price kind and its age in a tooltip; when it goes stale it stays on screen, dimmed and marked, because a
  * provider outage that blanks a price looks exactly like a market that moved.
  *
- * A reaction is *then*: the fixed return between an Event's anchor and a horizon. It never changes once
  * complete. A horizon that has not matured says 未到期 — it is never drawn as 0.00%.
  *
  * Both use red-up / green-down, the same convention as the direction word, and are told apart from the
@@ -96,36 +92,6 @@ export function NewsQuoteCompact({ quote }: { quote: NewsQuote | undefined }) {
           <NewsQuoteChange quote={quote} showStale={false} />
         </>
       )}
-    </span>
-  );
-}
-
-export function NewsReactionValue({
-  horizon,
-  reaction,
-}: {
-  horizon: "1h" | "4h";
-  reaction: NewsEventReaction | NewsReaction | null | undefined;
-}) {
-  const value = reactionValue(reaction, horizon);
-  const label = horizon === "1h" ? "1H" : "4H";
-  if (value == null) {
-    return (
-      <span className="news-reaction" data-state={reaction?.state ?? "pending"}>
-        <small>{label}</small>
-        <span className="news-reaction-empty">{reactionPlaceholder(reaction, horizon)}</span>
-      </span>
-    );
-  }
-  return (
-    <span
-      className="news-reaction"
-      data-state={reaction?.state}
-      data-tone={priceTone(value)}
-      title={`事件后 ${label} 的实际涨跌，锚点是新闻发布时间`}
-    >
-      <small>{label}</small>
-      <b>{formatBps(value)}</b>
     </span>
   );
 }

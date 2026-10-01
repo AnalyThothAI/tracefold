@@ -45,7 +45,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         event_update_columns = columns("news_event_updates")
         scope_repair_columns = columns("news_head_scope_repairs")
         delivery_queue_columns = columns("news_delivery_queue")
-        news_ingest_columns = columns("news_ingest_state")
+        news_ingest_columns = columns("news_collectors")
         news_v3_indexes = {
             str(row["indexname"]): str(row["indexdef"])
             for row in conn.execute(
@@ -142,18 +142,8 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "card_copy_input_digest",
         "card_copy_document",
     }
-    assert news_ingest_columns == {
-        "singleton_key",
-        "connected",
-        "last_frame_at_ms",
-        "last_publish_at_ms",
-        "last_error_code",
-        "broker_snapshot",
-        "updated_at_ms",
-    }
+    assert news_ingest_columns == {"collector_id", "state", "incidents", "updated_at_ms"}
     assert {
-        "ix_news_incidents_open",
-        "ix_news_incidents_recovery",
         "ix_news_items_published",
         "ix_news_events_opened",
         "ix_news_events_kind_opened",
@@ -189,7 +179,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
     assert "telemetry_deterministic" not in unpublished_index
     assert "liquidation_deterministic" not in unpublished_index
-    assert version == latest_migration_version() == "20261001_0420"
+    assert version == latest_migration_version() == "20261001_0421"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -214,18 +204,20 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20261001_0420"
+    assert version == latest_migration_version() == "20261001_0421"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
-        ingest = conn.execute("SELECT singleton_key, updated_at_ms FROM news_ingest_state").fetchall()
+        ingest = conn.execute(
+            "SELECT collector_id, updated_at_ms FROM news_collectors ORDER BY collector_id"
+        ).fetchall()
     finally:
         conn.close()
 
-    assert ingest == [{"singleton_key": "opennews", "updated_at_ms": 0}]
+    assert [row["collector_id"] for row in ingest] == ["chain_tape", "instrument_catalog", "opennews", "wallet_roster"]
     # A fresh install used to arrive with a `PAUSED` runtime row and three blacklisted symbols. Both
     # seeds belonged to tables `20260901_0347` dropped, so the only structural seeds left are News's.
 

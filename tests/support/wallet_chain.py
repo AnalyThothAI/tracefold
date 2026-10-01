@@ -277,14 +277,17 @@ def _loop(conn: Any, chain: _Chain, **kwargs: Any) -> ChainTapeLoop:
 
 
 def _seed_cursor(conn: Any, *, block: int, roster_version: int, tx_index: int = -1) -> None:
-    conn.execute(
-        """
-        INSERT INTO news_market_wallet_tape_state
-            (state_id, high_water_block, high_water_tx_index, roster_version, last_outcome, updated_at_ms)
-        VALUES ('chain_tape', %s, %s, %s, '', 1)
-        """,
-        (block, tx_index, roster_version),
-    )
+    from tracefold.news.chain_tape.contracts import TapeCursor
+
+    with conn.transaction():
+        repositories_for_connection(conn).news.chain_tape_save_state(
+            cursor=TapeCursor(block, tx_index),
+            roster_version=roster_version,
+            outcome="",
+            error=None,
+            now_ms=1,
+            succeeded=False,
+        )
     conn.commit()
 
 
@@ -302,5 +305,4 @@ def _fills(conn: Any) -> list[dict[str, Any]]:
 
 
 def _state(conn: Any) -> dict[str, Any] | None:
-    row = conn.execute("SELECT * FROM news_market_wallet_tape_state").fetchone()
-    return None if row is None else dict(row)
+    return repositories_for_connection(conn).news.chain_tape_state()

@@ -137,7 +137,7 @@ def test_projection_validation_checks_bounded_public_models(tmp_path, postgres_c
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         initial = ProjectionValidationAudit(conn).run()
-        conn.execute("DELETE FROM news_ingest_state")
+        conn.execute("DELETE FROM news_collectors WHERE collector_id='opennews'")
         stale = ProjectionValidationAudit(conn).run()
     finally:
         conn.close()
@@ -145,7 +145,7 @@ def test_projection_validation_checks_bounded_public_models(tmp_path, postgres_c
     assert initial["ok"] is True
     assert initial["mismatch_count"] == 0
     assert set(initial["checks"]) == {
-        "news_ingest_state_mismatch",
+        "news_collectors_mismatch",
         "news_delivery_state_mismatch",
         # #553 PR-2: the same bounded-model question for the market card ledger, plus the claim only
         # it can make -- an observation may not point at a card that is not there.
@@ -153,7 +153,7 @@ def test_projection_validation_checks_bounded_public_models(tmp_path, postgres_c
         "news_market_coverage_mismatch",
     }
     assert stale["ok"] is False
-    assert stale["checks"]["news_ingest_state_mismatch"] == 1
+    assert stale["checks"]["news_collectors_mismatch"] == 1
 
 
 def test_query_audit_analyzes_all_route_query_families_on_empty_schema(

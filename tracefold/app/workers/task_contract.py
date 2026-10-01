@@ -33,15 +33,12 @@ from tracefold.app.workers.runtime import (
     NEWS_INGESTION,
     NEWS_INSTRUMENTS,
     NEWS_QUOTES,
-    NEWS_REACTIONS,
     WALLET_NET_BUY,
-    WALLET_PRICES,
     WALLET_ROSTER,
 )
 from tracefold.app.workers.wiring.chain_tape import (
     CHAIN_TAPE_TASK_NAME,
     WALLET_NET_BUY_TASK_NAME,
-    WALLET_PRICES_TASK_NAME,
     WALLET_ROSTER_TASK_NAME,
     ChainTapeComposition,
     run_chain_tape,
@@ -72,7 +69,6 @@ _NEWS_TASK_DECLARATIONS: dict[str, tuple[str, bool]] = {
     "news-deliverer": (NEWS_DELIVERY, False),
     "news-instruments": (NEWS_INSTRUMENTS, False),
     "news-quotes": (NEWS_QUOTES, False),
-    "news-reactions": (NEWS_REACTIONS, False),
 }
 
 
@@ -156,16 +152,6 @@ def worker_business_tasks(
                 foundational=False,
             )
         )
-        if tape.prices is not None:
-            prices = tape.prices
-            tasks.append(
-                WorkerTask(
-                    name=WALLET_PRICES_TASK_NAME,
-                    capability=WALLET_PRICES,
-                    run=lambda stop: run_chain_tape(prices, stop_event=stop, poll_seconds=tape.poll_seconds),
-                    foundational=False,
-                )
-            )
     return tuple(tasks)
 
 

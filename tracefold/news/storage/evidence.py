@@ -31,7 +31,7 @@ ITEM_MATERIAL_COLUMNS = """item_id, source_artifact_id, canonical_url, reporting
 # every Event of the window; `test_news_recall_bounds` holds the plan to that at production scale.
 _WINDOW = """e.event_id <> %(event_id)s AND e.updated_at_ms <= %(cutoff)s
     AND e.created_at_ms >= %(since)s AND e.created_at_ms < %(cutoff)s
-    AND i.provider_params_available_at_ms <= %(cutoff)s AND i.market_kind IS NULL"""
+    AND i.provider_params_available_at_ms <= %(cutoff)s"""
 _ORIGIN = "COALESCE(NULLIF(source_artifact_id,''), NULLIF(canonical_url,''), item_id)"
 
 
@@ -76,7 +76,7 @@ BACKGROUND_CANDIDATES_SQL = (
                  AND e.updated_at_ms <= %(cutoff)s AND e.created_at_ms >= %(since)s AND e.created_at_ms < %(cutoff)s
                ORDER BY e.created_at_ms DESC, e.event_id) tagged
         JOIN news_items i ON i.item_id = tagged.leader_item_id
-       WHERE i.provider_params_available_at_ms <= %(cutoff)s AND i.market_kind IS NULL AND EXISTS (
+       WHERE i.provider_params_available_at_ms <= %(cutoff)s AND EXISTS (
          SELECT 1
            FROM (SELECT lower(tagged.comparison_title) AS text
                  UNION ALL SELECT lower(m.fact_text) FROM news_event_members m

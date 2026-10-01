@@ -501,7 +501,7 @@ def test_a_roster_version_appears_only_when_the_membership_changes(conn: Any) ->
             [_member(SELL_WALLET, quality=2), _member(BUY_WALLET, quality=1)], now_ms=4_000
         )
     assert joined.roster_version == 2
-    assert conn.execute("SELECT count(*) AS n FROM news_market_wallet_roster").fetchone()["n"] == 3
+    assert conn.execute("SELECT count(*) AS n FROM news_market_wallets").fetchone()["n"] == 2
 
 
 # --------------------------------------------------------------------------- retention
@@ -600,7 +600,7 @@ def test_the_kind_vocabulary_and_the_cash_pairing_are_enforced_by_postgres(conn:
     with pytest.raises(psycopg.errors.CheckViolation):
         conn.execute(
             """
-            INSERT INTO news_market_wallet_tape_state (state_id, updated_at_ms)
+            INSERT INTO news_collectors (collector_id, updated_at_ms)
             VALUES ('somebody_elses_tape', 1)
             """
         )

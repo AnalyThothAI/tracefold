@@ -16,7 +16,6 @@ import {
 } from "../../model/symbolLanes";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
-import { NewsReactionValue } from "../chrome/NewsQuoteValue";
 
 /**
  * Every persisted Event kind for this name on one clock.
@@ -94,7 +93,6 @@ export function NewsSymbolEvents({
             <span>类型</span>
             <span>EVENT</span>
             <span>去向</span>
-            <span className="news-symbol-num">1H / 4H</span>
           </div>
           {shown.map((event) => (
             <EventRow event={event} key={event.event_id} />
@@ -136,10 +134,6 @@ function EventRow({ event }: { event: NewsFeedEvent }) {
       </span>
       <span className="news-symbol-outcome">
         <NewsOutcomeBadge outcome={event.outcome} variant="text" />
-      </span>
-      <span className="news-symbol-num news-symbol-reaction">
-        <NewsReactionValue horizon="1h" reaction={event.reaction} />
-        <NewsReactionValue horizon="4h" reaction={event.reaction} />
       </span>
     </article>
   );

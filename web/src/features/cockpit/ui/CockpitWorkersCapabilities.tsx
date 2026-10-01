@@ -39,7 +39,6 @@ const CAPABILITY_LABELS: Record<string, string> = {
   news_ingestion: "接收与入库",
   news_instruments: "标的表快照",
   news_quotes: "行情快照",
-  news_reactions: "事件回看",
   trading_signal_lane: "交易信号 lane",
 };
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -31,6 +32,7 @@ from ..events.storyline import preliminary_storyline_key
 from ..events.titles import ExtractedTitle, description_after_title, extract_title
 from ..events.tokens import comparison_tokens, jaccard
 from ..evidence import normalized_provider_text, text_sha
+from ..market_observations import MarketObservation
 from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
 from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
 from ..source_contracts import (
@@ -488,82 +490,113 @@ def admit_market_item(
     """
 
     news = repos.news
-    inserted = news.upsert_item(
-        item_id=prepared.item_id,
-        source_id=prepared.source_id,
-        source_item_key=prepared.provider_record_id,
-        title=prepared.parent.title or prepared.title or "(untitled)",
-        raw_first_line=prepared.parent.first_line[:500],
-        description=prepared.description,
-        canonical_url=prepared.canonical_url,
-        reporting_origin=prepared.reporting_origin,
-        published_at_ms=prepared.event_at_ms,
-        observed_at_ms=prepared.received_at_ms,
-        provider_metadata_json=prepared.provider_metadata_json,
-        strategy_ids_json=prepared.strategy_ids_json,
-        ingest_mode=ingest_mode,
-        trace_id=trace_id,
+    fields: dict[str, Any] = {}
+    if prepared.oi is not None:
+        source = prepared.oi_source
+        fields = {
+            "provider": MARKET_PROVIDER,
+            "source_venue": prepared.source_venue,
+            "parser_version": oi_signals.METRIC_VERSION,
+            "oi_event_id": prepared.oi_event_id,
+            "measurement_definition": oi_signals.measurement_definition(source),
+            "source_contract_version": None if source is None else source.contract_version,
+            "measurement_window_ms": None if source is None else source.measurement_window_ms,
+            **{
+                name: getattr(prepared.oi, name)
+                for name in (
+                    "symbol",
+                    "raw_instrument",
+                    "direction",
+                    "oi_change_bps",
+                    "oi_value_usd",
+                    "whale_long_profit_bps",
+                    "whale_oi_ratio_bps",
+                )
+            },
+        }
+    elif prepared.liquidation is not None:
+        fields = {
+            "provider": MARKET_PROVIDER,
+            **{
+                name: getattr(prepared.liquidation, name)
+                for name in (
+                    "symbol",
+                    "raw_instrument",
+                    "source_venue",
+                    "parser_version",
+                    "source_contract_version",
+                    "liquidated_position_side",
+                    "forced_order_side",
+                    "notional_usd",
+                    "price",
+                )
+            },
+        }
+    elif prepared.smart_money_fact is not None:
+        fields = {
+            "provider": MARKET_PROVIDER,
+            "notional_usd": prepared.smart_money_fact.reported_notional_usd,
+            **{
+                name: getattr(prepared.smart_money_fact, name)
+                for name in (
+                    "symbol",
+                    "raw_instrument",
+                    "source_venue",
+                    "parser_version",
+                    "source_contract_version",
+                    "trader_label",
+                    "account_address",
+                    "action",
+                    "position_side",
+                    "price",
+                    "pnl_usd",
+                )
+            },
+        }
+    elif prepared.wallet is not None:
+        fields = {"provider": "robinhood_chain"}
+    typed_fact = bool(fields)
+    inserted = news.insert_market_observation(
+        MarketObservation(
+            observation_id=prepared.item_id,
+            kind=prepared.market_kind,
+            source_id=prepared.source_id,
+            source_item_key=prepared.provider_record_id,
+            source_strategy_id=prepared.source_strategy_id,
+            title=prepared.parent.title or prepared.title or "(untitled)",
+            raw_first_line=prepared.parent.first_line[:500],
+            description=prepared.description,
+            event_at_ms=prepared.event_at_ms,
+            received_at_ms=prepared.received_at_ms,
+            provider_metadata=json.loads(prepared.provider_metadata_json),
+            provider_params=json.loads(prepared.provider_params_json),
+            ingest_mode=ingest_mode,
+            parse_status=prepared.parse_status,
+            parse_error=prepared.parse_error,
+            available_at_ms=now_ms if typed_fact and prepared.wallet is None else None,
+            **fields,
+        ),
         now_ms=now_ms,
-        source_artifact_id=prepared.source_artifact_id,
-        market_kind=prepared.market_kind,
-        market_source_strategy_id=prepared.source_strategy_id,
-        market_parse_status=prepared.parse_status,
-        market_parse_error=prepared.parse_error,
-        provider_params_json=prepared.provider_params_json,
     )
-    fact_written = _write_market_fact(news, prepared, ingest_mode=ingest_mode, now_ms=now_ms)
+    if prepared.wallet is not None:
+        typed_fact = bool(
+            news.chain_tape_insert_wallet_event(prepared.wallet, snapshot_json=prepared.provider_params_json)
+        )
     return MarketAdmitResult(
         item_id=prepared.item_id,
         item_inserted=inserted,
         market_kind=prepared.market_kind,
         parse_status=prepared.parse_status,
         parse_error=prepared.parse_error,
-        fact_written=fact_written,
+        fact_written=typed_fact,
     )
-
-
-def _write_market_fact(news: Any, prepared: _PreparedMarket, *, ingest_mode: str, now_ms: int) -> bool:
-    if prepared.oi is not None:
-        source = prepared.oi_source
-        news.insert_oi_signal(
-            event_id=prepared.oi_event_id,
-            metric_version=oi_signals.METRIC_VERSION,
-            symbol=prepared.oi.symbol,
-            raw_instrument=prepared.oi.raw_instrument,
-            direction=prepared.oi.direction,
-            oi_change_bps=prepared.oi.oi_change_bps,
-            oi_value_usd=prepared.oi.oi_value_usd,
-            whale_long_profit_bps=prepared.oi.whale_long_profit_bps,
-            whale_oi_ratio_bps=prepared.oi.whale_oi_ratio_bps,
-            observed_at_ms=prepared.event_at_ms,
-            received_at_ms=prepared.received_at_ms,
-            now_ms=now_ms,
-            provider=MARKET_PROVIDER,
-            source_strategy_id=None if source is None else source.strategy_id,
-            source_contract_version=None if source is None else source.contract_version,
-            measurement_window_ms=None if source is None else source.measurement_window_ms,
-            measurement_definition=oi_signals.measurement_definition(source),
-            source_item_id=prepared.item_id,
-            source_venue=prepared.source_venue,
-            ingest_mode=ingest_mode,
-        )
-        return True
-    if prepared.liquidation is not None:
-        news.insert_market_liquidation(fact=prepared.liquidation, ingest_mode=ingest_mode, now_ms=now_ms)
-        return True
-    if prepared.smart_money_fact is not None:
-        news.insert_market_smart_money(fact=prepared.smart_money_fact, ingest_mode=ingest_mode, now_ms=now_ms)
-        return True
-    if prepared.wallet is not None:
-        return bool(news.chain_tape_insert_wallet_event(prepared.wallet, snapshot_json=prepared.provider_params_json))
-    return False
 
 
 def prepare_wallet_observation(event: WalletEvent) -> _PreparedMarket:
     """One derived wallet observation, ready for the same admission transaction every market kind uses.
 
     This exists so the wallet rules do not grow an admission path of their own. What reaches PostgreSQL
-    is an ordinary market Item -- `market_kind = 'wallet'`, `market_notify_state = 'pending'` -- plus one
+    is a market observation with a pending notification marker, plus one
     typed fact row, written together by `admit_market_item`, which is the same contract #553 wrote for
     OI, liquidation and smart money.
 

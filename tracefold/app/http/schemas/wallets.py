@@ -134,9 +134,6 @@ class NewsWalletEventData(ExactApiSchema):
     first_attempt_at_ms: int | None
     settled_at_ms: int | None
     attempts: int
-    reference_price: str | None
-    reference_at_ms: int | None
-    reference_source: str | None
 
 
 class NewsWalletEventTotalsData(ExactApiSchema):
@@ -175,23 +172,7 @@ class NewsWalletFillData(ExactApiSchema):
     roster_version: int
 
 
-class NewsWalletOutcomeData(ExactApiSchema):
-    horizon: Literal["15m", "1h", "4h"]
-    target_at_ms: int
-    at_ms: int
-    price: str | None
-    source: str
-    reference_price: str | None
-    reference_at_ms: int | None
-    # Three, not four. `unavailable` was in the column's CHECK, this union and the generated TS type
-    # since #641, and `WalletPriceSampler` has never written it: a horizon it could not price is
-    # `missing_reference` or `late` (#649 §9). Migration 20260915_0381 removes the fourth value.
-    status: Literal["comparable", "missing_reference", "late"]
-    change_percent: str | None
-
-
 class NewsWalletEventDetailData(ExactApiSchema):
     event: NewsWalletEventData
     fills: list[NewsWalletFillData]
     next_fills_cursor: str | None
-    outcomes: list[NewsWalletOutcomeData]

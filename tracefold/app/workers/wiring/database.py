@@ -192,40 +192,6 @@ class WorkerQuoteDatabase:
             raise TransientError(f"quote_db_overrun:{name}") from exc
 
 
-class WorkerReactionDatabase:
-    """`ReactionDatabasePort` (#304): deterministic candle review on the one-slot heavy admission.
-
-    Quote collection is intentionally absent from this adapter: a slow Reaction backlog must not hold the
-    ordinary permit that keeps current display quotes moving.
-    """
-
-    def __init__(self, database: WorkerDatabase) -> None:
-        self._database = database
-        self._lane = database.heavy_business()
-
-    async def read[T](self, name: str, fn: Callable[[PriceRepositories], T], *, timeout_seconds: float) -> T:
-        return await self._run(
-            name,
-            _in_session(self._database, name, fn, timeout_seconds, _price_repositories),
-            timeout_seconds,
-        )
-
-    async def tx[T](self, name: str, fn: Callable[[PriceRepositories], T], *, timeout_seconds: float) -> T:
-        return await self._run(
-            name,
-            _in_session(self._database, name, fn, timeout_seconds, _price_repositories),
-            timeout_seconds,
-        )
-
-    async def _run[T](self, name: str, run: Callable[[], T], timeout_seconds: float) -> T:
-        try:
-            return await self._lane.run_business(name, run, operation_timeout_seconds=timeout_seconds)
-        except ResourceAdmissionTimeout as exc:
-            raise DeferError(f"reaction_db_admission_timeout:{name}") from exc
-        except ResourceOperationOverrun as exc:
-            raise TransientError(f"reaction_db_overrun:{name}") from exc
-
-
 class WorkerChainTapeDatabase:
     """`ChainTapeDatabasePort` (#572 PR-1): the wallet tape on ordinary business admission.
 
@@ -298,6 +264,5 @@ __all__ = [
     "WorkerNewsColdDatabase",
     "WorkerNewsDatabase",
     "WorkerQuoteDatabase",
-    "WorkerReactionDatabase",
     "WorkerTradingDatabase",
 ]

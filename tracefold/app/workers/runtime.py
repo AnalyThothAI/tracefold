@@ -24,7 +24,6 @@ NEWS_EDITORIAL = "news_editorial"
 NEWS_DELIVERY = "news_delivery"
 NEWS_INSTRUMENTS = "news_instruments"
 NEWS_QUOTES = "news_quotes"
-NEWS_REACTIONS = "news_reactions"
 # The market notification loop's own key. Named for what it does rather than for the package that
 # owns it, because that is what an operator reading `/api/status` is looking for: market alerts are a
 # capability of the product, not of News's internal layout (#553 PR-2).
@@ -38,7 +37,6 @@ CHAIN_TAPE = "chain_tape"
 # pricing all keep working against the last version that was published.
 WALLET_ROSTER = "wallet_roster"
 WALLET_NET_BUY = "wallet_net_buy"
-WALLET_PRICES = "wallet_prices"
 
 CapabilityStateName = Literal["running", "faulted", "unavailable", "disabled"]
 
@@ -346,10 +344,8 @@ __all__ = [
     "NEWS_INGESTION",
     "NEWS_INSTRUMENTS",
     "NEWS_QUOTES",
-    "NEWS_REACTIONS",
     "SHARED_RESOURCE_FAILURES",
     "WALLET_NET_BUY",
-    "WALLET_PRICES",
     "WORKERS_RUNTIME_STALE_AFTER_MS",
     "WORKERS_RUNTIME_VERSION",
     "CapabilityState",

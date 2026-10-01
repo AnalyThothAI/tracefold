@@ -83,9 +83,7 @@ def test_serve_pool_uses_the_shared_login_with_stable_read_only_attribution() ->
                 "lock_timeout": "250ms",
             }
             with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
-                conn.execute(
-                    "UPDATE news_ingest_state SET updated_at_ms = updated_at_ms WHERE singleton_key = 'opennews'"
-                )
+                conn.execute("UPDATE news_collectors SET updated_at_ms = updated_at_ms WHERE collector_id = 'opennews'")
     finally:
         asyncio.run(database.aclose())
 

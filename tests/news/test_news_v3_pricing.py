@@ -37,17 +37,12 @@ from tracefold.integrations.venues.trades import (
 )
 from tracefold.news.market_review.pricing import (
     CANDLE_INTERVAL_MS,
-    HORIZON_MS,
     QUOTE_FRESH_MAX_AGE_MS,
     QUOTE_MAX_FUTURE_SKEW_MS,
     QUOTE_PERIOD_SECONDS,
-    REACTION_METRIC_VERSION,
     Candle,
     PriceInstrument,
     Trade,
-    coverage_pct,
-    hit_pct,
-    median_bps,
     parse_change_pct,
     parse_price,
     price_kind_for,
@@ -218,11 +213,11 @@ def test_selected_endpoints_stay_exactly_one_horizon_apart() -> None:
     span = 5 * 3_600_000
     bars = _candles(_floor(ANCHOR) - CANDLE_INTERVAL_MS, ["1"] * (span // CANDLE_INTERVAL_MS))
     p0 = select_candle(bars, target_ms=ANCHOR)
-    p1 = select_candle(bars, target_ms=ANCHOR + HORIZON_MS["1h"])
-    p4 = select_candle(bars, target_ms=ANCHOR + HORIZON_MS["4h"])
+    p1 = select_candle(bars, target_ms=ANCHOR + 3_600_000)
+    p4 = select_candle(bars, target_ms=ANCHOR + 14_400_000)
     assert p0 and p1 and p4
-    assert p1.close_at_ms - p0.close_at_ms == HORIZON_MS["1h"]
-    assert p4.close_at_ms - p0.close_at_ms == HORIZON_MS["4h"]
+    assert p1.close_at_ms - p0.close_at_ms == 3_600_000
+    assert p4.close_at_ms - p0.close_at_ms == 14_400_000
 
 
 def test_an_anchor_exactly_on_a_boundary_takes_the_candle_that_closed_on_it() -> None:
@@ -235,7 +230,7 @@ def test_an_anchor_exactly_on_a_boundary_takes_the_candle_that_closed_on_it() ->
 def test_a_gap_is_missing_data_and_never_forward_filled() -> None:
     """A halt, a closed session or an illiquid hole must read as missing, not as an unchanged price."""
 
-    target = _floor(ANCHOR) + HORIZON_MS["1h"]
+    target = _floor(ANCHOR) + 3_600_000
     stale = _candles(target - 20 * CANDLE_INTERVAL_MS, ["10"])
     assert select_candle(stale, target_ms=target) is None
     assert select_candle([], target_ms=target) is None
@@ -262,34 +257,6 @@ def test_return_is_decimal_basis_points_with_half_even_rounding() -> None:
     assert return_bps(Decimal("100"), Decimal("100.005")) == 0
     assert return_bps(Decimal("100"), Decimal("100.015")) == 2
     assert return_bps(Decimal("0"), Decimal("1")) is None
-
-
-def test_event_level_aggregate_is_the_discrete_median_of_its_primaries() -> None:
-    assert median_bps([]) is None
-    assert median_bps([120]) == 120
-    # Even count takes the lower middle — a return one contract actually printed, and exactly
-    # PostgreSQL's percentile_disc(0.5), so the feed and the review page agree.
-    assert median_bps([100, 200]) == 100
-    assert median_bps([-300, 100, 200]) == 100
-
-
-def test_a_percentage_without_a_denominator_is_not_reported() -> None:
-    assert hit_pct(0, 0) is None
-    assert coverage_pct(0, 0) is None
-    assert hit_pct(56, 100) == 56.0
-    assert coverage_pct(3, 4) == 75.0
-
-
-def test_metric_version_is_pinned() -> None:
-    """Changing this string is a new version and a replay, never an edit to what a stored row means.
-
-    v2 (#651 §6.2): the anchor, interval, price kind, gap tolerance and aggregation are unchanged, but
-    *which contract* a symbol resolves to now depends on the market the Event's judgment named, so a
-    `reaction_v1` row and a `reaction_v2` row for the same `(event_id, symbol)` can be measurements of two
-    different instruments. They are kept apart rather than reconciled.
-    """
-
-    assert REACTION_METRIC_VERSION == "reaction_v2"
 
 
 # ---------------------------------------------------------------------------- venue adapters

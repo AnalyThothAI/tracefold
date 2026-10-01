@@ -14,9 +14,7 @@ import {
   type NewsDelivery,
   type NewsEventDetail,
   type NewsEventMember,
-  type NewsEventReaction,
   type NewsQuote,
-  type NewsReaction,
   type NewsSymbolNormalization,
   newsAssetKey,
   useNewsEventWithToken,
@@ -36,7 +34,6 @@ import { NewsTechnical } from "../chrome/NewsChrome";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
 import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
-import { NewsReactionValue } from "../chrome/NewsQuoteValue";
 
 import { NewsEventPager } from "./NewsEventPager";
 import {
@@ -231,16 +228,6 @@ function EventDocument({
 
       <SymbolNormalization groups={detail.normalization ?? []} />
 
-      {/* The second market block, deliberately its own card: "now" and "after this Event" are different time
-          semantics, and one table would invite reading a rolling change as the market's answer to this news. */}
-      <Card
-        aria-label="事件后反应"
-        hint="以新闻发布时间为锚点的固定收益，不是当前滚动涨跌"
-        title="事件后反应"
-      >
-        <EventReactions aggregate={detail.reaction} reactions={detail.reactions ?? []} />
-      </Card>
-
       <ReviewSummary detail={detail} />
 
       <div className="news-detail-grid">
@@ -347,70 +334,6 @@ function ReviewSummary({ detail }: { detail: NewsEventDetail }) {
         <EmptyNote>还没有当前通知决策的人工反馈。</EmptyNote>
       )}
     </Card>
-  );
-}
-
-/**
- * 事件后反应 (#88): the deterministic return between this Event's anchor and each horizon, per asset.
- *
- * The raw closes and their timestamps ship beside the returns so the number is auditable rather than
- * asserted. A horizon that has not matured says so; a gap the provider has no bar for says that instead of
- * forward-filling a price across it.
- */
-function EventReactions({
-  aggregate,
-  reactions,
-}: {
-  aggregate: NewsReaction | null | undefined;
-  reactions: NewsEventReaction[];
-}) {
-  const primaryReactions = reactions.filter((reaction) => reaction.is_primary);
-  const nonPrimaryCount = reactions.length - primaryReactions.length;
-  if (!reactions.length && !aggregate) {
-    return <EmptyNote>还没有可用的事件后反应。</EmptyNote>;
-  }
-  return (
-    <div className="news-detail-reactions">
-      {aggregate ? (
-        <p className="news-detail-reaction-aggregate">
-          <span>事件级（主标的中位）</span>
-          <NewsReactionValue horizon="1h" reaction={aggregate} />
-          <NewsReactionValue horizon="4h" reaction={aggregate} />
-          <small>
-            {aggregate.priced_n}/{aggregate.asset_n} 个主标的已定价 · {aggregate.metric_version}
-          </small>
-        </p>
-      ) : null}
-      {primaryReactions.length ? (
-        <ul className="news-detail-reaction-list">
-          {primaryReactions.map((reaction) => (
-            <li key={reaction.symbol}>
-              <span className="news-detail-quote-symbol">
-                <code>{reaction.symbol}</code>
-                {reaction.venue ? (
-                  <small>
-                    {reaction.venue}:{reaction.venue_symbol}
-                  </small>
-                ) : null}
-              </span>
-              <NewsReactionValue horizon="1h" reaction={reaction} />
-              <NewsReactionValue horizon="4h" reaction={reaction} />
-              <small className="news-detail-reaction-closes">
-                {reaction.p0 ? `p0 ${reaction.p0}` : reaction.state_zh}
-                {reaction.p1 ? ` · p1 ${reaction.p1}` : ""}
-                {reaction.p4 ? ` · p4 ${reaction.p4}` : ""}
-                {reaction.unavailable_reason_zh ? ` · ${reaction.unavailable_reason_zh}` : ""}
-              </small>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {nonPrimaryCount ? (
-        <p className="news-detail-reaction-caveat">
-          已隐藏 {nonPrimaryCount} 个同名但非主标的的价格候选；它们不参与事件级评价。
-        </p>
-      ) : null}
-    </div>
   );
 }
 

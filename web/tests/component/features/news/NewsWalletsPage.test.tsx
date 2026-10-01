@@ -68,12 +68,12 @@ describe("wallet net-buy events", () => {
       /已发送\s*·\s*未发送/,
     );
     expect(requests[0]).toBe("/api/news/wallets/events/" + "a".repeat(64));
-    expect(screen.getByText("未取得触发时的可靠价格基准，价格变化保持未知。")).toBeVisible();
+    expect(screen.queryByText("观察后价格变化")).not.toBeInTheDocument();
     expect(screen.getByText("转出")).toBeVisible();
     expect(screen.queryByText("0.00%")).toBeNull();
   });
 
-  it("keeps zero, negative net flow, tiny prices and known zero changes distinct from unknown", async () => {
+  it("keeps zero and negative net flow in wallet episodes", async () => {
     const data = newsWalletDecimalDetailFixture();
     const event = data.event;
     server.use(
@@ -83,8 +83,6 @@ describe("wallet net-buy events", () => {
     fireEvent.click(await screen.findByText("其他观察地址与未纳入原因 · 1"));
     expect(screen.getByText("$-1,500.50")).toBeVisible();
     expect(screen.getAllByText("$0").length).toBeGreaterThan(0);
-    expect(screen.getByText("价格 $1.23e-28")).toBeVisible();
-    expect(screen.getByText("观察后价格变化 0%")).toBeVisible();
   });
 
   it("sends history range changes and retains full-scope totals across cursor pages", async () => {

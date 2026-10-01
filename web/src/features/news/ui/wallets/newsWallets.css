@@ -127,20 +127,7 @@
     grid-template-columns: minmax(0, 1fr);
     gap: 12px;
   }
-  .news-wallets-outcomes {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 12px;
-  }
-  .news-wallets-outcomes > div {
-    padding: 12px;
-    border-radius: var(--radius-sm);
-    background: var(--surface-slot);
-  }
   @media (width < 700px) {
-    .news-wallets-outcomes {
-      grid-template-columns: 1fr;
-    }
     .news-wallet-event-list thead {
       display: none;
     }

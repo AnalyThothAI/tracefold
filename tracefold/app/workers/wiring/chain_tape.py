@@ -1,8 +1,8 @@
-"""Compose independently supervised wallet roster, ingestion, net-buy detection and price tasks.
+"""Compose independently supervised wallet roster, ingestion and net-buy detection tasks.
 
 Each task owns its adapters, one bounded `advance()` and one `aclose()`. PostgreSQL facts and durable
-work markers connect the stages. Slow price calls cannot hold up ingestion, a slow roster site cannot
-hold up collection (#649 §5.1), and a faulted stage closes only its own clients. App owns polling,
+work markers connect the stages. A slow roster site cannot hold up collection (#649 §5.1), and a
+faulted stage closes only its own clients. App owns polling,
 cancellation and joining all in-flight work.
 """
 
@@ -17,19 +17,16 @@ from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.runtime import (
     CHAIN_TAPE,
     WALLET_NET_BUY,
-    WALLET_PRICES,
     WALLET_ROSTER,
     CapabilityStates,
 )
 from tracefold.app.workers.wiring.database import WorkerChainTapeDatabase
-from tracefold.integrations.dexscreener import DexScreenerClient
 from tracefold.integrations.robinhood_chain import RobinhoodChainClient
 from tracefold.integrations.robinhoodtrenches import RobinhoodTrenchesClient
 from tracefold.news.bus import now_ms
 from tracefold.news.chain_tape import ChainTapeLoop
 from tracefold.news.chain_tape.detect import NetBuyDetector
 from tracefold.news.chain_tape.loop import POLL_INTERVAL_SECONDS
-from tracefold.news.chain_tape.prices import WalletPriceSampler
 from tracefold.news.chain_tape.roster_refresh import RosterRefreshLoop
 from tracefold.news.chain_tape.rules import WalletRules
 from tracefold.platform.config.models import Settings
@@ -38,7 +35,6 @@ from tracefold.platform.observability import TelemetryRegistry
 CHAIN_TAPE_TASK_NAME = "news-chain-tape"
 WALLET_ROSTER_TASK_NAME = "news-wallet-roster"
 WALLET_NET_BUY_TASK_NAME = "news-wallet-net-buy"
-WALLET_PRICES_TASK_NAME = "news-wallet-prices"
 
 
 class WalletStage(Protocol):
@@ -51,13 +47,12 @@ class WalletStage(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ChainTapeComposition:
-    """Four stages with independent resources and one operator-configured polling cadence."""
+    """Three stages with independent resources and one operator-configured polling cadence."""
 
     loop: ChainTapeLoop
     poll_seconds: float
     roster: RosterRefreshLoop
     detector: NetBuyDetector
-    prices: WalletPriceSampler
 
 
 def _wire_chain_tape(
@@ -71,7 +66,7 @@ def _wire_chain_tape(
 
     chain_tape = settings.news.chain_tape
     if not chain_tape.enabled:
-        for capability in (CHAIN_TAPE, WALLET_ROSTER, WALLET_NET_BUY, WALLET_PRICES):
+        for capability in (CHAIN_TAPE, WALLET_ROSTER, WALLET_NET_BUY):
             capabilities.disabled(capability, "news_chain_tape_disabled")
         return None
     tape_db = WorkerChainTapeDatabase(db)
@@ -97,14 +92,12 @@ def _wire_chain_tape(
         notifications_enabled=chain_tape.notifications_enabled,
         clock=now_ms,
     )
-    prices = WalletPriceSampler(db=tape_db, prices=DexScreenerClient(), clock=now_ms)
-    for capability in (CHAIN_TAPE, WALLET_ROSTER, WALLET_NET_BUY, WALLET_PRICES):
+    for capability in (CHAIN_TAPE, WALLET_ROSTER, WALLET_NET_BUY):
         capabilities.running(capability)
     return ChainTapeComposition(
         loop=loop,
         roster=roster,
         detector=detector,
-        prices=prices,
         poll_seconds=float(chain_tape.poll_interval_s),
     )
 
@@ -151,7 +144,6 @@ async def _advance_or_stop(loop: WalletStage, *, stop_event: asyncio.Event) -> N
 __all__ = [
     "CHAIN_TAPE_TASK_NAME",
     "WALLET_NET_BUY_TASK_NAME",
-    "WALLET_PRICES_TASK_NAME",
     "WALLET_ROSTER_TASK_NAME",
     "ChainTapeComposition",
     "_wire_chain_tape",

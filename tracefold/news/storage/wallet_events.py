@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from typing import Any, Final, cast
 
 from ..chain_tape.contracts import ClassifiedFill
-from ..wallet_contracts import WALLET_OUTCOME_HORIZONS, WalletEvent, WalletOutcome, WalletReference
+from ..wallet_contracts import WalletEvent
 from .sql_values import _dumps
 from .wallet_snapshots import wallet_event_row
 
@@ -26,17 +26,17 @@ NET_BUY_WINDOW_SQL: Final = f"""
 EVENT_COLUMNS: Final = """e.item_id, e.chain_id, e.token, e.token_symbol, e.trigger_tx_hash,
     e.event_at_ms, e.received_at_ms, e.detected_at_ms, e.last_effective_buy_at_ms, e.ended_at_ms,
     e.initial_snapshot, e.latest_snapshot, e.latest_matched, e.change_reason, e.updated_at_ms,
-    e.trigger_max_age_s, e.notification_eligible, e.notification_reason, e.send_snapshot,
-    e.reference_price, e.reference_at_ms, e.reference_source"""
+    e.trigger_max_age_s, e.notification_eligible, e.notification_reason, e.send_snapshot"""
 
 
 WALLET_PENDING_RECEIPTS_SQL: Final = f"""
             WITH seed AS (
                 SELECT f.chain_id, f.tx_hash, f.block_number AS block, f.log_index AS log
                   FROM news_market_wallet_fills f
-                  JOIN news_market_wallet_tape_state s ON s.state_id = 'chain_tape'
+                  JOIN news_collectors s ON s.collector_id = 'chain_tape'
                  WHERE f.derived_at_ms IS NULL
-                   AND (f.block_number, f.log_index) <= (s.scanned_block, s.scanned_log)
+                   AND (f.block_number, f.log_index) <= ((s.state->>'scanned_block')::bigint,
+                       (s.state->>'scanned_log')::bigint)
                  ORDER BY f.block_number, f.log_index, f.chain_id, f.tx_hash LIMIT %s
             ), pending AS (
                 SELECT chain_id, tx_hash, min(block) AS block, min(log) AS log FROM seed
@@ -56,13 +56,13 @@ WALLET_PENDING_RECEIPTS_SQL: Final = f"""
 #
 # The facts are the four this join already has: whether the *detector* already refused the episode
 # (`e.notification_eligible`, which is how a muted wallet lane is recorded), whether the notification
-# loop has decided about the Item at all (`i.market_notify_state`), the delivery row if a decision
+# loop has decided about the Item at all (`i.notify_state`), the delivery row if a decision
 # produced one, and the track's own reason if it did not. `pending` is now exactly one thing: an
 # intent that exists, has not been attempted, and whose track still has a next due time.
 NOTIFICATION_PROJECTION: Final = """
                    CASE
                      WHEN d.state IS NULL AND NOT e.notification_eligible THEN 'not_alerted'
-                     WHEN d.state IS NULL AND i.market_notify_state <> 'processed' THEN 'awaiting_decision'
+                     WHEN d.state IS NULL AND i.notify_state <> 'processed' THEN 'awaiting_decision'
                      WHEN d.state IS NULL THEN 'not_alerted'
                      WHEN d.state = 'pending' AND d.attempts = 0 AND t.next_due_at_ms IS NULL
                        THEN 'not_alerted'
@@ -77,9 +77,9 @@ WALLET_EVENTS_SQL: Final = f"""
                    d.created_at_ms AS intent_at_ms, d.first_attempt_at_ms,
                    d.settled_at_ms, d.attempts
               FROM news_market_wallet_events e
-              JOIN news_items i ON i.item_id = e.item_id
-              LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
-              LEFT JOIN news_market_tracks t ON t.group_key = i.market_notify_group_key
+              JOIN news_market_observations i ON i.observation_id = e.item_id
+              LEFT JOIN news_market_deliveries d ON d.delivery_key = i.notification_id
+              LEFT JOIN news_market_tracks t ON t.group_key = i.notify_group_key
              WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
                AND (%s::bigint IS NULL OR (e.event_at_ms,e.item_id) < (%s,%s))
              ORDER BY e.event_at_ms DESC, e.item_id DESC LIMIT %s
@@ -88,8 +88,8 @@ WALLET_EVENTS_SQL: Final = f"""
 WALLET_EVENT_TOTALS_SQL: Final = """
             SELECT count(*) AS total, count(*) FILTER (WHERE e.ended_at_ms IS NULL) AS active,
                    count(*) FILTER (WHERE d.state = 'sent') AS sent
-              FROM news_market_wallet_events e JOIN news_items i USING (item_id)
-              LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
+              FROM news_market_wallet_events e JOIN news_market_observations i ON i.observation_id=e.item_id
+              LEFT JOIN news_market_deliveries d ON d.delivery_key = i.notification_id
              WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
         """
 
@@ -102,22 +102,6 @@ WALLET_EVENT_FILLS_SQL: Final = """
                AND (block_number,log_index) <= (%s,%s)
                AND (%s::bigint IS NULL OR (block_number,log_index) < (%s,%s))
              ORDER BY block_number DESC, log_index DESC LIMIT %s
-        """
-
-WALLET_DUE_OUTCOMES_SQL: Final = """
-                SELECT e.item_id, e.chain_id, e.token, e.reference_price, e.reference_at_ms,
-                       i.market_notify_delivery_key AS delivery_key, e.event_at_ms + %s AS target_at_ms
-                  FROM news_market_wallet_events e JOIN news_items i USING (item_id)
-                  LEFT JOIN news_market_wallet_outcomes o ON o.item_id = e.item_id AND o.horizon = %s
-                 WHERE e.event_at_ms + %s <= %s AND o.item_id IS NULL
-                 ORDER BY COALESCE(e.outcome_attempted_at_ms,0), e.event_at_ms, e.item_id LIMIT %s
-            """
-
-WALLET_DUE_REFERENCES_SQL: Final = """
-            SELECT item_id, chain_id, token, event_at_ms
-              FROM news_market_wallet_events
-             WHERE reference_price IS NULL AND event_at_ms > %s AND event_at_ms <= %s
-             ORDER BY COALESCE(outcome_attempted_at_ms, 0), event_at_ms, item_id LIMIT %s
         """
 
 # The tape's earliest movement in a token, which is the whole of what this repository knows about the
@@ -146,9 +130,9 @@ WALLET_NOTIFICATION_FUNNEL_SQL: Final = """
                 SELECT d.state AS state, d.delivery_key AS delivery_key,
                        COALESCE(d.error, e.notification_reason, t.pending_reason) AS reason
                   FROM news_market_wallet_events e
-                  JOIN news_items i ON i.item_id = e.item_id
-                  LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
-                  LEFT JOIN news_market_tracks t ON t.group_key = i.market_notify_group_key
+                  JOIN news_market_observations i ON i.observation_id = e.item_id
+                  LEFT JOIN news_market_deliveries d ON d.delivery_key = i.notification_id
+                  LEFT JOIN news_market_tracks t ON t.group_key = i.notify_group_key
                  WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
             ), leading_reason AS (
                 SELECT reason, count(*) AS n FROM scoped
@@ -162,22 +146,14 @@ WALLET_NOTIFICATION_FUNNEL_SQL: Final = """
                    COALESCE((SELECT n FROM leading_reason), 0) AS unsent_reason_count
         """
 
-WALLET_OUTCOMES_SQL: Final = """
-            SELECT horizon, target_at_ms, at_ms, price::text, source, reference_price::text,
-                   reference_at_ms, status,
-                   CASE WHEN status = 'comparable' THEN ((price / reference_price - 1) * 100)::text
-                   END AS change_percent
-              FROM news_market_wallet_outcomes WHERE item_id = %s ORDER BY target_at_ms
-        """
-
 WALLET_EVENT_SQL: Final = f"""
             SELECT {EVENT_COLUMNS},{NOTIFICATION_PROJECTION},
                    d.created_at_ms AS intent_at_ms, d.first_attempt_at_ms,
                    d.settled_at_ms, d.attempts, d.card AS frozen_card
               FROM news_market_wallet_events e
-              JOIN news_items i ON i.item_id = e.item_id
-              LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
-              LEFT JOIN news_market_tracks t ON t.group_key = i.market_notify_group_key
+              JOIN news_market_observations i ON i.observation_id = e.item_id
+              LEFT JOIN news_market_deliveries d ON d.delivery_key = i.notification_id
+              LEFT JOIN news_market_tracks t ON t.group_key = i.notify_group_key
              WHERE e.item_id = %s
         """  # noqa: S608 -- code-owned SQL identifiers.
 
@@ -268,9 +244,10 @@ class WalletEventStorage:
         return (
             self.conn.execute("""
             SELECT 1 FROM news_market_wallet_fills f
-              JOIN news_market_wallet_tape_state s ON s.state_id = 'chain_tape'
+              JOIN news_collectors s ON s.collector_id = 'chain_tape'
              WHERE f.derived_at_ms IS NULL
-               AND (f.block_number, f.log_index) <= (s.scanned_block, s.scanned_log) LIMIT 1
+               AND (f.block_number, f.log_index) <= ((s.state->>'scanned_block')::bigint,
+                   (s.state->>'scanned_log')::bigint) LIMIT 1
         """).fetchone()
             is not None
         )
@@ -317,9 +294,8 @@ class WalletEventStorage:
                 item_id, chain_id, token, token_symbol, trigger_tx_hash, event_at_ms,
                 received_at_ms, detected_at_ms, last_effective_buy_at_ms,
                 initial_snapshot, latest_snapshot, latest_matched, change_reason, updated_at_ms,
-                trigger_max_age_s, notification_eligible, notification_reason,
-                reference_price, reference_at_ms, reference_source
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,'triggered',%s,%s,%s,%s,%s,%s,%s)
+                trigger_max_age_s, notification_eligible, notification_reason
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,'triggered',%s,%s,%s,%s)
             ON CONFLICT (item_id) DO NOTHING
         """,
                 (
@@ -339,9 +315,6 @@ class WalletEventStorage:
                     event.trigger_max_age_s,
                     event.notification_eligible,
                     event.notification_reason,
-                    event.reference_price,
-                    event.reference_at_ms,
-                    event.reference_source,
                 ),
             ).rowcount
         )
@@ -493,77 +466,3 @@ class WalletEventStorage:
         """
 
         return cast(dict[str, Any], self.conn.execute(WALLET_NOTIFICATION_FUNNEL_SQL, (from_ms, to_ms)).fetchone())
-
-    def chain_tape_due_references(self, *, now_ms: int, max_delay_ms: int, limit: int) -> list[dict[str, Any]]:
-        """Fresh episodes that still have no t0 baseline, least recently attempted first.
-
-        The lower bound is the sampling budget itself, so an episode that aged past it is never
-        backfilled, and the ordering is the sampler's own attempt stamp, so one token the price
-        provider cannot answer for rotates to the back instead of holding every other episode.
-        """
-
-        return list(self.conn.execute(WALLET_DUE_REFERENCES_SQL, (now_ms - max_delay_ms, now_ms, limit)).fetchall())
-
-    def chain_tape_record_reference(self, reference: WalletReference) -> bool:
-        """The sampler is the only writer here, and it writes once: a set baseline is never rewritten."""
-
-        return bool(
-            self.conn.execute(
-                """
-            UPDATE news_market_wallet_events
-               SET reference_price = %s, reference_at_ms = %s, reference_source = %s
-             WHERE item_id = %s AND reference_price IS NULL
-        """,
-                (reference.price, reference.at_ms, reference.source, reference.item_id),
-            ).rowcount
-        )
-
-    def chain_tape_due_outcomes(self, *, now_ms: int, limit: int) -> list[dict[str, Any]]:
-        due: list[dict[str, Any]] = []
-        for horizon, horizon_ms in WALLET_OUTCOME_HORIZONS:
-            rows = self.conn.execute(
-                WALLET_DUE_OUTCOMES_SQL,
-                (horizon_ms, horizon, horizon_ms, now_ms, max(1, limit // 3)),
-            ).fetchall()
-            due.extend({**row, "horizon": horizon} for row in rows)
-        return due
-
-    def chain_tape_record_outcome(self, outcome: WalletOutcome) -> bool:
-        return bool(
-            self.conn.execute(
-                """
-            INSERT INTO news_market_wallet_outcomes
-              (item_id,horizon,delivery_key,target_at_ms,at_ms,price,source,
-               reference_price,reference_at_ms,status)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
-        """,
-                (
-                    outcome.item_id,
-                    outcome.horizon,
-                    outcome.delivery_key,
-                    outcome.target_at_ms,
-                    outcome.at_ms,
-                    outcome.price,
-                    outcome.source,
-                    outcome.reference_price,
-                    outcome.reference_at_ms,
-                    outcome.status,
-                ),
-            ).rowcount
-        )
-
-    def chain_tape_mark_outcome_attempted(self, item_ids: Sequence[str], *, now_ms: int) -> None:
-        self.conn.execute(
-            """
-            UPDATE news_market_wallet_events SET outcome_attempted_at_ms = %s WHERE item_id = ANY(%s)
-        """,
-            (now_ms, list(item_ids)),
-        )
-
-    def wallet_outcomes(self, item_id: str) -> list[dict[str, Any]]:
-        return list(
-            self.conn.execute(
-                WALLET_OUTCOMES_SQL,
-                (item_id,),
-            ).fetchall()
-        )

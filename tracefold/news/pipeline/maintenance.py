@@ -364,6 +364,19 @@ class JanitorLoop:
             oldest_observed_at_ms = None if oldest is None else int(oldest)
             if backlog_rows == 0:
                 break
+        for _ in range(_RAW_RETENTION_MAX_BATCHES):
+            remaining_seconds = _RAW_RETENTION_MAX_WALL_SECONDS - (time.perf_counter() - started)
+            if remaining_seconds <= 0:
+                break
+            market = await self.cold_db.tx(
+                "news_market_retention",
+                lambda repos: repos.news.purge_market_observations(
+                    cutoff_ms=stamp - self.retention_judged_ms, batch_size=_RAW_RETENTION_BATCH_SIZE
+                ),
+                timeout_seconds=min(_RAW_RETENTION_BATCH_TIMEOUT_SECONDS, remaining_seconds),
+            )
+            if not market["backlog_items"]:
+                break
         # Alerting state for a group whose every observation has left the retention window answers a
         # question about records nobody can read any more. One bounded batch per pass, beside the
         # purge that made them unreadable, so it can never become its own unbounded scan (#553 §3.4).

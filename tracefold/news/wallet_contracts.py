@@ -4,26 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Final, Literal
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict
 
 WALLET_PROVIDER: Final = "robinhood_chain"
 WALLET_SOURCE_ID: Final = "news-robinhood-chain"
-OutcomeHorizon = Literal["15m", "1h", "4h"]
-WALLET_OUTCOME_HORIZONS: Final[tuple[tuple[OutcomeHorizon, int], ...]] = (
-    ("15m", 900_000),
-    ("1h", 3_600_000),
-    ("4h", 14_400_000),
-)
-OUTCOME_MAX_DELAY_MS: Final = 60_000
-# How long after the trigger a first price still counts as *the trigger's* price. It is one fast
-# window: past it the sample describes a later market, so the episode keeps no baseline at all rather
-# than acquiring a misleading one, and an episode older than this is never backfilled (#649 §8).
-REFERENCE_MAX_DELAY_MS: Final = 300_000
-# The one trigger window. There used to be two -- a 5m quorum of three beside this one -- and a card
-# had to say which of them had fired before it could say anything else. One window is one sentence:
-# five roster addresses, thirty minutes, a thousand dollars each (#649 PR-3 §2).
 NET_BUY_WINDOW_MS: Final = 1_800_000
 # How far back a member's own participation is counted for the card's third fact. Fourteen days is
 # long enough that a recurring buyer shows up as one and short enough that the count describes the
@@ -129,40 +115,3 @@ class WalletEvent:
     trigger_max_age_s: int
     notification_eligible: bool
     notification_reason: str | None
-    reference_price: Decimal | None = None
-    reference_at_ms: int | None = None
-    reference_source: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class WalletReference:
-    """The episode's t0 baseline: the first price that was really available after the trigger.
-
-    `at_ms` is the moment the provider answered, not the trigger, so the delay the baseline carries is
-    recorded rather than hidden -- `at_ms - trigger_at_ms` is the whole of it, and both halves are
-    stored columns. Only the price sampler builds one, and only once per episode.
-    """
-
-    item_id: str
-    price: Decimal
-    at_ms: int
-    source: str
-    trigger_at_ms: int
-
-    @property
-    def delay_ms(self) -> int:
-        return self.at_ms - self.trigger_at_ms
-
-
-@dataclass(frozen=True, slots=True)
-class WalletOutcome:
-    item_id: str
-    horizon: OutcomeHorizon
-    price: Decimal | None
-    at_ms: int
-    source: str
-    reference_price: Decimal | None
-    reference_at_ms: int | None
-    target_at_ms: int
-    status: str
-    delivery_key: str | None = None

@@ -456,8 +456,10 @@ def test_a_market_frame_that_matched_no_template_is_stored_raw_and_calls_no_mode
 
     assert bus.published == []
     item = conn.execute(
-        "SELECT item_id, market_kind, market_parse_status, market_parse_error, market_source_strategy_id"
-        " FROM news_items WHERE source_item_key = '179999001'"
+        "SELECT observation_id AS item_id, kind AS market_kind, parse_status AS "
+        "market_parse_status, parse_error AS market_parse_error, source_strategy_id AS "
+        "market_source_strategy_id FROM news_market_observations WHERE source_item_key = "
+        "'179999001'"
     ).fetchone()
     assert item is not None
     assert (item["market_kind"], item["market_parse_status"]) == ("oi", "raw")
@@ -465,7 +467,11 @@ def test_a_market_frame_that_matched_no_template_is_stored_raw_and_calls_no_mode
     assert item["market_source_strategy_id"] == "1019"
     assert (
         conn.execute(
-            "SELECT count(*) AS n FROM news_oi_signals WHERE source_item_id = %s", (item["item_id"],)
+            (
+                "SELECT count(*) AS n FROM news_market_observations WHERE observation_id = %s AND "
+                "parser_version IS NOT NULL"
+            ),
+            (item["item_id"],),
         ).fetchone()["n"]
         == 0
     )
@@ -480,9 +486,10 @@ def test_a_market_frame_that_matched_no_template_is_stored_raw_and_calls_no_mode
     )
 
     news = repositories_for_connection(conn).news
-    observed = conn.execute("SELECT observed_at_ms FROM news_items WHERE item_id = %s", (item["item_id"],)).fetchone()[
-        "observed_at_ms"
-    ]
+    observed = conn.execute(
+        "SELECT received_at_ms AS observed_at_ms FROM news_market_observations WHERE observation_id = %s",
+        (item["item_id"],),
+    ).fetchone()["observed_at_ms"]
     sources = {row["market_kind"]: row for row in news.market_sources(from_ms=observed, to_ms=observed + 1)}
     assert sources["oi"]["received"] >= 1
     assert sources["oi"]["raw"] >= 1

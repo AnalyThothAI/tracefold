@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Annotated, Any, get_args
+from typing import Annotated, get_args
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
@@ -95,7 +95,6 @@ def get_news_feed(
             # server fault and must not come back as a 400 naming a field the caller got right (#87 review).
             raise ApiBadRequest(str(exc), field="cursor") from exc
         _attach_asset_refs(data["events"], repos.news, repos.instruments)
-        _attach_reactions(data["events"], repos.price, now_ms=int(time.time() * 1000))
     if search is not None and not cursor:
         runtime.telemetry.record_news_search(
             search.mode,
@@ -113,14 +112,6 @@ def _parse_csv_filter(value: str, *, allowed: tuple[str, ...], error: str, field
         raise ApiBadRequest(error, field=field)
     selected = tuple(item for item in allowed if item in requested)
     return selected or None
-
-
-def _attach_reactions(events: list[dict[str, Any]], price: Any, *, now_ms: int) -> None:
-    """One bounded batch for the whole page: at most `limit` Event ids, never one query per row."""
-
-    aggregates = price.event_reaction_aggregates([event["event_id"] for event in events], now_ms=now_ms)
-    for event in events:
-        event["reaction"] = aggregates.get(str(event["event_id"]))
 
 
 __all__ = ["router"]

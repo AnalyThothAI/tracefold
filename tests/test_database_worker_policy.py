@@ -18,7 +18,6 @@ from tracefold.app.workers.wiring.database import (
     WorkerNewsColdDatabase,
     WorkerNewsDatabase,
     WorkerQuoteDatabase,
-    WorkerReactionDatabase,
     WorkerTradingDatabase,
 )
 from tracefold.platform.observability import TelemetryRegistry
@@ -112,18 +111,15 @@ def test_business_database_callbacks_receive_only_their_repository_capabilities(
         quote = await WorkerQuoteDatabase(database).read(  # type: ignore[arg-type]
             "quote_view", lambda repos: repos, timeout_seconds=1.0
         )
-        reaction = await WorkerReactionDatabase(database).read(  # type: ignore[arg-type]
-            "reaction_view", lambda repos: repos, timeout_seconds=1.0
-        )
         trading = await WorkerTradingDatabase(database).read(  # type: ignore[arg-type]
             "trading_view", lambda repos: repos, timeout_seconds=1.0
         )
 
         assert (hasattr(news, "news"), hasattr(news, "instruments"), hasattr(news, "price")) == (True, True, True)
         assert (hasattr(cold, "news"), hasattr(cold, "instruments"), hasattr(cold, "price")) == (True, True, True)
-        assert hasattr(quote, "price") and hasattr(reaction, "price")
+        assert hasattr(quote, "price")
         assert hasattr(trading, "trading")
-        for view in (news, cold, quote, reaction, trading):
+        for view in (news, cold, quote, trading):
             assert not hasattr(view, "conn")
         assert not hasattr(news, "trading")
         assert not hasattr(quote, "news")

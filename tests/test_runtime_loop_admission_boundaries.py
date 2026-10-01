@@ -10,7 +10,6 @@ from tracefold.app.workers.runtime import (
     CHAIN_TAPE,
     MARKET_NOTIFICATIONS,
     WALLET_NET_BUY,
-    WALLET_PRICES,
     WALLET_ROSTER,
     CapabilityStates,
 )
@@ -145,7 +144,6 @@ def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_i
             loop=_StubChainTape(),
             roster=_StubChainTape(),
             detector=_StubChainTape(),
-            prices=_StubChainTape(),
             poll_seconds=2.0,
         ),
     )
@@ -168,9 +166,7 @@ def test_every_news_ingestion_task_is_foundational_and_every_optional_one_owns_i
     assert by_name["news-wallet-roster"].foundational is False
     assert by_name["news-chain-tape"].foundational is False
     assert by_name["news-wallet-net-buy"].capability == WALLET_NET_BUY
-    assert by_name["news-wallet-prices"].capability == WALLET_PRICES
     assert by_name["news-wallet-net-buy"].foundational is False
-    assert by_name["news-wallet-prices"].foundational is False
     optional = [task.capability for task in tasks if not task.foundational]
     assert MARKET_NOTIFICATIONS in optional
     assert CHAIN_TAPE in optional
@@ -232,7 +228,6 @@ class _AllStagesPipeline:
                 "news-janitor",
                 "news-instruments",
                 "news-quotes",
-                "news-reactions",
             )
         ]
 

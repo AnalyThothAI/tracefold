@@ -8,7 +8,6 @@ observation when the group is a run of them.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
@@ -22,6 +21,7 @@ from tracefold.news.market_contracts import (
     REASON_UNPROCESSED,
     REASON_UNSTRUCTURED,
 )
+from tracefold.news.market_observations import MarketObservation
 from tracefold.news.oi_signals import measurement_definition, oi_source_contract
 from tracefold.news.smart_money import parse_smart_money
 from tracefold.news.source_contracts import MARKET_KINDS, MARKET_PROVIDER
@@ -52,54 +52,67 @@ def _item(
     strategy_id: str = "1019",
     parse_error: str = "unknown_market_source",
 ) -> None:
-    news.upsert_item(
-        item_id=item_id,
+    value = MarketObservation(
+        observation_id=item_id,
+        kind=kind,
         source_id="opennews",
         source_item_key=item_id,
+        source_strategy_id=strategy_id,
         title=item_id,
         raw_first_line=item_id,
         description="",
-        canonical_url=None,
-        reporting_origin="opennews",
-        published_at_ms=at_ms,
-        observed_at_ms=at_ms,
-        provider_metadata_json="{}",
-        strategy_ids_json="[]",
+        event_at_ms=at_ms,
+        received_at_ms=at_ms,
+        provider_metadata={},
+        provider_params=params or {},
         ingest_mode=ingest_mode,
-        trace_id="trace",
-        now_ms=at_ms,
-        market_kind=kind,
-        market_source_strategy_id=strategy_id,
-        market_parse_status="parsed" if parsed else "raw",
-        market_parse_error=None if parsed else parse_error,
-        provider_params_json="{}" if params is None else json.dumps(params),
+        parse_status="parsed" if parsed else "raw",
+        parse_error=None if parsed else parse_error,
     )
+    if not hasattr(news, "fixture_observations"):
+        news.fixture_observations = {}
+    news.fixture_observations[item_id] = value
+    if not parsed or kind == "unknown_market":
+        news.insert_market_observation(value, now_ms=at_ms)
 
 
 def _oi(news: Any, item_id: str, *, venue: str, symbol: str, at_ms: int) -> None:
     source = oi_source_contract({"strategies": [{"id": "1019"}]})
     assert source is not None
-    news.insert_oi_signal(
-        event_id=f"event-{item_id}",
-        metric_version="oi_signal_v1",
-        symbol=symbol,
-        raw_instrument=symbol,
-        direction="rise",
-        oi_change_bps=455,
-        oi_value_usd=32_170_000,
-        whale_long_profit_bps=8_021,
-        whale_oi_ratio_bps=10_071,
-        observed_at_ms=at_ms,
-        received_at_ms=at_ms,
+    base = news.fixture_observations[item_id]
+    news.insert_market_observation(
+        base.model_copy(
+            update=dict(
+                oi_event_id=f"event-{item_id}",
+                parser_version="oi_signal_v1",
+                symbol=symbol,
+                raw_instrument=symbol,
+                direction="rise",
+                oi_change_bps=455,
+                oi_value_usd=32170000,
+                whale_long_profit_bps=8021,
+                whale_oi_ratio_bps=10071,
+                provider=MARKET_PROVIDER,
+                source_venue=venue,
+                source_contract_version=source.contract_version,
+                measurement_window_ms=source.measurement_window_ms,
+                measurement_definition=measurement_definition(source),
+                available_at_ms=at_ms,
+            )
+        ),
         now_ms=at_ms,
-        provider=MARKET_PROVIDER,
-        source_strategy_id=source.strategy_id,
-        source_contract_version=source.contract_version,
-        measurement_window_ms=source.measurement_window_ms,
-        measurement_definition=measurement_definition(source),
-        source_item_id=item_id,
-        source_venue=venue,
     )
+
+
+def _typed(news: Any, fact: Any, *, at_ms: int) -> None:
+    base = news.fixture_observations[fact.item_id]
+    fields = {name: getattr(fact, name) for name in MarketObservation.model_fields if hasattr(fact, name)}
+    fields.update(provider=MARKET_PROVIDER, available_at_ms=at_ms)
+    if base.kind == "smart_money":
+        fields["notional_usd"] = fact.reported_notional_usd
+    # Source Item clocks are what the public reader has always used.
+    fields.update(event_at_ms=base.event_at_ms, received_at_ms=base.received_at_ms)
+    news.insert_market_observation(base.model_copy(update=fields), now_ms=at_ms)
 
 
 def _groups(news: Any, *, kinds: tuple[str, ...] = (), limit: int = 50) -> list[dict[str, Any]]:
@@ -263,72 +276,6 @@ def test_an_unparsed_record_is_its_own_group_and_never_merges_with_another_unkno
     assert len({group["group_key"] for group in groups}) == 2
 
 
-def test_backfilled_smart_money_records_group_by_account_once_a_fact_names_one(conn) -> None:
-    """#562. The reader's view of the reparse: 112 one-record groups become account groups.
-
-    Without a typed fact an Item is keyed `raw|<kind>|<item_id>` -- one group per provider record,
-    which is deliberate, because §4.1 forbids merging records whose grouping fields are unknown. The
-    fact is what supplies those fields, so the same three reports collapse into the one account run
-    §4.4 describes as soon as the parser has been run against them.
-    """
-
-    repos = repositories_for_connection(conn)
-    news = repos.news
-    address = "0x" + "a" * 40
-    reports = (
-        ("wallet-run-1", "js-2 Open Long BTC $798.18K , Price $79,817.87"),
-        ("wallet-run-2", "js-2 Open Long BTC $1.20M , Price $79,900.00"),
-        ("wallet-run-3", "js-2 Open Long BTC $2.10M , Price $80,100.00"),
-    )
-    with repos.transaction():
-        for offset, (item_id, _) in enumerate(reports):
-            _item(
-                news,
-                item_id,
-                kind="smart_money",
-                at_ms=NOW + offset,
-                parsed=False,
-                strategy_id="2026",
-                parse_error="market_backfill_not_reparsed",
-                params={"relatedAddress": address},
-            )
-
-    before = _groups(news)
-    assert [group["observation_count"] for group in before] == [1, 1, 1]
-    assert {group["group_key"] for group in before} == {f"raw|smart_money|{item_id}" for item_id, _ in reports}
-
-    with repos.transaction():
-        for offset, (item_id, title) in enumerate(reports):
-            fact = parse_smart_money(
-                title,
-                item_id=item_id,
-                fact_id=f"fact-{item_id}",
-                source_strategy_id="2026",
-                provider_source="hyperliquid",
-                related_address=address,
-                event_at_ms=NOW + offset,
-                received_at_ms=NOW + offset,
-            )
-            assert fact is not None
-            news.insert_market_smart_money(fact=fact, ingest_mode="live", now_ms=NOW)
-        # Exactly what the revision writes beside each fact; the group key is a function of the fact,
-        # and the parse pair is the independent second answer the page shows (#553 §6).
-        conn.execute(
-            "UPDATE news_items SET market_parse_status = 'parsed', market_parse_error = NULL"
-            " WHERE market_kind = 'smart_money'"
-        )
-
-    after = _groups(news)
-
-    assert [group["observation_count"] for group in after] == [3]
-    group = after[0]
-    assert group["group_key"] == f"smart_money|{MARKET_PROVIDER}|2026|js-2|{address}|hyperliquid|BTC|open|long"
-    assert (group["first_event_at_ms"], group["last_event_at_ms"]) == (NOW, NOW + 2)
-    assert group["latest"]["item_id"] == "wallet-run-3"
-    assert (group["latest"]["parse_status"], group["latest"]["parse_error"]) == ("parsed", None)
-    assert group["latest"]["account_address"] == address
-
-
 def test_the_kind_filter_narrows_and_the_source_summary_always_names_every_kind(conn) -> None:
     repos = repositories_for_connection(conn)
     news = repos.news
@@ -346,7 +293,7 @@ def test_the_kind_filter_narrows_and_the_source_summary_always_names_every_kind(
         _item(news, "oi-1", kind="oi", at_ms=NOW)
         _oi(news, "oi-1", venue="binance", symbol="BTC", at_ms=NOW)
         _item(news, "liq-1", kind="liquidation", at_ms=NOW + 1)
-        news.insert_market_liquidation(fact=liquidation, ingest_mode="live", now_ms=NOW)
+        _typed(news, liquidation, at_ms=NOW)
 
     assert [group["market_kind"] for group in _groups(news, kinds=("oi",))] == ["oi"]
     assert [group["market_kind"] for group in _groups(news, kinds=("liquidation",))] == ["liquidation"]
@@ -394,7 +341,7 @@ def test_one_item_reads_back_its_stored_payload_and_its_groups_whole_timeline(co
     params = {"relatedAddress": address, "strategy": {"metrics": {"position_value": {"value": 482113.55}}}}
     with repos.transaction():
         _item(news, "wallet-1", kind="smart_money", at_ms=NOW, params=params)
-        news.insert_market_smart_money(fact=account, ingest_mode="live", now_ms=NOW)
+        _typed(news, account, at_ms=NOW)
 
     detail = news.market_item(item_id="wallet-1")
     assert detail is not None
@@ -433,45 +380,6 @@ def test_the_page_cursor_walks_groups_without_repeating_or_skipping_one(conn) ->
         limit=2,
     )
     assert [group["latest"]["item_id"] for group in second] == ["oi-page-2", "oi-page-1"]
-
-
-def test_a_second_metric_version_of_one_record_is_a_re_parse_not_a_second_observation(conn) -> None:
-    """#553 SHOULD-FIX 2. The ledger's key is `(source_item_id, metric_version)` and the read uses both.
-
-    A parser generation bump writes a second row for the same provider record. It is the same
-    measurement read again, so the list must still show one observation: joining on the Item alone
-    would duplicate every OI row and double the count a reader is shown the day a new version lands.
-    """
-
-    repos = repositories_for_connection(conn)
-    news = repos.news
-    with repos.transaction():
-        _item(news, "oi-two-versions", kind="oi", at_ms=NOW)
-        _oi(news, "oi-two-versions", venue="binance", symbol="BTC", at_ms=NOW)
-        # The next parser generation, written beside the current one exactly as a re-parse would.
-        conn.execute(
-            """
-            INSERT INTO news_oi_signals (
-              event_id, metric_version, symbol, raw_instrument, direction, oi_change_bps, oi_value_usd,
-              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, received_at_ms, created_at_ms,
-              provider, measurement_definition, source_item_id, source_venue, available_at_ms, historical
-            ) VALUES (
-              'event-oi-two-versions-next', 'oi_signal_v2', %(symbol)s, 'BTC', 'rise', 999, 1, 1, 1,
-              %(at)s, %(at)s, %(at)s, 'opennews', 'oi_signal_v2|unproven|unproven', 'oi-two-versions',
-              'binance', %(at)s, false
-            )
-            """,
-            {"at": NOW, "symbol": "BTC"},
-        )
-
-    groups = _groups(news)
-
-    assert [(group["market_kind"], group["observation_count"]) for group in groups] == [("oi", 1)]
-    # The current metric version is what the reader is shown; the re-parse is evidence beside it.
-    assert groups[0]["latest"]["oi_change_bps"] == 455
-    assert groups[0]["latest"]["measurement_definition"].startswith("oi_signal_v1|")
-    sources = {row["market_kind"]: row for row in news.market_sources(from_ms=NOW - 1, to_ms=NOW + 3_600_000)}
-    assert (sources["oi"]["received"], sources["oi"]["groups"]) == (1, 1)
 
 
 def test_the_page_scan_bound_is_reported_and_never_ends_pagination_early(conn, monkeypatch) -> None:

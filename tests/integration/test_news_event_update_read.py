@@ -73,10 +73,6 @@ def _event(news: Any, event_id: str, *, opened_at_ms: int) -> None:
         trace_id="trace",
         now_ms=opened_at_ms,
         source_artifact_id=f"artifact:{event_id}",
-        market_kind=None,
-        market_source_strategy_id=None,
-        market_parse_status=None,
-        market_parse_error=None,
     )
     news.insert_event(
         event_id=event_id,

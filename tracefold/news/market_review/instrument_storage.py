@@ -2,7 +2,7 @@
 
 The snapshot write is idempotent by ``(venue, venue_symbol)`` and it writes only what moved: re-running it on an
 unchanged catalogue writes no instrument row at all, and only the answering venue's row in
-``news_market_instrument_snapshot_state`` advances (#570 A11). The current universe answers what an issuer's
+``news_collectors.instrument_catalog`` advances (#570 A11). The current universe answers what an issuer's
 canonical symbol is and whether it is a coin or a stock. A separate immutable event ledger records only the
 catalogue validity boundaries needed by historical Trading replay; it is not a second latest universe or a source
 of reader-facing listing news.
@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any
 
 # S608 exemptions below interpolate only module-owned ranking/optional-clause fragments; all values stay bound.
+from ..storage.collectors import CollectorsStorage, InstrumentCatalogState
 from .instruments import (
     ALIAS_SEEDS,
     INSTRUMENT_CLASS_ORDER,
@@ -408,7 +409,8 @@ class InstrumentsRepository:
         # from the snapshot state rather than from a per-row stamp (#570 A11). The figure still spans every venue,
         # including the reference tier: one stale tier is still a stale snapshot.
         stamp = self.conn.execute(
-            "SELECT max(last_snapshot_ms) AS last_snapshot_ms FROM news_market_instrument_snapshot_state"
+            "SELECT max(value::bigint) AS last_snapshot_ms FROM news_collectors c,"
+            " jsonb_each_text(c.state->'venues') WHERE collector_id='instrument_catalog'"
         ).fetchone()
         summary["last_snapshot_ms"] = stamp["last_snapshot_ms"] if stamp else None
         summary["reference_symbols"] = int(
@@ -522,7 +524,7 @@ class InstrumentsRepository:
         comparison that makes it unnecessary compares the complete instrument identity.
 
         "This venue answered a complete catalogue at T" is a fact about the venue, not about each of its rows, so
-        it lives in ``news_market_instrument_snapshot_state``: one row per answering venue, advanced on every
+        it lives in ``news_collectors.instrument_catalog``: one row per answering venue, advanced on every
         snapshot whether or not the catalogue moved. That is what the status page's ``last_snapshot_ms`` reads.
 
         Venues absent from ``instruments`` are left untouched — a venue that failed to answer must not read as a
@@ -579,15 +581,11 @@ class InstrumentsRepository:
             )
             written += 1
 
-        for venue in sorted(answered):
-            self.conn.execute(
-                """
-                INSERT INTO news_market_instrument_snapshot_state (venue, last_snapshot_ms)
-                VALUES (%s, %s)
-                ON CONFLICT (venue) DO UPDATE SET last_snapshot_ms = EXCLUDED.last_snapshot_ms
-                """,
-                (venue, int(now_ms)),
-            )
+        with CollectorsStorage(self.conn).mutate_collector(
+            "instrument_catalog", InstrumentCatalogState, now_ms=now_ms
+        ) as (catalog, _):
+            for venue in sorted(answered):
+                catalog.venues[venue] = int(now_ms)
         return SnapshotResult(
             total=len(instruments), venues=tuple(sorted(answered)), delisted=len(gone), written=written
         )

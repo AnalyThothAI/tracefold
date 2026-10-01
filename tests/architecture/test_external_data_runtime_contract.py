@@ -99,7 +99,7 @@ def test_production_composition_requires_explicit_external_data_classification_a
     assert invalid == {}
     assert missing_telemetry == []
     assert set(exempt.values()) == {"internal_maintenance"}
-    assert observed == SEMANTIC_CLASSES
+    assert observed == {"durable_event", "latest_state"}
 
 
 def test_the_chain_tape_stages_declare_their_semantics_and_emit_the_common_telemetry() -> None:

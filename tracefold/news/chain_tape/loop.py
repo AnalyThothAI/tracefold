@@ -20,8 +20,7 @@ Two flows share the turn, and the extension gate names them separately because t
   in bounded batches, and idempotent on the chain's own identity.
 
 Provider failures retain the durable position for a later turn. Unexpected errors reach Workers
-supervision. The roster refresh, the net-buy detector and the event price sampler run independently
-over committed facts.
+supervision. The roster refresh and the net-buy detector run independently over committed facts.
 """
 
 from __future__ import annotations

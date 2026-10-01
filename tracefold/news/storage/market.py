@@ -1,4 +1,4 @@
-"""The market read model: Items and their typed facts, read directly.
+"""The market read model: immutable observations and their notification projections.
 
 Nothing here goes through a verdict, a reader-history snapshot, an Event leader or a model. A market
 observation exists because the provider reported it and this process stored it, and that is the whole
@@ -27,7 +27,6 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Final, TypedDict
 
 from ..market_contracts import MARKET_TIMELINE_MAX, MARKET_TRACK_FIELDS, MARKET_WINDOW_ROW_CAP, notification_status
-from ..oi_contracts import OI_METRIC_VERSION
 from ..source_contracts import MARKET_KINDS
 from .sql_values import _dumps
 from .wallet_snapshots import wallet_snapshot
@@ -125,94 +124,40 @@ class MarketSourceSummaryRow(TypedDict):
     last_unknown_at_ms: int | None
 
 
-# One observation, whatever kind it is. The three fact tables stay separate tables -- a shared
-# supertable would need a column for every kind's semantics and a NULL for every other kind's -- and
-# they are unioned into one shape only here, at the point a reader actually needs one list.
-# The OI ledger's key is `(source_item_id, metric_version)`, so the join needs both halves. A second
-# metric version is a re-parse of the same provider record under a new parser generation, not a second
-# observation of the market -- joining on the Item alone would duplicate every OI row and double the
-# `observation_count` a reader is shown the day one lands.
-_OBSERVATIONS_SQL = f"""
-    SELECT i.item_id,
-           i.market_kind,
-           i.market_source_strategy_id AS source_strategy_id,
-           i.market_parse_status AS parse_status,
-           i.market_parse_error AS parse_error,
-           i.first_ingest_mode AS ingest_mode,
-           COALESCE(o.historical, false) AS historical,
-           i.title,
-           i.published_at_ms AS event_at_ms,
-           i.observed_at_ms AS received_at_ms,
-           COALESCE(o.available_at_ms, l.available_at_ms, w.available_at_ms) AS available_at_ms,
-           -- Per row, never an implied constant. #553 stored the provider on every market fact
-           -- precisely so a second one could not merge into the first's groups; `wallet` is that
-           -- second provider, and it is the chain rather than OpenNews (#572 §5.2).
-           COALESCE(o.provider, l.provider, w.provider,
-                    CASE WHEN e.item_id IS NOT NULL THEN 'robinhood_chain' END) AS provider,
-           COALESCE(o.source_venue, l.source_venue, w.source_venue) AS source_venue,
-           COALESCE(o.raw_instrument, l.raw_instrument, w.raw_instrument, e.token) AS raw_instrument,
-           COALESCE(o.symbol, l.symbol, w.symbol, e.token_symbol) AS symbol,
-           o.measurement_definition,
-           o.measurement_window_ms,
-           CASE WHEN o.source_contract_version IS NOT NULL AND o.measurement_window_ms > 0
-                THEN 'proven' WHEN o.source_item_id IS NOT NULL THEN 'unproven' END AS measurement_contract_status,
-           o.direction,
-           o.oi_change_bps,
-           o.oi_value_usd,
-           o.whale_long_profit_bps,
-           o.whale_oi_ratio_bps,
-           l.liquidated_position_side,
-           l.forced_order_side,
-           COALESCE(l.notional_usd, w.reported_notional_usd)::text AS notional_usd,
-           COALESCE(l.price, w.price)::text AS price,
-           w.trader_label,
-           w.account_address,
-           w.action,
-           w.position_side,
-           w.pnl_usd::text AS pnl_usd,
-           e.chain_id AS wallet_chain_id,
-           e.token AS wallet_token,
-           COALESCE(e.send_snapshot, e.initial_snapshot) AS wallet_snapshot,
-           e.notification_eligible AS wallet_notify_eligible,
-           e.notification_reason AS wallet_notification_reason,
-           e.trigger_max_age_s AS wallet_trigger_max_age_s,
-           i.market_notify_state AS notify_state,
-           i.market_notify_group_key AS notify_group_key,
-           i.market_notify_delivery_key AS delivery_key,
-           d.state AS delivery_state,
-           d.error AS delivery_error,
-           d.trigger_item_id AS delivery_trigger_item_id,
-           t.pending_reason AS track_reason,
-           -- No card claimed this observation and its group has moved on to a later round: nothing
-           -- is holding it and nothing will cover it. The comparison lives here because the round
-           -- start is the track's, and the track is already joined (#562 PR-F).
-           COALESCE(i.market_notify_delivery_key IS NULL AND i.observed_at_ms < t.round_started_at_ms, false)
-             AS round_closed,
-           CASE
-             WHEN o.source_item_id IS NOT NULL THEN
-               'oi|' || o.provider || '|' || COALESCE(o.source_venue, '') || '|'
-                     || o.raw_instrument || '|' || o.measurement_definition
-             WHEN l.item_id IS NOT NULL THEN
-               'liquidation|' || l.provider || '|' || COALESCE(l.source_venue, '') || '|'
-                     || l.raw_instrument || '|' || l.liquidated_position_side
-             WHEN w.item_id IS NOT NULL THEN
-               'smart_money|' || w.provider || '|' || w.source_strategy_id || '|' || w.trader_label
-                     || '|' || COALESCE(w.account_address, '') || '|' || COALESCE(w.source_venue, '')
-                     || '|' || w.raw_instrument || '|' || w.action || '|' || w.position_side
-             WHEN e.item_id IS NOT NULL THEN
-               'wallet|net_buy|' || e.chain_id::text || '|' || e.token || '|' || e.item_id
-             ELSE 'raw|' || i.market_kind || '|' || i.item_id
-           END AS group_key
-      FROM news_items i
-      LEFT JOIN news_oi_signals o
-             ON o.source_item_id = i.item_id
-            AND o.metric_version = '{OI_METRIC_VERSION}'
-      LEFT JOIN news_market_liquidations l ON l.item_id = i.item_id
-      LEFT JOIN news_market_smart_money w ON w.item_id = i.item_id
-      LEFT JOIN news_market_wallet_events e ON e.item_id = i.item_id
-      LEFT JOIN news_market_deliveries d ON d.delivery_key = i.market_notify_delivery_key
-      LEFT JOIN news_market_tracks t ON t.group_key = i.market_notify_group_key
-"""  # noqa: S608 -- the only interpolations are the code-owned `OI_METRIC_VERSION`
+# Public observation projection, verified against the pre-cut projection in revision 0421.
+_OBSERVATIONS_SQL = """
+SELECT o.observation_id AS item_id, o.kind AS market_kind, o.source_strategy_id, o.parse_status, o.parse_error,
+       o.ingest_mode, o.historical, o.title, o.event_at_ms, o.received_at_ms, o.available_at_ms, o.provider,
+       o.source_venue, COALESCE(o.raw_instrument, e.token) AS raw_instrument, COALESCE(o.symbol, e.token_symbol) AS
+           symbol,
+       o.measurement_definition, o.measurement_window_ms,
+       CASE WHEN o.oi_event_id IS NOT NULL AND o.source_contract_version IS NOT NULL AND o.measurement_window_ms >
+           0 THEN 'proven'
+            WHEN o.oi_event_id IS NOT NULL THEN 'unproven' END AS measurement_contract_status,
+       o.direction, o.oi_change_bps, o.oi_value_usd, o.whale_long_profit_bps, o.whale_oi_ratio_bps,
+       o.liquidated_position_side, o.forced_order_side, o.notional_usd::text AS notional_usd, o.price::text AS price,
+       o.trader_label, o.account_address, o.action, o.position_side, o.pnl_usd::text AS pnl_usd,
+       e.chain_id AS wallet_chain_id, e.token AS wallet_token, COALESCE(e.send_snapshot, e.initial_snapshot) AS
+           wallet_snapshot,
+       e.notification_eligible AS wallet_notify_eligible, e.notification_reason AS wallet_notification_reason,
+       e.trigger_max_age_s AS wallet_trigger_max_age_s,
+       o.notify_state, o.notify_group_key, o.notification_id AS delivery_key, d.state AS delivery_state,
+       d.error AS delivery_error, d.trigger_item_id AS delivery_trigger_item_id, t.pending_reason AS track_reason,
+       COALESCE(o.notification_id IS NULL AND o.received_at_ms < t.round_started_at_ms, false) AS round_closed,
+       CASE WHEN o.oi_event_id IS NOT NULL THEN 'oi|' || o.provider || '|' || COALESCE(o.source_venue, '') || '|'
+           || o.raw_instrument || '|' || o.measurement_definition
+            WHEN o.liquidated_position_side IS NOT NULL THEN 'liquidation|' || o.provider || '|' ||
+                COALESCE(o.source_venue, '') || '|' || o.raw_instrument || '|' || o.liquidated_position_side
+            WHEN o.trader_label IS NOT NULL THEN 'smart_money|' || o.provider || '|' || o.source_strategy_id || '|'
+                || o.trader_label || '|' || COALESCE(o.account_address, '') || '|' || COALESCE(o.source_venue, '')
+                || '|' || o.raw_instrument || '|' || o.action || '|' || o.position_side
+            WHEN e.item_id IS NOT NULL THEN 'wallet|net_buy|' || e.chain_id::text || '|' || e.token || '|' || e.item_id
+            ELSE 'raw|' || o.kind || '|' || o.observation_id END AS group_key
+  FROM news_market_observations o
+  LEFT JOIN news_market_wallet_events e ON e.item_id = o.observation_id
+  LEFT JOIN news_market_deliveries d ON d.delivery_key = o.notification_id
+  LEFT JOIN news_market_tracks t ON t.group_key = o.notify_group_key
+"""
 
 _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
     "item_id",
@@ -272,8 +217,8 @@ INTERNAL_OBSERVATION_KEYS: Final[frozenset[str]] = frozenset({"wallet_notify_eli
 MARKET_GROUPS_SQL = f"""
     WITH observations AS MATERIALIZED (
       SELECT * FROM ({_OBSERVATIONS_SQL}
-         WHERE i.market_kind = ANY(%(kinds)s)
-           AND i.observed_at_ms >= %(from_ms)s AND i.observed_at_ms < %(to_ms)s
+         WHERE o.kind = ANY(%(kinds)s)
+           AND o.received_at_ms >= %(from_ms)s AND o.received_at_ms < %(to_ms)s
       ) AS windowed
       WHERE (%(asset)s::text IS NULL OR upper(symbol) = %(asset)s)
         AND (%(provider)s::text IS NULL OR provider = %(provider)s)
@@ -315,12 +260,12 @@ MARKET_GROUPS_SQL = f"""
 # row of every list page to serve one row of one detail page.
 MARKET_ITEM_SQL = f"""
     SELECT windowed.*, i2.provider_params, i2.description, i2.raw_first_line
-      FROM ({_OBSERVATIONS_SQL} WHERE i.item_id = %s AND i.market_kind IS NOT NULL) AS windowed
-      JOIN news_items i2 ON i2.item_id = windowed.item_id
+      FROM ({_OBSERVATIONS_SQL} WHERE o.observation_id = %s) AS windowed
+      JOIN news_market_observations i2 ON i2.observation_id = windowed.item_id
 """  # noqa: S608 -- interpolates only this module's own observation projection
 
 MARKET_TIMELINE_SQL = f"""
-    SELECT * FROM ({_OBSERVATIONS_SQL} WHERE i.market_kind IS NOT NULL) AS windowed
+    SELECT * FROM ({_OBSERVATIONS_SQL} WHERE true) AS windowed
      WHERE windowed.group_key = %s
      ORDER BY windowed.received_at_ms DESC, windowed.item_id DESC
      LIMIT {MARKET_TIMELINE_MAX}
@@ -351,9 +296,9 @@ MARKET_DELIVERY_SUMMARY_SQL = """
 MARKET_SOURCES_SQL = f"""
     WITH observations AS MATERIALIZED (
       SELECT * FROM ({_OBSERVATIONS_SQL}
-         WHERE i.market_kind IS NOT NULL
-           AND i.observed_at_ms >= %s
-           AND i.observed_at_ms < %s) AS windowed
+         WHERE true
+           AND o.received_at_ms >= %s
+           AND o.received_at_ms < %s) AS windowed
     )
     SELECT market_kind,
            count(*) AS received,
@@ -377,10 +322,10 @@ _TRACK_INSERT = ", ".join(_TRACK_COLUMNS)
 _TRACK_VALUES = ", ".join(f"%({column})s" for column in _TRACK_COLUMNS)
 _TRACK_UPDATE = ",\n      ".join(f"{column} = EXCLUDED.{column}" for column in _TRACK_COLUMNS[1:])
 
-# The loop's take query. `market_notify_state = 'pending'` is a marker, not a cursor: an Item stays in
+# The loop's take query. `notify_state = 'pending'` is a marker, not a cursor: an Item stays in
 # this answer until the loop has grouped it, whatever order its transaction became visible in.
 MARKET_NOTIFY_BACKLOG_SQL = f"""
-    SELECT * FROM ({_OBSERVATIONS_SQL} WHERE i.market_notify_state = 'pending') AS backlog
+    SELECT * FROM ({_OBSERVATIONS_SQL} WHERE o.notify_state = 'pending') AS backlog
      ORDER BY backlog.received_at_ms ASC, backlog.item_id ASC
      LIMIT %s
 """  # noqa: S608 -- interpolates only this module's own observation projection
@@ -396,10 +341,10 @@ MARKET_TRACK_UPSERT_SQL = f"""
 """  # noqa: S608 -- interpolates only this module's own column identifiers
 
 MARKET_MARK_PROCESSED_SQL = """
-    UPDATE news_items
-       SET market_notify_state = 'processed', market_notify_group_key = %s
-     WHERE item_id = ANY(%s)
-       AND market_notify_state = 'pending'
+    UPDATE news_market_observations
+       SET notify_state = 'processed', notify_group_key = %s
+     WHERE observation_id = ANY(%s)
+       AND notify_state = 'pending'
 """
 
 # `ON CONFLICT DO NOTHING` answers both keys at once: the primary key, which is why a restart never
@@ -419,19 +364,19 @@ MARKET_OPEN_DELIVERY_SQL = """
 # round that ended before it. Without it, an observation a rule held hours ago -- an OI change under
 # the follow-up threshold, then four quiet hours -- is swept into whatever card comes next, which is
 # how the first production MARSCOIN card came to cover `01:20-07:34` (#562 PR-F). The partial index
-# `ix_news_items_market_notify_unclaimed (market_notify_group_key, observed_at_ms)` serves exactly
+# `ix_news_items_market_notify_unclaimed (notify_group_key, observed_at_ms)` serves exactly
 # this predicate.
 MARKET_ADOPT_UNCLAIMED_SQL = """
-    UPDATE news_items
-       SET market_notify_delivery_key = %s
-     WHERE market_notify_group_key = %s
-       AND market_notify_delivery_key IS NULL
-       AND market_notify_state = 'processed'
-       AND observed_at_ms >= %s
-       AND (%s::text[] IS NULL OR item_id = ANY(%s))
-       AND (market_kind <> 'wallet' OR EXISTS (
+    UPDATE news_market_observations
+       SET notification_id = %s
+     WHERE notify_group_key = %s
+       AND notification_id IS NULL
+       AND notify_state = 'processed'
+       AND received_at_ms >= %s
+       AND (%s::text[] IS NULL OR observation_id = ANY(%s))
+       AND (kind <> 'wallet' OR EXISTS (
              SELECT 1 FROM news_market_wallet_events e
-              WHERE e.item_id = news_items.item_id
+              WHERE e.item_id = news_market_observations.observation_id
                 AND e.notification_eligible
            ))
 """
@@ -496,9 +441,9 @@ MARKET_DISCARD_DELIVERY_SQL = """
 """
 
 MARKET_DELIVERY_ITEM_IDS_SQL = f"""
-    SELECT item_id FROM news_items
-     WHERE market_notify_delivery_key = %s
-     ORDER BY observed_at_ms, item_id
+    SELECT observation_id AS item_id FROM news_market_observations
+     WHERE notification_id = %s
+     ORDER BY received_at_ms, observation_id
      LIMIT {MARKET_TIMELINE_MAX}
 """  # noqa: S608 -- interpolates only this module's own timeline cap
 
@@ -508,7 +453,7 @@ MARKET_DELIVERY_ITEM_IDS_SQL = f"""
 # covered. The set is bounded by the alert round it belongs to, and the card's own line cap bounds
 # what is rendered from it (#562 PR-F).
 MARKET_DELIVERY_OBSERVATIONS_SQL = f"""
-    SELECT * FROM ({_OBSERVATIONS_SQL} WHERE i.market_notify_delivery_key = %s) AS covered
+    SELECT * FROM ({_OBSERVATIONS_SQL} WHERE o.notification_id = %s) AS covered
      ORDER BY covered.received_at_ms ASC, covered.item_id ASC
 """  # noqa: S608 -- interpolates only this module's own projection
 
@@ -641,7 +586,7 @@ MARKET_PRUNE_TRACKS_SQL = """
        SELECT t.group_key FROM news_market_tracks t
         WHERE t.last_observed_at_ms < %s
           AND NOT EXISTS (
-            SELECT 1 FROM news_items i WHERE i.market_notify_group_key = t.group_key)
+            SELECT 1 FROM news_market_observations i WHERE i.notify_group_key = t.group_key)
         ORDER BY t.last_observed_at_ms
         LIMIT %s)
 """

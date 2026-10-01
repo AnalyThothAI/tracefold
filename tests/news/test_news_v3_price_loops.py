@@ -15,38 +15,26 @@ from typing import Any
 
 import pytest
 
-from tracefold.app.workers.wiring.database import WorkerQuoteDatabase, WorkerReactionDatabase
-from tracefold.news.bus import now_ms
+from tracefold.app.workers.wiring.database import WorkerQuoteDatabase
 from tracefold.news.market_review import loops as loops_module
-from tracefold.news.market_review.loops import EventReactionLoop, QuoteSnapshotLoop
+from tracefold.news.market_review.loops import QuoteSnapshotLoop
 from tracefold.news.market_review.pricing import (
-    CANDLE_INTERVAL_MS,
-    HORIZON_MS,
     QUOTE_DAY_PERIOD_SECONDS,
     QUOTE_SOURCE_GROUP_MAX,
     QUOTE_TARGET_MAX,
-    REACTION_CANDLE_REQUESTS_MAX,
-    Candle,
     PriceInstrument,
     ProviderQuote,
 )
 from tracefold.platform.observability import TelemetryRegistry
 
-# Three days before the real clock, on a candle boundary plus the same 100 s offset the old literal had.
-# The literal (2026-08-17) aged past `REACTION_HISTORY_MAX_AGE_MS` (30 d) on 2026-09-16 and every
-# reaction-loop case started reporting `history_exhausted` instead of exercising the planner.
-ANCHOR = (now_ms() - 3 * 86_400_000) // 60_000 * 60_000 + 100_000
-
 
 class _FakePrice:
     """The repository surface the loops touch, recording what each turn asked for and wrote."""
 
-    def __init__(self, *, targets: list[PriceInstrument] | None = None, due: list[dict[str, Any]] | None = None):
+    def __init__(self, *, targets: list[PriceInstrument] | None = None):
         self._targets = targets or []
-        self._due = due or []
         self.snapshots: dict[str, dict[str, Any]] = {}
         self.forgotten: list[str] = []
-        self.reactions: list[dict[str, Any]] = []
         self.instruments: dict[str, PriceInstrument] = {}
         self.requested_markets: list[tuple[str, str]] = []
 
@@ -72,10 +60,6 @@ class _FakePrice:
         self.forgotten.extend(dropped)
         return len(dropped)
 
-    def due_reactions(self, *, now_ms: int, limit: int) -> list[dict[str, Any]]:
-        del now_ms
-        return self._due[:limit]
-
     def resolve_instruments(self, requests: Any) -> dict[Any, PriceInstrument]:
         # Keyed by the whole request (#651 §6.2): one batch may ask about the same symbol in two markets.
         self.requested_markets = [(r.symbol, r.market_type) for r in requests]
@@ -85,28 +69,21 @@ class _FakePrice:
             if request.symbol in self.instruments and request.accepts(self.instruments[request.symbol].instrument_class)
         }
 
-    def upsert_reaction(self, row: Any, *, now_ms: int) -> None:
-        del now_ms
-        self.reactions.append(dict(row))
-
 
 class _FakeColdDatabase:
     """The fake exposes ordinary and heavy business admission, never the News consumer lane.
 
-    It stands in for `WorkerDatabase`, and satisfies the Quote/Reaction ports through the production
+    It stands in for `WorkerDatabase`, and satisfies the Quote port through the production
     adapter rather than a second hand-written one, so the lane, session and transaction wiring the loops
     actually run under is the wiring under test.
     """
 
-    def __init__(self, price: _FakePrice, *, reaction: bool = False) -> None:
+    def __init__(self, price: _FakePrice) -> None:
         self.price = price
         self.in_transaction = False
         self.operations: list[str] = []
         self.lanes: list[str] = []
-        self._port = WorkerReactionDatabase(self) if reaction else WorkerQuoteDatabase(self)
-
-    def heavy_business(self) -> _FakeHeavyDatabase:
-        return _FakeHeavyDatabase(self)
+        self._port = WorkerQuoteDatabase(self)
 
     async def read(self, name: str, fn: Any, *, timeout_seconds: float) -> Any:
         return await self._port.read(name, fn, timeout_seconds=timeout_seconds)
@@ -139,43 +116,18 @@ class _FakeColdDatabase:
         yield _Session()
 
 
-class _FakeHeavyDatabase:
-    def __init__(self, owner: _FakeColdDatabase) -> None:
-        self.owner = owner
-
-    async def run_business(self, name: str, fn: Any, *, operation_timeout_seconds: float) -> Any:
-        del operation_timeout_seconds
-        self.owner.operations.append(name)
-        self.owner.lanes.append("heavy")
-        return fn()
-
-
 def _instrument(venue: str, venue_symbol: str, base: str) -> PriceInstrument:
     return PriceInstrument(venue=venue, venue_symbol=venue_symbol, base_symbol=base, instrument_class="crypto")
 
 
-def _bars(first_open_ms: int, count: int, start: float = 100.0, step: float = 1.0) -> list[Candle]:
-    return [
-        Candle(
-            open_at_ms=first_open_ms + index * CANDLE_INTERVAL_MS,
-            close_at_ms=first_open_ms + (index + 1) * CANDLE_INTERVAL_MS,
-            close=Decimal(str(start + index * step)),
-        )
-        for index in range(count)
-    ]
-
-
-def test_quote_and_reaction_database_ports_use_distinct_existing_business_admission() -> None:
-    """#304 F2P: Quote uses ordinary business while Reaction remains on the one-slot heavy gate."""
+def test_quote_database_port_uses_ordinary_business_admission() -> None:
+    """Current quote reads use ordinary business admission."""
 
     quote_db = _FakeColdDatabase(_FakePrice())
-    reaction_db = _FakeColdDatabase(_FakePrice(), reaction=True)
 
     asyncio.run(quote_db.read("quote", lambda repos: repos.price, timeout_seconds=1.0))
-    asyncio.run(reaction_db.read("reaction", lambda repos: repos.price, timeout_seconds=1.0))
 
     assert quote_db.lanes == ["ordinary"]
-    assert reaction_db.lanes == ["heavy"]
 
 
 # ---------------------------------------------------------------------------- quote turns
@@ -852,274 +804,10 @@ def test_reference_is_valid_through_600_seconds_then_only_the_change_expires(
     assert expired.reference_at_ms == 100
 
 
-# ---------------------------------------------------------------------------- reaction turns
-def _due_row(event_id: str, symbol: str = "BTC", **overrides: Any) -> dict[str, Any]:
-    return {
-        "event_id": event_id,
-        "symbol": symbol,
-        "anchor_at_ms": ANCHOR,
-        "state": None,
-        "venue": None,
-        "venue_symbol": None,
-        "instrument_class": None,
-        # What the Event's own judgment says the symbol is (#651 §6.2); `due_reactions` projects it out of
-        # the current verdict, and a pre-#651 verdict says nothing here.
-        "market_type": None,
-        "p0": None,
-        "p0_at_ms": None,
-        "p1": None,
-        "p1_at_ms": None,
-        **overrides,
-    }
-
-
-def _reaction_loop(price: _FakePrice, bars: list[Candle], *, record: list[Any] | None = None) -> EventReactionLoop:
-    """A fake that honours the requested range, exactly like the real adapters.
-
-    A fetcher that ignores `start_ms`/`end_ms` hides planner bugs: the first version of `_needed_window`
-    asked only for the 1H neighbourhood on a matured backfill row and would have written every backfilled
-    Event off as `no_candle_within_gap`, while a range-blind fake reported it complete.
-    """
-
-    def fetcher_for(_venue: str):
-        async def fetch(venue_symbol: str, start_ms: int, end_ms: int):
-            if record is not None:
-                record.append((venue_symbol, start_ms, end_ms))
-            return [bar for bar in bars if start_ms <= bar.open_at_ms <= end_ms]
-
-        return fetch
-
-    return EventReactionLoop(db=_FakeColdDatabase(price, reaction=True), fetcher_for=fetcher_for)
-
-
-def test_one_candle_response_fills_many_events_on_the_same_instrument() -> None:
-    price = _FakePrice(due=[_due_row(f"e{index}") for index in range(5)])
-    price.instruments["BTC"] = _instrument("binance.perp", "BTCUSDT", "BTC")
-    requests: list[Any] = []
-    bars = _bars(ANCHOR - 2 * CANDLE_INTERVAL_MS, 60)
-
-    result = asyncio.run(_reaction_loop(price, bars, record=requests).turn())
-
-    assert len(requests) == 1  # five Events, one merged range, one provider call
-    assert result["due"] == 5 and result["written"] == 5
-    # These anchors matured long ago, so one backfill turn fills both legs from the same response.
-    assert {row["state"] for row in price.reactions} == {"complete"}
-    assert all(row["return_1h_bps"] is not None for row in price.reactions)
-    assert all(row["return_4h_bps"] is not None for row in price.reactions)
-
-
-def test_every_event_keeps_its_own_row_because_every_anchor_is_different() -> None:
-    """Reaction identity cannot be deduplicated away — only its provider reads are coalesced."""
-
-    price = _FakePrice(
-        due=[
-            _due_row("e1", anchor_at_ms=ANCHOR),
-            _due_row("e2", anchor_at_ms=ANCHOR + 30 * 60_000),
-        ]
-    )
-    price.instruments["BTC"] = _instrument("binance.perp", "BTCUSDT", "BTC")
-    requests: list[Any] = []
-    asyncio.run(_reaction_loop(price, _bars(ANCHOR - 2 * CANDLE_INTERVAL_MS, 80), record=requests).turn())
-
-    assert len(requests) == 1
-    assert {row["event_id"] for row in price.reactions} == {"e1", "e2"}
-    assert price.reactions[0]["return_1h_bps"] != price.reactions[1]["return_1h_bps"]
-
-
-def test_an_unresolvable_symbol_is_recorded_once_with_a_stable_reason() -> None:
-    price = _FakePrice(due=[_due_row("e1", symbol="NOTATHING")])
-    result = asyncio.run(_reaction_loop(price, []).turn())
-
-    assert result["written"] == 1
-    assert price.reactions[0]["state"] == "unavailable"
-    assert price.reactions[0]["unavailable_reason"] == "instrument_unresolved"
-
-
-def test_an_event_older_than_the_history_window_says_so_instead_of_asking_forever() -> None:
-    price = _FakePrice(due=[_due_row("e1", anchor_at_ms=1_000)])
-    price.instruments["BTC"] = _instrument("binance.perp", "BTCUSDT", "BTC")
-    asyncio.run(_reaction_loop(price, []).turn())
-
-    assert price.reactions[0]["unavailable_reason"] == "history_expired"
-
-
-def test_a_transient_provider_failure_writes_nothing_and_leaves_the_work_due() -> None:
-    price = _FakePrice(due=[_due_row("e1")])
-    price.instruments["BTC"] = _instrument("binance.perp", "BTCUSDT", "BTC")
-
-    def fetcher_for(_venue: str):
-        async def fetch(*_args: Any):
-            raise RuntimeError("venue_timeout")
-
-        return fetch
-
-    loop = EventReactionLoop(db=_FakeColdDatabase(price, reaction=True), fetcher_for=fetcher_for)
-    result = asyncio.run(loop.turn())
-
-    assert price.reactions == []  # a timeout is loop health, never a semantic reason
-    assert result["written"] == 0
-    assert loop.last_error is not None
-
-
-def test_a_backfilled_event_gets_both_horizons_from_one_window() -> None:
-    """An Event first measured after anchor+4H must not lose its 4H leg to a too-narrow request.
-
-    This is the whole initial backfill, and everything behind an outage longer than three hours.
-    """
-
-    price = _FakePrice(due=[_due_row("e1")])
-    price.instruments["BTC"] = _instrument("binance.perp", "BTCUSDT", "BTC")
-    requests: list[Any] = []
-    asyncio.run(_reaction_loop(price, _bars(ANCHOR - 2 * CANDLE_INTERVAL_MS, 60), record=requests).turn())
-
-    _, _start_ms, end_ms = requests[0]
-    assert end_ms >= ANCHOR + HORIZON_MS["4h"]  # one window covering both horizons
-    written = price.reactions[0]
-    assert written["state"] == "complete"
-    assert written["return_1h_bps"] is not None and written["return_4h_bps"] is not None
-    assert written.get("unavailable_reason") is None
-
-
-def test_an_immature_event_asks_only_for_the_first_horizon() -> None:
-    fresh_anchor = now_ms() - 2 * HORIZON_MS["1h"]
-    price = _FakePrice(due=[_due_row("e1", anchor_at_ms=fresh_anchor)])
-    price.instruments["BTC"] = _instrument("binance.perp", "BTCUSDT", "BTC")
-    requests: list[Any] = []
-    asyncio.run(_reaction_loop(price, _bars(fresh_anchor - 2 * CANDLE_INTERVAL_MS, 30), record=requests).turn())
-
-    _, _, end_ms = requests[0]
-    assert end_ms < fresh_anchor + HORIZON_MS["4h"]  # 4H has not matured; nothing asks for it yet
-    assert price.reactions[0]["state"] == "partial"
-    assert price.reactions[0].get("unavailable_reason") is None  # still due for its 4H leg
-
-
-def test_a_market_that_has_never_traded_is_named_once_instead_of_asked_forever() -> None:
-    """Hyperliquid lists spot pairs with no trades at all and answers `[]` for them, permanently.
-
-    Treating that as a transient failure left the row unwritten and therefore permanently due: in production
-    31 such rows sat at the head of the oldest-first scan, pinning the backlog SLO at 52 h and re-requesting
-    dead markets every turn.
-    """
-
-    price = _FakePrice(due=[_due_row("e1")])
-    price.instruments["BTC"] = _instrument("hl.spot", "@293", "BTC")
-    result = asyncio.run(_reaction_loop(price, []).turn())
-
-    assert result["written"] == 1
-    assert price.reactions[0]["state"] == "unavailable"
-    assert price.reactions[0]["unavailable_reason"] == "no_candle_within_gap"
-
-
-def test_no_answer_at_all_still_leaves_the_work_due() -> None:
-    """The other half of the same rule: a failed request is loop health and must stay retryable."""
-
-    price = _FakePrice(due=[_due_row("e1")])
-    price.instruments["BTC"] = _instrument("binance.perp", "BTCUSDT", "BTC")
-
-    def fetcher_for(_venue: str):
-        async def fetch(*_args: Any):
-            raise RuntimeError("venue_timeout")
-
-        return fetch
-
-    loop = EventReactionLoop(db=_FakeColdDatabase(price, reaction=True), fetcher_for=fetcher_for)
-    asyncio.run(loop.turn())
-
-    assert price.reactions == []
-
-
-def test_a_partial_row_keeps_its_first_horizon_when_the_second_window_is_empty() -> None:
-    matured = now_ms() - HORIZON_MS["4h"] - 60_000
-    price = _FakePrice(
-        due=[
-            _due_row(
-                "e1",
-                state="partial",
-                venue="hl.spot",
-                venue_symbol="@293",
-                p0=Decimal("100"),
-                p0_at_ms=matured,
-                p1=Decimal("101"),
-                p1_at_ms=matured + HORIZON_MS["1h"],
-                anchor_at_ms=matured,
-            )
-        ]
-    )
-    asyncio.run(_reaction_loop(price, []).turn())
-
-    written = price.reactions[0]
-    assert written["state"] == "partial"  # the 1H measurement survives
-    assert written["p0"] == Decimal("100")
-    assert written["unavailable_reason"] == "no_candle_within_gap"
-
-
-def test_a_hole_at_the_horizon_is_named_rather_than_forward_filled() -> None:
-    price = _FakePrice(due=[_due_row("e1")])
-    price.instruments["BTC"] = _instrument("binance.perp", "BTCUSDT", "BTC")
-    # Bars stop long before anchor+1H, so p1 falls in a gap.
-    asyncio.run(_reaction_loop(price, _bars(ANCHOR - 2 * CANDLE_INTERVAL_MS, 2)).turn())
-
-    assert price.reactions[0]["state"] == "unavailable"
-    assert price.reactions[0]["unavailable_reason"] == "no_candle_within_gap"
-
-
-def test_the_four_hour_leg_reuses_the_pinned_source_and_never_refetches_p0() -> None:
-    matured = ANCHOR + HORIZON_MS["4h"] + 60_000
-    price = _FakePrice(
-        due=[
-            _due_row(
-                "e1",
-                state="partial",
-                venue="binance.perp",
-                venue_symbol="BTCUSDT",
-                instrument_class="crypto",
-                p0=Decimal("100"),
-                p0_at_ms=ANCHOR,
-                p1=Decimal("101"),
-                p1_at_ms=ANCHOR + HORIZON_MS["1h"],
-                anchor_at_ms=matured - HORIZON_MS["4h"] - 60_000,
-            )
-        ]
-    )
-    # No resolvable symbol: the row must price from its pin, not from a fresh lookup.
-    requests: list[Any] = []
-    anchor = price._due[0]["anchor_at_ms"]
-    bars = _bars(anchor + HORIZON_MS["4h"] - 2 * CANDLE_INTERVAL_MS, 4, start=110.0, step=0.0)
-    result = asyncio.run(_reaction_loop(price, bars, record=requests).turn())
-
-    assert result["written"] == 1
-    written = price.reactions[0]
-    assert written["state"] == "complete"
-    assert written["venue_symbol"] == "BTCUSDT"
-    assert written["p0"] == Decimal("100")  # persisted price points are never refetched
-    assert written["return_4h_bps"] == 1000  # 100 -> 110
-    # Only the 4H neighbourhood is requested, never the whole anchor..+4H span.
-    _, start_ms, end_ms = requests[0]
-    assert end_ms - start_ms <= 4 * CANDLE_INTERVAL_MS
-
-
-def test_a_turn_never_exceeds_the_merged_candle_request_cap() -> None:
-    price = _FakePrice(due=[_due_row(f"e{index}", symbol=f"S{index}") for index in range(50)])
-    for index in range(50):
-        price.instruments[f"S{index}"] = _instrument("binance.perp", f"S{index}USDT", f"S{index}")
-    requests: list[Any] = []
-    asyncio.run(_reaction_loop(price, _bars(ANCHOR - 2 * CANDLE_INTERVAL_MS, 60), record=requests).turn())
-
-    assert len(requests) == REACTION_CANDLE_REQUESTS_MAX
-    # Rows the cap left out are simply not written this turn; they stay due in PostgreSQL.
-    assert len(price.reactions) == REACTION_CANDLE_REQUESTS_MAX
-
-
-@pytest.mark.parametrize("loop_name", ["quotes", "reactions"])
-def test_a_disabled_loop_runs_no_turn_at_all(loop_name: str) -> None:
-    price = _FakePrice()
-    db = _FakeColdDatabase(price)
+def test_a_disabled_quote_loop_runs_no_turn_at_all() -> None:
+    db = _FakeColdDatabase(_FakePrice())
     stop = asyncio.Event()
     stop.set()
-    loop: Any = (
-        QuoteSnapshotLoop(db=db, fetcher_for=lambda _s: None, enabled=False)
-        if loop_name == "quotes"
-        else EventReactionLoop(db=db, fetcher_for=lambda _v: None, enabled=False)
-    )
+    loop = QuoteSnapshotLoop(db=db, fetcher_for=lambda _s: None, enabled=False)
     asyncio.run(loop.run(stop_event=stop))
     assert db.operations == []

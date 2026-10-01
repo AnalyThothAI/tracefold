@@ -161,7 +161,7 @@ class Trading research;
 | [news/adapters](../tracefold/news/adapters/) | DSPy 提取、语义判断、读者判断与文案的具体模型适配 | [模型边界](modules/news.md#agent) |
 | [news/storage](../tracefold/news/storage/) | News 事实与短事务；语义、通知使用各自存储接口和显式 SQL 协作者 | [新闻状态](modules/news.md#state) |
 | [market_notifications.py](../tracefold/news/market_notifications.py) | OI / 清算 / 大户 / 钱包通知的确定性分支与发送循环 | [市场观察](modules/oi.md) |
-| [news/market_review](../tracefold/news/market_review/) | 标的目录、当前报价、固定期限 Event Reaction | [行情复盘](modules/market-review.md) |
+| [news/market_review](../tracefold/news/market_review/) | 标的目录、当前报价与发送时行情 | [行情复盘](modules/market-review.md) |
 | [news/chain_tape](../tracefold/news/chain_tape/) | 名单、回执完整前缀、成交解释、净买入与价格采样 | [钱包](modules/wallets.md) |
 | [news/review](../tracefold/news/review/)、[learning](../tracefold/news/learning/) | ReviewDesk、保留的卡片评审与校准 | [复核](modules/review.md) |
 | [trading/engine](../tracefold/trading/engine/) | 类型化目标、LIVE 特征、双腿几何、预测策略与记分纯函数 | [交易研究](modules/trading.md) |

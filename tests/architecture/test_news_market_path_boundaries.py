@@ -41,6 +41,8 @@ MARKET_PATH = (
     "tracefold/news/card_format.py",
     "tracefold/news/feishu_card.py",
     "tracefold/news/storage/market.py",
+    "tracefold/news/market_observations.py",
+    "tracefold/news/storage/observations.py",
     "tracefold/app/http/routes/market.py",
     "tracefold/app/http/schemas/market.py",
     "tracefold/news/storage/trade_projection.py",
@@ -81,7 +83,6 @@ MARKET_OWNED_FUNCTIONS: Final[dict[str, tuple[str, ...]]] = {
         "_prepare_market",
         "_related_address",
         "admit_market_item",
-        "_write_market_fact",
     ),
 }
 
@@ -140,7 +141,7 @@ def test_the_admission_scan_reads_the_market_functions_and_not_the_editorial_one
     scanned = _scannable("tracefold/news/pipeline/admission.py")
     whole = (ROOT / "tracefold/news/pipeline/admission.py").read_text(encoding="utf-8")
 
-    assert "admit_market_item" in scanned and "_write_market_fact" in scanned
+    assert "admit_market_item" in scanned and "insert_market_observation" in scanned
     assert "storyline_key" in whole, "the editorial branch still builds one, and must"
     assert "storyline_key" not in scanned
     assert len(scanned) < len(whole)

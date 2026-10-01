@@ -13,7 +13,6 @@ from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_review.pricing import (
     QUOTE_TARGET_MAX,
-    REACTION_METRIC_VERSION,
     REVIEW_MAX_HOURS,
     Quote,
     QuoteRequest,
@@ -132,51 +131,10 @@ def _seed(conn: Any) -> None:
         conn.execute(update_sql, params)
         conn.execute(head_sql, params)
         conn.commit()
-    conn.execute(
-        """
-        INSERT INTO news_event_reactions (event_id, symbol, metric_version, venue, venue_symbol,
-                                          instrument_class, anchor_at_ms, p0, p0_at_ms, p1, p1_at_ms,
-                                          p4, p4_at_ms, return_1h_bps, return_4h_bps, is_primary, state,
-                                          created_at_ms, updated_at_ms)
-        SELECT 'e-' || g, prefix || (g %% 500), %s, 'binance.perp', prefix || (g %% 500) || 'USDT', 'crypto',
-               %s + g * %s::bigint, 100, %s + g * %s::bigint, 101,
-               %s + g * %s::bigint + 3600000, 104, %s + g * %s::bigint + 14400000,
-               (g %% 400) - 200, (g %% 800) - 400, true, 'complete', %s, %s
-          FROM generate_series(1, %s) AS g, unnest(ARRAY['S', 'T']) AS prefix
-        """,
-        (
-            REACTION_METRIC_VERSION,
-            window_start,
-            step,
-            window_start,
-            step,
-            window_start,
-            step,
-            window_start,
-            step,
-            NOW,
-            NOW,
-            EVENTS,
-        ),
-    )
-    conn.execute("ANALYZE news_event_reactions")
     conn.execute("ANALYZE news_events")
     conn.execute("ANALYZE news_event_update_heads")
     conn.execute("ANALYZE news_event_updates")
     conn.commit()
-
-
-def test_the_corpus_is_the_size_the_budget_was_written_for(seeded) -> None:
-    rows = seeded.execute("SELECT count(*) AS n FROM news_event_reactions").fetchone()["n"]
-    assert rows >= 100_000
-
-
-def test_feed_attachment_completes_under_the_serve_statement_timeout(seeded) -> None:
-    repos = repositories_for_connection(seeded)
-    event_ids = [f"e-{index}" for index in range(1, 101)]
-    aggregates = repos.price.event_reaction_aggregates(event_ids, now_ms=NOW)
-
-    assert len(aggregates) == 100
 
 
 def test_the_quote_read_stays_bounded_with_a_full_snapshot(seeded) -> None:
@@ -241,32 +199,6 @@ def test_source_batch_persistence_is_the_reason_the_naive_design_was_rejected(se
     # Ten turns over 256 instruments: 2,560 rows under the rejected per-instrument design, 1 row here.
     assert after == before
     assert after <= 12  # the source-group ceiling, not the target count
-
-
-def test_the_due_scan_and_review_stay_bounded_against_a_year_of_finished_rows(seeded) -> None:
-    """The two reads that could grow silently: the due scan and the review window.
-
-    The due scan walks Event-assets oldest-first and probes the Reaction key; a corpus where every row is
-    already finished is its worst case, because nothing stops it early. That case must still be fast enough
-    for a 60 s loop, and the review must ride its partial index rather than the whole table.
-    """
-
-    repos = repositories_for_connection(seeded)
-    due = repos.price.due_reactions(now_ms=NOW, limit=100)
-    assert isinstance(due, list)
-
-    review_plan = "\n".join(
-        row["QUERY PLAN"]
-        for row in seeded.execute(
-            """
-            EXPLAIN SELECT event_id, count(*) FROM news_event_reactions
-             WHERE metric_version = %s AND is_primary AND anchor_at_ms >= %s AND anchor_at_ms < %s
-             GROUP BY event_id
-            """,
-            (REACTION_METRIC_VERSION, NOW - 168 * HOUR, NOW),
-        ).fetchall()
-    )
-    assert "ix_news_reactions_review" in review_plan, review_plan
 
 
 def _instrument(base: str) -> Any:

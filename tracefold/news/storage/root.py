@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .chain_tape import ChainTapeStorage
+from .collectors import CollectorsStorage
 from .decisions import DecisionStorage
 from .events import EventStorage
 from .evidence import EvidenceStorage
@@ -15,6 +16,7 @@ from .market import MarketStorage
 from .notification_context import NotificationContextStorage
 from .notification_delivery import NotificationDeliveryStorage
 from .notification_work import NotificationWorkStorage
+from .observations import ObservationStorage
 from .operations import OperationsStorage
 from .semantic_input import SemanticInputStorage
 from .semantic_updates import SemanticUpdateStorage
@@ -26,6 +28,8 @@ from .wallet_events import WalletEventStorage
 
 class NewsRepository(
     OperationsStorage,
+    CollectorsStorage,
+    ObservationStorage,
     EventStorage,
     EvidenceStorage,
     DecisionStorage,

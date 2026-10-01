@@ -20,7 +20,6 @@ from tracefold.app.http.schemas import status as status_schemas
 from tracefold.app.serve_runtime import MeasuredOnce
 from tracefold.news import EVENT_KINDS, MARKET_KINDS
 from tracefold.news.market_review.instruments import InstrumentSearchIdentity
-from tracefold.news.market_review.pricing import REACTION_METRIC_VERSION
 from tracefold.news.models import Admission
 from tracefold.news.update_view import (
     event_update_view,
@@ -297,14 +296,6 @@ class _FakePriceRepository:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
-    def event_reaction_aggregates(self, event_ids: Any, **kwargs: Any) -> dict[str, Any]:
-        self.calls.append(("event_reaction_aggregates", {"event_ids": list(event_ids), **kwargs}))
-        return {}
-
-    def event_reactions(self, event_id: str) -> list[dict[str, Any]]:
-        self.calls.append(("event_reactions", {"event_id": event_id}))
-        return []
-
     def quotes_for_symbols(self, requests: Any, **kwargs: Any) -> list[dict[str, Any]]:
         symbols = [request.symbol for request in requests]
         self.calls.append(("quotes_for_symbols", {"symbols": symbols, **kwargs}))
@@ -341,14 +332,9 @@ class _FakePriceRepository:
     def price_status(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("price_status", kwargs))
         return {
-            "metric_version": REACTION_METRIC_VERSION,
-            "oldest_due_age_ms": 0,
             "sources": [],
             "fresh_sources": 0,
             "quotes": 0,
-            "reaction_partial_7d": 0,
-            "reaction_complete_7d": 0,
-            "reaction_unavailable_7d": 0,
         }
 
 
@@ -443,7 +429,6 @@ def test_news_schemas_publish_current_event_update_and_feedback_only() -> None:
         "outcome",
         "update",
         "delivery",
-        "reaction",
     }
     assert set(event_schemas.NewsEventDetailData.model_fields) == {
         "event",
@@ -457,8 +442,6 @@ def test_news_schemas_publish_current_event_update_and_feedback_only() -> None:
         "evidence_snapshots",
         "reader_receipt",
         "normalization",
-        "reaction",
-        "reactions",
     }
     assert set(event_schemas.NewsEventFeedbackData.model_fields) == {"feedback_n", "latest"}
     assert set(status_schemas.NewsSourceContractStageCountsData.model_fields) == {"received", "parsed", "adopted"}
@@ -1397,13 +1380,13 @@ def test_quotes_rejects_an_oversized_or_malformed_symbol_batch(client) -> None:
     assert unknown.json()["error"] == "unsupported_query_param"
 
 
-def test_the_feed_attaches_reactions_in_one_bounded_batch(client) -> None:
+def test_the_feed_preserves_quotes_without_retired_reactions(client) -> None:
     api, news = client
     response = api.get("/api/news/feed", params={"token": TOKEN})
 
     assert response.status_code == 200
     events = response.json()["data"]["events"]
-    assert "reaction" in events[0]
+    assert "reaction" not in events[0]
     del news
 
 
@@ -1421,9 +1404,8 @@ def test_event_detail_keeps_the_two_market_meanings_in_separate_fields(client) -
     api, _ = client
     detail = api.get("/api/news/events/ev-1", params={"token": TOKEN}).json()["data"]
 
-    assert "reaction" in detail and "reactions" in detail
+    assert "reaction" not in detail and "reactions" not in detail
     # Nothing in either contract is called simply `change`, which could mean either meaning.
-    assert "change" not in event_schemas.NewsReactionSummaryData.model_fields
     assert "change_pct" in event_schemas.NewsQuoteData.model_fields
     assert "change_basis" in event_schemas.NewsQuoteData.model_fields
 
@@ -1431,11 +1413,11 @@ def test_event_detail_keeps_the_two_market_meanings_in_separate_fields(client) -
 def test_status_reports_the_price_plane_beside_the_pipeline(client) -> None:
     api, _ = client
     data = api.get("/api/news/status", params={"token": TOKEN}).json()["data"]
-    assert data["price"]["metric_version"] == REACTION_METRIC_VERSION
+    assert "metric_version" not in data["price"]
     assert data["price"]["sources"] == []
     # The backlog SLO has to be *served*, not merely declared: the envelope drops unset fields, so a schema
     # default with no repository value disappears from the response entirely.
-    assert data["price"]["oldest_due_age_ms"] == 0
+    assert "oldest_due_age_ms" not in data["price"]
 
 
 def test_news_status_reuses_measurement_and_etag_within_ttl(client) -> None:

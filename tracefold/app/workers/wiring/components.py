@@ -14,9 +14,7 @@ from tracefold.app.workers.runtime import (
     NEWS_INGESTION,
     NEWS_INSTRUMENTS,
     NEWS_QUOTES,
-    NEWS_REACTIONS,
     WALLET_NET_BUY,
-    WALLET_PRICES,
     WALLET_ROSTER,
     CapabilityStates,
 )
@@ -105,12 +103,10 @@ async def _wire_components(
             NEWS_EDITORIAL,
             NEWS_INSTRUMENTS,
             NEWS_QUOTES,
-            NEWS_REACTIONS,
             MARKET_NOTIFICATIONS,
             CHAIN_TAPE,
             WALLET_ROSTER,
             WALLET_NET_BUY,
-            WALLET_PRICES,
         ):
             capabilities.disabled(capability, "news_disabled")
         # A push target declared against a disabled News is a configuration error, not a delivery.

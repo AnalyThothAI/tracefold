@@ -257,16 +257,19 @@ def test_an_oi_frame_crosses_production_workers_and_reaches_the_market_read(gold
             == 0
         )
         assert (
-            conn.execute("SELECT count(*) AS n FROM news_oi_signals WHERE source_item_id = %s", (item_id,)).fetchone()[
-                "n"
-            ]
+            conn.execute(
+                "SELECT count(*) AS n FROM news_market_observations WHERE observation_id = %s", (item_id,)
+            ).fetchone()["n"]
             == 1
         )
         # One card, in the durable ledger the read model projects: the loop's to-do list is in
         # PostgreSQL, so what the reader was told is a row here rather than a counter somewhere.
         marker = conn.execute(
-            "SELECT market_notify_state, market_notify_group_key, market_notify_delivery_key"
-            " FROM news_items WHERE item_id = %s",
+            (
+                "SELECT notify_state AS market_notify_state, notify_group_key AS "
+                "market_notify_group_key, notification_id AS market_notify_delivery_key FROM "
+                "news_market_observations WHERE observation_id = %s"
+            ),
             (item_id,),
         ).fetchone()
         assert marker["market_notify_state"] == "processed"

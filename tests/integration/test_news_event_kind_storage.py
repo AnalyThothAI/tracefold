@@ -10,6 +10,7 @@ from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_json
 from tracefold.news.liquidations import parse_liquidation
+from tracefold.news.market_observations import MarketObservation
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.news.oi_signals import OiSignal, measurement_definition, oi_source_contract
 from tracefold.news.source_contracts import (
@@ -38,6 +39,8 @@ def _item(
     source_artifact_id: str = "artifact:shared",
     market_kind: str | None = None,
 ) -> None:
+    if market_kind:
+        return
     news.upsert_item(
         item_id=item_id,
         source_id="opennews",
@@ -55,10 +58,6 @@ def _item(
         trace_id="trace",
         now_ms=NOW,
         source_artifact_id=source_artifact_id,
-        market_kind=market_kind,
-        market_source_strategy_id="1019" if market_kind else None,
-        market_parse_status="parsed" if market_kind else None,
-        market_parse_error=None,
     )
 
 
@@ -127,12 +126,33 @@ def _insert_oi(news: Any, *, event_id: str, item_id: str, signal: OiSignal, **ov
     historical = bool(fields.pop("historical", False))
     fields.update(over)
     reconstructed = bool(fields.pop("historical", historical))
-    news.insert_oi_signal(**fields)
+    value = MarketObservation(
+        observation_id=item_id,
+        kind="oi",
+        source_id="opennews",
+        source_item_key=item_id,
+        source_strategy_id=fields.pop("source_strategy_id"),
+        title=item_id,
+        raw_first_line="",
+        description="",
+        provider_params={},
+        provider_metadata={},
+        ingest_mode=fields.pop("ingest_mode", "live"),
+        parse_status="parsed",
+        parse_error=None,
+        event_at_ms=fields.pop("observed_at_ms"),
+        received_at_ms=fields.pop("received_at_ms"),
+        available_at_ms=fields["now_ms"],
+        oi_event_id=fields.pop("event_id"),
+        parser_version=fields.pop("metric_version"),
+        **{key: val for key, val in fields.items() if key in MarketObservation.model_fields},
+    )
+    news.insert_market_observation(value, now_ms=fields["now_ms"])
     if reconstructed:
         # Only the migration marks a fact as rebuilt, so a test that needs one writes it the same way
         # rather than reopening a live writer that must never be able to.
         news.conn.execute(
-            "UPDATE news_oi_signals SET historical = true WHERE source_item_id = %s",
+            "UPDATE news_market_observations SET historical = true WHERE observation_id = %s",
             (fields["source_item_id"],),
         )
 
@@ -187,7 +207,8 @@ def test_one_item_is_one_observation_and_a_replay_of_it_adds_no_row(conn) -> Non
         )
 
     rows = conn.execute(
-        "SELECT event_id, oi_value_usd FROM news_oi_signals WHERE source_item_id = 'replay-oi-item'"
+        "SELECT oi_event_id AS event_id, oi_value_usd FROM news_market_observations WHERE "
+        "observation_id = 'replay-oi-item'"
     ).fetchall()
     assert [(row["event_id"], row["oi_value_usd"]) for row in rows] == [("replay-oi-event", 32_170_000)]
 
@@ -211,8 +232,8 @@ def test_a_historical_rebuild_is_readable_and_stays_out_of_the_live_trigger_set(
         _insert_oi(news, event_id="historical-oi-event", item_id="historical-oi-item", signal=signal, historical=True)
 
     stored = conn.execute(
-        "SELECT historical, available_at_ms, observed_at_ms FROM news_oi_signals"
-        " WHERE source_item_id = 'historical-oi-item'"
+        "SELECT historical, available_at_ms, event_at_ms AS observed_at_ms FROM "
+        "news_market_observations WHERE observation_id = 'historical-oi-item'"
     ).fetchone()
     assert stored["historical"] is True
     # The original provider stamp is untouched; only the first-available instant is the rebuild's.
@@ -474,8 +495,8 @@ def test_oi_frame_whose_provider_clock_ran_ahead_stores_on_the_first_attempt(con
         )
 
     stored = conn.execute(
-        "SELECT observed_at_ms, received_at_ms, available_at_ms FROM news_oi_signals"
-        " WHERE source_item_id = 'ahead-oi-item'"
+        "SELECT event_at_ms AS observed_at_ms, received_at_ms, available_at_ms FROM "
+        "news_market_observations WHERE observation_id = 'ahead-oi-item'"
     ).fetchone()
     assert stored["observed_at_ms"] - stored["available_at_ms"] == 250
     assert stored["received_at_ms"] == NOW
@@ -498,11 +519,11 @@ def test_liquidation_whose_venue_clock_ran_ahead_stores_like_any_other(conn) -> 
     assert ahead is not None
     with repos.transaction():
         _item(news, "ahead-liq-item")
-        news.insert_market_liquidation(fact=ahead, ingest_mode="live", now_ms=NOW)
+        _liquidation(news, ahead)
 
     stored = conn.execute(
-        "SELECT source_venue, source_strategy_id, raw_instrument, event_at_ms, received_at_ms"
-        " FROM news_market_liquidations WHERE item_id = 'ahead-liq-item'"
+        "SELECT source_venue, source_strategy_id, raw_instrument, event_at_ms, received_at_ms "
+        "FROM news_market_observations WHERE observation_id = 'ahead-liq-item'"
     ).fetchone()
     assert stored["event_at_ms"] - stored["received_at_ms"] == 250
     assert (stored["source_venue"], stored["source_strategy_id"], stored["raw_instrument"]) == ("okx", "2083", "BTC")
@@ -525,10 +546,40 @@ def test_a_purged_item_takes_its_typed_market_facts_with_it(conn) -> None:
     assert fact is not None
     with repos.transaction():
         _item(news, "cascade-liq-item")
-        news.insert_market_liquidation(fact=fact, ingest_mode="live", now_ms=NOW)
+        _liquidation(news, fact)
 
-    conn.execute("DELETE FROM news_items WHERE item_id = 'cascade-liq-item'")
+    conn.execute("DELETE FROM news_market_observations WHERE observation_id = 'cascade-liq-item'")
     remaining = conn.execute(
-        "SELECT count(*) AS n FROM news_market_liquidations WHERE item_id = 'cascade-liq-item'"
+        "SELECT count(*) AS n FROM news_market_observations WHERE observation_id = 'cascade-liq-item'"
     ).fetchone()
     assert remaining["n"] == 0
+
+
+def _liquidation(news, fact):
+    news.insert_market_observation(
+        MarketObservation(
+            observation_id=fact.item_id,
+            kind="liquidation",
+            source_id="opennews",
+            source_item_key=fact.item_id,
+            source_strategy_id=fact.source_strategy_id,
+            title=fact.item_id,
+            raw_first_line="",
+            description="",
+            provider_metadata={},
+            provider_params={},
+            ingest_mode="live",
+            parse_status="parsed",
+            parse_error=None,
+            event_at_ms=fact.event_at_ms,
+            received_at_ms=fact.received_at_ms,
+            available_at_ms=NOW,
+            provider=MARKET_PROVIDER,
+            **{
+                key: getattr(fact, key)
+                for key in MarketObservation.model_fields
+                if hasattr(fact, key) and key not in {"event_at_ms", "received_at_ms", "source_strategy_id"}
+            },
+        ),
+        now_ms=NOW,
+    )

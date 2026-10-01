@@ -10,9 +10,8 @@ from typing import Any
 import pytest
 
 from tracefold.app.query_audit import PUBLIC_ROUTE_QUERY_COVERAGE, query_audit_catalog
-from tracefold.news.market_review import instrument_storage, quote_storage
-from tracefold.news.market_review.quote_storage import QuoteStorage
-from tracefold.news.storage import events, feed_sql
+from tracefold.news.market_review import instrument_storage
+from tracefold.news.storage import collectors, events, feed_sql
 from tracefold.news.storage.events import EventStorage
 from tracefold.news.storage.feed import FeedStorage
 from tracefold.news.storage.root import NewsRepository
@@ -81,16 +80,12 @@ _NEWS_QUERY_NAMES = (
     "news_wallet_events",
     "news_wallet_event_totals",
     "news_wallet_event_fills",
-    "news_wallet_outcomes",
     "news_wallet_pending_receipts",
-    "news_wallet_due_outcomes",
     "news_wallet_net_buy_window",
     # #582 PR-2. The OI card's two News reads: they serve no route either, and they run inside the
     # send lane's own 1.5 s budget, which is what makes an unplanned scan visible to a reader.
     "news_market_news_pushed",
     "news_market_news_total",
-    "news_reaction_due_scan",
-    "news_reaction_attach",
     "news_review_decision_queue",
     "news_review_decision_coverage",
     "news_review_decision_evidence",
@@ -150,7 +145,6 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_feed_text_search_counts",
         "news_feed_text_search_cursor",
         "news_event_asset_projection",
-        "news_reaction_attach",
     )
     assert catalog.query_routes["/api/news/events/{event_id}"] == (
         "news_event_detail",
@@ -165,7 +159,6 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_event_semantic_observations",
         "news_event_notification_work",
         "news_event_asset_projection",
-        "news_reaction_attach",
     )
     assert catalog.query_routes["/api/news/items/{item_id}/events"] == (
         "news_item_related_count",
@@ -454,7 +447,9 @@ def test_status_audit_reads_its_sql_from_the_production_module_only():
         "STATUS_FUNNEL_REVIEW_RATIOS_SQL",
         "STATUS_FUNNEL_TOTALS_SQL",
     }
-    assert all(getattr(feed_sql, name) for name in referenced)
+    assert all(
+        getattr(collectors, name) if name == "STATUS_INGEST_SQL" else getattr(feed_sql, name) for name in referenced
+    )
 
 
 def _executed_constants(owner: type, method_name: str) -> set[str | None]:
@@ -486,7 +481,6 @@ def test_news_audit_plans_the_statements_the_deduper_reaction_and_detail_reads_e
     assert audited["news_search_event_symbols"] == instrument_storage.SEARCH_EVENT_SYMBOLS_SQL
     assert audited["news_event_members"] == feed_sql.EVENT_MEMBERS_SQL
     assert audited["news_band_lookup"] == events.BAND_CANDIDATES_SQL
-    assert audited["news_reaction_due_scan"] == quote_storage.DUE_REACTIONS_SQL
     # Not vacuous about the drift that motivated this: the audited member read returns the whole card.
     assert "i.canonical_url" in audited["news_event_members"]
     assert "news_event_evidence_snapshots" in audited["news_band_lookup"]
@@ -494,7 +488,6 @@ def test_news_audit_plans_the_statements_the_deduper_reaction_and_detail_reads_e
     # And the constants are the ones the production methods execute, by AST rather than by text.
     assert "EVENT_MEMBERS_SQL" in _executed_constants(FeedStorage, "event_detail")
     assert _executed_constants(EventStorage, "find_band_candidates") == {"BAND_CANDIDATES_SQL"}
-    assert _executed_constants(QuoteStorage, "due_reactions") == {"DUE_REACTIONS_SQL"}
 
 
 def test_query_audit_covers_every_public_openapi_route():

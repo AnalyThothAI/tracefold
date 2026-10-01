@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import { useNewsWalletEventWithToken, type NewsWalletSnapshot } from "../../api/newsQueries";
-import { displayTime, optionalDuration, optionalTime } from "../../model/newsLabels";
+import { displayTime, optionalTime } from "../../model/newsLabels";
 import {
   walletDecimal,
   walletNotificationLabel,
@@ -101,49 +101,6 @@ function EpisodeContent({ token, episodeId }: { token: string; episodeId: string
           窗口滑出不代表卖出，转出不代表清仓。最后有效增持
           {displayTime(event.last_effective_buy_at_ms)} 用于本轮去重，30 分钟无有效增持后结束。
         </p>
-        <h3>事件后价格观察</h3>
-        <p>
-          {event.reference_price === null || event.reference_at_ms === null
-            ? "未取得触发时的可靠价格基准，价格变化保持未知。"
-            : `首次可得参考价 $${walletDecimal(event.reference_price)} · ${optionalTime(event.reference_at_ms)} · 距触发 ${optionalDuration(event.reference_at_ms - event.triggered_at_ms)} · ${event.reference_source}`}
-        </p>
-        <div className="news-wallets-outcomes">
-          {(["15m", "1h", "4h"] as const).map((horizon) => {
-            const receipt = data.outcomes.find((outcome) => outcome.horizon === horizon);
-            return (
-              <div key={horizon}>
-                <b>{horizon}</b>
-                <p>
-                  {receipt
-                    ? {
-                        comparable: "可比较",
-                        missing_reference: "缺少触发基准",
-                        unavailable: "未取得价格",
-                        late: "采样迟到，目标时点价格未知",
-                      }[receipt.status]
-                    : "尚无采样回执"}
-                </p>
-                {receipt ? (
-                  <>
-                    <p>目标 {displayTime(receipt.target_at_ms)}</p>
-                    <p>实际 {displayTime(receipt.at_ms)}</p>
-                    <p>基准 {optionalTime(receipt.reference_at_ms)}</p>
-                    <p>
-                      {receipt.price === null
-                        ? "价格未知"
-                        : `价格 $${walletDecimal(receipt.price)}`}
-                    </p>
-                    <p>
-                      {receipt.change_percent === null
-                        ? "变化未知"
-                        : `观察后价格变化 ${walletDecimal(receipt.change_percent)}%`}
-                    </p>
-                  </>
-                ) : null}
-              </div>
-            );
-          })}
-        </div>
         <details>
           <summary>检测与通知时间</summary>
           <p>
