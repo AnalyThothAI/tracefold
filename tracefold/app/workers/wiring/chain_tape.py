@@ -1,8 +1,8 @@
-"""Compose independently supervised wallet roster, ingestion, net-buy detection and price tasks.
+"""Compose independently supervised wallet roster, ingestion and net-buy detection tasks.
 
 Each task owns its adapters, one bounded `advance()` and one `aclose()`. PostgreSQL facts and durable
-work markers connect the stages. Slow price calls cannot hold up ingestion, a slow roster site cannot
-hold up collection (#649 §5.1), and a faulted stage closes only its own clients. App owns polling,
+work markers connect the stages. A slow roster site cannot hold up collection (#649 §5.1), and a
+faulted stage closes only its own clients. App owns polling,
 cancellation and joining all in-flight work.
 """
 
@@ -47,7 +47,7 @@ class WalletStage(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ChainTapeComposition:
-    """Four stages with independent resources and one operator-configured polling cadence."""
+    """Three stages with independent resources and one operator-configured polling cadence."""
 
     loop: ChainTapeLoop
     poll_seconds: float

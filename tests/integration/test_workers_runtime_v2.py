@@ -592,20 +592,19 @@ def test_real_market_notification_task_fault_stops_only_that_task() -> None:
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("capability", ["chain_tape", "wallet_roster", "wallet_net_buy", "wallet_prices"])
+@pytest.mark.parametrize("capability", ["chain_tape", "wallet_roster", "wallet_net_buy"])
 def test_real_chain_tape_task_fault_stops_only_that_task(capability: str) -> None:
     """#614's tasks cross the real process, task supervision, PostgreSQL and readiness seam.
 
     A fault closes only its stage. Every wallet sibling and News fact admission continue; orderly
     process shutdown joins the healthy wallet stages and closes each independently owned resource.
-    #649 §5.1 adds the fourth: a roster site that will not answer must not be able to stop the
-    collector, the detector or the price sampler.
+    A roster provider failure cannot stop the collector or net-buy detector.
     """
 
     _create_test_fact_table()
     port = _free_port()
     process = _start_workers_process(f"{capability}_fault", port)
-    siblings = {"chain_tape", "wallet_roster", "wallet_net_buy", "wallet_prices"} - {capability}
+    siblings = {"chain_tape", "wallet_roster", "wallet_net_buy"} - {capability}
     try:
         _wait_ready(process, port)
         _wait_capability(port, capability, "faulted")
@@ -618,6 +617,7 @@ def test_real_chain_tape_task_fault_stops_only_that_task(capability: str) -> Non
             "state": "faulted",
             "reason": f"{capability}:RuntimeError",
         }
+        assert "wallet_prices" not in payload["capabilities"]
         for sibling in siblings | {"news_ingestion"}:
             assert payload["capabilities"][sibling] == {"state": "running", "reason": None}
 
