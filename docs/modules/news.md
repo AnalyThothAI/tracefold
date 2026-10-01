@@ -256,6 +256,8 @@ sequenceDiagram
 
 语义预算见 [updates/service.py](../../tracefold/news/updates/service.py)，通知预算见 [notifications/service.py](../../tracefold/news/notifications/service.py)，模型调用边界见 [adapters/generation.py](../../tracefold/news/adapters/generation.py)。它们是上限，不是实际耗时、服务级别承诺或性能实测。排查延时需要拆开：**入队等待 → DB 领取 → 模型物理调用 → 判断 / 回退 → 采用 → 通知等待 → 发送**。把总耗时都称为“Agent 慢”无法定位根因。
 
+抽取、语义判断、卡片文案和生成式读者判断都经 `generate()` 调用，回答写成单行紧凑 JSON。DSPy 自带的 `JSONAdapter` 在提示里以 `indent=2` 展示输出样例，模型会照抄缩进；News 的适配器改为展示并要求紧凑格式，#765 实测输出 token 少约 35%。`response_format` 不变，服务端仍按 schema 约束回答。一次回答能写多长，实际由输出上限（qwen 抽取 4000 token）和单次调用 60 秒（`GENERATION_CALL_SECONDS`）中先到的一个决定：单独调大上限，长清单只会从截断变成超时。紧凑输出减少了长清单截断，但不能消除。
+
 提供商失败与内容不确定不同：非最终尝试中，关键关系 / 支撑判断无法取得会进入持久重试；最终尝试允许按契约保存 unresolved / `possible_new`，不能伪造“没有新闻价值”。程序错误和非法核心输出仍是失败。
 
 生成输出具体区分 `news_generation_output_truncated`、`news_generation_output_empty` 与 `news_generation_output_schema_invalid`。provider 以 `finish_reason=length` 截断的回答即使被 JSON 修复成可解析的对象，也是 `news_generation_output_truncated`；一个抽取回答里没有任何可用命题（全部 `news_claim_schema_invalid`）同样是坏回答。已配置的 fallback 只有请求契约有实质差异时才可补答一次（抽取 fallback 的输出上限更大），只有路由上最后一个回答仍不可用才使修订失败；固定契约或引用错误不再消耗相同请求的多轮语义重试。临时限流、超时、服务端和传输错误仍走有界恢复。错误日志只记录错误类别、长度，以及被修复或不可用命题的字段位置与错误类型（`news_extraction_claim_repaired` / `news_extraction_claim_schema_invalid index=… errors=[(loc, type)]`），不记录原始模型响应片段。

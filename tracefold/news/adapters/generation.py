@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Callable, Mapping
 from typing import Any, Final
 
 import dspy  # type: ignore[import-untyped]
+from dspy.adapters.utils import serialize_for_json  # type: ignore[import-untyped]
 from typesafe_sdk import TypeSafeAPIConnectionError, TypeSafeAPIError, TypeSafeAPIResponseValidationError
 
 from ..updates.judgment import ConfigurationFault, ContractFault, ProviderUnavailable
@@ -15,7 +17,7 @@ from ..updates.judgment import ConfigurationFault, ContractFault, ProviderUnavai
 log = logging.getLogger("tracefold.news")
 
 
-ADAPTER_VERSION: Final = "news_generated_transport_v7"
+ADAPTER_VERSION: Final = "news_generated_transport_v8"
 
 
 _REF_FIELDS = frozenset(
@@ -31,6 +33,25 @@ _REF_FIELDS = frozenset(
         "antecedent_refs",
     }
 )
+
+
+class CompactJSONAdapter(dspy.JSONAdapter):  # type: ignore[misc]
+    """DSPy's JSON adapter, showing and asking for the answer as one compact JSON line.
+
+    DSPy renders the output skeleton and demos with `indent=2`, and the model copies that layout;
+    compact answers took ~35 % fewer output tokens (#765). Only the shown format changes: the
+    inherited response_format still has the server enforce the schema.
+    """
+
+    def format_field_with_value(self, fields_with_values: dict[Any, Any], role: str = "user") -> str:
+        if role == "user":
+            return str(super().format_field_with_value(fields_with_values, role=role))
+        values = {field.name: value for field, value in fields_with_values.items()}
+        return json.dumps(serialize_for_json(values), separators=(",", ":"), ensure_ascii=False)
+
+    def user_message_output_requirements(self, signature: Any) -> str:
+        requirements = super().user_message_output_requirements(signature)
+        return f"{requirements} Write the JSON compactly on one line, without indentation or line breaks."
 
 
 _GENERATION_TRANSIENT = (dspy.LMRateLimitError, dspy.LMServerError, dspy.LMTimeoutError, dspy.LMTransportError)
@@ -119,7 +140,7 @@ async def generate(signature: Any, route: Any, *, accept: Callable[[Any], Any] |
         try:
             # This is the normal generative signature, not a Jev probability signature
             # temporarily bound to a chat model. No global dspy.configure mutation.
-            with dspy.context(adapter=dspy.JSONAdapter()):
+            with dspy.context(adapter=CompactJSONAdapter()):
                 prediction = await dspy.Predict(signature).acall(lm=lm, **inputs)
             if _truncated(lm, history_before):
                 raise ContractFault("news_generation_output_truncated")
