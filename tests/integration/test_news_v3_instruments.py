@@ -23,7 +23,6 @@ def conn(postgres_module_clone_dsn: str):
 
 @pytest.fixture(autouse=True)
 def _clean(conn):
-    conn.execute("DELETE FROM news_market_instrument_listing_events")
     conn.execute("DELETE FROM news_market_instruments")
     conn.execute("DELETE FROM news_market_instrument_snapshot_state")
     conn.execute("DELETE FROM news_symbol_aliases")
@@ -55,10 +54,6 @@ def _tuple_counters(conn) -> tuple[int, int]:
         "  FROM pg_stat_user_tables WHERE relname = 'news_market_instruments'"
     ).fetchone()
     return (int(row["ins"]), int(row["upd"])) if row else (0, 0)
-
-
-def _listing_events(conn) -> int:
-    return int(conn.execute("SELECT count(*) AS n FROM news_market_instrument_listing_events").fetchone()["n"])
 
 
 def _snapshot_state(conn) -> dict[str, int]:
@@ -101,7 +96,7 @@ def test_snapshot_writes_the_universe_and_summarizes_it(conn) -> None:
     assert result.total == 3
     assert result.venues == ("binance.perp", "hl.xyz")
     assert result.delisted == 0
-    assert result.written == 3  # every contract is new, and each one records its listing event
+    assert result.written == 3  # every contract is new
     assert _snapshot_state(conn) == {"binance.perp": NOW, "hl.xyz": NOW}
 
     summary = repos.instruments.universe_summary()
@@ -131,11 +126,10 @@ def test_second_snapshot_reconciles_and_is_idempotent(conn) -> None:
     # Re-running an unchanged catalogue writes no row at all: the refresh time is a venue fact, and it is the
     # only thing that moves (#570 A11).
     versions = _row_versions(conn)
-    events = _listing_events(conn)
     with repos.transaction():
         repeat = repos.instruments.apply_snapshot(second, now_ms=NOW + 7200_000)
     assert repeat.delisted == 0 and repeat.written == 0
-    assert _row_versions(conn) == versions and _listing_events(conn) == events
+    assert _row_versions(conn) == versions
     assert repos.instruments.universe_summary()["last_snapshot_ms"] == NOW + 7200_000
     assert _snapshot_state(conn) == {"binance.perp": NOW + 7200_000}
 
@@ -144,78 +138,6 @@ def test_second_snapshot_reconciles_and_is_idempotent(conn) -> None:
         relist = repos.instruments.apply_snapshot(first, now_ms=NOW + 10800_000)
     assert repos.instruments.venues_for("OLD") == ("binance.perp",)
     assert relist.written == 2  # OLDUSDT relisted, ADIUSDT delisted; BTCUSDT still untouched
-
-
-def test_trade_projection_uses_source_time_listing_intervals_across_relisting(conn) -> None:
-    repos = repositories_for_connection(conn)
-    with repos.transaction():
-        repos.instruments.apply_snapshot(
-            [_inst("binance.perp", "OLDUSDT", "OLD", "USDT")],
-            now_ms=NOW,
-        )
-        repos.instruments.apply_snapshot(
-            [_inst("binance.perp", "BTCUSDT", "BTC", "USDT")],
-            now_ms=NOW + 3_600_000,
-        )
-
-    assert repos.news.trade_candidate_instrument(base_symbol="OLD", venues=("binance.perp",)) == []
-    historical = repos.news.trade_candidate_instrument(
-        base_symbol="OLD",
-        venues=("binance.perp",),
-        observed_at_ms=NOW + 1,
-    )
-    assert [(row["venue_symbol"], row["status"]) for row in historical] == [("OLDUSDT", "trading")]
-    assert (
-        repos.news.trade_candidate_instrument(
-            base_symbol="OLD",
-            venues=("binance.perp",),
-            observed_at_ms=NOW + 3_600_000,
-        )
-        == []
-    )
-
-    with repos.transaction():
-        repos.instruments.apply_snapshot(
-            [_inst("binance.perp", "OLDUSDT", "OLD", "USDT")],
-            now_ms=NOW + 7_200_000,
-        )
-
-    assert repos.news.trade_candidate_instrument(base_symbol="OLD", venues=("binance.perp",))
-    assert (
-        repos.news.trade_candidate_instrument(
-            base_symbol="OLD",
-            venues=("binance.perp",),
-            observed_at_ms=NOW + 3_600_001,
-        )
-        == []
-    )
-    relisted = repos.news.trade_candidate_instrument(
-        base_symbol="OLD",
-        venues=("binance.perp",),
-        observed_at_ms=NOW + 7_200_000,
-    )
-    assert [(row["venue_symbol"], row["status"]) for row in relisted] == [("OLDUSDT", "trading")]
-
-    with repos.transaction():
-        repos.instruments.apply_snapshot(
-            [_inst("binance.perp", "OLDUSDT", "NEW", "USDT")],
-            now_ms=NOW + 10_800_000,
-        )
-
-    assert (
-        repos.news.trade_candidate_instrument(
-            base_symbol="OLD",
-            venues=("binance.perp",),
-            observed_at_ms=NOW + 10_800_000,
-        )
-        == []
-    )
-    changed = repos.news.trade_candidate_instrument(
-        base_symbol="NEW",
-        venues=("binance.perp",),
-        observed_at_ms=NOW + 10_800_000,
-    )
-    assert [(row["venue_symbol"], row["base_symbol"]) for row in changed] == [("OLDUSDT", "NEW")]
 
 
 def test_a_venue_that_did_not_answer_is_never_read_as_a_mass_delisting(conn) -> None:
@@ -274,7 +196,7 @@ def test_an_unchanged_large_catalogue_is_read_and_not_written(conn) -> None:
     catalogue = [_inst("binance.perp", f"BULK{index:05d}USDT", f"BULK{index:05d}", "USDT") for index in range(5_000)]
     with repos.transaction():
         cold = repos.instruments.apply_snapshot(catalogue, now_ms=NOW)
-    assert cold.written == 5_000 and _listing_events(conn) == 5_000
+    assert cold.written == 5_000
 
     versions = _row_versions(conn)
     inserted, updated = _tuple_counters(conn)
@@ -284,13 +206,12 @@ def test_an_unchanged_large_catalogue_is_read_and_not_written(conn) -> None:
     assert repeat.total == 5_000 and repeat.delisted == 0 and repeat.written == 0
     assert _tuple_counters(conn) == (inserted, updated)  # PostgreSQL counted no insert and no update
     assert _row_versions(conn) == versions  # and no row holds a new physical version
-    assert _listing_events(conn) == 5_000  # a refresh that changed nothing is not a listing event
     # The one fact a refresh always establishes still moves, and the status page still reads it.
     assert _snapshot_state(conn) == {"binance.perp": NOW + 6 * 3600_000}
     assert repos.instruments.universe_summary()["last_snapshot_ms"] == NOW + 6 * 3600_000
 
 
-def test_one_changed_field_writes_exactly_one_row_and_records_it(conn) -> None:
+def test_one_changed_field_writes_exactly_one_catalogue_row(conn) -> None:
     """A venue re-declaring one contract's quote asset is a real catalogue change, and the only one worth a write."""
 
     repos = repositories_for_connection(conn)
@@ -326,19 +247,10 @@ def test_one_changed_field_writes_exactly_one_row_and_records_it(conn) -> None:
         "SELECT quote_asset, observed_at_ms FROM news_market_instruments WHERE venue_symbol = 'BBBUSDT'"
     ).fetchone()
     assert changed["quote_asset"] == "USDC" and int(changed["observed_at_ms"]) == NOW + 3600_000
-    # The event ledger is the historical record source-time replay reads, and it gained exactly one row.
-    events = conn.execute(
-        "SELECT venue_symbol, quote_asset, status, observed_at_ms FROM news_market_instrument_listing_events"
-        " WHERE observed_at_ms = %s",
-        (NOW + 3600_000,),
-    ).fetchall()
-    assert [(str(row["venue_symbol"]), str(row["quote_asset"]), str(row["status"])) for row in events] == [
-        ("BBBUSDT", "USDC", "trading")
-    ]
 
 
-def test_delisting_and_relisting_write_their_own_rows_and_events(conn) -> None:
-    """Both catalogue boundaries still write, and each one still records exactly one event."""
+def test_delisting_and_relisting_only_write_changed_rows(conn) -> None:
+    """Both catalogue boundaries write while unchanged contracts retain their physical version."""
 
     repos = repositories_for_connection(conn)
     listed = [_inst("binance.perp", "KEEPUSDT", "KEEP", "USDT"), _inst("binance.perp", "GONEUSDT", "GONE", "USDT")]
@@ -351,16 +263,6 @@ def test_delisting_and_relisting_write_their_own_rows_and_events(conn) -> None:
 
     assert (delisting.written, delisting.delisted) == (1, 1)
     assert (relisting.written, relisting.delisted) == (1, 0)
-    ledger = conn.execute(
-        "SELECT venue_symbol, status, observed_at_ms FROM news_market_instrument_listing_events"
-        " ORDER BY observed_at_ms, venue_symbol"
-    ).fetchall()
-    assert [(str(row["venue_symbol"]), str(row["status"]), int(row["observed_at_ms"])) for row in ledger] == [
-        ("GONEUSDT", "trading", NOW),
-        ("KEEPUSDT", "trading", NOW),
-        ("GONEUSDT", "delisted", NOW + 3600_000),
-        ("GONEUSDT", "trading", NOW + 7200_000),
-    ]
     row = conn.execute(
         "SELECT status, observed_at_ms FROM news_market_instruments WHERE venue_symbol = 'GONEUSDT'"
     ).fetchone()

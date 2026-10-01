@@ -162,8 +162,8 @@ def _smoke(conn: Any) -> dict[str, bool]:
         (_CURRENT_EVENT_ID,),
     ).fetchone()
     case = repos.trading.restore_drill_case(case_id=_CASE_ID)
-    signal = repos.trading.next_signal(account_slot=_ACCOUNT_SLOT, after_seq=0)
-    command = repos.trading.next_intent(account_slot=_ACCOUNT_SLOT, after_seq=0)
+    signal = repos.trading.disposition(kind="signal", input_id=_SIGNAL_ID)
+    command = repos.trading.next_intent(account_slot=_ACCOUNT_SLOT)
     return {
         "migration_head": summary["migration_head"] == latest_migration_version(),
         "news_current_fact": repos.news.event_card(_CURRENT_EVENT_ID) is not None,
@@ -179,7 +179,8 @@ def _smoke(conn: Any) -> dict[str, bool]:
         "trading_signal_fact": summary["signal_rows"] == 1,
         "trading_execution_facts": all(summary[key] == 1 for key in ("command_rows", "disposition_rows")),
         "trading_execution_read": signal is not None
-        and signal.signal_id == _SIGNAL_ID
+        and signal["disposition"] == "expired"
+        and repos.trading.next_signal(account_slot=_ACCOUNT_SLOT) is None
         and command is not None
         and command["command_id"] == _COMMAND_ID,
     }

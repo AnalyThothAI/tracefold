@@ -141,6 +141,18 @@ def seed_sent_claim_projection(event_id: str, *, content_revision: str, claim_re
     seed_update_version(event_id, content_revision=content_revision, claims=[claim])
 
 
+def freeze_receipt(intent_id: str) -> None:
+    sql(
+        """UPDATE news_deliveries d SET sent_claims=(
+             SELECT COALESCE(jsonb_agg(claim), '[]'::jsonb)
+             FROM jsonb_array_elements(u.document->'claims') claim
+             WHERE d.claim_refs ? (claim->>'ref'))
+           FROM news_event_updates u WHERE d.intent_id=%s
+             AND u.event_id=d.event_id AND u.content_revision=d.content_revision""",
+        (intent_id,),
+    )
+
+
 def seed_sent_receipt(
     event_id: str, *, intent_id: str, content_revision: str, claim_refs: list[str], body: str, settled_at_ms: int
 ) -> None:
@@ -167,6 +179,8 @@ def seed_sent_receipt(
         ),
     )
 
+    freeze_receipt(intent_id)
+
 
 def seed_window_receipts(rows: list[tuple[str, str, int]], *, event_id: str = "window-filler") -> None:
     """Sent receipts `(intent_id, body, settled_at_ms)` projecting no claim: the rest of a window."""
@@ -180,9 +194,9 @@ def seed_window_receipts(rows: list[tuple[str, str, int]], *, event_id: str = "w
                 """
                 INSERT INTO news_deliveries
                   (intent_id, event_id, kind, state, card, receipt, attempted_at_ms, settled_at_ms, created_at_ms,
-                   history_context, content_revision, claim_refs, body, payload_sha256, plan_key)
+                   history_context, content_revision, claim_refs, body, payload_sha256, plan_key, sent_claims)
                 VALUES (%s, %s, 'update', 'sent', '{}'::jsonb, '{}'::jsonb, %s, %s, %s, '{}'::jsonb, %s,
-                        '["cl:window-filler"]'::jsonb, %s, %s, false)
+                        '["cl:window-filler"]'::jsonb, %s, %s, false, '[]'::jsonb)
                 """,
                 [
                     (intent_id, event_id, at_ms, at_ms, at_ms, digest(event_id), body, digest(body))
@@ -1182,6 +1196,8 @@ def test_snapshot_recalls_sent_claim_despite_many_unrelated_receipts() -> None:
             ),
         )
 
+        freeze_receipt(identity("intent", event_id))
+
     for index in range(35):
         sent_update(f"leader-noise-{index}", leader, "市场价格保持稳定")
     sent_update("actual-tariff", TEXT, "机构已宣布百分之二十五钢铁进口关税")
@@ -1191,12 +1207,12 @@ def test_snapshot_recalls_sent_claim_despite_many_unrelated_receipts() -> None:
     assert snapshot.reader.receipts[0].intent_id == identity("intent", "actual-tariff")
 
 
-def test_snapshot_keeps_earlier_incremental_receipt_and_excludes_future_and_deleted() -> None:
+def test_snapshot_keeps_earlier_incremental_receipt_and_excludes_future() -> None:
     pg, _db, clock = store()
     adopted_head(pg.semantic, clock)
     seed_event("incremental", title=TEXT, fingerprint="incremental")
 
-    def sent_update(key: str, body: str, at_ms: int, *, deleted: bool = False) -> str:
+    def sent_update(key: str, body: str, at_ms: int) -> str:
         intent = identity("intent", key)
         seed_sent_claim_projection("incremental", content_revision=digest(key), claim_ref="historical-claim")
         sql(
@@ -1204,11 +1220,9 @@ def test_snapshot_keeps_earlier_incremental_receipt_and_excludes_future_and_dele
             INSERT INTO news_deliveries
               (intent_id, event_id, kind, state, card, receipt, attempted_at_ms,
                settled_at_ms, created_at_ms, history_context, content_revision,
-               claim_refs, body, payload_sha256, plan_key, delete_state,
-               delete_evidence, delete_reason, delete_attempted_at_ms, delete_settled_at_ms)
+               claim_refs, body, payload_sha256, plan_key)
             VALUES (%s, 'incremental', 'update', 'sent', '{}'::jsonb, '{}'::jsonb,
-                    %s, %s, %s, %s::jsonb, %s, '["historical-claim"]'::jsonb, %s, %s, false, %s,
-                    %s::jsonb, %s, %s, %s)
+                    %s, %s, %s, %s::jsonb, %s, '["historical-claim"]'::jsonb, %s, %s, false)
             """,
             (
                 intent,
@@ -1219,25 +1233,20 @@ def test_snapshot_keeps_earlier_incremental_receipt_and_excludes_future_and_dele
                 digest(key),
                 body,
                 digest(body),
-                "deleted" if deleted else None,
-                "{}" if deleted else None,
-                "test deletion" if deleted else None,
-                at_ms if deleted else None,
-                at_ms if deleted else None,
             ),
         )
+        freeze_receipt(intent)
         return intent
 
     old = sent_update("A", "机构宣布关税", STAMP + 1)
     latest = sent_update("B", "生效日期为下月", STAMP + 2)
     future = sent_update("future", "还没发送的消息", clock() + 1)
-    removed = sent_update("removed", "已经删除的消息", STAMP + 3, deleted=True)
     snapshot = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
     assert snapshot is not None
     receipts = {row.intent_id: row.body for row in snapshot.reader.receipts}
     assert receipts[old] == "机构宣布关税"
     assert receipts[latest] == "生效日期为下月"
-    assert future not in receipts and removed not in receipts
+    assert future not in receipts
 
 
 def reader_material(db: ThreadedDb, clock: Clock) -> dict[str, Any]:

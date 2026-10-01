@@ -347,8 +347,9 @@ def settle_intent(
         """
         INSERT INTO news_deliveries (
           intent_id, event_id, kind, state, card, receipt, error_code, attempted_at_ms, settled_at_ms,
-          created_at_ms, content_revision, claim_refs, body, payload_sha256, plan_key, decision_ref
-        ) VALUES (%s, %s, 'update', %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
+          created_at_ms, content_revision, claim_refs, body, payload_sha256, plan_key, decision_ref, sent_claims
+        ) VALUES (%s, %s, 'update', %s, %s::jsonb, %s::jsonb, %s, %s, %s, %s, %s, %s::jsonb,
+                  %s, %s, %s, %s, %s::jsonb)
         """,
         (
             intent_id,
@@ -374,6 +375,9 @@ def settle_intent(
             digest(body),
             plan.key,
             plan.record_ref,
+            canonical_json(
+                [claim.model_dump(mode="json") for claim in update.claims if claim.ref in plan.selected_claim_refs]
+            ),
         ),
     )
     return intent_id

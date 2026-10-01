@@ -174,20 +174,14 @@ class NotificationContextStorage:
                         words jsonb, han_bigrams jsonb)
                 ), window_receipts AS MATERIALIZED (
                     SELECT {_RECEIPT_COLUMNS},
-                           COALESCE(h.claims, '[]'::jsonb) AS historical_claims,
-                           (u.document IS NULL) AS missing_projection,
-                           d.body || ' ' || COALESCE(h.statements, '') AS search_text
+                           COALESCE(d.sent_claims, '[]'::jsonb) AS historical_claims,
+                           (d.sent_claims IS NULL) AS missing_projection,
+                           d.body || ' ' || array_to_string(ARRAY(
+                               SELECT claim ->> 'statement'
+                               FROM jsonb_array_elements(COALESCE(d.sent_claims, '[]'::jsonb)) claim
+                           ), ' ') AS search_text
                       FROM news_deliveries d
-                      LEFT JOIN news_event_updates u
-                        ON u.event_id = d.event_id AND u.content_revision = d.content_revision
-                      LEFT JOIN LATERAL (
-                          SELECT jsonb_agg(claim) AS claims,
-                                 string_agg(claim ->> 'statement', ' ') AS statements
-                            FROM jsonb_array_elements(COALESCE(u.document -> 'claims', '[]'::jsonb)) claim
-                           WHERE d.claim_refs ? (claim ->> 'ref')
-                      ) h ON TRUE
                      WHERE d.kind = 'update' AND d.state = 'sent'
-                       AND d.delete_state IS DISTINCT FROM 'deleted'
                        AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
                        AND d.body IS NOT NULL AND d.payload_sha256 IS NOT NULL
                 ), structured AS (
@@ -379,16 +373,9 @@ class NotificationContextStorage:
             dict(row)
             for row in self.conn.execute(
                 f"""
-                SELECT {_RECEIPT_COLUMNS}, d.state, COALESCE(h.claims, '[]'::jsonb) AS historical_claims
+                SELECT {_RECEIPT_COLUMNS}, d.state, COALESCE(d.sent_claims, '[]'::jsonb) AS historical_claims
                   FROM news_deliveries d
-                  LEFT JOIN news_event_updates u
-                    ON u.event_id = d.event_id AND u.content_revision = d.content_revision
-                  LEFT JOIN LATERAL (
-                      SELECT jsonb_agg(claim) AS claims
-                        FROM jsonb_array_elements(COALESCE(u.document -> 'claims', '[]'::jsonb)) claim
-                       WHERE d.claim_refs ? (claim ->> 'ref')
-                  ) h ON TRUE
-                 WHERE d.kind = 'update' AND d.delete_state IS DISTINCT FROM 'deleted'
+                 WHERE d.kind = 'update'
                    AND d.claim_refs ?| %s::text[]
                    AND (d.state = 'sending'
                         OR (d.state = 'ambiguous' AND d.settled_at_ms >= %s AND d.settled_at_ms < %s)

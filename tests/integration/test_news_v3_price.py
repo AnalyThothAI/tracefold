@@ -46,7 +46,6 @@ def _clean(conn):
         "news_semantic_observations",
         "news_events",
         "news_items",
-        "news_market_instrument_listing_events",
         "news_market_instruments",
         "news_symbol_aliases",
     ):

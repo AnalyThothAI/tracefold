@@ -38,12 +38,6 @@
 | `edit_error_code` | `TEXT` | True | `None` |
 | `edit_attempted_at_ms` | `BIGINT` | True | `None` |
 | `edit_settled_at_ms` | `BIGINT` | True | `None` |
-| `delete_state` | `TEXT` | True | `None` |
-| `delete_evidence` | `JSONB` | True | `None` |
-| `delete_reason` | `TEXT` | True | `None` |
-| `delete_error_code` | `TEXT` | True | `None` |
-| `delete_attempted_at_ms` | `BIGINT` | True | `None` |
-| `delete_settled_at_ms` | `BIGINT` | True | `None` |
 | `history_context` | `JSONB` | True | `None` |
 | `intent_id` | `TEXT` | False | `None` |
 | `content_revision` | `TEXT` | True | `None` |
@@ -55,6 +49,7 @@
 | `card_copy_input_digest` | `TEXT` | True | `None` |
 | `card_copy_document` | `JSONB` | True | `None` |
 | `settlement` | `JSONB` | True | `None` |
+| `sent_claims` | `JSONB` | True | `None` |
 
 ## `news_delivery_queue`
 
@@ -214,24 +209,6 @@
 | `event_kind` | `TEXT` | False | `None` |
 | `source_contract_reason` | `TEXT` | True | `None` |
 
-## `news_evidence_documents`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `document_id` | `TEXT` | False | `None` |
-| `requested_url` | `TEXT` | False | `None` |
-| `final_url` | `TEXT` | False | `None` |
-| `normalized_url` | `TEXT` | False | `None` |
-| `response_sha256` | `TEXT` | False | `None` |
-| `extracted_text_sha256` | `TEXT` | False | `None` |
-| `extractor_version` | `TEXT` | False | `None` |
-| `extracted_text` | `TEXT` | False | `None` |
-| `reported_published_at_ms` | `BIGINT` | True | `None` |
-| `observed_at_ms` | `BIGINT` | False | `None` |
-| `available_at_ms` | `BIGINT` | False | `None` |
-| `content_type` | `TEXT` | False | `None` |
-| `extraction_status` | `TEXT` | False | `None` |
-
 ## `news_external_miss_snapshots`
 
 | Column | Type | Nullable | Default |
@@ -357,18 +334,6 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
-## `news_market_instrument_listing_events`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `venue` | `TEXT` | False | `None` |
-| `venue_symbol` | `TEXT` | False | `None` |
-| `observed_at_ms` | `BIGINT` | False | `None` |
-| `base_symbol` | `TEXT` | False | `None` |
-| `instrument_class` | `TEXT` | False | `None` |
-| `quote_asset` | `TEXT` | True | `None` |
-| `status` | `TEXT` | False | `None` |
-
 ## `news_market_instrument_snapshot_state`
 
 | Column | Type | Nullable | Default |
@@ -486,15 +451,6 @@
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `round_started_at_ms` | `BIGINT` | False | `0` |
 
-## `news_market_wallet_archive`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `record_type` | `TEXT` | False | `None` |
-| `record_key` | `TEXT` | False | `None` |
-| `payload` | `JSONB` | False | `None` |
-| `archived_at_ms` | `BIGINT` | False | `None` |
-
 ## `news_market_wallet_events`
 
 | Column | Type | Nullable | Default |
@@ -577,7 +533,6 @@
 | `provider` | `TEXT` | False | `'robinhoodtrenches'::text` |
 | `known_at_ms` | `BIGINT` | False | `None` |
 | `monitoring_from_ms` | `BIGINT` | True | `None` |
-| `archived_source_statistics` | `JSONB` | True | `None` |
 
 ## `news_market_wallet_tape_state`
 
@@ -610,7 +565,6 @@
 | `enrichment_error` | `TEXT` | True | `None` |
 | `roster_next_attempt_at_ms` | `BIGINT` | False | `0` |
 | `roster_consecutive_failures` | `INTEGER` | False | `0` |
-| `pre_0399_cursor` | `JSONB` | True | `None` |
 
 ## `news_notification_decisions`
 
@@ -889,8 +843,6 @@
 | `account_slot` | `TEXT` | False | `None` |
 | `environment` | `TEXT` | False | `None` |
 | `heartbeat_at_ns` | `BIGINT` | False | `None` |
-| `last_signal_seq` | `BIGINT` | False | `0` |
-| `last_intent_seq` | `BIGINT` | False | `0` |
 | `last_full_reconcile_at_ns` | `BIGINT` | True | `None` |
 | `account_snapshot` | `JSONB` | True | `None` |
 | `unexpected_exposure` | `BOOLEAN` | False | `false` |
@@ -1058,17 +1010,6 @@
 | `native_symbol` | `TEXT` | False | `None` |
 | `next_trade_id` | `BIGINT` | False | `None` |
 | `checked_at_ns` | `BIGINT` | False | `None` |
-
-## `trading_trigger_conflicts`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `kind` | `TEXT` | False | `None` |
-| `source_fact_key` | `TEXT` | False | `None` |
-| `source_revision` | `TEXT` | False | `None` |
-| `attempted_sha256` | `TEXT` | False | `None` |
-| `original_sha256` | `TEXT` | False | `None` |
-| `observed_at_ms` | `BIGINT` | False | `None` |
 
 ## `trading_triggers`
 

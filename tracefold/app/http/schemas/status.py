@@ -254,7 +254,7 @@ class NewsStatusData(ExactApiSchema):
     watchlist: list[str] = Field(default_factory=list)
     instruments: NewsInstrumentUniverse = Field(default_factory=NewsInstrumentUniverse)
     price: NewsPriceStatusData = Field(default_factory=NewsPriceStatusData)
-    measured_at_ms: int
+    measured_at_ms: int = Field(description="本进程状态计算的时间；成功结果缓存 30 秒，缓存期间 ETag 稳定。")
 
 
 __all__ = [

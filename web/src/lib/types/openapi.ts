@@ -2720,7 +2720,10 @@ export interface components {
             health: components["schemas"]["NewsHealthData"];
             ingest: components["schemas"]["NewsIngestStatusData"];
             instruments?: components["schemas"]["NewsInstrumentUniverse"];
-            /** Measured At Ms */
+            /**
+             * Measured At Ms
+             * @description 本进程状态计算的时间；成功结果缓存 30 秒，缓存期间 ETag 稳定。
+             */
             measured_at_ms: number;
             pipeline: components["schemas"]["NewsPipelineStatusData"];
             price?: components["schemas"]["NewsPriceStatusData"];

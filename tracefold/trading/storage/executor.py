@@ -195,13 +195,16 @@ class ExecutorStorage:
             return int(existing["seq"])
         return int(inserted["seq"])
 
-    def next_signal(self, *, account_slot: str, after_seq: int) -> SignalV4 | None:
+    def next_signal(self, *, account_slot: str) -> SignalV4 | None:
         row = self.conn.execute(
             """
-            SELECT seq,payload FROM trading_signals
-            WHERE account_slot=%s AND seq>%s ORDER BY seq LIMIT 1
+            SELECT s.seq,s.payload FROM trading_signals s
+            WHERE s.account_slot=%s AND NOT EXISTS (
+              SELECT 1 FROM trading_dispositions d
+              WHERE d.input_kind='signal' AND d.input_id=s.signal_id
+            ) ORDER BY s.seq LIMIT 1
             """,
-            (account_slot, after_seq),
+            (account_slot,),
         ).fetchone()
         return (
             None
@@ -209,15 +212,18 @@ class ExecutorStorage:
             else SignalV4.model_validate_json(json.dumps({**row["payload"], "seq": int(row["seq"])}))
         )
 
-    def next_intent(self, *, account_slot: str, after_seq: int) -> dict[str, Any] | None:
+    def next_intent(self, *, account_slot: str) -> dict[str, Any] | None:
         return cast(
             dict[str, Any] | None,
             self.conn.execute(
                 """
-            SELECT * FROM trading_operator_intents
-            WHERE account_slot=%s AND seq>%s ORDER BY seq LIMIT 1
+            SELECT i.* FROM trading_operator_intents i
+            WHERE i.account_slot=%s AND NOT EXISTS (
+              SELECT 1 FROM trading_dispositions d
+              WHERE d.input_kind='intent' AND d.input_id=i.command_id
+            ) ORDER BY i.seq LIMIT 1
             """,
-                (account_slot, after_seq),
+                (account_slot,),
             ).fetchone(),
         )
 
@@ -252,19 +258,20 @@ class ExecutorStorage:
         if row is None or (row["disposition"], row["reason"], row["plan_id"]) != (disposition, reason, plan_id):
             raise ValueError("input_disposition_conflict")
 
-    def advance_cursor(self, *, account_slot: str, kind: str, seq: int) -> None:
-        if kind not in ("signal", "intent"):
-            raise ValueError("cursor_kind_invalid")
-        if kind == "signal":
+    def newer_entry_stop_applied(self, *, account_slot: str, seq: int) -> bool:
+        return (
             self.conn.execute(
-                "UPDATE trading_executor_state SET last_signal_seq=GREATEST(last_signal_seq,%s) WHERE account_slot=%s",
-                (seq, account_slot),
-            )
-        else:
-            self.conn.execute(
-                "UPDATE trading_executor_state SET last_intent_seq=GREATEST(last_intent_seq,%s) WHERE account_slot=%s",
-                (seq, account_slot),
-            )
+                """
+            SELECT 1 FROM trading_operator_intents i
+            JOIN trading_dispositions d ON d.input_kind='intent' AND d.input_id=i.command_id
+            WHERE i.account_slot=%s AND i.seq>%s
+              AND i.action IN ('pause_entries','emergency_halt') AND d.disposition='accepted'
+            LIMIT 1
+            """,
+                (account_slot, seq),
+            ).fetchone()
+            is not None
+        )
 
     def create_plan(
         self,
@@ -384,6 +391,8 @@ class ExecutorStorage:
                                   THEN %s ELSE resolved_at_ns END,
               updated_at_ns=%s
             WHERE client_order_id=%s
+              AND (status,venue_order_id,error_code,evidence) IS DISTINCT FROM
+                  (%s,COALESCE(%s,venue_order_id),%s,COALESCE(%s::jsonb,evidence))
             """,
             (
                 status,
@@ -396,6 +405,10 @@ class ExecutorStorage:
                 now_ns,
                 now_ns,
                 client_id,
+                status,
+                venue_order_id,
+                error_code,
+                None if evidence is None else json.dumps(evidence),
             ),
         )
 

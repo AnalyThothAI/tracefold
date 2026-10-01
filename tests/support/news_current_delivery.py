@@ -42,4 +42,13 @@ def seed_delivery(
             False,
         ),
     )
+    conn.execute(
+        """UPDATE news_deliveries d SET sent_claims=(
+             SELECT COALESCE(jsonb_agg(claim), '[]'::jsonb)
+             FROM jsonb_array_elements(u.document->'claims') claim
+             WHERE d.claim_refs ? (claim->>'ref'))
+           FROM news_event_updates u WHERE d.intent_id=%s
+             AND u.event_id=d.event_id AND u.content_revision=d.content_revision""",
+        (intent_id,),
+    )
     return intent_id

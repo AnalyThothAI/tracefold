@@ -6524,6 +6524,7 @@
             "$ref": "#/components/schemas/NewsInstrumentUniverse"
           },
           "measured_at_ms": {
+            "description": "\u672c\u8fdb\u7a0b\u72b6\u6001\u8ba1\u7b97\u7684\u65f6\u95f4\uff1b\u6210\u529f\u7ed3\u679c\u7f13\u5b58 30 \u79d2\uff0c\u7f13\u5b58\u671f\u95f4 ETag \u7a33\u5b9a\u3002",
             "title": "Measured At Ms",
             "type": "integer"
           },

@@ -144,10 +144,6 @@ class ReaderReceipt(ExactNewsModel):
             return cls(state="not_received")
         delivery_state = str(delivery.get("state") or "") or None
         error_code = str(delivery.get("error_code") or "") or None
-        # A card intentionally removed after authoritative tradability review is not part of the durable reader
-        # history. Keeping it as "received" would let an untradeable, deleted issuer suppress a future listing.
-        if delivery.get("delete_state") == "deleted":
-            return cls(state="not_received", delivery_state=delivery_state, error_code=error_code)
         if delivery_state == "sent":
             return cls(
                 state="received",

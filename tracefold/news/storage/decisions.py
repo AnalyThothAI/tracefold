@@ -30,7 +30,6 @@ _PUSHED_NEWS_PROJECTION = """
            COALESCE(d.history_context -> 'canonical_assets', '[]'::jsonb) AS canonical_assets
       FROM news_events e
       JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'update' AND d.state = 'sent'
-                            AND d.delete_state IS DISTINCT FROM 'deleted'
 """
 
 
