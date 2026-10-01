@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from ..clock import clock_ms
 from ..updates.contracts import EventUpdate, Evidence, Extraction, FrozenInput, PublicUpdate, ReadTarget, SemanticLease
@@ -16,13 +16,6 @@ from .update_commit import PUBLIC_TRADE_KINDS
 
 if TYPE_CHECKING:
     from ..pipeline.runtime import NewsDatabasePort
-
-# The claim leases the work and builds its frozen input, bounded related-Event candidate retrieval
-# included, in one consistent transaction; that is not a 3 s hot-path read. Under load the candidate
-# SQL alone takes seconds, and a claim cancelled at 3 s rolls back, requeues uncounted and retries at
-# once, so every consumer keeps overrunning and none ever completes. Still far inside the 180 s lease
-# and the 120 s semantic stage it precedes; the statement timeout follows this operation budget.
-CLAIM_SECONDS: Final = 15.0
 
 
 def _lease_token() -> str:
@@ -214,7 +207,6 @@ class PgSemanticStore:
             lambda repos: repos.news.semantic_work.claim_semantic_work(
                 event_id=event_id, lease_token=token, now_ms=now_ms, lease_ms=lease_ms, input=repos.news.semantic_input
             ),
-            timeout_seconds=CLAIM_SECONDS,
         )
 
     async def defer_semantic_event(self, lease: SemanticLease, *, reason: str, retry_after_ms: int = 0) -> None:
