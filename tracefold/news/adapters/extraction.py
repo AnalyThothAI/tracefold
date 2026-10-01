@@ -61,6 +61,8 @@ name the company or product without spelling its ticker. If no supplied tag cove
 asset in the cited source text, you may add that asset using the source's ticker or unambiguous name;
 do not infer an unnamed ecosystem token, issuer asset or related instrument. Use unknown when the text
 does not establish its market type. Conflicting source markets cannot be resolved by guessing.
+An asset is a tradable instrument (token, stock, fund, index, commodity or currency pair); places, waterways,
+countries, governments, weapons, programs and organizations without a named listed instrument are not assets.
 Claims without relevant assets remain valid with assets=[].
 Keep the named speaker and scope of attribution in both fields.speaker and the statement. A publisher
 is not automatically the speaker. Keep material qualifiers in the quoted span, including who said it.

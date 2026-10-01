@@ -1,8 +1,9 @@
-"""Adapter responsibility moves preserve identities; changed extraction contracts change its cache.
+"""Program identities, with a fixed model identity, and the signature schemas they include.
 
-The values are captured from main 3c429fc before #759's responsibility move, with a fixed model
-identity. Extraction intentionally adds source candidates and uses the shared MarketType vocabulary;
-the unrelated judgment and copy programs retain their original identities.
+#765 moved every generative role to the compact JSON adapter (`news_generated_transport_v8`), so the
+extractor, card copy, generated judgment and generated reader identities changed together; its asset rule
+(tradable instruments only) changed the extractor instruction as well. The native judgment does not use
+that adapter and keeps its identity; no signature schema changed.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ def test_image_news_identity_probe_executes_its_actual_build_call() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_extraction_contract_change_preserves_unrelated_program_and_schema_identities() -> None:
+def test_program_and_signature_schema_identities_are_pinned() -> None:
     model = "identity-fixture"
     actual = {
         "extractor": DspyExtractor(lambda: None, model_identity=model, topics=dict(CODEBOOK)).identity,
@@ -57,11 +58,11 @@ def test_extraction_contract_change_preserves_unrelated_program_and_schema_ident
         ).identity,
     }
     assert actual == {
-        "extractor": "extractor:5b24af81420fef3a7127b722d4e911a6e01d0bc0314d87f88f449b0934faf3ba",
-        "copy": "news_card_copy:d0a6746bae6657d750165ab78db10ffd4ef4838b69ed2f8c191acb90c0037261",
-        "generated": "generated_judgment:0ff4b04ea2eb0f1f01890b7d21d1705b86284f1801c367ace51677c7da4be460",
+        "extractor": "extractor:c51e23b3dcc6717a901346797fa0a53c7485d4db16570d8995ecb71b72137ee6",
+        "copy": "news_card_copy:410f061c5d2ead4ecb1011ed64d4895d831266aceb836a446cf5225fc8125876",
+        "generated": "generated_judgment:acdaa52b89c67f7f12833369dbbbb1e7609d9a84d01cdc7d916d35cb60906df7",
         "native": "native_judgment:763a95518060a756b572c0163fcb4f35b5fbc556daf46dd9e295cfa71bc08fca",
-        "reader": "news_reader_judge:879f7202524d09293138986aa32640f9a73b01201181785d89e4897449164b1e",
+        "reader": "news_reader_judge:3af8592d934a884e6fcc685fcf090dd6a050b2675fffc58c3195d6f6fd7f388a",
     }
     assert {
         "extract": digest(ExtractSignature.model_json_schema()),

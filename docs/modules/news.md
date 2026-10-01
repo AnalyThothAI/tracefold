@@ -151,7 +151,7 @@ Claim ref 指向一个命题或真实世界中的一次发生。新增支持、�
 
 ### 实体依据与相关召回
 
-来源资产采用来源优先的简单链路：Item 的 provider_metadata.coins 保留原始标签；[semantic_input.py](../../tracefold/news/storage/semantic_input.py) 按 evidence_ref 投影为 FrozenInput.asset_candidates（symbol、market_type、grade），随同一次抽取输入冻结。现有抽取器针对每条命题选择相关候选及 primary/mentioned，不把整篇标签复制给所有命题；接地时只恢复被选中、被引用来源候选的拼写与已知市场，跨来源冲突保留未知。正文明确 ticker、公司或产品名称时允许有限补充，不要求 ticker 字面出现；不从 URL、related prior 或泛主题补资产。空资产、目录未收录或缺行情都不阻止事实采用与通知判断，不新增资产表、实体服务或模型轮次。
+来源资产采用来源优先的简单链路：Item 的 provider_metadata.coins 保留原始标签；[semantic_input.py](../../tracefold/news/storage/semantic_input.py) 按 evidence_ref 投影为 FrozenInput.asset_candidates（symbol、market_type、grade），随同一次抽取输入冻结。现有抽取器针对每条命题选择相关候选及 primary/mentioned，不把整篇标签复制给所有命题；接地时只恢复被选中、被引用来源候选的拼写与已知市场，跨来源冲突保留未知。正文明确 ticker、公司或产品名称时允许有限补充，不要求 ticker 字面出现；不从 URL、related prior 或泛主题补资产。资产只指可交易标的（token、股票、基金、指数、商品或货币对）；地点、航道、国家、政府、武器、项目和组织在没有明确上市标的时不是资产。空资产、目录未收录或缺行情都不阻止事实采用与通知判断，不新增资产表、实体服务或模型轮次。
 
 资产市场词表复用现有 MarketType。历史读取显式把 forex 解释为 fx；旧 fund 没有证明其市场类别，保留为 unknown，不猜 equity。原始来源、已存 Claim/ref、内容版本与真实回执不重写。
 
@@ -260,6 +260,8 @@ sequenceDiagram
 生成并发由 News runtime 装配的一个进程内许可所有者控制，生成式主路由与 fallback 都使用它；原生 Jev、Trading 和独立离线进程不占这个许可。判断批次的至多 3 个并行仍是每组问题的局部限制，不代替 News runtime 的总限额。进程内限额不证明真实 provider 容量已隔离，也不保证 News 在共享后端上的优先级；不同 URL 或 API key 是否拥有独立配额需由实际服务资源证明，见[运维](../OPERATIONS.md#news-retry)。
 
 等待许可计入已有阶段截止时间。容量等待保留 `news_generation_capacity_wait` 原因，但只有该阶段尚未开始任何生成式或原生模型调用的纯本地等待，才不消耗业务尝试：语义存储持久记录原因，仅在租约 owner 仍有效、wanted revision 相同的情况下退还本次领取，不冲销先前 provider 尝试或新修订预算；通知返回容量原因，工作保持 pending，只持久延后下一次尝试，不新增失败或 decision 记录，卡片阶段先释放未发送意图再延后。已完成模型调用后再次排队仍计实际尝试，但不因此记 provider 故障；同批并行中模型调用也被截止取消时，保留 provider 超时 / breaker 分类，不冒充纯等待。直接任务取消保留取消 / 租约恢复语义。
+
+抽取、语义判断、卡片文案和生成式读者判断都经 `generate()` 调用，回答写成单行紧凑 JSON。DSPy 自带的 `JSONAdapter` 在提示里以 `indent=2` 展示输出样例，模型会照抄缩进；News 的适配器改为展示并要求紧凑格式，#765 实测输出 token 少约 35%。`response_format` 不变，服务端仍按 schema 约束回答。一次回答能写多长，实际由输出上限（qwen 抽取 4000 token）和单次调用 60 秒（`GENERATION_CALL_SECONDS`）中先到的一个决定：单独调大上限，长清单只会从截断变成超时。紧凑输出减少了长清单截断，但不能消除。
 
 提供商失败与内容不确定不同：非最终尝试中，关键关系 / 支撑判断无法取得会进入持久重试；最终尝试允许按契约保存 unresolved / `possible_new`，不能伪造“没有新闻价值”。程序错误和非法核心输出仍是失败。
 

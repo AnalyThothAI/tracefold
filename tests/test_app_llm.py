@@ -14,6 +14,7 @@ from tracefold.app import learning_runtime
 from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.wiring import news as workers
 from tracefold.news.adapters.card_copy import CopySignature
+from tracefold.news.adapters.generation import CompactJSONAdapter
 from tracefold.platform.config.models import LlmRequestConfig, Settings
 
 
@@ -62,7 +63,7 @@ def test_qwen_thinking_alias_is_called_without_a_disable_override() -> None:
 
 
 class _CaptureEngine:
-    """A provider double below the real DSPy JSON adapter: records the normalized request it is sent."""
+    """A provider double below the News JSON adapter: records the normalized request it is sent."""
 
     def __init__(self) -> None:
         self.requests: list[Request] = []
@@ -151,7 +152,7 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
     production = learning_runtime.generative_lm(endpoint, max_tokens=2048, timeout=5.0)
     assert production.kwargs["extra_body"] == expected_extra
     assert "request-shape-secret" not in repr(production.kwargs.get("extra_body"))
-    # The same structured-output capability, below the real DSPy JSON adapter, shapes the request.
+    # The same structured-output capability, below the News JSON adapter, shapes the request.
     engine = _CaptureEngine()
     request: dict[str, Any] = {"cache": False, "num_retries": 0, "max_tokens": 2048}
     if endpoint.temperature is not None:
@@ -160,7 +161,7 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
         endpoint.model_name, structured_output=endpoint.structured_output, engine=engine, **request
     )
 
-    with dspy.context(adapter=dspy.JSONAdapter()):
+    with dspy.context(adapter=CompactJSONAdapter()):
         prediction = dspy.Predict(CopySignature)(selected_claims_json="[]", lm=lm)
 
     assert prediction.result.headline_zh == "标题"
