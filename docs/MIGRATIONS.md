@@ -31,7 +31,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20260929_0418`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20261001_0419`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序
@@ -92,6 +92,7 @@ class Runtime execution;
 | `20260929_0416` | 新增只追加的 `news_claim_links` 并从历史 EventUpdate 回填；通知决定支持 `reader_v2` | [0416](../tracefold/platform/postgres/alembic/versions/20260929_0416_news_reader_decisions.py) |
 | `20260929_0417` | DEMO 执行账本硬切：Signal v4、disposition、Plan、订单与原生成交；删除 Nautilus 执行表 | [0417](../tracefold/platform/postgres/alembic/versions/20260929_0417_trading_execution_hard_cut.py) |
 | `20260929_0418` | LIVE Analysis 硬切：仅选中 Trigger 建 Case，冻结预测、六策略和双腿纸面账本；删除旧 Gate、WATCH 与逐调用表 | [0418](../tracefold/platform/postgres/alembic/versions/20260929_0418_trading_analysis_hard_cut.py) |
+| `20261001_0419` | News 关联召回改为索引驱动：`news_event_assets` 增加数据库生成的 `retrieval_symbol` / `retrieval_pair_base`（重写约 3.4 万行）与索引，`news_items.canonical_url`、`news_events.leader_item_id` 和成员事实 GIN 三元组索引；删除只被旧召回使用的标题 GiST 索引。不改事实行；生产副本上整次约 4 s，可降级 | [0419](../tracefold/platform/postgres/alembic/versions/20261001_0419_news_recall_indexes.py) |
 
 这些切换是前向迁移，不通过旧卡片 / verdict 伪造新 Claim。0407 曾将旧 pending `first` / `followup` 意图结算；0411 将它们连同旧发送行删除。当前 intent 只接受 `update`，发送账本保留决策引用。EventUpdate 的不可变版本与已发送的当前通知保留。
 

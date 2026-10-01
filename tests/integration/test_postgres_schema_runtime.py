@@ -173,6 +173,11 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "ix_news_event_bands_expires",
         "ix_news_event_assets_event",
         "ix_news_event_assets_symbol",
+        "ix_news_event_assets_retrieval_symbol",
+        "ix_news_event_assets_retrieval_pair_base",
+        "ix_news_event_members_fact_trgm",
+        "ix_news_events_leader_item",
+        "ix_news_items_canonical_url",
         "ix_news_deliveries_state",
         "ix_news_deliveries_sent",
         "ix_news_deliveries_editing",
@@ -190,7 +195,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
     assert "telemetry_deterministic" not in unpublished_index
     assert "liquidation_deterministic" not in unpublished_index
-    assert version == latest_migration_version() == "20260929_0418"
+    assert version == latest_migration_version() == "20261001_0419"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -215,7 +220,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260929_0418"
+    assert version == latest_migration_version() == "20261001_0419"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:

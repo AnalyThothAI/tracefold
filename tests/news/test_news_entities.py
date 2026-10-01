@@ -11,6 +11,7 @@ from tracefold.news.entities import (
     identity_value,
     source_asset_symbols,
     source_mentions_asset,
+    stored_asset_codes,
 )
 from tracefold.news.evidence import query_for
 from tracefold.news.models import MarketAsset
@@ -39,6 +40,16 @@ def test_underlying_issuer_venue_and_pair_relations_only_expand_candidates(
     assert asset_features(first, market)[0].key != asset_features(second, market)[0].key
     assert shared in asset_retrieval_symbols(first, market) & asset_retrieval_symbols(second, market)
     assert all(feature.key != asset_features(second, market)[0].key for feature in asset_features(first, market)[1:])
+
+
+def test_stored_asset_codes_expand_catalogue_aliases_on_the_query_side() -> None:
+    """Stored retrieval codes carry no alias (#771): a tag spelled XAU or XAUT relates to a GOLD query."""
+
+    assert stored_asset_codes({"GOLD"}) == ("GOLD", "XAU", "XAUT")
+    assert stored_asset_codes(asset_retrieval_symbols("CL", "commodity")) == ("BRENTOIL", "CL", "OIL", "USOIL", "WTI")
+    assert stored_asset_codes(()) == ()
+    # Aliases resolve one way: a query for the alias itself does not reach its target's other aliases.
+    assert stored_asset_codes({"XAUT"}) == ("XAUT",)
 
 
 def test_an_unspecified_chain_cannot_authorize_address_case_folding() -> None:
