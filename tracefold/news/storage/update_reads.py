@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Final
 
+from ..update_view import decode_plan
 from .notification_view import pending_notification, receipt_notification
 from .semantic_jobs import semantic_job
 
@@ -49,13 +50,14 @@ EVENT_SEMANTIC_OBSERVATIONS_SQL: Final = """
 """
 EVENT_NOTIFICATION_WORK_SQL: Final = """
  SELECT j.subject_id,j.state,j.attempts,j.last_error_code,j.next_attempt_at_ms,
- j.updated_at_ms,j.detail,n.plan,n.origin FROM news_jobs j
+ j.updated_at_ms,j.detail,n.plan,n.origin,n.decided_at_ms FROM news_jobs j
  LEFT JOIN news_notifications n ON n.notification_id=j.detail->>'decision_ref'
  WHERE j.job_kind='notify' AND j.subject_id=%s
 """
 EVENT_DELIVERIES_SQL: Final = """
  SELECT intent_id,kind,state,card,receipt,error_code,attempted_at_ms,settled_at_ms,created_at_ms,edit_state,
- pending_card,edit_error_code,edit_attempted_at_ms,edit_settled_at_ms,content_revision,claim_refs,plan_key
+ pending_card,edit_error_code,edit_attempted_at_ms,edit_settled_at_ms,content_revision,claim_refs,plan_key,
+ history_context->'timings' AS timings,plan->'timings' AS plan_timings
  FROM news_notifications WHERE kind='update' AND event_id=%s
   AND state IN ('sending','sent','ambiguous','terminal') ORDER BY created_at_ms,intent_id
 """
@@ -65,6 +67,61 @@ EVENT_DELIVERY_QUEUE_SQL: Final = """
   AND (state IN ('pending','dead','sending') OR (state='terminal' AND reserved_at_ms IS NOT NULL))
  ORDER BY reserved_at_ms,intent_id
 """
+
+EVENT_EARLIER_RECEIPTS_SQL: Final = """
+ SELECT intent_id,event_id,card,settled_at_ms FROM news_notifications
+ WHERE kind='update' AND state='sent' AND intent_id=ANY(%s)
+   AND settled_at_ms<=%s
+"""
+EVENT_KNOWN_RECEIPTS_SQL: Final = """
+ SELECT wanted.claim_ref,receipt.intent_id,receipt.event_id,receipt.card,receipt.settled_at_ms
+ FROM unnest(%s::text[]) wanted(claim_ref)
+ CROSS JOIN LATERAL (
+   SELECT intent_id,event_id,card,settled_at_ms FROM news_notifications
+   WHERE kind='update' AND state='sent'
+     AND claim_refs @> to_jsonb(ARRAY[wanted.claim_ref]) AND settled_at_ms<=%s
+   ORDER BY settled_at_ms DESC,intent_id LIMIT 1
+ ) receipt
+"""
+
+
+def attach_earlier_receipts(conn: Any, work: dict[str, Any] | None, view: dict[str, Any] | None) -> None:
+    """Resolve frozen anchors in a batch. Old known rows use only their persisted semantic path."""
+    if work is None or view is None or view.get("plan") is None:
+        return
+    rows = view["plan"]["claim_decisions"]
+    before = int(work.get("decided_at_ms") or work["updated_at_ms"])
+    ids = sorted({row["earlier_intent_id"] for row in rows if row.get("earlier_intent_id")})
+    receipts = conn.execute(EVENT_EARLIER_RECEIPTS_SQL, (ids, before)).fetchall() if ids else []
+    by_id = {row["intent_id"]: row for row in receipts}
+    targets = {}
+    plan = decode_plan(work.get("plan"))
+    for row in () if plan is None else plan.claim_decisions:
+        if row.reader is None or row.reader.novelty != "known":
+            continue
+        target = row.claim_ref
+        for link in row.reader.link_path:
+            target = link.previous_ref if target == link.current_ref else link.current_ref
+        targets[row.claim_ref] = target
+    known = (
+        conn.execute(EVENT_KNOWN_RECEIPTS_SQL, (sorted(set(targets.values())), before)).fetchall() if targets else []
+    )
+    by_claim = {row["claim_ref"]: row for row in known}
+    for decision in rows:
+        receipt = by_id.get(decision.get("earlier_intent_id"))
+        if receipt is None and not decision.get("earlier_intent_id"):
+            receipt = by_claim.get(targets.get(decision["claim_ref"]))
+        if receipt is None:
+            continue
+        card = receipt["card"] or {}
+        decision["earlier_intent_id"] = receipt["intent_id"]
+        decision["earlier"] = {
+            "intent_id": receipt["intent_id"],
+            "event_id": receipt["event_id"],
+            "headline_zh": str(card.get("headline_zh") or ""),
+            "body": str(card.get("body") or ""),
+            "received_at_ms": int(receipt["settled_at_ms"]),
+        }
 
 
 def event_update_head(conn: Any, event_id: str) -> dict[str, Any] | None:
@@ -129,7 +186,16 @@ def notification_work(conn: Any, event_id: str) -> dict[str, Any] | None:
         **row["detail"],
         **{
             key: row[key]
-            for key in ("state", "plan", "origin", "attempts", "last_error_code", "next_attempt_at_ms", "updated_at_ms")
+            for key in (
+                "state",
+                "plan",
+                "origin",
+                "attempts",
+                "last_error_code",
+                "next_attempt_at_ms",
+                "updated_at_ms",
+                "decided_at_ms",
+            )
         },
     }
 
@@ -145,12 +211,15 @@ def event_delivery_queue(conn: Any, event_id: str) -> list[dict[str, Any]]:
 __all__ = [
     "EVENT_DELIVERIES_SQL",
     "EVENT_DELIVERY_QUEUE_SQL",
+    "EVENT_EARLIER_RECEIPTS_SQL",
+    "EVENT_KNOWN_RECEIPTS_SQL",
     "EVENT_NOTIFICATION_WORK_SQL",
     "EVENT_SEMANTIC_OBSERVATIONS_SQL",
     "EVENT_SEMANTIC_WORK_SQL",
     "EVENT_UPDATE_HEAD_SQL",
     "EVENT_UPDATE_PREVIOUS_CLAIMS_SQL",
     "EVENT_UPDATE_REVISIONS_SQL",
+    "attach_earlier_receipts",
     "event_deliveries",
     "event_delivery_queue",
     "event_update_head",

@@ -797,6 +797,52 @@
         "title": "BootstrapData",
         "type": "object"
       },
+      "DeliveryTimings": {
+        "additionalProperties": false,
+        "description": "Where one send spent its time before the provider call, kept beside its receipt. Audit only.\n\nThe card clocks are absent when a frozen card was reused rather than composed by this turn.\n`send_slot_wait_ms` is from the card being ready to this turn holding the process's one send slot.",
+        "properties": {
+          "card_finished_at_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Finished At Ms"
+          },
+          "card_started_at_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Card Started At Ms"
+          },
+          "ready_at_ms": {
+            "minimum": 0.0,
+            "title": "Ready At Ms",
+            "type": "integer"
+          },
+          "send_slot_wait_ms": {
+            "minimum": 0.0,
+            "title": "Send Slot Wait Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ready_at_ms",
+          "send_slot_wait_ms"
+        ],
+        "title": "DeliveryTimings",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1816,6 +1862,16 @@
             "title": "Decision Zh",
             "type": "string"
           },
+          "earlier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsEarlierNotificationData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "earlier_intent_id": {
             "anyOf": [
               {
@@ -1851,6 +1907,17 @@
               }
             ],
             "title": "Importance Probabilities"
+          },
+          "importance_threshold": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importance Threshold"
           },
           "novelty": {
             "anyOf": [
@@ -2253,6 +2320,40 @@
         "title": "NewsDuplicatesWithheld24hData",
         "type": "object"
       },
+      "NewsEarlierNotificationData": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "headline_zh": {
+            "title": "Headline Zh",
+            "type": "string"
+          },
+          "intent_id": {
+            "title": "Intent Id",
+            "type": "string"
+          },
+          "received_at_ms": {
+            "title": "Received At Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "intent_id",
+          "event_id",
+          "headline_zh",
+          "body",
+          "received_at_ms"
+        ],
+        "title": "NewsEarlierNotificationData",
+        "type": "object"
+      },
       "NewsEventData": {
         "additionalProperties": false,
         "properties": {
@@ -2493,6 +2594,16 @@
           "reader_receipt": {
             "$ref": "#/components/schemas/NewsReaderReceiptData"
           },
+          "story": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsEventStoryData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "timeline": {
             "items": {
               "$ref": "#/components/schemas/NewsTimelineStepData"
@@ -2592,6 +2703,42 @@
           "match_kind"
         ],
         "title": "NewsEventMemberData",
+        "type": "object"
+      },
+      "NewsEventStoryData": {
+        "additionalProperties": false,
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/NewsStoryEventData"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "from_ms": {
+            "title": "From Ms",
+            "type": "integer"
+          },
+          "has_more": {
+            "default": false,
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "storyline_key": {
+            "title": "Storyline Key",
+            "type": "string"
+          },
+          "to_ms": {
+            "title": "To Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "storyline_key",
+          "from_ms",
+          "to_ms"
+        ],
+        "title": "NewsEventStoryData",
         "type": "object"
       },
       "NewsEventUpdateData": {
@@ -4813,6 +4960,16 @@
             "title": "Reason Zh",
             "type": "string"
           },
+          "timings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanTimings"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "update_ref": {
             "title": "Update Ref",
             "type": "string"
@@ -6070,6 +6227,25 @@
         "title": "NewsSemanticWorkData",
         "type": "object"
       },
+      "NewsSentLineData": {
+        "additionalProperties": false,
+        "properties": {
+          "claim_ref": {
+            "title": "Claim Ref",
+            "type": "string"
+          },
+          "text_zh": {
+            "title": "Text Zh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "claim_ref",
+          "text_zh"
+        ],
+        "title": "NewsSentLineData",
+        "type": "object"
+      },
       "NewsSourceContractStageCountsData": {
         "additionalProperties": false,
         "properties": {
@@ -6202,6 +6378,61 @@
           "measured_at_ms"
         ],
         "title": "NewsStatusData",
+        "type": "object"
+      },
+      "NewsStoryEventData": {
+        "additionalProperties": false,
+        "properties": {
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
+          },
+          "headline": {
+            "title": "Headline",
+            "type": "string"
+          },
+          "opened_at_ms": {
+            "title": "Opened At Ms",
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/NewsOutcomeData"
+          },
+          "published_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At Ms"
+          },
+          "received_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At Ms"
+          },
+          "reporting_origin": {
+            "title": "Reporting Origin",
+            "type": "string"
+          }
+        },
+        "required": [
+          "event_id",
+          "headline",
+          "reporting_origin",
+          "opened_at_ms",
+          "outcome"
+        ],
+        "title": "NewsStoryEventData",
         "type": "object"
       },
       "NewsSymbolContractData": {
@@ -6526,6 +6757,13 @@
             "title": "Key",
             "type": "boolean"
           },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/NewsSentLineData"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
           "payload_sha256": {
             "anyOf": [
               {
@@ -6536,6 +6774,16 @@
               }
             ],
             "title": "Payload Sha256"
+          },
+          "plan_timings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlanTimings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "receipt": {
             "anyOf": [
@@ -6576,6 +6824,16 @@
             "default": "",
             "title": "State Zh",
             "type": "string"
+          },
+          "timings": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeliveryTimings"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -7558,6 +7816,74 @@
           "notifications_enabled"
         ],
         "title": "NewsWalletsData",
+        "type": "object"
+      },
+      "PlanTimings": {
+        "additionalProperties": false,
+        "description": "Where one planning turn spent its time. Audit only: nothing reads it back to decide anything.\n\n`due_at_ms` is when the work became due and `started_at_ms` when this turn took it, so the wait for a\nprepare slot is their difference; the two durations are the snapshot read and the reader judgments;\n`planned_at_ms` is when the plan was complete. The decision row's `created_at_ms` is the write, so every\nstage from adoption to the recorded decision can be read back with SQL alone.",
+        "properties": {
+          "due_at_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At Ms"
+          },
+          "judgment_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Judgment Ms"
+          },
+          "planned_at_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned At Ms"
+          },
+          "snapshot_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Ms"
+          },
+          "started_at_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At Ms"
+          }
+        },
+        "title": "PlanTimings",
         "type": "object"
       },
       "ReadinessData": {

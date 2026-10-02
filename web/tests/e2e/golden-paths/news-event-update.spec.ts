@@ -1,214 +1,124 @@
-import { expect, test, type Page } from "@tests/e2e/fixtures";
+import { expect, test } from "@tests/e2e/fixtures";
 import {
   expectNoDocumentHorizontalOverflow,
   expectNoUnhandledApiRequests,
 } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
-import { newsTimelineFixture, newsUpdateDetailFixture } from "@tests/fixtures/newsFixture";
+import { newsUpdateDetailFixture, newsOutcomeFixture } from "@tests/fixtures/newsFixture";
 
-/** The detail reading flow is verified at every configured viewport, where layout and scroll exist. */
-test("switches shared-card tabs without moving the reading position or losing expanded claims", async ({
-  page,
-}) => {
+/** Continuous reading, real scroll and keyboard links at every configured viewport. */
+test("reads sent content, all facts and original without opening engineering", async ({ page }) => {
   await installMockApi(page);
   await page.goto("/news/events/evt-agent-tariff");
-
   await expect(
     page.getByRole("heading", { level: 1, name: "钢铁进口关税上调至 50%" }),
   ).toBeVisible();
-  const tablist = page.getByRole("tablist", { name: "事件详情" });
-  const content = page.getByRole("tabpanel", { name: "事件内容" });
-  await expect(tablist.getByRole("tab")).toHaveCount(4);
-  for (const name of ["事件内容", "来源证据", "当前行情", "处理记录"]) {
-    await expect(tablist.getByRole("tab", { name })).toBeVisible();
-  }
-  await expect(page.getByRole("tabpanel")).toHaveCount(1);
-  await expect(page.locator('[role="tabpanel"]')).toHaveCount(4);
-  await expect(page.getByRole("navigation", { name: "事件详情目录" })).toHaveCount(0);
-  await expect(content.locator(".news-update-claim")).toHaveCount(2);
-  const raisedClaim = content.locator(".news-update-claim").nth(1);
-  await raisedClaim.getByText("历史比较 1 项").click();
-  await expect(raisedClaim.getByText(/此前：Agency announces 25% tariff/)).toBeVisible();
-
-  await tablist.scrollIntoViewIfNeeded();
-  const before = await readingPosition(page);
-  await tablist.getByRole("tab", { name: "来源证据" }).click();
-  await expect(page.getByRole("tabpanel", { name: "来源证据" })).toBeVisible();
-  await expect(page.getByRole("tabpanel")).toHaveCount(1);
-  await expect(page.getByRole("region", { name: "来源与分歧" }).getByText("反驳")).toBeVisible();
-  expect(await readingPosition(page)).toEqual(before);
-  await tablist.getByRole("tab", { name: "事件内容" }).click();
-  await expect(raisedClaim.getByText(/此前：Agency announces 25% tariff/)).toBeVisible();
-  expect(await readingPosition(page)).toEqual(before);
-
-  const sourceButton = content.locator("#news-claim-1").getByRole("button", { name: /来源 01/ });
-  await sourceButton.click();
-  await expect(page).toHaveURL(/\?tab=source&focus=source-01$/);
+  await expect(page.getByRole("region", { name: "读者收到的推送" })).toContainText(
+    "【重点】钢铁进口关税上调至 50%",
+  );
+  await expect(page.locator(".news-reader-fact")).toHaveCount(2);
+  await expect(page.locator(".news-reader-fact").first()).toHaveAttribute("id", "news-claim-2");
+  await expect(page.locator("#news-processing")).not.toHaveAttribute("open", "");
+  await expect(page.getByRole("tablist", { name: "事件详情" })).toHaveCount(0);
+  await page.locator("#news-claim-1").getByRole("button", { name: "查看原文 1 ↗" }).click();
+  await expect(page).toHaveURL(/\?focus=source-01$/);
   await expect(page.locator("#source-01")).toBeFocused();
-  await page.locator("#source-01").getByRole("button", { name: "命题 01" }).click();
-  await expect(page).toHaveURL(/\?tab=content&focus=news-claim-1$/);
+  await page.locator("#source-01").getByRole("button", { name: "查看事实 1" }).press("Enter");
+  await expect(page).toHaveURL(/\?focus=news-claim-1$/);
   await expect(page.locator("#news-claim-1")).toBeFocused();
-  await expect(raisedClaim.getByText(/此前：Agency announces 25% tariff/)).toBeVisible();
-
-  await tablist.getByRole("tab", { name: "来源证据" }).click();
-  await page
-    .locator(".news-detail-notification-summary")
-    .getByRole("button", { name: "命题 01" })
-    .click();
-  await expect(page.locator("#news-claim-1")).toBeFocused();
-  await expect
-    .poll(() =>
-      page.locator("#news-claim-1").evaluate((claim) => {
-        const bounds = claim.getBoundingClientRect();
-        const viewport = claim.closest(".center-column")!.getBoundingClientRect();
-        return bounds.top >= viewport.top - 1 && bounds.bottom <= viewport.bottom + 1;
-      }),
-    )
-    .toBe(true);
+  await page.goBack();
+  await expect(page.locator("#source-01")).toBeFocused();
+  await page.reload();
+  await expect(page.locator("#source-01")).toBeFocused();
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoUnhandledApiRequests(page);
 });
 
-test("restores query reading locations on cold load, reload and back with keyboard tabs", async ({
+test("opens a cold processing record and preserves comparisons during citation navigation", async ({
   page,
 }) => {
   await installMockApi(page);
   await page.goto("/news/events/evt-agent-tariff?tab=processing&focus=delivery-record");
-  await expect(page.getByRole("tab", { name: "处理记录" })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  await expect(page.locator("#news-processing")).toHaveAttribute("open", "");
   await expect(page.locator("#delivery-record")).toHaveAttribute("open", "");
   await expect(page.locator("#delivery-record")).toBeFocused();
   await page.locator("#delivery-record").getByText("实际发送正文").click();
-  await expect(page.getByText("【重点】钢铁进口关税上调至 50%", { exact: true })).toBeVisible();
-  await page.reload();
-  await expect(page.locator("#delivery-record")).toHaveAttribute("open", "");
-  await expect(page.locator("#delivery-record")).toBeFocused();
-
-  const tabs = page.getByRole("tablist", { name: "事件详情" });
-  const source = tabs.getByRole("tab", { name: "来源证据" });
-  const processing = tabs.getByRole("tab", { name: "处理记录" });
-  await processing.focus();
-  await processing.press("Home");
-  await expect(tabs.getByRole("tab", { name: "事件内容" })).toBeFocused();
-  await expect(page).toHaveURL(/\?tab=content$/);
-  await page.keyboard.press("ArrowRight");
-  await expect(source).toBeFocused();
-  await expect(page).toHaveURL(/\?tab=source$/);
-  await page.keyboard.press("End");
-  await expect(processing).toBeFocused();
-  await expect(page).toHaveURL(/\?tab=processing$/);
-  const beforeHistory = await readingPosition(page);
-  await page.goBack();
-  await expect(page).toHaveURL(/\?tab=source$/);
-  await expect(page.getByRole("tabpanel", { name: "来源证据" })).toBeVisible();
-  await expect(source).toBeFocused();
-  expect(await readingPosition(page)).toEqual(beforeHistory);
-  await page.goForward();
-  await expect(page).toHaveURL(/\?tab=processing$/);
-  await expect(page.getByRole("tabpanel", { name: "处理记录" })).toBeVisible();
-  await expect(processing).toBeFocused();
-  expect(await readingPosition(page)).toEqual(beforeHistory);
-  await page.goBack();
-  await expect(source).toBeFocused();
-  await page.reload();
-  await expect(page.getByRole("tabpanel", { name: "来源证据" })).toBeVisible();
-  await expect(page.getByRole("tabpanel")).toHaveCount(1);
+  await expect(page.locator("#delivery-record")).toContainText("【重点】钢铁进口关税上调至 50%");
+  await page.getByText("事实字段、来源关系与历史比较").click();
+  const claim = page.locator("#claim-record-2");
+  await claim.getByText("历史比较 1 项").click();
+  await expect(claim.getByText(/此前：Agency announces 25% tariff/)).toBeVisible();
+  await claim.getByRole("button", { name: /来源 01/ }).click();
+  await expect(page.locator("#source-01")).toBeFocused();
+  await page.locator("#source-01").getByRole("button", { name: "查看事实 1" }).click();
+  await expect(claim.locator("#news-claim-history-2")).toHaveAttribute("open", "");
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoUnhandledApiRequests(page);
 });
 
-test("preserves document height and scroll when a long expanded processing panel switches to short content", async ({
+test("keeps uncertain and source-only Events readable without claiming delivery", async ({
   page,
 }) => {
   await installMockApi(page);
   const detail = newsUpdateDetailFixture();
-  const step = newsTimelineFixture()[0];
-  detail.timeline = Array.from({ length: 32 }, (_, index) => ({
-    ...step,
-    at_ms: step.at_ms + index * 1_000,
-    summary_zh: `收到已记录材料 ${index + 1}`,
-  }));
+  detail.processing!.intents![0].state = "ambiguous";
+  detail.processing!.intents![0].state_zh = "发送结果不明";
+  detail.outcome = newsOutcomeFixture({
+    group: "held",
+    kind: "delivery_ambiguous",
+    text_zh: "发送结果不明",
+  });
+  detail.deliveries = [];
+  detail.reader_receipt = { state: "unknown", delivery_state: "ambiguous" };
   await page.route("**/api/news/events/evt-agent-tariff", (route) =>
     route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ ok: true, data: detail }),
     }),
   );
-  await page.goto("/news/events/evt-agent-tariff?tab=processing&focus=timeline-record");
-  await expect(page.locator("#timeline-record")).toHaveAttribute("open", "");
-  await expect(page.locator("#timeline-record").getByRole("listitem")).toHaveCount(32);
-  await page.getByRole("tab", { name: "处理记录" }).evaluate((tab) => {
-    (tab as HTMLElement).focus({ preventScroll: true });
-    tab.closest(".center-column")!.scrollTop = 500;
-  });
-  const before = await readingPosition(page);
-  expect(before.scroll).toBeGreaterThan(0);
-  const slotHeight = await activeSlotHeight(page);
-  await page.keyboard.press("Home");
-  await expect(page.getByRole("tab", { name: "事件内容" })).toHaveAttribute(
-    "aria-selected",
-    "true",
+  await page.goto("/news/events/evt-agent-tariff");
+  const sent = page.getByRole("region", { name: "读者收到的推送" });
+  await expect(sent).toContainText("本次没有确认送达的推送");
+  await expect(sent).not.toContainText("【重点】钢铁进口关税上调至 50%");
+  await expect(page.locator(".news-reader-fact[data-sent]")).toHaveCount(0);
+  await expectNoDocumentHorizontalOverflow(page);
+  detail.event_update = null;
+  detail.processing = null;
+  await page.reload();
+  await expect(page.getByRole("region", { name: "每件事与推送原因" })).toContainText(
+    "尚无已采用事实",
   );
-  expect(await readingPosition(page)).toEqual(before);
-  expect(await activeSlotHeight(page)).toBeGreaterThanOrEqual(slotHeight);
-  await expect(page.getByRole("tabpanel")).toHaveCount(1);
-  await page.keyboard.press("End");
-  await expect(page.locator("#timeline-record")).toHaveAttribute("open", "");
-  expect(await readingPosition(page)).toEqual(before);
+  await expect(page.getByRole("region", { name: "原文" })).toContainText("Reuters World");
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoUnhandledApiRequests(page);
 });
 
-test("preserves the shell scroll position when browser back hides a manually expanded long panel", async ({
+test("copies a shareable focused link and leaves refresh polling at the reading position", async ({
   page,
 }) => {
   await installMockApi(page);
-  const detail = newsUpdateDetailFixture();
-  const step = newsTimelineFixture()[0];
-  detail.timeline = Array.from({ length: 32 }, (_, index) => ({
-    ...step,
-    at_ms: step.at_ms + index * 1_000,
-    summary_zh: `收到已记录材料 ${index + 1}`,
-  }));
-  await page.route("**/api/news/events/evt-agent-tariff", (route) =>
-    route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({ ok: true, data: detail }),
-    }),
-  );
-  await page.goto("/news/events/evt-agent-tariff?tab=content");
-  await page.getByRole("tab", { name: "处理记录" }).click();
-  await page.locator("#timeline-record > summary").click();
-  await expect(page.locator("#timeline-record")).toHaveAttribute("open", "");
-  await page.locator(".center-column").evaluate((shell) => {
-    shell.scrollTop = 500;
+  await page.clock.install();
+  let detailReads = 0;
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname === "/api/news/events/evt-agent-tariff") detailReads++;
   });
-  const before = await readingPosition(page);
-  expect(before.scroll).toBeGreaterThan(0);
-  const slotHeight = await activeSlotHeight(page);
-  await page.goBack();
-  await expect(page.getByRole("tabpanel", { name: "事件内容" })).toBeVisible();
-  expect(await readingPosition(page)).toEqual(before);
-  expect(await activeSlotHeight(page)).toBeGreaterThanOrEqual(slotHeight);
-  await page.goForward();
-  await expect(page.getByRole("tabpanel", { name: "处理记录" })).toBeVisible();
-  await expect(page.locator("#timeline-record")).toHaveAttribute("open", "");
-  expect(await readingPosition(page)).toEqual(before);
+  await page.goto("/news/events/evt-agent-tariff?focus=news-claim-1");
+  await expect(page.locator("#news-claim-1")).toBeFocused();
+  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.getByRole("button", { name: "复制事件链接" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "事件链接已复制" })).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toContain(
+    "/news/events/evt-agent-tariff?focus=news-claim-1",
+  );
+  await page.locator("#source-01").getByRole("link", { name: "打开原文" }).focus();
+  const before = await page.locator(".center-column").evaluate((element) => element.scrollTop);
+  const reads = detailReads;
+  await page.clock.runFor(16_000);
+  await expect.poll(() => detailReads).toBeGreaterThan(reads);
+  expect(await page.locator(".center-column").evaluate((element) => element.scrollTop)).toBe(
+    before,
+  );
+  await expect(page.locator("#source-01").getByRole("link", { name: "打开原文" })).toBeFocused();
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoUnhandledApiRequests(page);
 });
-
-async function readingPosition(page: Page) {
-  return page.getByRole("tablist", { name: "事件详情" }).evaluate((tabs) => ({
-    scroll: tabs.closest(".center-column")!.scrollTop,
-    top: tabs.getBoundingClientRect().top,
-  }));
-}
-
-async function activeSlotHeight(page: Page) {
-  return page
-    .getByRole("tabpanel")
-    .evaluate((panel) => panel.parentElement!.getBoundingClientRect().height);
-}

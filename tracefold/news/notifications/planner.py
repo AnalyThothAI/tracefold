@@ -88,6 +88,7 @@ class NotificationPlanner:
                     link_path=novelty[claim.ref].path,
                     render="full" if earlier is None else earlier.render,
                     earlier=earlier,
+                    anchor_intent_id=anchor,
                     input_digest=None if claim.ref not in inputs else inputs[claim.ref].digest,
                     message_intents=intents,
                     judgment=judgments.get(claim.ref),

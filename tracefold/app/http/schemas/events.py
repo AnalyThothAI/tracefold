@@ -6,8 +6,9 @@ from pydantic import Field
 
 from tracefold.news import EventKind, SourceAuthority
 from tracefold.news.models import MarketType
-from tracefold.news.notifications.contracts import ClaimDecisionValue, ClaimReason, PlanAction, PlanReason
+from tracefold.news.notifications.contracts import ClaimDecisionValue, ClaimReason, PlanAction, PlanReason, PlanTimings
 from tracefold.news.notifications.novelty import Novelty, Render
+from tracefold.news.notifications.ports import DeliveryTimings
 from tracefold.news.notifications.reader import ReaderBackend
 from tracefold.news.update_view import LegacyClaimReason
 from tracefold.news.updates.contracts import ChangeKind, ContentKind, Mode, Phase, Relation
@@ -295,6 +296,14 @@ class NewsSemanticObservationData(ExactApiSchema):
     adopted_content_revision: str | None = None
 
 
+class NewsEarlierNotificationData(ExactApiSchema):
+    intent_id: str
+    event_id: str
+    headline_zh: str
+    body: str
+    received_at_ms: int
+
+
 class NewsClaimDecisionData(ExactApiSchema):
     claim_ref: str
     statement: str | None = None
@@ -309,6 +318,8 @@ class NewsClaimDecisionData(ExactApiSchema):
     novelty_zh: str = ""
     render: Render | None = None
     earlier_intent_id: str | None = None
+    earlier: NewsEarlierNotificationData | None = None
+    importance_threshold: float | None = None
     importance: float | None = None
     importance_probabilities: list[float] | None = None
     reader_backend: ReaderBackend | None = None
@@ -326,6 +337,7 @@ class NewsNotificationPlanData(ExactApiSchema):
     decision_ref: str | None = None
     reader_identity: str | None = None
     claim_decisions: list[NewsClaimDecisionData] = Field(default_factory=list)
+    timings: PlanTimings | None = None
 
 
 class NewsNotificationWorkData(ExactApiSchema):
@@ -339,6 +351,11 @@ class NewsNotificationWorkData(ExactApiSchema):
     updated_at_ms: int
     plan: NewsNotificationPlanData | None = None
     plan_error_code: str | None = None
+
+
+class NewsSentLineData(ExactApiSchema):
+    claim_ref: str
+    text_zh: str
 
 
 class NewsUpdateIntentData(ExactApiSchema):
@@ -359,6 +376,9 @@ class NewsUpdateIntentData(ExactApiSchema):
     body: str | None = None
     payload_sha256: str | None = None
     receipt: dict[str, Any] | None = None
+    lines: list[NewsSentLineData] = Field(default_factory=list)
+    timings: DeliveryTimings | None = None
+    plan_timings: PlanTimings | None = None
 
 
 class NewsProcessingData(ExactApiSchema):
@@ -370,6 +390,24 @@ class NewsProcessingData(ExactApiSchema):
     intents: list[NewsUpdateIntentData] = Field(default_factory=list)
     # Set when the adopted head's stored document does not decode under the current contract.
     update_error_code: str | None = None
+
+
+class NewsStoryEventData(ExactApiSchema):
+    event_id: str
+    headline: str
+    reporting_origin: str
+    published_at_ms: int | None = None
+    opened_at_ms: int
+    outcome: NewsOutcomeData
+    received_at_ms: int | None = None
+
+
+class NewsEventStoryData(ExactApiSchema):
+    storyline_key: str
+    from_ms: int
+    to_ms: int
+    events: list[NewsStoryEventData] = Field(default_factory=list)
+    has_more: bool = False
 
 
 class NewsEventDetailData(ExactApiSchema):
@@ -385,6 +423,7 @@ class NewsEventDetailData(ExactApiSchema):
     evidence_snapshots: list[NewsEvidenceSnapshotData] = Field(default_factory=list)
     reader_receipt: NewsReaderReceiptData
     normalization: list[NewsSymbolNormalizationData] = Field(default_factory=list)
+    story: NewsEventStoryData | None = None
 
 
 class NewsItemRelatedEventData(ExactApiSchema):
@@ -461,9 +500,11 @@ __all__ = [
     "NewsClaimData",
     "NewsClaimDecisionData",
     "NewsDeliveryData",
+    "NewsEarlierNotificationData",
     "NewsEventData",
     "NewsEventDetailData",
     "NewsEventMemberData",
+    "NewsEventStoryData",
     "NewsEventUpdateData",
     "NewsEvidenceSnapshotData",
     "NewsItemRelatedEventData",
@@ -476,6 +517,8 @@ __all__ = [
     "NewsQuotesData",
     "NewsReaderReceiptData",
     "NewsSemanticWorkData",
+    "NewsSentLineData",
+    "NewsStoryEventData",
     "NewsTimelineStepData",
     "NewsUpdateEvidenceData",
     "NewsUpdateIntentData",

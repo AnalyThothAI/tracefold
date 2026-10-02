@@ -102,7 +102,7 @@ def test_cursor_indexes_upgrade_and_downgrade_preserve_0427_facts(postgres_migra
         assert facts(conn) == before
         assert indexes(conn) == original_indexes
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20261002_0427"
-    command.upgrade(config, "head")
+    command.upgrade(config, "20261002_0428")
     with closing(connect_postgres_test()) as conn:
         assert facts(conn) == before
         assert indexes(conn) == upgraded

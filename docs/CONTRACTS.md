@@ -121,7 +121,7 @@ bootstrap 无需 token，其余业务读取先检查 `Authorization: Bearer ...`
 | card copy input digest | 所选命题的完整表达材料和文案器身份；仅相同实际输入复用中文文案 |
 | 冻结正文 / 实际发送账本 | 谁可能收到什么、结果是否已明确 |
 
-新采用内容使用 `news_event_update_v2`；旧 v1 保留原始内容与哈希。Event 详情读取当前 adopted update、来源、语义工作、通知决策及真实发送回执。只有旧事实的 Event 仍可看到来源和实际回执，但不再生成旧 verdict 的详情投影，也不会由旧 verdict 合成新 Claim。
+新采用内容使用 `news_event_update_v2`；旧 v1 保留原始内容与哈希。Event 详情读取当前 adopted update、来源、语义工作、通知决策及真实发送回执。读者投影增加 `processing.intents[].lines`（按冻结正文顺序且通过摘要核验的中文行）、意图自己的 `timings` / `plan_timings`、通知计划的 `timings`，以及逐事实决定的 `earlier`（此前真正送达的事件、标题、正文与时间）和独立数值 `importance_threshold`。无法可靠拆分正文时 `lines` 为空，不按采用顺序猜映射。`story` 只查询当前非空故事线、当前收到时刻前后各 24 小时，最多当前事件加最近 29 条，`has_more` 表示窗口仍有其他记录；不把 `none` 分桶或同故事线推导成相同事实。只有旧事实的 Event 仍可看到来源和实际回执，但不再生成旧 verdict 的详情投影，也不会由旧 verdict 合成新 Claim。
 
 公开编辑型契约 `news_public_update_v1` 区分 `catalyst_delta` 与 `source_update`。前者给合格变化内容一个研究入口，后者显式更新旧 claim refs，可能跨 Event；它不创建新研究有效期或自动影响已有仓位。
 

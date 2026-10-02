@@ -370,3 +370,50 @@ def test_failed_notification_is_held_with_its_error_alongside_historical_deliver
     # Exhausted by the previous code and backfilled by 0413: named, not a bare key.
     legacy = work | {"last_error_code": "news_notification_exhausted_legacy"}
     assert "旧版通知规划已耗尽" in _outcome(semantic=_DONE, adopted=True, notification=legacy).reason_zh
+
+
+def test_frozen_lines_follow_card_order_and_reject_ambiguous_or_changed_body() -> None:
+    from tracefold.news.update_view import frozen_card_lines
+    from tracefold.news.updates.identity import digest
+
+    body = "中文标题\n\n事实乙\n保留换行\n\n事实甲"
+    card = {
+        "intent_id": "sent",
+        "claim_refs": ["a", "b"],
+        "headline_zh": "中文标题",
+        "body": body,
+        "payload_sha256": digest(body),
+    }
+    assert frozen_card_lines(card) == [
+        {"claim_ref": "a", "text_zh": "事实乙\n保留换行"},
+        {"claim_ref": "b", "text_zh": "事实甲"},
+    ]
+    assert frozen_card_lines(card | {"body": body + "被改写"}) == []
+    ambiguous = body.replace("事实乙\n保留换行", "事实乙\n\n另一段")
+    assert frozen_card_lines(card | {"body": ambiguous, "payload_sha256": digest(ambiguous)}) == []
+    assert frozen_card_lines(card | {"claim_refs": ["b", "a"]}) == []
+
+
+def test_reader_plan_keeps_known_anchor_and_measured_timings() -> None:
+    from tracefold.news.notifications.contracts import ClaimDecision, PlanTimings, ReaderRecord
+    from tracefold.news.update_view import plan_view
+
+    assert "anchor_intent_id" not in ReaderRecord(novelty="known").model_dump(mode="json")
+    update = first_update("known")
+    plan = silent_plan(update).model_copy(
+        update={
+            "claim_decisions": (
+                ClaimDecision(
+                    claim_ref=update.claims[0].ref,
+                    decision="not_notified",
+                    reason="known_to_reader",
+                    reader=ReaderRecord(novelty="known", anchor_intent_id="earlier-sent"),
+                ),
+            ),
+            "timings": PlanTimings(snapshot_ms=25, judgment_ms=100),
+        }
+    )
+    view = plan_view(plan, statements={update.claims[0].ref: update.claims[0].statement})
+    assert view["claim_decisions"][0]["earlier_intent_id"] == "earlier-sent"
+    assert view["timings"]["snapshot_ms"] == 25
+    assert "≥" not in view["claim_decisions"][0]["reason_zh"]

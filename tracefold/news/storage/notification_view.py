@@ -31,6 +31,8 @@ def receipt_notification(row: Mapping[str, Any]) -> dict[str, Any]:
     value = {key: row[key] for key in keys}
     value["body"] = (row["card"] or {}).get("body")
     value["payload_sha256"] = (row["card"] or {}).get("payload_sha256")
+    value["timings"] = row.get("timings")
+    value["plan_timings"] = row.get("plan_timings")
     if row["state"] == "sending":
         value["error_code"] = None
     return value

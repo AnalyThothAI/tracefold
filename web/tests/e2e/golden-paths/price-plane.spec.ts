@@ -18,7 +18,7 @@ test("keeps current quotes on an Event after retiring event returns", async ({ p
   await page.setViewportSize({ height: 900, width: 1440 });
   await page.goto("/news/events/evt-global-policy?tab=market");
 
-  const quotes = page.getByRole("tabpanel", { name: "当前行情" }).locator(".news-quote-table");
+  const quotes = page.locator("#news-market .news-quote-table");
   await expect(quotes).toBeVisible();
   await expect(quotes).toContainText("现价");
   await expect(quotes).toContainText("24H");

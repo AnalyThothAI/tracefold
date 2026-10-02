@@ -13,8 +13,9 @@ from typing import Any, Final, Literal
 
 from pydantic import ValidationError
 
-from .notifications.contracts import ClaimDecision, NotificationPlan
-from .notifications.policy import cuts_for
+from .notifications.contracts import ClaimDecision, FrozenCard, NotificationPlan, PlanTimings
+from .notifications.policy import anchor_index, cuts_for
+from .notifications.ports import DeliveryTimings
 from .taxonomy import IPTC_SUBJECT_LABELS_ZH, source_authority_zh
 from .updates.contracts import Claim, EventUpdate, Evidence
 
@@ -449,16 +450,9 @@ def semantic_view(work: Mapping[str, Any] | None) -> dict[str, Any] | None:
 
 
 def _claim_reason_zh(row: ClaimDecision) -> str:
-    """A templated reason: the rule, and for a reader row the score and the cut it was read against."""
+    """Reader copy names the reason; numeric evidence remains in separate fields."""
 
     text = _zh(CLAIM_REASON_ZH, row.reason)
-    judgment = None if row.reader is None else row.reader.judgment
-    if judgment is not None and judgment.importance is not None and judgment.backend is not None:
-        cuts = cuts_for(judgment)
-        text += (
-            f"（增量重要性 {judgment.importance.value:.2f}；推送 ≥ {cuts.push}，"
-            f"已知事实 ≥ {cuts.held}，重点 P(4) ≥ {cuts.key_tail}）"
-        )
     if row.reader is not None and row.reader.earlier is not None:
         text += f"；{_zh(RENDER_ZH, row.reader.render)}此前已推送的一条"
     return text
@@ -476,6 +470,7 @@ def plan_view(plan: NotificationPlan, *, statements: Mapping[str, str]) -> dict[
         "reader_revision": plan.reader_revision,
         "decision_ref": plan.record_ref,
         "reader_identity": plan.reader_identity,
+        "timings": None if plan.timings is None else plan.timings.model_dump(mode="json"),
         "claim_decisions": [
             {
                 "claim_ref": row.claim_ref,
@@ -498,11 +493,21 @@ def _reader_fields(row: ClaimDecision) -> dict[str, Any]:
         return {}
     judgment = reader.judgment
     importance = None if judgment is None else judgment.importance
+    earlier_id = reader.anchor_intent_id or (None if reader.earlier is None else reader.earlier.intent_id)
+    if earlier_id is None and judgment is not None and judgment.backend is not None and judgment.anchor is not None:
+        index = anchor_index(judgment.anchor, cuts_for(judgment))
+        if index is not None and index < len(reader.message_intents):
+            earlier_id = reader.message_intents[index]
+    threshold = None
+    if judgment is not None and judgment.backend is not None:
+        cuts = cuts_for(judgment)
+        threshold = cuts.held if reader.render == "increment" else cuts.push
     return {
         "novelty": reader.novelty,
         "novelty_zh": _zh(NOVELTY_ZH, reader.novelty),
         "render": reader.render,
-        "earlier_intent_id": None if reader.earlier is None else reader.earlier.intent_id,
+        "earlier_intent_id": earlier_id,
+        "importance_threshold": threshold,
         "importance": None if importance is None else round(importance.value, 2),
         "importance_probabilities": None if importance is None else [round(p, 3) for p in importance.probabilities],
         "reader_backend": None if judgment is None else judgment.backend,
@@ -617,9 +622,44 @@ def intent_views(
                 "body": (d or {}).get("body"),
                 "payload_sha256": (d or {}).get("payload_sha256"),
                 "receipt": (d or {}).get("receipt"),
+                "lines": frozen_card_lines(card),
+                "timings": delivery_timings((d or {}).get("timings")),
+                "plan_timings": plan_timings((d or {}).get("plan_timings")),
             }
         )
     return views
+
+
+def frozen_card_lines(card: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Recover the ordered frozen lines only when the exact body proves an unambiguous mapping."""
+    try:
+        frozen = FrozenCard.model_validate(card)
+    except ValidationError:
+        return []
+    if frozen.claim_refs != tuple(sorted(set(frozen.claim_refs))):
+        return []
+    parts = frozen.body.split("\n\n")
+    if len(parts) != len(frozen.claim_refs) + 1 or parts[0] != frozen.headline_zh:
+        return []
+    return [{"claim_ref": ref, "text_zh": text} for ref, text in zip(frozen.claim_refs, parts[1:], strict=True)]
+
+
+def delivery_timings(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    try:
+        return DeliveryTimings.model_validate(raw).model_dump(mode="json")
+    except ValidationError:
+        return None
+
+
+def plan_timings(raw: Any) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    try:
+        return PlanTimings.model_validate(raw).model_dump(mode="json")
+    except ValidationError:
+        return None
 
 
 def sent_headline(intents: Sequence[Mapping[str, Any]]) -> str | None:

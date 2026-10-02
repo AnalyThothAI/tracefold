@@ -51,8 +51,9 @@
     color: var(--signal-caution);
   }
 
-  .news-asset-chips code[data-resolution="unlisted"] .news-asset-symbol {
-    text-decoration: line-through;
+  .news-asset-unlisted {
+    color: var(--signal-caution);
+    font-weight: 400;
   }
 
   .news-asset-more {

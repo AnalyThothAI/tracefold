@@ -521,3 +521,87 @@ def test_failed_notification_agrees_in_feed_detail_and_tab_counts(conn) -> None:
         served = {row["event_id"] for row in _feed(news, outcome=group)["events"]}
         assert served == {event for event, row in rows.items() if row["outcome"]["group"] == group}
     assert detail["event_update"]["content_revision"] == seeded["silent"].content_revision
+
+
+@pytest.mark.parametrize("explicit_anchor", [True, False])
+@pytest.mark.parametrize(
+    ("receipt_state", "sent_offset", "has_earlier"),
+    [
+        ("sent", -80_000, True),
+        ("sent", 0, False),
+        ("ambiguous", -80_000, False),
+    ],
+)
+def test_reader_earlier_anchor_is_a_sent_receipt_before_the_decision(
+    conn, receipt_state, sent_offset, has_earlier, explicit_anchor
+) -> None:
+    from tracefold.news.notifications.contracts import ClaimDecision, ReaderRecord
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        _event(repos.news, "old-received", opened_at_ms=NOW - 100_000)
+        _event(repos.news, "new-known", opened_at_ms=NOW - 50_000)
+        old = first_update("old-received", adopted_at_ms=NOW - 90_000)
+        persist_update(conn, old)
+        old_plan = notify_plan(old)
+        settle_intent(
+            conn,
+            old,
+            old_plan,
+            state=receipt_state,
+            headline_zh="已收到的标题",
+            body="已收到的标题\n\n已收到的原始正文",
+            now_ms=NOW + sent_offset,
+        )
+        current = first_update("new-known", adopted_at_ms=NOW - 40_000)
+        persist_update(conn, current)
+        persist_semantic_work(conn, current.event_id, wanted=1, done=1, now_ms=NOW - 40_000)
+        plan = silent_plan(current).model_copy(
+            update={
+                "claim_decisions": (
+                    ClaimDecision(
+                        claim_ref=current.claims[0].ref,
+                        decision="not_notified",
+                        reason="known_to_reader",
+                        reader=ReaderRecord(
+                            novelty="known", anchor_intent_id=old_plan.intent_id if explicit_anchor else None
+                        ),
+                    ),
+                )
+            }
+        )
+        persist_plan(conn, current, plan, state="done", now_ms=NOW - 30_000)
+    detail = repos.news.event_detail(current.event_id)
+    row = detail["processing"]["notification"]["plan"]["claim_decisions"][0]
+    if not has_earlier:
+        assert "earlier" not in row
+        return
+        assert row["earlier"] == {
+            "intent_id": old_plan.intent_id,
+            "event_id": old.event_id,
+            "headline_zh": "已收到的标题",
+            "body": "已收到的标题\n\n已收到的原始正文",
+            "received_at_ms": NOW - 79_500,
+        }
+    assert detail["processing"]["intents"] == []
+
+
+def test_story_window_is_bounded_keeps_current_and_excludes_absent_keys(conn) -> None:
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        for index in range(33):
+            _event(repos.news, f"story-{index:02d}", opened_at_ms=NOW + index)
+        _event(repos.news, "out-of-window", opened_at_ms=NOW + 24 * 3600_000 + 1)
+        conn.execute("UPDATE news_events SET storyline_key='asset:BLAST'")
+    detail = repos.news.event_detail("story-00")
+    story = detail["story"]
+    assert len(story["events"]) == 30
+    assert story["has_more"] is True
+    ids = [row["event_id"] for row in story["events"]]
+    assert ids[0] == "story-00"
+    assert ids[-1] == "story-32"
+    assert "out-of-window" not in ids
+    assert story["from_ms"] == NOW - 24 * 3600_000
+    with conn.transaction():
+        conn.execute("UPDATE news_events SET storyline_key='none' WHERE event_id='story-00'")
+    assert repos.news.event_detail("story-00")["story"] is None
