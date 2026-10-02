@@ -140,7 +140,11 @@ RabbitMQ 重试、delivery limit 和 dead lettering 由 broker policy 管理。W
 5. **保存并采用。** 保存 observation，再由纯函数组装知识版本。在短事务中校验 owner、lease 和 expected head，原子写入采用文档、head、命题索引、公开 outbox 和必要通知工作。
 6. **结算与补读。** 无实质变化只结算版本。有实质变化时结算采用，再尝试有界补读；补读失败不撤回已提交的知识、outbox 或通知工作。
 
-保存 observation 使“理解完成”可追溯；head CAS 决定这份理解能否成为当前知识。采用冲突最多尝试两次：复用抽取，只补算新 head 所需的关系。更高输入版本已采用时，旧尝试保存观察并结束，不降低 head。
+关系提问与组装共用逐命题比较范围：外部 prior 只有被该命题选中的配对才参与；兄弟命题选中的 prior 不算本命题缺失回答。新命题只有冲突关系或没有实质关系时，范围内的缺失关系、`unresolved` 或被代码否决的等价仍产生 `possible_new`，不能据此制造 catalyst；全部比较为 `unrelated` 的新命题产生 `new_fact` 并公开为 `catalyst_delta`。采用前 head 前进时补入的本 Event prior 仍全对比较；未启用召回的路径和重放保持 supplied prior 全量比较。
+
+[命题范围回归](../../tests/news/test_news_relation_scope.py)覆盖兄弟命题隔离、真实未决、缺失关系、等价否决与采用冲突后的补算；[PostgreSQL 发布回归](../../tests/integration/test_news_relation_scope.py)覆盖原子采用、公开 outbox、通知待办与历史不可变。
+
+`EventUpdate.current_claims` 唯一推导有效命题，排除被更正退休和真实变化替代的 ref。抽取只读本 Event prior；外部 prior 只用于比较，相关 Event 再次采用不使抽取 checkpoint 失效。同一可见正文和范围已读、已隔离或已排入本轮时，转载副本不重复抽取；同一记录自身正文变化仍须读取。
 
 补读只能使用 FrozenInput 提供、`ExistingSourceReader` 能读取的已有来源目标。一条 lineage 通过持久 reservation 限定一次补读；重试不能重新获得名额。它不提供自主搜索或任意网页读取能力。
 

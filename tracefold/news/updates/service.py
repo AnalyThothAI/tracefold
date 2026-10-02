@@ -148,7 +148,9 @@ class NewsAgent:
                 )
             observation = self._observation(work_id, source, understood, completed_at_ms, recall=recall_manifest)
             observation = await self.store.save_observation(observation)
-            update = assemble_update(source, understood, head, adopted_at_ms=self.clock())
+            update = assemble_update(
+                source, understood, head, adopted_at_ms=self.clock(), relation_pairs=relation_pairs
+            )
             if update is None:
                 await self.store.finish_semantic_work(work_id, lease=lease, reason="no_substantive_content_change")
                 return "unchanged"
