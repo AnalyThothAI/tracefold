@@ -8,7 +8,7 @@ from typing import Final
 from ..models import ADMITTED_ADMISSIONS
 from ..source_contracts import EVENT_KINDS
 from .notification_rows import NOTIFICATION_DECISIONS_SQL, NOTIFY_JOBS_SQL, UPDATE_PENDING_SQL, UPDATE_RECEIPTS_SQL
-from .semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL, SEMANTIC_JOBS_SQL
+from .semantic_rows import ANALYSIS_HEADS_SQL, SEMANTIC_JOBS_SQL
 
 ITEM_RELATED_COUNT_SQL: Final = "SELECT count(DISTINCT event_id) AS n FROM news_event_members WHERE item_id=%s"
 ITEM_RELATED_KEYS_SQL: Final = (
@@ -216,7 +216,7 @@ STATUS_FUNNEL_TOTALS_SQL: Final = f"""
 # EventUpdate join is on a primary key. `d` is the Event's representative ledger row -- the current
 # revision's latest attempt, else its latest sent card, else its latest attempt -- over the
 # `(event_id, kind)` index, so an earlier revision's receipt never hides what happened to the current one
-# (#742 R1); `q` is its latest intent still owed with no ledger row, from one pass over the in-flight queue.
+# (#742 R1); `q` is its latest intent still owed with no ledger row.
 _READER_DELIVERY_ORDER_SQL: Final = (
     "(dl.content_revision = current_head.content_revision) DESC, (dl.state = 'sent') DESC,"
     " dl.created_at_ms DESC, dl.intent_id DESC"
@@ -226,9 +226,8 @@ _FEED_PAGE_DELIVERY_SQL: Final = f"""
             SELECT dl.kind, dl.state, dl.settled_at_ms, dl.error_code, dl.card, dl.plan_key,
                    dl.content_revision, dl.payload_sha256
               FROM ({UPDATE_RECEIPTS_SQL}) dl
-              LEFT JOIN ({ANALYSIS_HEADS_SQL}) current_head ON current_head.event_id = dl.event_id
              WHERE dl.event_id = e.event_id AND dl.kind IN {READER_DELIVERY_KINDS_SQL}
-             ORDER BY {_READER_DELIVERY_ORDER_SQL}
+             ORDER BY {_READER_DELIVERY_ORDER_SQL.replace("current_head.content_revision", "h.content_revision")}
              LIMIT 1
           ) d ON true
 """  # noqa: S608
@@ -247,24 +246,32 @@ _FEED_COUNTS_DELIVERY_SQL: Final = f"""
 
 def _feed_joins_sql(*, bulk_deliveries: bool = False) -> str:
     delivery_join = _FEED_COUNTS_DELIVERY_SQL if bulk_deliveries else _FEED_PAGE_DELIVERY_SQL
+    # The shared notification ledger contains settled history too. Page reads probe one Event;
+    # only counts, which already inspect every matching Event, deduplicate the whole ledger.
+    pending_join = f"""
+          LEFT JOIN {"(" if bulk_deliveries else "LATERAL ("}
+            SELECT {"DISTINCT ON (owed.event_id)" if bulk_deliveries else ""}
+                   owed.event_id, owed.state, owed.error_code,
+                   owed.content_revision, owed.frozen_card IS NOT NULL AS frozen_card
+              FROM ({UPDATE_PENDING_SQL}) owed
+             WHERE {"" if bulk_deliveries else "owed.event_id = e.event_id AND "}
+                   owed.kind IN {READER_DELIVERY_KINDS_SQL}
+               AND NOT EXISTS (SELECT 1 FROM ({UPDATE_RECEIPTS_SQL}) settled WHERE settled.intent_id = owed.intent_id)
+             ORDER BY {"owed.event_id," if bulk_deliveries else ""} owed.enqueued_at_ms DESC, owed.intent_id DESC
+             {"" if bulk_deliveries else "LIMIT 1"}
+          ) q ON {"q.event_id = e.event_id" if bulk_deliveries else "true"}
+    """  # noqa: S608 - fixed SQL alternatives only
     return f"""
           JOIN news_items i ON i.item_id = e.leader_item_id
           JOIN LATERAL (SELECT 1 WHERE e.evidence_version IS NOT NULL) current_evidence ON true
           LEFT JOIN ({SEMANTIC_JOBS_SQL}) sw ON sw.event_id = e.event_id
-          LEFT JOIN ({ANALYSIS_HEADS_SQL}) h ON h.event_id = e.event_id
-          LEFT JOIN ({ANALYSES_SQL}) u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
+          LEFT JOIN news_analyses h ON h.analysis_id = e.current_analysis_id AND h.event_id = e.event_id
+          LEFT JOIN LATERAL (SELECT h.document WHERE h.adopted_at_ms IS NOT NULL) u ON true
           LEFT JOIN ({NOTIFY_JOBS_SQL}) nw ON nw.event_id = e.event_id AND nw.channel = 'news'
           LEFT JOIN ({NOTIFICATION_DECISIONS_SQL}) nd ON nd.decision_ref = nw.decision_ref
           {delivery_join}
-          LEFT JOIN (
-            SELECT DISTINCT ON (owed.event_id) owed.event_id, owed.state, owed.error_code,
-                   owed.content_revision, owed.frozen_card IS NOT NULL AS frozen_card
-              FROM ({UPDATE_PENDING_SQL}) owed
-             WHERE owed.kind IN {READER_DELIVERY_KINDS_SQL}
-               AND NOT EXISTS (SELECT 1 FROM ({UPDATE_RECEIPTS_SQL}) settled WHERE settled.intent_id = owed.intent_id)
-             ORDER BY owed.event_id, owed.enqueued_at_ms DESC, owed.intent_id DESC
-          ) q ON q.event_id = e.event_id
-    """  # noqa: S608
+          {pending_join}
+    """
 
 
 def feed_page_sql(where_sql: str) -> str:

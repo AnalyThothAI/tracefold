@@ -18,7 +18,7 @@ from ..updates.projection import reading_views
 from .errors import EventUpdateConflict, SemanticLeaseLost
 from .semantic_input import frozen_input
 from .semantic_jobs import SemanticJobDetail, SemanticJobs, semantic_job
-from .semantic_rows import ANALYSES_SQL, SEMANTIC_JOBS_SQL, SEMANTIC_RESULTS_SQL
+from .semantic_rows import ANALYSES_SQL, SEMANTIC_RESULTS_SQL
 from .sql_values import _retry_delay
 from .update_commit import lock_event
 
@@ -47,11 +47,20 @@ _WAKE_STATE_LIMIT: Final = 1_000
 _RUNNABLE: Final = f"attempts < {SEMANTIC_ATTEMPTS_MAX} AND last_outcome IS DISTINCT FROM 'failed'"
 
 
+_OUTSTANDING_JOBS_SQL: Final = """
+    SELECT attempts, detail->>'last_outcome' AS last_outcome, updated_at_ms,
+           next_attempt_at_ms, lease_until_ms AS leased_until_ms
+      FROM news_jobs
+     WHERE job_kind='semantic'
+       AND (detail->>'done_revision' IS NULL
+            OR (detail->>'done_revision')::integer < (detail->>'wanted_revision')::integer)
+     ORDER BY next_attempt_at_ms, subject_id
+"""
+
+
 SEMANTIC_WAKE_STATE_SQL: Final = f"""
     WITH pending AS MATERIALIZED (
-      SELECT attempts, last_outcome, updated_at_ms FROM ({SEMANTIC_JOBS_SQL})
-       WHERE done_revision IS NULL OR done_revision < wanted_revision
-       ORDER BY next_attempt_at_ms, event_id
+      {_OUTSTANDING_JOBS_SQL}
        LIMIT {_WAKE_STATE_LIMIT}
     )
     SELECT count(*) FILTER (WHERE {_RUNNABLE}) AS pending,
@@ -63,17 +72,15 @@ SEMANTIC_WAKE_STATE_SQL: Final = f"""
 
 SEMANTIC_STATUS_SQL: Final = f"""
     WITH outstanding AS MATERIALIZED (
-      SELECT attempts, last_outcome, next_attempt_at_ms, leased_until_ms
-        FROM ({SEMANTIC_JOBS_SQL})
-       WHERE done_revision IS NULL OR done_revision < wanted_revision
-       ORDER BY next_attempt_at_ms, event_id
+      {_OUTSTANDING_JOBS_SQL}
        LIMIT {_WAKE_STATE_LIMIT}
     )
     SELECT
       (SELECT count(*) FROM ({SEMANTIC_RESULTS_SQL}) WHERE completed_at_ms >= %(since)s)
         AS semantic_observations_24h,
       (SELECT count(*) FROM ({ANALYSES_SQL}) WHERE adopted_at_ms >= %(since)s) AS semantic_adopted_24h,
-      (SELECT count(*) FROM ({SEMANTIC_JOBS_SQL}) WHERE last_outcome = 'failed' AND updated_at_ms >= %(since)s)
+      (SELECT count(*) FROM news_jobs WHERE job_kind='semantic'
+         AND detail->>'last_outcome'='failed' AND updated_at_ms >= %(since)s)
         AS semantic_failed_24h,
       (SELECT count(*) FROM outstanding WHERE {_RUNNABLE}
          AND next_attempt_at_ms <= %(now)s AND (leased_until_ms IS NULL OR leased_until_ms <= %(now)s))
@@ -85,12 +92,12 @@ SEMANTIC_STATUS_SQL: Final = f"""
 """  # noqa: S608 - code-owned integer constant only
 
 
-SEMANTIC_FAILED_CODES_SQL: Final = f"""
+SEMANTIC_FAILED_CODES_SQL: Final = """
     SELECT COALESCE(last_error_code, 'unknown') AS code, count(*) AS n
-      FROM ({SEMANTIC_JOBS_SQL})
-     WHERE last_outcome = 'failed' AND updated_at_ms >= %s
+      FROM news_jobs
+     WHERE job_kind='semantic' AND detail->>'last_outcome'='failed' AND updated_at_ms >= %s
      GROUP BY 1
-"""  # noqa: S608 -- fixed SQL; bound values.
+"""
 
 log = logging.getLogger("tracefold.news")
 
