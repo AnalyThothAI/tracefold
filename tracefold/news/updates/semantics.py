@@ -128,22 +128,16 @@ class SemanticAnalyzer:
         final_attempt: bool,
         relation_pairs: frozenset[tuple[str, str]] | None = None,
     ) -> Extraction:
-        """Judge every new claim against every supplied current prior; no model outside the judge decides one.
+        """Judge every new claim against its selected external priors and all of this Event's current priors.
 
         Candidates are already bounded by retrieval (current claims only); no global pair search and no
-        title-only key for relation cache reuse. Every supplied pair ends with a relation.
+        title-only key for relation cache reuse. Every pair in the claim's comparison scope ends with a relation.
         """
 
         questions = []
         pairs: dict[str, tuple[DraftClaim, PriorClaim]] = {}
         for claim in extraction.claims:
-            for prior in source.prior:
-                if (
-                    relation_pairs is not None
-                    and prior.event_id != source.event_id
-                    and (claim.slot, prior.claim.ref) not in relation_pairs
-                ):
-                    continue
+            for prior in source.relation_priors(claim.slot, relation_pairs):
                 item_id = identity("pair", claim.slot, prior.claim.ref)
                 pairs[item_id] = (claim, prior)
                 payload = {
