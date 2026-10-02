@@ -10,7 +10,8 @@ model configuration. Startup loads that exact immutable revision offline and
 verifies pooling, dimensions and inference dtype. It applies the calibrated token
 cap, symmetric statement-only encoding with `prompt=""`, L2 normalization and
 `trust_remote_code=False`. An incompatible snapshot fails startup. Requests retain
-their input order. The service accepts at most two statements per batch and runs
+their input order. Each response declares the exact embedder identity, which the
+application checks before saving any vectors. The service accepts at most two statements per batch and runs
 one inference at a time. Admission waits at most 0.5 seconds for a short existing
 batch, then returns 503 with `Retry-After: 1` if still busy.
 Connections, body size and socket reads are bounded.
@@ -67,7 +68,9 @@ port is `127.0.0.1:8767`, while Workers in this project can use
 `http://news-embedding:8080/v1`. Configure `llm.news_embedding` with the exact
 calibrated model, that base URL, `api_key_file: news_embedding_api_key` and
 `max_batch_size: 2`. Verify the application's golden/self-test availability before
-declaring dense recall ready.
+declaring dense recall ready. The application compares fixed English, Chinese,
+Russian and token-cap-sensitive probes against packaged real model vectors;
+pairwise translation similarity alone cannot validate stored-vector compatibility.
 
 `make embedding-status` reports the running immutable image and secretless
 provenance: revision, cap, pooling, dtype, dimensions, normalization, calibration

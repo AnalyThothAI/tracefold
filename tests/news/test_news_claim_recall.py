@@ -23,6 +23,19 @@ def vector(x: float, y: float = 0) -> bytes:
     return vector_bytes((x, y, *([0.0] * (CALIBRATION.embedder.dimensions - 2))), CALIBRATION.embedder)
 
 
+def provider_data(texts, fallback):
+    golden_texts, matrix = claim_embedding.golden_vectors(CALIBRATION.embedder)
+    golden = dict(zip(golden_texts, matrix.tolist(), strict=True))
+    return {
+        "model": CALIBRATION.embedder.model,
+        "embedder_identity": CALIBRATION.embedder.key,
+        "data": [
+            {"index": index, "embedding": golden[text] if text in golden else fallback(text)}
+            for index, text in enumerate(texts)
+        ],
+    }
+
+
 def test_one_rank_fuses_routes_deterministically_and_groups_receipts_by_best_claim() -> None:
     probe = Probe("A policy decision", vector(1), CALIBRATION.embedder.key)
     rows = (
@@ -85,6 +98,8 @@ def test_missing_vectors_use_the_calibrated_degraded_lexical_floor_per_candidate
     ranking = rank(prepare_rank(probe, rows, "prior", calibration=calibrated), rows)
     assert ranking.degraded
     assert {hit.key: hit.routes for hit in ranking.hits} == {"ready": ("dense",), "pending": ("fts",)}
+    assert calibrated.digest != CALIBRATION.digest
+    assert ranking.diagnostics()["policy"] == f"claim_recall_v1:{calibrated.digest}"
 
 
 def golden_vectors() -> dict[str, bytes]:
@@ -159,6 +174,7 @@ def test_issue_755_shared_words_do_not_admit_unrelated_market_stories_above_the_
         [],
         [0.0] * CALIBRATION.embedder.dimensions,
         [float("nan")] * CALIBRATION.embedder.dimensions,
+        [10**400, *([0.0] * (CALIBRATION.embedder.dimensions - 1))],
         [1.0] * (CALIBRATION.embedder.dimensions - 1),
     ],
 )
@@ -196,28 +212,17 @@ def test_route_self_test_and_batch_failures_return_lexical_probes_without_retryi
 def test_embedding_health_reports_an_outage_and_the_next_successful_batch_recovers() -> None:
     statuses = []
     calls = 0
+    failed = False
 
     def respond(request):
-        nonlocal calls
+        nonlocal calls, failed
         calls += 1
-        if calls == 2:
-            return httpx.Response(503)
         texts = json.loads(request.content)["input"]
+        if texts == ["policy"] and not failed:
+            failed = True
+            return httpx.Response(503)
         return httpx.Response(
-            200,
-            json={
-                "data": [
-                    {
-                        "index": i,
-                        "embedding": [
-                            1.0 if i != 2 else 0.0,
-                            1.0 if i == 2 else 0.0,
-                            *([0.0] * (CALIBRATION.embedder.dimensions - 2)),
-                        ],
-                    }
-                    for i in range(len(texts))
-                ]
-            },
+            200, json=provider_data(texts, lambda _: [1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))])
         )
 
     route = ClaimEmbedder(
@@ -237,7 +242,8 @@ def test_embedding_health_reports_an_outage_and_the_next_successful_batch_recove
         await route.aclose()
 
     asyncio.run(run())
-    assert calls == 3 and statuses == [True, False, True]
+    texts, _ = claim_embedding.golden_vectors(CALIBRATION.embedder)
+    assert calls == (len(texts) + 3) // 4 + 2 and statuses == [True, False, True]
 
 
 def test_startup_outage_recovers_after_backoff_without_restarting_workers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -252,18 +258,7 @@ def test_startup_outage_recovers_after_backoff_without_restarting_workers(monkey
         if len(batches) == 1:
             return httpx.Response(503)
         return httpx.Response(
-            200,
-            json={
-                "data": [
-                    {
-                        "index": index,
-                        "embedding": [0.0, 1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 2))]
-                        if "software" in text
-                        else [1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))],
-                    }
-                    for index, text in enumerate(texts)
-                ]
-            },
+            200, json=provider_data(texts, lambda _: [1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))])
         )
 
     route = ClaimEmbedder(
@@ -299,20 +294,11 @@ def test_bounded_batches_preserve_provider_order_and_never_publish_partial_probe
         assert len(texts) <= 2
         if outage and "fact-2" in texts:
             return httpx.Response(503)
-        rows = []
-        for index, text in enumerate(texts):
-            second = 1.0 if "software" in text else float(text[-1]) if text.startswith("fact-") else 0.0
-            rows.append(
-                {
-                    "index": index,
-                    "embedding": [
-                        0.0 if "software" in text else 1.0,
-                        second,
-                        *([0.0] * (CALIBRATION.embedder.dimensions - 2)),
-                    ],
-                }
-            )
-        return httpx.Response(200, json={"data": list(reversed(rows))})
+        data = provider_data(
+            texts, lambda text: [1.0, float(text[-1]), *([0.0] * (CALIBRATION.embedder.dimensions - 2))]
+        )
+        data["data"].reverse()
+        return httpx.Response(200, json=data)
 
     route = ClaimEmbedder(
         model=CALIBRATION.embedder.model,
@@ -336,3 +322,91 @@ def test_bounded_batches_preserve_provider_order_and_never_publish_partial_probe
         await route.aclose()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("field", ["model", "embedder_identity"])
+def test_a_replaced_provider_cannot_publish_vectors_under_the_previous_embedder_identity(field: str) -> None:
+    mismatch = True
+    statuses: list[bool] = []
+
+    def respond(_request: httpx.Request) -> httpx.Response:
+        body = {
+            "model": CALIBRATION.embedder.model,
+            "embedder_identity": CALIBRATION.embedder.key,
+            "data": [{"index": 0, "embedding": [1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))]}],
+        }
+        if mismatch:
+            body[field] = "a-replaced-model-revision"
+        return httpx.Response(200, json=body)
+
+    route = ClaimEmbedder(
+        model=CALIBRATION.embedder.model,
+        base_url="https://example.test/v1",
+        api_key="private-key",
+        transport=httpx.MockTransport(respond),
+        on_status=statuses.append,
+    )
+    # The endpoint is replaced after the startup golden check has succeeded.
+    route._tested = route.ready = True
+
+    async def run() -> None:
+        nonlocal mismatch
+        assert await route.probes(["policy"]) == (Probe("policy"),)
+        mismatch = False
+        (probe,) = await route.probes(["policy"])
+        assert probe.vector == vector(1) and probe.embedder == CALIBRATION.embedder.key
+        await route.aclose()
+
+    asyncio.run(run())
+    assert statuses == [False, True]
+
+
+def test_golden_self_test_rejects_a_different_vector_basis_even_when_pairwise_similarity_is_preserved() -> None:
+    calls = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        data = provider_data(json.loads(request.content)["input"], lambda _: [])
+        # A cyclic orthogonal rotation preserves all multilingual paraphrase
+        # similarities, but it is incompatible with vectors already stored.
+        for row in data["data"]:
+            row["embedding"] = row["embedding"][1:] + row["embedding"][:1]
+        return httpx.Response(200, json=data)
+
+    route = ClaimEmbedder(
+        model=CALIBRATION.embedder.model,
+        base_url="https://example.test/v1",
+        api_key="private-key",
+        transport=httpx.MockTransport(respond),
+    )
+
+    async def run() -> None:
+        assert await route.probes(["policy"]) == (Probe("policy"),)
+        assert await route.probes(["second"]) == (Probe("second"),)
+        await route.aclose()
+
+    asyncio.run(run())
+    texts, _ = claim_embedding.golden_vectors(CALIBRATION.embedder)
+    assert calls == (len(texts) + 1) // 2
+
+
+def test_missing_golden_resource_disables_only_dense_recall(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing(_identity):
+        raise FileNotFoundError("missing golden resource")
+
+    monkeypatch.setattr(claim_embedding, "golden_vectors", missing)
+    statuses: list[bool] = []
+    route = ClaimEmbedder(
+        model=CALIBRATION.embedder.model,
+        base_url="https://example.test/v1",
+        api_key="private-key",
+        on_status=statuses.append,
+    )
+
+    async def run() -> None:
+        assert await route.probes(["policy"]) == (Probe("policy"),)
+        await route.aclose()
+
+    asyncio.run(run())
+    assert statuses == [False]

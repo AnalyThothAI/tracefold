@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from importlib.resources import files
 from typing import Literal, Protocol
 
@@ -21,6 +21,7 @@ from .updates.contracts import Claim, DraftClaim
 from .updates.identity import digest
 
 TEXT_TEMPLATE = "claim_embed_text_v1"
+LEXICAL_TEMPLATE = "claim_lexical_text_v1"
 RECEIPT_WINDOW_MS = 48 * 60 * 60 * 1000
 PRIOR_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 log = logging.getLogger("tracefold.news")
@@ -29,6 +30,14 @@ log = logging.getLogger("tracefold.news")
 def embed_text(claim: Claim | DraftClaim) -> str:
     """The proposition alone: no product copy, source boilerplate or invented context."""
     return claim.statement
+
+
+def lexical_text(claim: Claim | DraftClaim) -> str:
+    """One FTS projection of stored semantic fields, with no inferred aliases."""
+    fields = claim.fields
+    values = [claim.statement, fields.subject, fields.action, fields.object, fields.speaker]
+    values.extend(value for q in fields.quantities for value in (q.name, q.unit, q.value, q.period))
+    return " ".join(value for value in values if value is not None)
 
 
 def text_sha(claim: Claim | DraftClaim) -> str:
@@ -82,25 +91,33 @@ class Cuts:
 
 @dataclass(frozen=True, slots=True)
 class Calibration:
+    version: str
     embedder: EmbedderIdentity
+    lexical_template: str
     prior: Cuts
     receipt: Cuts
     route_n: int
     rrf_k: int
     dataset_sha256: str
-    digest: str
+
+    @property
+    def digest(self) -> str:
+        return digest(asdict(self))
 
     @classmethod
     def load(cls) -> Calibration:
         data = json.loads(files("tracefold.news").joinpath("claim_recall_calibration.json").read_text())
+        if data["version"] != "claim_recall_v1" or data["lexical_template"] != LEXICAL_TEMPLATE:
+            raise ValueError("news_recall_lexical_template_mismatch")
         return cls(
+            version=str(data["version"]),
             embedder=EmbedderIdentity(**data["embedder"]),
+            lexical_template=str(data["lexical_template"]),
             prior=Cuts(**data["prior"]),
             receipt=Cuts(**data["receipt"]),
             route_n=int(data["route_n"]),
             rrf_k=int(data["rrf_k"]),
             dataset_sha256=str(data["dataset_sha256"]),
-            digest=digest(data),
         )
 
 
@@ -144,6 +161,7 @@ class Hit:
 
 @dataclass(frozen=True, slots=True)
 class Ranking:
+    policy: str
     hits: tuple[Hit, ...]
     degraded: bool
     route_hits: tuple[tuple[str, int], ...] = ()
@@ -151,7 +169,7 @@ class Ranking:
 
     def diagnostics(self) -> dict[str, object]:
         return {
-            "policy": RECALL_POLICY,
+            "policy": self.policy,
             "degraded": self.degraded,
             "route_hits": dict(self.route_hits),
             "candidate_count": self.candidate_count,
@@ -161,7 +179,10 @@ class Ranking:
 
 
 def vector_bytes(values: Sequence[float], identity: EmbedderIdentity) -> bytes:
-    vector = np.asarray(values, dtype=np.float32)
+    try:
+        vector = np.asarray(values, dtype=np.float32)
+    except (TypeError, OverflowError) as exc:
+        raise ValueError("news_embedding_shape_invalid") from exc
     if vector.shape != (identity.dimensions,) or not np.isfinite(vector).all():
         raise ValueError("news_embedding_shape_invalid")
     norm = float(np.linalg.norm(vector))
@@ -293,6 +314,7 @@ def rank(prepared: PreparedRecall, candidates: Sequence[Candidate]) -> Ranking:
         (time.perf_counter() - prepared.started_at) * 1000,
     )
     return Ranking(
+        f"claim_recall_v1:{calibration.digest}",
         tuple(Hit(k, scores[k], dense.get(k), tuple(evidence[k]), by_key[k].sent, winners.get(k)) for k in selected),
         degraded,
         tuple((route, len(keys)) for route, keys in routes.items()),

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from ..claim_recall import EmbeddingPort, Probe, embed_text
+from ..claim_recall import EmbeddingPort, Probe, embed_text, lexical_text
 from ..clock import clock_ms
 from ..updates.contracts import Extraction, FrozenInput
 from ..updates.ports import PriorBatch
@@ -32,7 +32,12 @@ class PgClaimRecall:
             "news_claim_prior_recall",
             lambda repos: {
                 c.slot: repos.news.claim_index.prior(
-                    source.event_id, p, now_ms=now_ms, sources=sources, diagnostics=diagnostics[c.slot]
+                    source.event_id,
+                    p,
+                    lexical_query=lexical_text(c),
+                    now_ms=now_ms,
+                    sources=sources,
+                    diagnostics=diagnostics[c.slot],
                 )
                 for c, p in zip(extracted.claims, probes, strict=True)
             },

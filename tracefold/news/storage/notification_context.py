@@ -10,7 +10,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Final
 
-from ..claim_recall import RECEIPT_WINDOW_MS, Probe, embed_text, prepare_rank, rank
+from ..claim_recall import RECEIPT_WINDOW_MS, Probe, embed_text, lexical_text, prepare_rank, rank
 from ..notifications.contracts import NEWS_CHANNEL, DeliveredText
 from ..notifications.novelty import ClaimLink, LinkedReceipt, current_links, reader_novelty
 from ..notifications.recall import select_for_claim
@@ -357,7 +357,7 @@ class NotificationContextStorage:
                 and occurrence in eligible_claims
             }
             lexical = index.lexical_scores(
-                probe,
+                lexical_text(claim),
                 [(key, claim) for key, claim in verified.items() if key in prepared.fts_eligible_keys],
             )
             ranking = rank(

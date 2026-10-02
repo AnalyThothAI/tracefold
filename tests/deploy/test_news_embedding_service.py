@@ -91,6 +91,7 @@ def test_protocol_returns_ordered_exact_dimension_vectors_and_secretless_provena
         assert response.status_code == 200
         body = response.json()
         assert body["model"] == CALIBRATION.embedder.model
+        assert body["embedder_identity"] == CALIBRATION.embedder.key
         assert [row["index"] for row in body["data"]] == [0, 1]
         assert body["data"][0]["embedding"][0] == body["data"][1]["embedding"][1] == 1.0
         assert all(len(row["embedding"]) == CALIBRATION.embedder.dimensions for row in body["data"])
@@ -350,16 +351,12 @@ def test_model_loader_preserves_calibrated_wrapper_and_cuda_allocator_budget(
     class FakePooling:
         include_prompt = True
 
-        def __init__(self) -> None:
-            setattr(
-                self,
-                {
-                    "mean": "pooling_mode_mean_tokens",
-                    "cls": "pooling_mode_cls_token",
-                    "lasttoken": "pooling_mode_lasttoken",
-                }[identity.pooling],
-                True,
-            )
+        def get_config_dict(self) -> dict[str, Any]:
+            return {
+                "embedding_dimension": identity.dimensions,
+                "pooling_mode": identity.pooling,
+                "include_prompt": self.include_prompt,
+            }
 
     class FakeModel:
         def __init__(self, model: str, **kwargs: Any) -> None:
@@ -400,11 +397,11 @@ def test_model_loader_preserves_calibrated_wrapper_and_cuda_allocator_budget(
     )
     st = ModuleType("sentence_transformers")
     st.SentenceTransformer = FakeModel
-    models = ModuleType("sentence_transformers.models")
+    models = ModuleType("sentence_transformers.sentence_transformer.modules")
     models.Pooling = FakePooling
     monkeypatch.setitem(sys.modules, "torch", torch)
     monkeypatch.setitem(sys.modules, "sentence_transformers", st)
-    monkeypatch.setitem(sys.modules, "sentence_transformers.models", models)
+    monkeypatch.setitem(sys.modules, "sentence_transformers.sentence_transformer.modules", models)
     encoder = SentenceEncoder(identity, cache=tmp_path, device="cuda:0", max_batch=2, threads=4)
     assert observed["load"] == {
         "model": identity.model,

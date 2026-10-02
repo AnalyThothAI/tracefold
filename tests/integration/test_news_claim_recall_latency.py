@@ -23,7 +23,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_update_pg import EVENT, TEXT, Clock, adopted_head, extraction_for, store
-from tracefold.app.claim_embedding import EMBEDDING_SECONDS, ClaimEmbedder
+from tracefold.app.claim_embedding import EMBEDDING_SECONDS, ClaimEmbedder, golden_vectors
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.claim_recall import CALIBRATION, PRIOR_WINDOW_MS, RECEIPT_WINDOW_MS, Probe, vector_bytes
 from tracefold.news.notifications.contracts import NEWS_CHANNEL
@@ -204,8 +204,8 @@ def _seed_windows(head: EventUpdate, now_ms: int, vector: bytes) -> None:
         )
         conn.execute(
             """INSERT INTO news_claim_index(claim_ref,text_sha256,event_id,first_available_at_ms,
-                 embed_text,numbers,structure_keys,embedder,vector)
-               SELECT claim_ref,text_sha,event_id,available,statement,'{}','{}',%s,vector FROM recall_seed""",
+                 embed_text,lexical_text,numbers,structure_keys,embedder,vector)
+               SELECT claim_ref,text_sha,event_id,available,statement,statement,'{}','{}',%s,vector FROM recall_seed""",
             (CALIBRATION.embedder.key,),
         )
         conn.execute(
@@ -287,18 +287,19 @@ def test_real_embedding_adapter_timeout_is_bounded_before_the_recall_read(monkey
     cancelled = []
     provider_elapsed = []
     requests = []
+    golden_texts, golden_matrix = golden_vectors(CALIBRATION.embedder)
+    expected = dict(zip(golden_texts, golden_matrix.tolist(), strict=True))
 
     async def respond(request: httpx.Request) -> httpx.Response:
         assert not db.active
         texts = json.loads(request.content)["input"]
         requests.append(texts)
-        if len(requests) == 1:
-            rows = []
-            for index, _text in enumerate(texts):
-                values = [0.0] * CALIBRATION.embedder.dimensions
-                values[1 if index == 2 else 0] = 1.0
-                rows.append({"index": index, "embedding": values})
-            return httpx.Response(200, json={"data": rows})
+        if all(text in expected for text in texts):
+            rows = [{"index": index, "embedding": expected[text]} for index, text in enumerate(texts)]
+            return httpx.Response(
+                200,
+                json={"model": CALIBRATION.embedder.model, "embedder_identity": CALIBRATION.embedder.key, "data": rows},
+            )
         provider_started = time.perf_counter()
         try:
             await asyncio.Event().wait()
@@ -331,7 +332,7 @@ def test_real_embedding_adapter_timeout_is_bounded_before_the_recall_read(monkey
 
     result = asyncio.run(bounded_recall())
     elapsed = time.perf_counter() - started
-    assert cancelled == [True] and len(requests) == 2
+    assert cancelled == [True] and len(requests) == (len(golden_texts) + 3) // 4 + 1
     record_property("embedding_cancelled_after_seconds", provider_elapsed[0])
     record_property("recall_including_connection_seconds", elapsed)
     assert result.by_slot["a"]

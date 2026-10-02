@@ -185,6 +185,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "event_id",
         "first_available_at_ms",
         "embed_text",
+        "lexical_text",
         "lexical",
         "numbers",
         "structure_keys",

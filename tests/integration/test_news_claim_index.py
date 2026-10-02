@@ -21,7 +21,7 @@ from tests.support.news_update_pg import (
     store,
 )
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.claim_recall import CALIBRATION, Probe, embed_text, text_sha, vector_bytes
+from tracefold.news.claim_recall import CALIBRATION, Probe, embed_text, lexical_text, text_sha, vector_bytes
 from tracefold.news.storage.claim_index import ClaimIndexStorage
 from tracefold.news.storage.claim_recall import PgClaimRecall
 from tracefold.news.updates.contracts import content_revision_for
@@ -38,6 +38,7 @@ def test_adoption_indexes_each_claim_version_and_vector_completion_does_not_chan
     rows = sql("SELECT * FROM news_claim_index WHERE event_id=%s", (EVENT,))
     assert len(rows) == 1 and rows[0]["claim_ref"] == claim.ref and rows[0]["text_sha256"] == text_sha(claim)
     assert rows[0]["embed_text"] == embed_text(claim) and rows[0]["vector"] is None
+    assert rows[0]["lexical_text"] == lexical_text(claim)
     generation = sql("SELECT revision FROM news_reader_clock")[0]["revision"]
     vector = vector_bytes([1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))], CALIBRATION.embedder)
     asyncio.run(
@@ -61,6 +62,27 @@ def test_adoption_indexes_each_claim_version_and_vector_completion_does_not_chan
     assert sql("SELECT count(*) AS n FROM news_claim_index")[0]["n"] == 2
 
 
+def test_stored_and_unindexed_frozen_claims_use_the_same_semantic_fts_projection() -> None:
+    pg, db, clock = store()
+    claim = adopted_head(pg.semantic, clock).claims[0]
+    query = claim.model_copy(update={"statement": "Revised requirements apply."})
+    frozen = claim.model_copy(update={"statement": "Previously declared measures remain."})
+
+    async def run():
+        return await db.read(
+            "lexical",
+            lambda r: (
+                r.news.claim_index.lexical_scores(lexical_text(query), [("stored", claim), ("frozen", frozen)]),
+                r.news.claim_index.lexical_scores(query.statement, [("stored", claim), ("frozen", frozen)]),
+            ),
+        )
+
+    semantic, statement_only = asyncio.run(run())
+    assert semantic["stored"] > 0 and semantic["frozen"] > 0
+    assert statement_only == {"stored": 0.0, "frozen": 0.0}
+    assert sql("SELECT count(*) AS n FROM news_claim_index")[0]["n"] == 1
+
+
 def test_prior_uses_only_the_current_exact_text_and_excludes_own_and_future_versions() -> None:
     pg, db, clock = store()
     head = adopted_head(pg.semantic, clock)
@@ -81,7 +103,12 @@ def test_prior_uses_only_the_current_exact_text_and_excludes_own_and_future_vers
     probe = Probe(claim.statement, vector, CALIBRATION.embedder.key)
 
     def recall(event, stamp):
-        return asyncio.run(db.read("prior", lambda r: r.news.claim_index.prior(event, probe, now_ms=stamp, sources=())))
+        return asyncio.run(
+            db.read(
+                "prior",
+                lambda r: r.news.claim_index.prior(event, probe, lexical_query=probe.text, now_ms=stamp, sources=()),
+            )
+        )
 
     assert [p.claim for p in recall("query-event", clock.now_ms + 1)] == [claim]
     assert recall(EVENT, clock.now_ms + 1) == ()
@@ -239,7 +266,12 @@ def test_sent_48h_prior_uses_the_frozen_exact_version_beyond_7d_and_excludes_exp
 
     def prior(stamp):
         return asyncio.run(
-            db.read("sent-prior", lambda r: r.news.claim_index.prior("another-event", probe, now_ms=stamp, sources=()))
+            db.read(
+                "sent-prior",
+                lambda r: r.news.claim_index.prior(
+                    "another-event", probe, lexical_query=probe.text, now_ms=stamp, sources=()
+                ),
+            )
         )
 
     assert [p.claim for p in prior(clock.now_ms)] == [old]
@@ -248,7 +280,14 @@ def test_sent_48h_prior_uses_the_frozen_exact_version_beyond_7d_and_excludes_exp
     # the ordinary 7 d prior window. It must never resurrect the old sent text.
     assert all(p.claim != old for p in prior(clock.now_ms + 48 * 3600_000))
     assert (
-        asyncio.run(db.read("own", lambda r: r.news.claim_index.prior(EVENT, probe, now_ms=clock.now_ms, sources=())))
+        asyncio.run(
+            db.read(
+                "own",
+                lambda r: r.news.claim_index.prior(
+                    EVENT, probe, lexical_query=probe.text, now_ms=clock.now_ms, sources=()
+                ),
+            )
+        )
         == ()
     )
 

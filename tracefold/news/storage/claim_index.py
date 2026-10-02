@@ -14,6 +14,7 @@ from ..claim_recall import (
     Candidate,
     Probe,
     embed_text,
+    lexical_text,
     numbers,
     prepare_rank,
     rank,
@@ -46,14 +47,15 @@ class ClaimIndexStorage:
     def index_claim(self, event_id: str, claim: Claim, *, sources: Sequence[str] = ()) -> None:
         self.conn.execute(
             """INSERT INTO news_claim_index
-                 (claim_ref,text_sha256,event_id,first_available_at_ms,embed_text,numbers,structure_keys)
-               VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (claim_ref,text_sha256) DO NOTHING""",
+                 (claim_ref,text_sha256,event_id,first_available_at_ms,embed_text,lexical_text,numbers,structure_keys)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (claim_ref,text_sha256) DO NOTHING""",
             (
                 claim.ref,
                 text_sha(claim),
                 event_id,
                 claim.first_available_at_ms,
                 embed_text(claim),
+                lexical_text(claim),
                 list(numbers(embed_text(claim))),
                 sorted(set((*structure_keys(claim), *sources))),
             ),
@@ -93,12 +95,12 @@ class ClaimIndexStorage:
             for r in rows
         )
 
-    def lexical_scores(self, probe: Probe, claims: Sequence[tuple[str, Claim]]) -> dict[str, float]:
+    def lexical_scores(self, query_text: str, claims: Sequence[tuple[str, Claim]]) -> dict[str, float]:
         """Score only keys the shared dense guard allows onto the FTS route."""
         if not claims:
             return {}
         requested = [
-            {"key": key, "ref": claim.ref, "sha": text_sha(claim), "text": embed_text(claim)} for key, claim in claims
+            {"key": key, "ref": claim.ref, "sha": text_sha(claim), "text": lexical_text(claim)} for key, claim in claims
         ]
         rows = self.conn.execute(
             """SELECT requested.key,
@@ -106,7 +108,7 @@ class ClaimIndexStorage:
                         AS lexical
                  FROM jsonb_to_recordset(%s::jsonb) AS requested(key text,ref text,sha text,text text)
                  LEFT JOIN news_claim_index ci ON ci.claim_ref=requested.ref AND ci.text_sha256=requested.sha""",
-            (self._query(probe.text), json.dumps(requested)),
+            (self._query(query_text), json.dumps(requested)),
             binary=True,
         ).fetchall()
         return {str(row["key"]): float(row["lexical"]) for row in rows}
@@ -152,6 +154,7 @@ class ClaimIndexStorage:
         event_id: str,
         probe: Probe,
         *,
+        lexical_query: str,
         now_ms: int,
         sources: Sequence[str],
         diagnostics: dict[str, Any] | None = None,
@@ -273,7 +276,7 @@ class ClaimIndexStorage:
             if claim is not None:
                 claims[key] = claim
         lexical = self.lexical_scores(
-            probe, [(key, claim) for key, claim in claims.items() if key in prepared.fts_eligible_keys]
+            lexical_query, [(key, claim) for key, claim in claims.items() if key in prepared.fts_eligible_keys]
         )
         ranking = rank(
             prepared,

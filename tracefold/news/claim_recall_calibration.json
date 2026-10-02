@@ -1,5 +1,6 @@
 {
   "version": "claim_recall_v1",
+  "lexical_template": "claim_lexical_text_v1",
   "embedder": {
     "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
     "dimensions": 384,

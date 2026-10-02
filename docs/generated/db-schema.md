@@ -41,6 +41,7 @@
 | `event_id` | `TEXT` | False | `None` |
 | `first_available_at_ms` | `BIGINT` | False | `None` |
 | `embed_text` | `TEXT` | False | `None` |
+| `lexical_text` | `TEXT` | False | `None` |
 | `lexical` | `TSVECTOR` | True | `None` |
 | `numbers` | `ARRAY` | False | `'{}'::text[]` |
 | `structure_keys` | `ARRAY` | False | `'{}'::text[]` |

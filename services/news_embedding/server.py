@@ -103,7 +103,7 @@ class SentenceEncoder:
         # These dependencies belong only to this service image, never the Tracefold image.
         import torch
         from sentence_transformers import SentenceTransformer
-        from sentence_transformers.models import Pooling
+        from sentence_transformers.sentence_transformer.modules import Pooling
 
         self.torch = torch
         self.device = device
@@ -126,16 +126,10 @@ class SentenceEncoder:
         self.model.max_seq_length = identity.max_tokens
         self.model.eval()
         poolings = [module for module in self.model.modules() if isinstance(module, Pooling)]
-        flags = {
-            "cls": "pooling_mode_cls_token",
-            "mean": "pooling_mode_mean_tokens",
-            "lasttoken": "pooling_mode_lasttoken",
-            "max": "pooling_mode_max_tokens",
-            "weightedmean": "pooling_mode_weightedmean_tokens",
-            "mean_sqrt_len": "pooling_mode_mean_sqrt_len_tokens",
-        }
-        active = [name for name, flag in flags.items() if any(getattr(pool, flag, False) for pool in poolings)]
-        if len(poolings) != 1 or active != [identity.pooling] or not poolings[0].include_prompt:
+        if len(poolings) != 1:
+            raise ValueError("embedding_pooling_identity_mismatch")
+        config = poolings[0].get_config_dict()
+        if config["pooling_mode"] != identity.pooling or config["include_prompt"] is not True:
             raise ValueError("embedding_pooling_identity_mismatch")
         if self.model.get_sentence_embedding_dimension() != identity.dimensions:
             raise ValueError("embedding_dimension_identity_mismatch")
@@ -320,6 +314,7 @@ class EmbeddingHandler(BaseHTTPRequestHandler):
                 {
                     "object": "list",
                     "model": runtime.identity.model,
+                    "embedder_identity": runtime.identity.key,
                     "data": [
                         {"object": "embedding", "index": index, "embedding": vector}
                         for index, vector in enumerate(vectors)
