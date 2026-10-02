@@ -2,9 +2,35 @@
 
 [手册](../README.md) · [系统架构](../ARCHITECTURE.md) · [语义链路入门](news-semantics-guide.md) · [OI](oi.md) · [行情](market-review.md) · [运维](../OPERATIONS.md#news-retry)
 
-News 在 Workers 接收来源并保存事实，在 Serve 提供只读 Feed、详情、状态与行情接口。编辑型新闻形成带引用的命题和不可变 EventUpdate；市场报告形成独立的市场观察。知识采用、通知选择、实际送达各有持久记录。
+本文是 News 设计规则的维护入口。[语义链路入门](news-semantics-guide.md)用例子说明这些规则；[术语表](../../CONTEXT.md)统一名称；评测报告保存特定版本的证据，不替代现行规则。
 
-当前有两个编辑型工作流所有者：`NewsAgent` 负责抽取、理解、采用和有界补读；`Notifications` 负责计划、冻结文案、发送和结算。`SemanticWorker` 与 `DelivererLoop` 负责领取和调度，`tracefold.app` 负责模型、存储、provider 和生命周期装配。
+<details>
+<summary>本页目录</summary>
+
+- [端到端数据流](#section-端到端数据流)
+- [输入范围与身份](#input)
+- [NewsAgent 的语义工作](#agent)
+- [共享命题召回](#related-recall)
+- [主题、来源与公开契约](#topics-and-cited-source-authority)
+- [持久状态与恢复](#state)
+- [逐命题通知](#notification)
+- [正文、回执与重试](#正文回执与重试)
+- [验证与源码入口](#section-源码责任地图)
+
+</details>
+
+News 在 Workers 接收来源并保存事实，在 Serve 提供只读 Feed、详情、状态与行情接口。编辑型新闻形成带引用的命题和不可变 EventUpdate；市场报告形成独立的市场观察。
+
+理解链路时，先区分三个结果：**采用知识**表示系统保存了一个知识版本；**选择通知**表示系统决定向读者发送哪些命题；**实际送达**表示 provider 给出了送达证据。每个结果都有自己的持久记录，前一个结果不能证明后一个结果。
+
+| 所有者 | 输入 | 负责产生的结果 |
+| --- | --- | --- |
+| 准入 | 来源帧、确定性来源契约 | Item、修订、FactUnit、Event、证据和待处理语义版本 |
+| `NewsAgent` | 冻结来源、当前命题、租约 | 语义观察、采用的 EventUpdate、公开 outbox、必要通知工作 |
+| `Notifications` | 已采用知识、读者快照、通知工作 | 逐命题计划、intent、冻结正文、发送结果 |
+| `SemanticWorker` / `DelivererLoop` | 持久待办与可用能力 | 领取、调度、重试和有界恢复 |
+
+`tracefold.app` 装配模型、存储、provider 和生命周期。模型适配器提供回答，存储所有者控制事务；调度循环不承担语义规则或通知 policy。
 
 <a id="section-端到端数据流"></a>
 ## 端到端数据流
@@ -41,7 +67,9 @@ flowchart TB
 
 Receiver 对可接受帧使用 broker publish confirms；Deduper 消费 raw 消息，在短事务中完成持久准入。编辑型准入先提交证据与 semantic work，再发布唤醒并记录发布状态；Janitor 修复未发布唤醒与过期租约。语义消息只通知 Worker 有工作，PostgreSQL 保存待处理版本，两者没有共享事务。
 
-连接、进程中断和 broker 故障写入 collector 事故。Recovery 按 Strategy 历史接口和持久游标补抄，每轮限制墙钟、请求数及发布数；失败不伪装成已经恢复。RabbitMQ 重试、delivery limit 和 dead lettering 由 broker policy 管理。Workers 遇到有效 policy 漂移仍附着消费者并报告降级；`news bus-policy verify` 诊断仍失败，修复见[运维](../OPERATIONS.md)。
+连接、进程中断和 broker 故障写入 collector 事故。Recovery 按 Strategy 历史接口和持久游标补抄，每轮限制墙钟、请求数及发布数；失败不伪装成已经恢复。
+
+RabbitMQ 重试、delivery limit 和 dead lettering 由 broker policy 管理。Workers 遇到有效 policy 漂移仍附着消费者并报告降级；`news bus-policy verify` 诊断仍失败，修复见[运维](../OPERATIONS.md)。
 
 <a id="input"></a>
 <a id="section-一条-news-为什么可能对应多个-event"></a>
@@ -59,7 +87,9 @@ Receiver 对可接受帧使用 broker publish confirms；Deduper 消费 raw 消�
 
 [FactUnit](../../tracefold/news/events/facts.py)只拆至少三个连续、显式编号且满足长度约束的块。任务后续段落保留阅读范围，前后公共限定保留共享上下文；编号锚决定事实身份，续段不重建它。时间列表、金额与普通段落保持整条；whole-item 身份不随标题更改重建。
 
-[准入](../../tracefold/news/pipeline/admission.py)用来源契约、Gate、精确身份和有界标题近似匹配归组。MinHash / Jaccard、资产和数字用于查找候选及冲突保护，不能证明命题等价。同文来源不等于独立证实。只有任务范围、成员事实、正文修订或 grounded assets 等语义材料改变才请求语义工作；只换策略重发更新 provenance。
+[准入](../../tracefold/news/pipeline/admission.py)用来源契约、Gate、精确身份和有界标题近似匹配归组。MinHash / Jaccard、资产和数字用于查找候选及冲突保护，不能证明命题等价。同文来源不等于独立证实。
+
+只有任务范围、成员事实、正文修订或 grounded assets 等语义材料改变才请求语义工作；只换策略重发更新 provenance。
 
 补抄新闻由 Gate 判断时效：有效 `params.ts` 与观察时间相差不超过 30 分钟时按实时准入，上币保持 `listing_deterministic`；更老或缺有效时间的稿件记 recovery。超时补抄可追加证据，但不请求语义工作。实时稿不受此补抄窗口限制。补抄来源首次可见时间取观察时间与发布时间较早者；并入实时 Event 不抹去来源的补抄标注。
 
@@ -67,7 +97,9 @@ Receiver 对可接受帧使用 broker publish confirms；Deduper 消费 raw 消�
 
 [阅读投影](../../tracefold/news/updates/projection.py)按当前修订定位既有 FactUnit，定位不唯一时提供完整来源，不直接复用旧偏移。引文必须同时存在于本轮可见的连续片段和对应冻结 Evidence 中。
 
-冻结输入按 `evidence_ref` 保存原始 `source_asset_tags` 和抽取使用的 `asset_candidates`。候选保留 symbol、市场和 grade；商品候选须在自己来源正文中有相应商品语境，并附目录中 trading 合约的 `listed_markets`。`us.listed` 参考目录和 unknown 不补为交易市场；OpenNews 的 `cex` 不能单独证明资产类别。
+冻结输入按 `evidence_ref` 保存原始 `source_asset_tags` 和抽取使用的 `asset_candidates`。候选保留 symbol、市场和 grade。
+
+商品候选须在自己来源正文中有相应商品语境，并附目录中 trading 合约的 `listed_markets`。`us.listed` 参考目录和 unknown 不补为交易市场；OpenNews 的 `cex` 不能单独证明资产类别。
 
 抽取逐命题选择 primary / mentioned，接地校验只恢复引用来源中被选中的拼写与已知市场。模型市场为 unknown 且目录类别唯一时可补全，跨来源市场冲突仍保留未知。正文明确公司、产品或 ticker 可有限补充，URL、related prior 和泛主题不能补造资产。地点、国家、政府和组织不自动变成可交易标的。没有资产、目录或报价不阻止采用。
 
@@ -77,11 +109,36 @@ Receiver 对可接受帧使用 broker publish confirms；Deduper 消费 raw 消�
 <a id="section-newsagent-到底做了什么"></a>
 ## NewsAgent 的语义工作
 
-1. `SemanticWorker` 领取 wanted revision 与 lease，冻结本 Event 当前有效命题、未处理来源、任务范围和允许的补读目标。
-2. `NewsAgent` 按 event、input revision、`input_sha` 和 analyzer 身份读取抽取 checkpoint，缺失时才调用抽取。
-3. 抽取后事务外计算本地向量，有界读取跨 Event prior，再逐对判断关系与支撑。本 Event 有效命题全对比较，外部只比较选中的命题对。
-4. 纯组装生成知识版本；保存 observation，再在短事务中校验 owner、lease、wanted revision 和 expected head，原子采用 EventUpdate、公开 outbox、命题索引及必要通知工作。
-5. 无新证据或无实质变化只结算版本。采用后可有一次由持久 reservation 限定的已有来源补读，失败不能撤回已采用知识。
+### 冻结输入与领取
+
+`wanted_revision` 是待处理的输入版本，`done_revision` 是已完成的输入版本。它们记录工作进度，不是知识内容版本。新材料可以在旧尝试运行时请求更高的 wanted revision。
+
+领取分为两段，见 [semantic_store.py](../../tracefold/news/storage/semantic_store.py)：
+
+1. 在 `REPEATABLE READ READ ONLY` 事务中检查工作是否到期，读取材料并构造 `FrozenInput`。此时没有 Event 写锁，也没有取得租约。
+2. 在短写事务中锁 Event，以 wanted revision CAS 再检查工作是否仍可领取。只有 CAS 成功才增加一次尝试并取得 180 秒 lease；已经变化或被其他 owner 领取的版本不消耗尝试。
+
+这个顺序避免在 Event 写锁内读取和构造完整输入。读取超时也会带着版本及错误进入第二段：版本仍可领取时计一次尝试，清理 lease，并按退避规则保留错误。它不能因读取回滚而无限重试。
+
+| FrozenInput 材料 | 用途 |
+| --- | --- |
+| `evidence`、任务范围、来源资产候选 | 本轮实际阅读和抽取的来源 |
+| 本 Event 当前有效 prior | 增量抽取的已有知识和全对比较对象 |
+| `read_targets`、未解问题 | 已知目标的一次可选补读 |
+| 已建立关系、阅读及 lineage 身份 | 保留更正依据、处理范围和补读预算 |
+
+`EventUpdate.current_claims` 是有效命题的唯一推导：排除已更正退休或由真实变化替代的 ref。外部 prior 在抽取后召回，只用于比较，不进入抽取上下文。
+
+同一可见正文和范围已经处理、已经隔离或已排入本轮时，转载副本不重复抽取。被过滤的来源仍保留在成员事实中。相同正文的不同任务范围仍需阅读；同一记录自身正文变化，包括 A → B → A，仍须读取。精确 reanalyze 按指定 read_ref 重读。
+
+### 抽取、判断与采用
+
+1. **复用抽取。** `NewsAgent` 按 work_id 读取抽取 checkpoint；缺失时才调用模型。没有新证据时保存空 observation，并结算该输入版本，不调用模型或关联召回。
+2. **核对引文。** 将每条抽取命题的引用定位到冻结 Evidence 和本轮可见片段。保存真实源文片段，不能把任务元数据当作事实引文。
+3. **选择比较对象。** 在事务外计算本地向量，再用短只读查询逐命题召回外部 prior。本 Event 当前有效 prior 全对比较；外部只比较各命题实际入选的 pairs。
+4. **完成有限判断。** unknown mode 可补问一次；关系逐对判断；支撑只补齐本轮命题与新证据之间缺失的回答。成功回答按精确输入缓存，重试只问变化或缺失的回答。
+5. **保存并采用。** 保存 observation，再由纯函数组装知识版本。在短事务中校验 owner、lease 和 expected head，原子写入采用文档、head、命题索引、公开 outbox 和必要通知工作。
+6. **结算与补读。** 无实质变化只结算版本。有实质变化时结算采用，再尝试有界补读；补读失败不撤回已提交的知识、outbox 或通知工作。
 
 关系提问与组装共用逐命题比较范围：外部 prior 只有被该命题选中的配对才参与；兄弟命题选中的 prior 不算本命题缺失回答。新命题只有冲突关系或没有实质关系时，范围内的缺失关系、`unresolved` 或被代码否决的等价仍产生 `possible_new`，不能据此制造 catalyst；全部比较为 `unrelated` 的新命题产生 `new_fact` 并公开为 `catalyst_delta`。采用前 head 前进时补入的本 Event prior 仍全对比较；未启用召回的路径和重放保持 supplied prior 全量比较。
 
@@ -89,31 +146,76 @@ Receiver 对可接受帧使用 broker publish confirms；Deduper 消费 raw 消�
 
 `EventUpdate.current_claims` 唯一推导有效命题，排除被更正退休和真实变化替代的 ref。抽取只读本 Event prior；外部 prior 只用于比较，相关 Event 再次采用不使抽取 checkpoint 失效。同一可见正文和范围已读、已隔离或已排入本轮时，转载副本不重复抽取；同一记录自身正文变化仍须读取。
 
-生成使用严格 schema，解码容忍可修复可选字段、层级和单个条目；缺 statement、subject、action 或可用 citation 的命题被具名丢弃。全部条目不可用、空回答和 provider 截断是明确错误。引用可容忍外层引号、强调和空白差异，但必须保存真实源文片段。
+补读只能使用 FrozenInput 提供、`ExistingSourceReader` 能读取的已有来源目标。一条 lineage 通过持久 reservation 限定一次补读；重试不能重新获得名额。它不提供自主搜索或任意网页读取能力。
+
+### 抽取字段与关系
+
+生成使用严格 schema。解码可以修复可选字段、层级和单个条目；缺 statement、subject、action 或可用 citation 的命题被具名丢弃。全部条目不可用、空回答和 provider 截断是明确错误。引用核对可容忍外层引号、强调和空白差异，但通过核对只证明引用存在于来源，不证明来源陈述为真。
 
 | 判断或字段 | 当前职责 |
 | --- | --- |
-| relation | 等价、补充、更正、真实变化、冲突、无关或 unresolved；代码再检查目标、时间及可证明的标的/数量/语气冲突 |
-| support | 来源支持、反驳、转述、未涉及或 unresolved；同源修订和转载不重复计算独立支撑 |
+| relation | 判断新旧命题的关系；代码再检查可证明的冲突和时间方向 |
+| support | 判断来源支持、反驳、转述、未涉及或 unresolved；来源数量不等于独立支撑数量 |
 | mode | observation、assertion、decision、commitment、demand、threat、guidance、forecast、opinion、promotion、unknown；判断被归因者的言语行为 |
 | actor_role | 被归因者角色读数，不参与 Claim 身份，policy 不按角色字段分支 |
 | phase / content_kind | 行为阶段与内容类型，和言语行为分开；未来日期不自动变成执行完成 |
 | conditions / quantities / times | 保留条件极性、数量尺度和时间精度；未明示年份不得补造 |
 
-关系以同一核心事实为界；同故事中的另一个动作、标的或事件是独立事实。同一发生新增数字可为补充，更正和真实 A → B → A 转换保留版本及发生身份。只有同一 Event、完整被引全文和 statement 一致，且无数量/发生/结构身份冲突时，才允许窄范围 ref 复用。
+关系以同一核心事实为界。同故事中的另一个动作、标的或事件是独立事实；同一发生新增数字可以是补充。
+
+| 关系 | 含义与采用结果 |
+| --- | --- |
+| `equivalent` | 没有新增断言；本 Event 可复用 ref，记为 restatement |
+| `adds_information` | 同一事实增加细节、数量或条件，形成新增命题 |
+| `real_world_change` | 事实本身变化，形成阶段、参数或范围变化 |
+| `corrects` | 明确更正或撤回旧断言，保留旧历史并退休适用旧命题 |
+| `conflicts` | 来源互不相容，保留冲突，不能替来源决定哪个为真 |
+| `unrelated` | 不同事实，没有实质前驱关系 |
+| `unresolved` | 材料不足或最终尝试仍无法取得回答，保留 possible_new |
+
+代码只否决可以证明的差异，例如已接地身份、极性、言语行为类别、阶段、时期、同口径数量或被引上币标的冲突。自由文字不同不能直接证明事实不同。较晚到达的旧报道不能更正或替代更新命题，否则关系降为 unresolved。
+
+模型误判为 unrelated 时，只有同一 Event、完整被引全文和 statement 一致，且无数量、发生或结构身份冲突，才允许窄范围 ref 复用。这个保护不按相似标题跨 Event 合并命题。
 
 <a id="related-recall"></a>
 ### 共享命题召回
 
-[claim_recall.py](../../tracefold/news/claim_recall.py)统一语义 prior、冻结回执和离线评测排序：7 天 prior、48 小时回执内，稠密、PostgreSQL FTS 和同源路线做 RRF。参数来自[校准文件](../../tracefold/news/claim_recall_calibration.json)，当前 prior k=5、receipt k=16；召回只提供比较对象，不裁定同一性。
+[claim_recall.py](../../tracefold/news/claim_recall.py)是语义 prior、通知回执和离线评测的唯一排序器。共享排序使不同消费方使用相同检索定义；消费方仍各自拥有候选事实、窗口和名额。召回只选择比较对象，关系判断和通知 policy 才作业务决定。
 
-`news_claim_index` 以 `(claim_ref, text_sha256)` 保存精确版本和带编码身份的 fp16 向量。稠密只读 statement；FTS 的 `claim_lexical_text_v1` 包含 statement、subject、action、object、speaker 和数量 name/unit/value/period。采用向量只有精确文字及模型身份一致时复用；通知读取冻结版本，不借当前 head 替代历史。
+| 消费方与候选 | 窗口依据 | 最终名额 |
+| --- | --- | --- |
+| 语义：其他 Event 当前有效命题的精确文字版本 | `first_available_at_ms` 在过去 7 天内；采用时间早于查询时刻 | 每条新命题最多 5 个外部 prior |
+| 语义：其他 Event 的实际已送冻结命题 | 回执 `settled_at_ms` 在过去 48 小时内 | 与上一行共享 5 个名额，最多优先保留 2 个合格已送候选 |
+| 通知：实际已送回执中的冻结命题 | 回执 `settled_at_ms` 在过去 48 小时内 | 每条命题最多 16 条实际已送正文，已链接回执优先 |
 
-当前 Workers 从本地缓存离线加载固定 MiniLM FP32 ONNX，384 维、256 token、attention-mask mean pooling、L2，使用独立有界单线程执行器。缺缓存、自检/运行失败只关闭稠密路线，FTS 和同源继续，缺向量保留 pending。Janitor 补有界 pending；历史完整窗口由显式 backfill 处理。恢复见[运维](../OPERATIONS.md#命题向量缺失与降级)，兼容和资源证据见[本地嵌入报告](../reports/news-799.md)。
+本 Event prior 不占外部召回名额。语义的已送候选保留读者实际看到的精确版本：即使命题首次可见已超过 7 天，或它已退出来源 Event 的当前 head，近期送达的冻结版本仍能进入候选池。未来版本、过期回执和未送命题不能借这个名额进入。
+
+排序依次做四件事：
+
+1. 对精确候选版本计算稠密相似度；statement 是唯一稠密文本，不添加来源模板或推断别名。
+2. PostgreSQL FTS 使用唯一 `claim_lexical_text_v1` 投影：statement、subject、action、object、speaker，以及数量的 name、unit、value、period。同源路线使用引用来源的 artifact / URL key；资产和数字不是硬性实体过滤。
+3. 每条路线最多取 32 个候选，以 RRF 融合：每条路线第 r 名贡献 `1 / (60 + r)`。稳定事实 key 处理并列；同一 Claim 的文字版本合组，回执按最佳冻结命题得分合组，长卡片不会因命题更多获得加分。
+4. 在合格候选中保留已送名额，再截到消费方 top-k。名额不制造低于全部路线门槛的命中，返回数量可以为零。
+
+| 检索门槛 | 语义 prior | 通知 receipt |
+| --- | ---: | ---: |
+| 稠密相似度下限（含边界） | 0.6 | 0.4 |
+| 有兼容向量候选的 FTS 下限（须超过） | 0.9 | 0.9 |
+| 缺失或不兼容向量候选的 FTS 下限（须超过） | 0.2 | 0.2 |
+
+兼容向量明确低于稠密下限时，FTS 不把它重新带回；同源路线仍独立可用。缺向量的候选使用较低 FTS 门槛，其他候选维持原门槛。这是逐候选退化，不把整个池都当成无向量。参数和策略摘要由[校准文件](../../tracefold/news/claim_recall_calibration.json)维护。
+
+`news_claim_index` 以 `(claim_ref, text_sha256)` 保存检索版本和带编码身份的 fp16 向量。采用时原子写索引，只在精确文字及编码身份一致时复用抽取向量。索引帮助查询，不能替代 EventUpdate 或真实回执。通知读取冻结命题版本，不借当前 head 补造历史。
+
+Workers 从本地缓存离线加载固定 MiniLM FP32 ONNX，384 维、256 token 截断、attention-mask mean pooling 和 L2，使用独立有界单线程执行器。编码在事务外完成；同一轮各 claim 的短查询共享一次捕获的不可变候选池。
+
+缺缓存、自检失败或运行批次失败只关闭稠密路线；FTS 和同源继续，不阻断知识采用。缺向量行是持久 pending，Janitor 有界补算；完整历史窗口由显式 backfill 处理。向量补算不改变知识或读者权限版本。恢复见[运维](../OPERATIONS.md#命题向量缺失与降级)，兼容和资源证据见[本地嵌入报告](../reports/news-799.md)。
 
 ### 模型路由与预算
 
-App 分别选择抽取、判断、卡片路由。`llm.news_triage_model` 为基础抽取模型，可选 `news_triage_judgment_model` 指定同 endpoint 的判断模型名；卡片和 fallback 有独立配置。原生 `llm.news_judgment` 与通知 `llm.news_reader_judgment` 独立，不借 Trading 配置；原生不可得按路由回退一次，成功缓存不重复投票。
+App 分别选择抽取、判断和卡片路由。`llm.news_triage_model` 是基础抽取模型；可选 `news_triage_judgment_model` 指定同 endpoint 的生成式判断模型名。卡片和 fallback 有独立配置。
+
+原生 `llm.news_judgment` 与通知 `llm.news_reader_judgment` 独立配置，不借 Trading 配置。有限判断默认每批 8 题，最多并行 3 批。原生不可得时只对失败批次走生成式回退；成功回答已缓存，不再次投票。unknown mode 的补问使用生成式路由，有独立缓存身份。
 
 | 边界 | 当前上限 |
 | --- | --- |
@@ -123,7 +225,17 @@ App 分别选择抽取、判断、卡片路由。`llm.news_triage_model` 为基�
 | 通知准备模型阶段 | 60 秒，规划与文案共享，发送等待另计 |
 | 通知准备在途 | `news.push.notification_prepare_limit` 默认 2，范围 1–8 |
 
-边界不是端到端时延承诺。关系/支撑暂不可得时重试；最终尝试可保存 unresolved / `possible_new`，不伪造无价值结论。`possible_new` 不发布公开 catalyst。生成契约/引用错误、临时 provider 故障及熔断有不同处理，不用无效回答制造成功版本。
+这些边界是尝试上限，不是端到端时延承诺。延迟需要按入队、DB 读取/领取、模型调用、采用、通知准备和实际发送分别定位。
+
+| 未完成原因 | 处理 |
+| --- | --- |
+| 内容本身不确定 | 保存 unknown / unresolved，不因不确定而无限重问 |
+| 关系或支撑 provider 暂不可得 | 有剩余尝试时持久重试；最终尝试允许 unresolved / possible_new |
+| 生成回答空、截断或 schema 不合法 | 仅在配置回退请求有实质差异时补答一次；最后仍不可用则失败 |
+| 固定契约或引用错误 | 记录具名错误并失败，不把无效回答当作“没有新闻价值” |
+| 限流、超时、服务端或传输故障 | 按配置路由和持久尝试预算有界恢复；持续故障可触发熔断 |
+
+`possible_new` 保留尚不能确定的新内容，可以产生待评估通知工作，但不发布公开 catalyst。通知是否发送仍由自己的规则决定。
 
 <a id="topics-and-cited-source-authority"></a>
 <a id="section-主题来源与知识版本"></a>
@@ -131,7 +243,26 @@ App 分别选择抽取、判断、卡片路由。`llm.news_triage_model` 为基�
 
 知识契约为 `news_event_update_v2`。命题携带 IPTC 主题，Event 从有效命题汇总最多三个非冗余主题。来源权威来自实际引用的身份；issuer first party、监管文件与 secondary report 不等于独立核验。
 
-`content_sha` 描述业务材料，`content_revision` 与前一版本链接，允许回到先前状态而保留新的采用。Claim ref、阅读身份、观察、计划及 intent 各回答不同问题，不能用一个标题 hash 代替。
+### 身份与版本
+
+不同身份回答不同问题。它们允许成功步骤被复用，也限制旧 owner 和旧计划的权限。
+
+| 身份 | 绑定什么 | 解决什么问题 |
+| --- | --- | --- |
+| `read_ref` | 某份 Evidence 在本 Event 的实际任务阅读范围与材料 | 哪个范围已处理或已隔离 |
+| `input_sha` | 本 Event 抽取材料，包括 own prior、问题和目标；不含外部 prior | 输入相同能否复用抽取 |
+| `work_id` | Event、输入版本、input_sha、analyzer 身份 | 一次抽取 checkpoint 的键 |
+| `program_identity` / observation `result_id` | 实际语义程序 / work、prior、understanding、召回 policy 与 manifest | 区分不可变观察的程序及完整结果 |
+| `claim.ref` | 本 Event 的命题身份、适用等价关系和发生前驱 | 区分复述与新的真实发生 |
+| `content_sha` / `content_revision` | 知识业务材料 / 材料摘要和上一内容版本 | 区分无变化与新的采用，包括 A → B → A |
+| 判断 cache key | 判断器、题目版本和精确冻结输入 | 复用模型证据，不受单独 policy 调整影响 |
+| plan input digest / 决策 ref | 模型证据、policy、reader 输入和比较材料 | 保存这一次决定的可核查依据 |
+| `intent_id` | update、选中 refs、channel、purpose | 同一发送意图及已证明未送的重试 |
+| 文案 cache / FrozenCard digest | composer 与精确文案材料 / 冻结的实际正文 | 复用文案并确认送达的具体内容 |
+
+外部 Event 再次采用或召回校准参数改变，不改变抽取 work_id；理解会按本次 prior 重新推导，观察身份记录新的召回依据。改变 policy 不自动重问相同的模型证据，也不重新解释已送正文。
+
+Claim 身份材料不包含 statement 措辞或 content_kind 读法。适用的本 Event 等价命题可以复用 ref；存在实质变化时保留发生前驱与引文，使状态返回原值仍是一轮新的发生。`content_sha` 不变时不增加知识 head；输入 revision 可以在没有新知识的情况下完成。
 
 `news_public_update_v1` 有 `catalyst_delta` 和 `source_update`，显式带受影响、退休和替代 refs。App 映射公开事实到 Trading；News 不导入 Trading 或替其写表。卡片、通知分数和报价投影不是 Trading 事实输入。
 
@@ -140,29 +271,49 @@ App 分别选择抽取、判断、卡片路由。`llm.news_triage_model` 为基�
 <a id="section-状态必须分三层理解"></a>
 ## 持久状态与恢复
 
-| 记录 | 事实与恢复 |
-| --- | --- |
-| `news_jobs` semantic | wanted/done revision、lineage、已处理/失败 read refs、state、lease、attempt、due；精确版本领取和结算 |
-| `news_analyses` / Event head | 抽取 checkpoint、observation、不可变采用文档；观察不等于采用，失败保留上一有效 head |
-| `news_jobs` notify | pending / done / failed；新通知义务重建或重置工作，已有 pending 跟最新 head，保留已用尝试 |
-| `news_notifications` | 不可变决定、intent、冻结正文、发送状态及真实结果；DB 状态和 SendOutcome 分开 |
-| `news_reader_clock` | 一致读取后的权限版本围栏；不保存知识，采用/链接和读者送达事实使旧证明失效 |
+状态分成语义工作、已采用知识和读者结果三层。语义失败不删除上一有效 head；通知或文案失败不撤回已经采用的知识。
 
-语义、通知快照在 `REPEATABLE READ READ ONLY` 中构造，外部 I/O 在事务外。写事务先锁 Event 再锁 job/intent，校验 owner 和版本。通知锁内只验 head / reader 世代，不重新召回；向量补算、collector 与 Trading 不改变该世代。
+| 记录 | 保存什么 | 如何完成 |
+| --- | --- | --- |
+| `news_jobs` semantic | wanted/done revision、lineage、处理/失败 read refs、lease、attempt、due | owner 结算版本；state 为 pending / done / failed |
+| `news_judgment_cache` | 成功抽取 checkpoint 和精确输入判断回答 | 相同身份复用；它不代表知识已采用 |
+| `news_analyses` / Event head | observation、独立 scope repair、采用文档和当前指针 | 观察先保存；采用在 Event 锁下检查 lease 与 head CAS |
+| `news_jobs` notify | 内容版本、决策 ref、pending / done / failed | 不通知、发送结算或失败时推进；和语义工作独立 |
+| `news_notifications` | 决定、intent、冻结正文、lease、发送状态和结算证据 | 依据当前 owner 与 payload 结算，状态含义见[正文与回执](#正文回执与重试) |
+| `news_reader_clock` | 所有 reader 快照共享的数据库世代 | 相关事实提交时推进，计划/发送时用作权限围栏 |
 
-语义输入超时计已领取版本尝试并退避；最后尝试有有效 lease 时 Janitor 不能终结。失败只隔离实际读入范围，新材料仍可处理；迟到旧 lease 不能消耗新预算。模型/提示词升级不自动重读已处理证据或重置失败。
+只有 `new_fact`、`possible_new`、`parameter_change`、`phase_change`、`scope_change`、`correction` 或 `conflict` 才新建或重置通知工作。
+
+证据增加、复述和纯 scope retraction 只把已有 pending / failed 工作转向新 head，保留尝试预算；它们不创建工作，也不重开 failed。
+
+语义输入超时在版本 CAS 领取成功后计尝试，按 15 / 60 / 300 秒退避，最多 3 次。核心契约错误可在尚未耗尽次数时直接失败。最后一次尝试仍持有效 lease 时，Janitor 不能提前终结它。
+
+失败只隔离实际读入范围，后来加入的新材料仍可处理。迟到旧 lease 不能结算新 owner 或消耗它的预算。模型或提示词升级不自动重读已处理证据，也不自动重置失败。
 
 没有生成模型时，Worker 可确认唤醒但保留 DB pending；没有 sender 时通知待处理。配置故障分别报告 editorial / delivery / claim_recall 能力，共享基础资源故障由 Workers 根监督处理。
 
-`/api/news/status` 区分 semantic pending、deferred、in progress 和 failed exhausted，保留真实次数与错误。`primary_asset_markets_24h` 统计近 24 小时已采用 semantic 解析中的 primary 资产出现，不限当前 head、已推送或唯一 symbol；空分母比例为 null，只观测而不影响通知或健康。
+`/api/news/status` 区分 semantic pending、deferred、in progress 和 failed exhausted，保留真实次数与错误。
 
-精确重试、重读与 head scope 修复见[运维](../OPERATIONS.md#news-retry)。scope repair 退休误归属 Claim、写独立证明并发布 source_update；不改旧来源、EventUpdate、回执，也不重开已完成通知。
+`primary_asset_markets_24h` 统计近 24 小时已采用 semantic 解析中的 primary 资产出现，不限当前 head、已推送或唯一 symbol。空分母比例为 null；该指标只观测，不影响通知或健康。
+
+精确重试、重读与 head scope 修复见[运维](../OPERATIONS.md#news-retry)。scope repair 退休误归属 Claim，写独立证明并发布 source_update；不改旧来源、EventUpdate 或回执，也不重开已完成通知。
 
 <a id="notification"></a>
 <a id="section-什么决定一条新闻是否推送"></a>
 ## 逐命题通知
 
-`NotificationPlanner` 调用纯 [decide()](../../tracefold/news/notifications/policy.py)，根据 adopted 命题、有效关系、真实回执与未决发送状态给出具名决定。模型提供 importance / anchor 分布，policy 控制规则和阈值。
+通知回答的是“这条命题现在值得再向读者推送吗”。知识已采用，不代表值得推送；来源又报道一次，也不证明读者需要再收到一次。
+
+| 步骤 | 输入 | 产物与职责 |
+| --- | --- | --- |
+| 读者快照 | 当前 head、关系、真实回执、未决发送状态 | 一次一致读取的 ReaderSnapshot |
+| 必要模型判断 | 每命题 ReaderInput | importance / anchor 分布和后端身份；不决定发送权限 |
+| 纯 policy | 已读事实、模型证据、固定门槛 | 每条 Claim 的 notify / not_notified / deferred 和具名原因 |
+| 计划与 intent | 逐命题决定、选中集合、reader 世代 | 不可变决定与持久发送意图 |
+| 正文冻结 | 选中命题及适用旧正文 | FrozenCard 和实际正文 digest |
+| 发送与结算 | 持久计划、当前权限、冻结卡片、provider 结果 | sending 标记、真实回执或未送/不明证据 |
+
+`NotificationPlanner` 只对前置规则尚未决定的命题请求读者判断，再调用纯 [decide()](../../tracefold/news/notifications/policy.py)。policy 按下表顺序处理，早一步决定后不再进入后一步。模型不读取数据库、切点或发送器。
 
 | 顺序 | 当前行为 |
 | --- | --- |
@@ -170,35 +321,102 @@ App 分别选择抽取、判断、卡片路由。`llm.news_triage_model` 为基�
 | 2–3 | 自身 sending 暂缓；ambiguous 按可能已送保护，不重发 |
 | 4–5 | 首次可见超过 3 小时不推，更正/冲突为 12 小时；明确发生超过 7 天记旧闻，更正和带 speaker 新表态除外 |
 | 6–7 | 等价或更全已送命题为 known；链接发送在途则暂缓 |
-| 8 | 首次可见晚于旧回执的已送命题更正：通知更正 |
+| 8 | 更正指向已送命题，且首次可见晚于旧回执：通知更正 |
 | 9–10 | 受保护上币、商品/指数当日 ≥5% 的价格变动：确定性推送；价格水平/统计百分比不适用 |
 | 11–12 | 其余问必要读者判断；不可得暂缓，采用后超过 10 分钟仍不可得记 unassessed，不按猜测推送 |
 
-新颖度从不可变 adopted changes 派生，最多两跳，第二跳须经 equivalent；同一命题对用最新断言。sent、ambiguous、sending 分别处理。可证明的上币标的错链由读取保护过滤，历史图不改写。
+### 读者输入与模型证据
 
-唯一 `news_reader_input_v3` 的 `as_of` 是首次可见 UTC 日期；每命题至多 16 条实际 sent 正文，以冻结 `sent_claims` 召回，已链接优先。sending 不进入模型正文，ambiguous 只保护重复；缺冻结历史不借当前 head 补造。
+新颖度从不可变 adopted changes 派生，最多两跳；两跳路径中至少一跳须为 equivalent。同一命题对用最新断言。链接说明已经知道、增加细节或真实变化，不能把同一故事里的任意事实都当作重复。可证明的上币标的错链由读取保护过滤，历史图不改写。
 
-一次调用同时问新增重要性与同核心事实锚点。主体、目标、动作、发生/阶段须匹配；同故事、后来实施或不同统计期不直接作锚点。importance 相对完整已送正文评分，confidence 只记录。rubric 唯一源码为 [reader.py](../../tracefold/news/notifications/reader.py)。
+唯一 `news_reader_input_v3` 为每条命题冻结自己的材料：statement、字段、主题、实际引用来源，以及至多 16 条实际 sent 正文。`as_of` 是 claim 首次可见的 UTC 日期，重问或兄弟命题更新不改变它。正文检索使用冻结 `sent_claims`，不检索卡片正文措辞，不借当前 head 补造缺失历史。
+
+读者实际看到的内容由冻结正文证明。选择了某个 claim ref 不证明卡片完整表达了它。sending 不进入模型消息；ambiguous 不伪装成已读，但保留可能已送的重复保护。链接保护与模型正文池分开，即使没有可用正文或没有进入模型 top-k，适用的 sending / ambiguous 仍可阻止重复发送。
+
+一次模型调用同时提供两类证据：
+
+- **importance**：新增信息相对完整已送正文的重要性，保存 0–4 的概率分布与期望值。它不奖励旧故事的总体重要性或表达强烈程度。
+- **anchor**：哪条已送正文明确报告同一核心事实，或 none。主体、目标、动作、发生/阶段须匹配；同故事、后来实施或不同统计期不直接作锚点。
+
+confidence 只记录，不作为通知切点。rubric 的唯一源码是 [reader.py](../../tracefold/news/notifications/reader.py)；policy 用实际作答后端的门槛读取证据，不能把 unavailable 当成低分回答。
+
+### policy 如何使用分布
 
 | 后端 | push 期望值 | 锚定/细节 held | 重点 P(4) | 锚点 P(none) |
 | --- | ---: | ---: | ---: | ---: |
 | native | 2.4 | 2.5 | 0.4 | < 0.2 |
 | generated | 2.4 | 2.6 | 0.4 | < 0.2 |
 
-未锚定命题过普通期望值或重点尾部线即可推；held 须先过 held 线再标重点。无锚点、已下令/生效/执行/完成/取消的实际状态变化，linked increment 按普通门槛；承诺、预测、未知阶段和普通参数保持 held。真实误差与范围见[读者评测](../reports/news-791-b.md)。
+令 E 为 importance 期望值，P(4) 为第四级概率。普通与 held 分支的判断不同：
+
+| 分支 | 是否推送 | 推送后是否标重点 |
+| --- | --- | --- |
+| 普通 | **E ≥ push 或 P(4) ≥ 0.4**，任一成立即可 | P(4) ≥ 0.4 时标重点 |
+| held：已锚定的未链接事实，或适用 linked increment | **E ≥ held**；单独高 P(4) 不能越过这个门槛 | 先获准推送，再按 P(4) ≥ 0.4 标重点 |
+
+例如 E=2.2、P(4)=0.4：普通分支推送并标重点；held 分支保持 Feed。P(4) 既是普通分支的另一条推送门槛，也是获准推送后的重点门槛，不能写成“所有命题先过 2.4 才可能推”。
+
+P(none) < 0.2 时，policy 选择概率最高的具体消息作锚点。linked increment 通常进入 held；以下例外必须同时满足三个条件：
+
+- 没有锚点。
+- content_kind 为 state_change / official_measure，mode 为 observation / decision。
+- phase 为 ordered / effective / executing / completed / cancelled。
+
+这样的实际状态变化使用普通分支。承诺、预测、未知阶段和普通参数不适用这个例外。真实变化 development 使用语义前驱回执作对照，不因此进入 held。
+
+更正、已知、在途、确定性上币和当日大幅变动先由决定表处理，不经过以上一般评分分支。真实误差与证明范围见[读者评测](../reports/news-791-b.md)。
+
+### 计划和发送权限
+
+`prepare` 在 RR 快照中只计算一次 reader context。计划保存逐命题原因、比对过的 intent / 正文摘要、当前 head、reader 世代和计时，再在 Event 锁下提交决定并取得 intent。最终发送还要复核这些权限，因为准备期间其他新闻可能已经送达。
+
+写事务按 Event → job/intent → `news_reader_clock` 顺序锁定。锁内核对 head、owner 和 reader 世代，不重新运行召回。证明失效时退出锁并按新的上下文重新规划；精确输入未变的模型证据可复用。
+
+`news_reader_clock` 是**全局**围栏，不只跟随当前 Event 或新 sent 回执。当前数据库触发器在以下事实提交时推进世代：
+
+- 已采用 analysis 的插入、采用时间/文档实质变化或删除，包括其他 Event 的采用。
+- update 通知进入、退出或修改 sending / sent / ambiguous 的读者事实，包括卡片、回执、refs、冻结命题、历史上下文和结算时间。
+- Event 成员的插入、更新或删除。
+- Item provider metadata 改变，或 Event kind 改变。
+
+这是有意保守的权限检查：即使变化后来没有进入某条命题的召回结果，旧世代也不能继续当作有效证明。向量补算、collector 时钟和 Trading 不推进它。触发器见 [0425 迁移](../../tracefold/platform/postgres/alembic/versions/20261002_0425_semantic_read_indexes.py)。
 
 <a id="正文回执与重试"></a>
 ### 正文、回执与重试
 
-`prepare` 读一致快照、存计划、保留 intent、生成并冻结正文；`finalize` 按持久计划执行，不重判价值。文案只读选中命题、字段、引文和最少来源，补充/更正带实际旧正文作对照。冻结校验 refs、每命题一行、中文、URL/控制字符和 digest；约束不证明真实模型总能忠实翻译。
+`prepare` 提交计划与 intent 后生成并冻结正文；`finalize` 按持久计划执行，不重判价值。文案只读选中命题、字段、引文和最少来源，补充/更正带实际旧正文作对照。旧正文用于避免重复，不提供新的事实、名称或数字。
 
-发送顺序：共享 reservation → 目标预检 → 短事务 begin_send 复核 head / reader / lease 并写 sending → 事务外 provider → 短事务按 lease / payload 结算。sent 需真实回执；not_sent 只有明确可重试才续用原 intent/payload；ambiguous 禁止重发。已知结果可幂等结算，旧 lease 不能结算新 owner。
+中文表达必须保留对象、动作、数量、归因与阶段。“宣称”不能写成“核实”，“宣布将做”不能写成“已经实施”。冻结校验 refs、每命题一行、中文、URL/控制字符和 digest；这些约束不证明真实模型总能忠实翻译。
+
+发送按以下顺序进行：
+
+1. 取得共享发送 reservation，并完成目标预检。
+2. 在短事务中 begin_send，复核 head、reader 世代和 lease，写 sending。
+3. 在事务外调用 provider。
+4. 在短事务中按 lease 和 payload 结算，再释放共享发送机会。
+
+sending 表示持久发送许可已经记录，此时 provider 可能尚未被调用。进程在 begin_send 与 provider 之间崩溃、又没有可结算结果时，也按 ambiguous 对账，不能凭本地执行位置证明未送。适配器提供的 `SendOutcome` 与数据库状态分开：
+
+| provider 结果 | 数据库结果与后续行为 |
+| --- | --- |
+| `sent` | 写 sent 和真实 provider 回执；冻结正文成为读者事实 |
+| `not_sent` 且可重试 | 保留同 intent / payload 和未送 settlement；预算剩余时回到 pending，耗尽为 dead |
+| `not_sent` 且不可重试 | 写 terminal，不自动重发 |
+| `ambiguous` | 写 ambiguous，保留可能已送保护，禁止自动重发 |
+
+已知结果可以用相同证据幂等结算。旧 lease 的迟到结果不能结算新 owner。结算暂不可提交时保留 sending，不能把“本地没记成功”解释为“provider 没发送”。
 
 `DelivererLoop` 有界并行准备，单个 finalizer 串行结算；`NotificationSender` 执行冻结首发，唯一 `InitialSendEntry` 统一编辑型、市场首发和后续编辑节奏。`DeliveryEnrichment` 对真实首发回执领取编辑权，行情编辑不改事实正文/hash。
 
 启动与每 30 秒清扫不属于本进程且实际 lease 已过期的 sending，按 lease token / attempted time CAS 结算 ambiguous；不会仅因固定 elapsed 秒数终结仍有 owner 的发送。停机停止新准备，有界等待在途结算，释放未发送 reservation。
 
-规划异常计 notify work 尝试，文案异常和可重试 not_sent 计 intent 尝试，当前均最多 3 次。等待在途、CAS 冲突和 DB 暂时无答不计业务失败；已有发送账本的 intent 不能用 retry-work 重开。决定、准备和结果分别保存计时与比较回执摘要，不从卡片数推断调用数。
+规划异常计 notify work 尝试；文案异常和可重试 not_sent 计 intent 尝试，当前均最多 3 次。等待在途、CAS 冲突和 DB 暂时无答不计业务失败。
+
+精确 `retry-work` 可以重开同一内容版本的 failed notify work 和 dead intent。dead 可以已经保存**已证明未送**的可重试 not_sent settlement；恢复保留该证据，不把它改成送达。
+
+sending / sent / ambiguous / terminal intent 不由这个命令重开。执行步骤和参数由[运维](../OPERATIONS.md#news-retry)维护。
+
+决定、准备和结果分别保存计时与比较回执摘要。这些记录可以解释采用到送达的各段耗时；卡片数量不能证明模型调用数。
 
 ## 独立市场事实与采集器
 
@@ -215,9 +433,13 @@ Receiver publish 成功后用 1 秒有界事务记时钟，正常每 5 秒至多
 | 范围 | 实现与回归 |
 | --- | --- |
 | 接入与准入 | [pipeline](../../tracefold/news/pipeline/)、[FactUnit](../../tracefold/news/events/facts.py)、[范围单测](../../tests/news/test_news_update_input_scope.py)、[补抄集成](../../tests/integration/test_news_recovery_admission.py) |
-| 语义与采用 | [updates](../../tracefold/news/updates/)、[语义存储](../../tracefold/news/storage/semantic_store.py)、[Agent 回归](../../tests/news/test_news_event_updates_core.py)、[采用集成](../../tests/integration/test_news_event_update_store.py) |
-| 资产与召回 | [claim recall](../../tracefold/news/claim_recall.py)、[资产候选](../../tests/news/test_news_source_asset_candidates.py)、[向量复用](../../tests/integration/test_news_embedding_reuse.py)、[有界召回](../../tests/integration/test_news_claim_recall_bounded.py) |
-| 通知和发送 | [notifications](../../tracefold/news/notifications/)、[发送存储](../../tracefold/news/storage/notification_delivery.py)、[通知单测](../../tests/news/test_news_event_update_notifications.py)、[送达集成](../../tests/integration/test_news_update_delivery.py) |
+| 语义读取、领取与失败 | [语义存储](../../tracefold/news/storage/semantic_store.py)、[work SQL](../../tracefold/news/storage/semantic_work.py)、[输入超时](../../tests/integration/test_news_semantic_input_timeout.py)、[版本所有权](../../tests/integration/test_news_revision_ownership.py) |
+| 判断、身份与采用 | [updates](../../tracefold/news/updates/)、[Agent 回归](../../tests/news/test_news_event_updates_core.py)、[判断批次](../../tests/news/test_news_event_update_judgments.py)、[召回身份复用](../../tests/news/test_news_semantic_recall_identity.py)、[采用集成](../../tests/integration/test_news_event_update_store.py) |
+| 资产与召回 | [claim recall](../../tracefold/news/claim_recall.py)、[索引 SQL](../../tracefold/news/storage/claim_index.py)、[资产候选](../../tests/news/test_news_source_asset_candidates.py)、[精确当前/冻结版本](../../tests/integration/test_news_claim_index.py)、[有界召回](../../tests/integration/test_news_claim_recall_bounded.py) |
+| 通知输入与 policy | [reader](../../tracefold/news/notifications/reader.py)、[policy](../../tracefold/news/notifications/policy.py)、[通知单测](../../tests/news/test_news_event_update_notifications.py)、[分布与 held 回归](../../tests/news/test_news_reader_judgments.py) |
+| 发送权限、结算与恢复 | [发送存储](../../tracefold/news/storage/notification_delivery.py)、[通知 work SQL](../../tracefold/news/storage/notification_work.py)、[精确重试与世代](../../tests/integration/test_news_event_update_store.py)、[送达集成](../../tests/integration/test_news_update_delivery.py) |
 | 运行与 API | [App 装配](../../tracefold/app/workers/wiring/news.py)、[公开面边界](../../tests/architecture/test_news_public_runtime_surface.py)、[发送职责](../../tests/architecture/test_news_delivery_boundaries.py)、[市场边界](../../tests/architecture/test_news_market_path_boundaries.py)、[HTTP](../../tests/contract/test_news_http_contract.py) |
 
-纯算法和值在 events / updates / notifications / market_review，模型在 adapters，SQL 在 storage 的各生命周期所有者，App 建造能力，News 不反向导入 App。当前质量证据为[共享召回评测](../reports/issue-791-claim-recall-2026-10-02.md)、[读者评测](../reports/news-791-b.md)和[本地嵌入兼容](../reports/news-799.md)；每份报告注明版本、失败和证明范围，历史数字不等于当前部署或本次文档修改的验证。
+纯算法和值在 events / updates / notifications / market_review，模型在 adapters，SQL 在 storage 的各生命周期所有者。App 建造能力，News 不反向导入 App。
+
+当前质量证据为[共享召回评测](../reports/issue-791-claim-recall-2026-10-02.md)、[读者评测](../reports/news-791-b.md)和[本地嵌入兼容](../reports/news-799.md)。每份报告注明版本、失败和证明范围；历史数字不等于当前部署或本次文档修改的验证。
