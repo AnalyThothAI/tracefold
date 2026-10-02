@@ -14,10 +14,6 @@
     padding-bottom: 15px;
   }
 
-  .news-timeline[data-compact] .news-timeline-step {
-    padding-bottom: 12px;
-  }
-
   .news-timeline-step[data-last] {
     padding-bottom: 0;
   }
@@ -87,19 +83,6 @@
     font-size: var(--font-size-meta);
     line-height: 1.5;
     text-wrap: pretty;
-  }
-
-  .news-timeline-inline-facts {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 3px 10px;
-    margin: 2px 0 0;
-    color: var(--text-subtle);
-    font-size: var(--font-size-mono-meta);
-  }
-
-  .news-timeline-inline-facts code {
-    overflow-wrap: anywhere;
   }
 
   .news-timeline-toggle {

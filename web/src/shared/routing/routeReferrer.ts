@@ -3,7 +3,7 @@ import { useLocation } from "react-router-dom";
 /**
  * Where a secondary surface came from, so its way back is the way in (#256).
  *
- * The token page is reached from four different places — the Event feed, the Event drawer and detail, the
+ * The token page is reached from four different places — the Event feed and detail, the
  * market facts page and the Alpha ledger — and a back link that always said 事件流 was wrong three times out of
  * four: it named a page the reader had never been on and, from the feed, dropped the filters they arrived
  * with. React Router already carries per-navigation state; this is the whole contract for it.

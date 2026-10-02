@@ -227,28 +227,58 @@ describe("news route", () => {
     fireEvent.click(screen.getByRole("link", { name: "事件流" }));
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
 
-    /*
-     * At desktop width an Event opens *beside* the list, not instead of it (design proposal ⑦): the row link
-     * is a real href — every modified click, middle click and assistive path still follows it — but a plain
-     * click keeps the queue on screen and puts the Event in the drawer. 打开事件详情 is the canonical,
-     * shareable page from there.
-     */
-    fireEvent.click(await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ }));
-    const drawer = await screen.findByRole("dialog");
+    const headline = await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ });
+    expect(headline).toHaveAttribute("href", "/news/events/evt-global-policy");
+    fireEvent.click(headline);
+    const detailPage = await screen.findByRole("region", { name: "新闻事件详情" });
+    const detailHeadline = await within(detailPage).findByRole("heading", {
+      name: "钢铁进口关税上调至 50%",
+    });
     await waitFor(() =>
       expect(apiMock.readApi).toHaveBeenCalledWith(
         "/api/news/events/evt-global-policy",
         expect.any(Object),
       ),
     );
-    expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
-    expect(within(drawer).getByRole("link", { name: "代币页 SKHY" })).toHaveAttribute(
-      "href",
-      "/news/symbols/SKHY",
-    );
+    expect(screen.queryByRole("heading", { name: "新闻事件流" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(
+      within(detailHeadline.closest("article")!).getByRole("link", {
+        name: "SKHX",
+      }),
+    ).toHaveAttribute("href", "/news/symbols/SKHY");
+  });
 
-    fireEvent.click(within(drawer).getByRole("link", { name: "打开事件详情" }));
-    expect(await screen.findByRole("region", { name: "新闻事件详情" })).toBeInTheDocument();
+  it("returns directly from an Event to the same feed filters", async () => {
+    const feedPath = "/news?q=tariff&outcome=held&hours=168&event_kind=news";
+    renderAppRoute(feedPath);
+    fireEvent.click(await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ }));
+    await screen.findByRole("heading", { name: "钢铁进口关税上调至 50%" });
+
+    const back = screen.getByRole("link", { name: "返回新闻事件流" });
+    expect(back).toHaveAttribute("href", feedPath);
+    fireEvent.click(back);
+
+    expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "news search" })).toHaveValue("tariff");
+    expect(screen.getByRole("tab", { name: "被拦截 271" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "时间范围，最近 7 天" })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(apiMock.readApi).toHaveBeenCalledWith(
+        "/api/news/feed",
+        expect.objectContaining({
+          params: expect.objectContaining({
+            q: "tariff",
+            outcome: "held",
+            hours: "168",
+            event_kind: "news",
+          }),
+        }),
+      ),
+    );
   });
 
   it("reaches the token page from an asset chip on a hard-refreshable URL", async () => {

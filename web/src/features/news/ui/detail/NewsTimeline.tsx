@@ -37,38 +37,14 @@ export function NewsTimeline({ steps }: { steps: NewsTimelineStep[] }) {
   );
 }
 
-/** The four judgment steps with their first raw facts inline; delivery remains an outcome in the header. */
-export function NewsEventDrawerTimeline({ steps }: { steps: NewsTimelineStep[] }) {
-  const judgmentSteps = steps.filter((step) => step.stage !== "delivery");
-  if (!judgmentSteps.length) return null;
-  return (
-    <ol className="news-timeline" data-compact>
-      {judgmentSteps.map((step, index) => (
-        <TimelineStep
-          delta={index === 0 ? null : step.at_ms - judgmentSteps[index - 1].at_ms}
-          inlineFields
-          key={`${step.stage}-${index}`}
-          last={index === judgmentSteps.length - 1}
-          step={step}
-          withFields={false}
-        />
-      ))}
-    </ol>
-  );
-}
-
 function TimelineStep({
   delta,
-  inlineFields = false,
   last,
   step,
-  withFields = true,
 }: {
   delta: number | null;
-  inlineFields?: boolean;
   last: boolean;
   step: NewsTimelineStep;
-  withFields?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const facts = Object.entries(step.facts ?? {}).filter(([, value]) => !isEmptyFact(value));
@@ -92,16 +68,7 @@ function TimelineStep({
           )}
         </div>
         <p className="news-timeline-summary">{step.summary_zh}</p>
-        {inlineFields && facts.length ? (
-          <p className="news-timeline-inline-facts">
-            {facts.slice(0, 2).map(([key, value]) => (
-              <code key={key}>
-                {key}={formatFact(value)}
-              </code>
-            ))}
-          </p>
-        ) : null}
-        {withFields && facts.length ? (
+        {facts.length ? (
           <button
             aria-expanded={open}
             className="news-timeline-toggle"
@@ -113,7 +80,7 @@ function TimelineStep({
             {open ? "收起字段" : `展开字段 (${facts.length})`}
           </button>
         ) : null}
-        {withFields && open ? (
+        {open ? (
           <KeyValue className="news-timeline-fields">
             {facts.map(([key, value]) => (
               <KeyValueRow k={key} key={key} v={formatFact(value)} />
