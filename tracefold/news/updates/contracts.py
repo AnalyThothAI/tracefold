@@ -26,6 +26,21 @@ Mode = Literal[
     "commentary",
     "promotion",
     "unknown",
+    "assertion",
+    "demand",
+    "threat",
+    "opinion",
+]
+ActorRole = Literal[
+    "head_of_state_or_government",
+    "central_bank_policymaker",
+    "economic_policy_official",
+    "foreign_or_defense_official",
+    "other_government_official",
+    "regulator_or_court",
+    "company_or_project",
+    "analyst_or_media",
+    "unknown",
 ]
 Phase = Literal["proposed", "announced", "ordered", "effective", "executing", "completed", "cancelled", "unknown"]
 Relation = Literal[
@@ -217,6 +232,7 @@ class ClaimFields(Exact):
     statistical_period: str | None = None
     polarity: Literal["affirmative", "negative", "unknown"] = "unknown"
     mode: Mode = "unknown"
+    actor_role: ActorRole | None = None
     # A non-action claim can use None. A future effective_at never changes phase.
     phase: Phase | None = None
     # The notification policy's reading of the content. It is not part of claim identity: a different

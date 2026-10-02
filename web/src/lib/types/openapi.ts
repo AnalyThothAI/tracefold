@@ -835,7 +835,7 @@ export interface components {
              * Mode
              * @enum {string}
              */
-            mode: "observation" | "decision" | "commitment" | "conditional_threat" | "guidance" | "forecast" | "commentary" | "promotion" | "unknown";
+            mode: "observation" | "decision" | "commitment" | "conditional_threat" | "guidance" | "forecast" | "commentary" | "promotion" | "unknown" | "assertion" | "demand" | "threat" | "opinion";
             /**
              * Mode Zh
              * @default

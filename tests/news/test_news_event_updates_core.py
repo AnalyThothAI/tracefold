@@ -366,3 +366,26 @@ def test_source_authority_is_code_owned_provenance_not_evidence_identity() -> No
     named = Evidence.issue(plain.text, plain.source.model_copy(update={"source_authority": "issuer_first_party"}))
     assert named.ref == plain.ref
     assert Asset(symbol="CL", market_type="commodity", role="primary") in draft(plain).fields.assets
+
+
+@pytest.mark.parametrize("mode", ["conditional_threat", "commentary", "assertion", "demand", "threat", "opinion"])
+def test_stored_v4_and_v5_claim_documents_are_readable(mode: str) -> None:
+    _, _, head = update_one()
+    document = head.model_dump(mode="json")
+    document["claims"][0]["fields"]["mode"] = mode
+    document["claims"][0]["fields"].pop("actor_role")
+    assert EventUpdate.model_validate(document).claims[0].fields.mode == mode
+    document["claims"][0]["fields"]["actor_role"] = "head_of_state_or_government"
+    assert EventUpdate.model_validate(document).claims[0].fields.actor_role == "head_of_state_or_government"
+
+
+@pytest.mark.parametrize("role", [None, "unknown", "head_of_state_or_government", "company_or_project"])
+def test_actor_role_reading_does_not_change_claim_identity(role: str | None) -> None:
+    source, extraction, head = update_one()
+    original = extraction.claims[0]
+    reread = original.model_copy(update={"fields": original.fields.model_copy(update={"actor_role": role})})
+    changed = extraction.model_copy(update={"claims": (reread,)})
+    first = assemble_update(source, changed, None, adopted_at_ms=STAMP + 9999)
+    assert first is not None
+    assert first.claims[0].ref == head.claims[0].ref
+    assert assemble_update(source, changed, head, adopted_at_ms=STAMP + 9999) is None

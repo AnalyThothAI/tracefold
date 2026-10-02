@@ -180,6 +180,7 @@ def _claim_material(draft: DraftClaim) -> dict[str, Any]:
     # Statement is presentation and content_kind is the notification policy's reading; neither changes the
     # stable identity of a proposition on its own.
     del fields["content_kind"]
+    del fields["actor_role"]
     return fields
 
 

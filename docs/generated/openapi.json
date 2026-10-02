@@ -1641,7 +1641,11 @@
               "forecast",
               "commentary",
               "promotion",
-              "unknown"
+              "unknown",
+              "assertion",
+              "demand",
+              "threat",
+              "opinion"
             ],
             "title": "Mode",
             "type": "string"
