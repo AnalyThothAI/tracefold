@@ -2,7 +2,11 @@
 
 [手册](README.md) · [News](modules/news.md) · [Trading](modules/trading.md) · [Platform](modules/platform.md)
 
-Tracefold 是一个代码仓库、两个业务域、四种进程角色。**News 负责信息产品，Trading 负责交易研究与执行契约；App 装配两者，不把两套业务合并成一个巨大 Agent。**
+Tracefold 是一个代码仓库、两个业务域、四种进程角色。**News 负责信息产品，Trading 负责交易研究与执行契约。**
+
+业务域定义谁拥有事实和规则；进程角色定义这些工作在哪里运行。Workers 运行 News，Analysis 运行 Trading 研究，Executor 运行 DEMO 账户执行，Serve 读取两域的公开投影。四个角色共用应用镜像，保留各自生命周期和权限。
+
+`tracefold.app` 映射公开契约并装配运行依赖。News 与 Trading 各自拥有事实和表，跨域交接经过公开契约；Platform 提供配置、数据库资源和监督机制。核心对象的含义见[统一术语](../CONTEXT.md)。
 
 本页是当前系统地图。细节以链接的源码和模块手册为准；箭头表达调用或数据依赖，不代表跨系统事务或无条件成功。
 
@@ -189,7 +193,9 @@ class Trading research;
 
 OI 不先通过编辑型新闻模型；钱包首报不先经过 LLM 或价格收益评估。三者共用必要基础设施和发送适配，但不共用一套虚构的“总评分”或 Event 状态。
 
-编辑型新闻保留三个逻辑职责，只有两个业务工作流所有者：`NewsAgent` 提取与采用事实，`Notifications` 选择通知并完成持久发送。执行由 `NotificationSender`、行情查询与回执编辑协作者承担，经唯一 `InitialSendEntry` 共享发送时隙；`DelivererLoop` 只调度。实体特征由纯 [entities.py](../tracefold/news/entities.py) 提供，严格身份与关联召回分开。具体文件、数据契约和事务时序见 [News 手册](modules/news.md)。
+编辑型新闻由两个业务工作流所有者处理：`NewsAgent` 抽取、理解并采用知识；`Notifications` 选择通知并完成持久发送。召回器为判断选择输入，模型提供理解证据，代码检查身份、版本和通知规则。
+
+`NotificationSender` 执行冻结发送，行情查询和回执编辑由各自协作者负责。它们经唯一 `InitialSendEntry` 共享发送时隙，`DelivererLoop` 负责调度。实体特征由纯 [entities.py](../tracefold/news/entities.py) 提供。具体输入、产物和事务时序见 [News 手册](modules/news.md)。
 
 <a id="handoff"></a>
 <a id="section-news--trading先持久接收再确认来源"></a>
@@ -302,11 +308,17 @@ class Case,Amendment,Decision research;
 | 输入工作版本 | 最新证据是否已处理、谁持有租约、还可重试几次 | 当前 adopted head 一定是最新输入的结果 |
 | 已采用知识 | 哪些命题、引用与变更已成为当前版本 | 读者已经收到通知 |
 | 通知计划 / 卡片 | 选择了什么、正文是否冻结、生成是否失败 | 外部提供商已经成功发送 |
-| 实际发送回执 | 精确正文及 sent / not_sent / ambiguous 结果 | 允许交易、存在成交 |
+| 实际发送结果 / 已送回执 | 精确正文、sent / not_sent / ambiguous 结果，及 sent 的 provider 回执 | 允许交易、存在成交 |
 | Case / 决策 / 发布 | 研究用了什么、决定什么、是否产生 Signal | 交易所接受或成交 |
 | 账户 / 保护 / 原生历史 | 当前仓位是否已核实、是否有保护、原生成交与手续费证据是否完整 | 仅靠进程存活就能判断账户安全或已平仓 |
 
 最新语义输入失败时，旧的有效 head 仍可读；无实质变化时，done 可以前进而内容版本不增加。通知与交易分析可以在同一条新闻上独立成功、失败或暂缓。
+
+### 为什么这些状态分别保存
+
+例如，一条“暂停提现”的命题已经采用，发送卡片时 provider 连接中断。如果无法证明卡片是否送达，发送结果记为 `ambiguous`，保留重复发送保护；采用版本仍然有效。公开来源已经交给 Trading 时，研究也可以继续。
+
+这时要查发送意图、冻结正文和 provider 结果。重跑来源或改写知识版本不能证明送达，也不能消除外部结果的不确定性。通知恢复见[News 状态](modules/news.md#state)与[精确恢复](OPERATIONS.md#news-retry)；账户执行必须另外检查场所证据。
 
 <a id="5-transactions-resource-completion-and-supervision"></a>
 <a id="transactions"></a>

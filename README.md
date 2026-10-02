@@ -25,7 +25,7 @@ Tracefold 将持续到达的新闻、市场报告和链上回执，整理为可�
 | 理解与观察 | 研究与交付 |
 | :--- | :--- |
 | **01　新闻增量理解**<br/>从来源修订中抽取命题与引文，识别复述、补充和更正，形成版本化 EventUpdate。<br/>[News 手册 →](docs/modules/news.md) · [语义链路入门 →](docs/modules/news-semantics-guide.md) | **02　有依据的读者通知**<br/>逐命题比较实际已发正文；只为选中内容生成中文卡片，保留真实发送结果。<br/>[通知与回执 →](docs/modules/news.md#notification) |
-| **03　市场与链上观察**<br/>确定性解析 OI / 清算 / 大户报告；从完整链上回执发现多地址集中净买入。<br/>[市场观察 →](docs/modules/oi.md) · [钱包警报 →](docs/modules/wallets.md) | **04　受限交易研究**<br/>冻结当时可见的证据；保存概率预测、六个策略动作与成对纸面结果。<br/>[Trading 手册 →](docs/modules/trading.md) |
+| **03　市场与链上观察**<br/>确定性解析 OI / 清算 / 大户报告；从完整链上回执发现多地址集中净买入。<br/>[市场观察 →](docs/modules/oi.md) · [钱包警报 →](docs/modules/wallets.md) | **04　受限交易研究**<br/>冻结当时可见的证据；保存概率预测、六个策略的动作与成对纸面结果。<br/>[Trading 手册 →](docs/modules/trading.md) |
 | **05　行情与复核**<br/>区分当前报价、发送时行情补充和 Trading 研究结果。<br/>[行情复盘 →](docs/modules/market-review.md) | **06　独立账户执行**<br/>应用镜像中的 DEMO executor 消费 Signal 与操作意图，负责订单、保护、真实成交归属和对账。<br/>[Execution 手册 →](docs/modules/execution.md) |
 
 ## 三分钟理解系统
@@ -67,6 +67,8 @@ class Runtime execution;
 *能力视图：实线表示主要产物关系；虚线表示有条件的后续。省略了恢复与回写连线，不代表所有消息都会产生交易。*
 
 系统包含 **News、Trading 两个业务域**，以及 **Serve、Workers、Analysis、Executor 四种进程角色**，共用应用镜像并由 Compose 管理。RabbitMQ 承接原始消息与语义唤醒，PostgreSQL 保存事实、工作和回执。完整部署图与依赖方向见[系统架构](docs/ARCHITECTURE.md)。
+
+第一次参与开发，从[开发者阅读路径](docs/README.md#developer-route)进入，用[统一术语](CONTEXT.md)和一条新闻的走读连接架构、决策、恢复及测试。
 
 > [!IMPORTANT]
 > **采用知识 ≠ 已发通知；研究决策 ≠ 已发布 Signal；订单受理 ≠ 真实成交。**

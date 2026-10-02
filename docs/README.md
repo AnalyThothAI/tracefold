@@ -6,6 +6,19 @@
 
 ---
 
+<a id="developer-route"></a>
+## 第一次参与开发
+
+先沿一条业务路径建立理解，再查字段和命令。下面的顺序不要求先部署、调用模型或连接账户。
+
+1. 读[架构地图](ARCHITECTURE.md#atlas)，分清业务域、运行进程、数据所有者与权限。
+2. 用[统一术语](../CONTEXT.md)识别来源、命题、知识版本、发送意图和实际回执。
+3. 沿[News 示意案例](modules/news-semantics-guide.md)走到发送结果，再到[模块设计](modules/news.md)查召回、决策、状态和失败处理。
+4. 修改研究或执行时，继续读 [Trading](modules/trading.md)与 [Execution](modules/execution.md)，区分 LIVE 研究、DEMO 账户和场所证据。
+5. 在模块的源码与测试入口定位行为所有者，按[开发验证](DEVELOPMENT.md#risk-tiered-local-verification)选择检查。字段和命令查[契约参考](CONTRACTS.md)，恢复步骤查[运维](OPERATIONS.md)。
+
+读完一条路径后，应能解释一个正常结果和一个失败结果：哪个版本被处理、哪个决定被保存、外部效果由什么证明，以及下一步由谁恢复。中文手册的写法由[清晰技术写作](DEVELOPMENT.md#clear-technical-writing)维护。
+
 ## 选择你的阅读路径
 
 | 开始使用 | 理解与开发 |
@@ -53,6 +66,7 @@
 | 新闻为什么不推送？ | [逐命题通知](modules/news.md#notification) · [精确版本恢复](OPERATIONS.md#news-retry) |
 | 一条消息为什么有多个 Event？ | [输入范围与身份](modules/news.md#input) |
 | 模型究竟调用几次？ | [NewsAgent 与预算](modules/news.md#agent) |
+| 召回命中为什么不等于重复新闻？ | [统一术语](../CONTEXT.md#decision-terms) · [候选与排序](modules/news.md#related-recall) |
 | 有策略方向为什么没有成交？ | [预测与发布](modules/trading.md) · [执行与对账](modules/execution.md) |
 | 账户状态未知与未认领敞口怎么读？ | [账户操作边界](OPERATIONS.md#trading-operations) |
 | 文档图如何修改并验证？ | [写作与图表规范](DEVELOPMENT.md#documentation-design) · [渲染检查](TESTING.md#diagrams) |
@@ -67,6 +81,14 @@
 | [安全与权限](SECURITY.md)<br/>秘密、浏览器、模型工具与账户权限 | [测试与 CI](TESTING.md)<br/>当前测试分工、隔离资源和证明范围 |
 
 精确命令与机器契约：[**生成参考**](generated/README.md)。
+
+| 文档类型 | 回答什么 | 维护边界 |
+| :--- | :--- | :--- |
+| 入门走读 | 一条输入如何经过各阶段？ | 用例解释交接，具体规则链接模块 |
+| 架构与模块设计 | 谁负责、为什么这样处理、保存哪些状态？ | 描述当前实现，连接源码和测试 |
+| 操作手册 | 什么前提下执行什么命令，如何核实和恢复？ | 保留权限、版本与实际结果的前提 |
+| 生成参考 | 精确字段、约束和命令语法是什么？ | 由实现生成，不手工改派生内容 |
+| 评测报告 | 某版本在某样本上证明了什么？ | 保留测量时间、失败和局限 |
 
 <details>
 <summary><strong>协作与离线研究</strong></summary>

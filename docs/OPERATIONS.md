@@ -79,7 +79,21 @@ docker compose exec -T workers tracefold news why EVENT_ID
 
 结合 Event 详情读取这些身份：**来源修订、wanted / done 输入版本、语义 owner / lease / attempt、当前 content revision、通知工作、intent 与发送账本**。不要只凭 UI 上一个“失败”标签选重试命令。
 
-生成错误区分 `news_generation_output_truncated`、`news_generation_output_empty`、`news_generation_output_schema_invalid`。配置了请求契约具有实质差异的 fallback 时（模型、端点或输出上限不同；抽取 fallback 的输出上限更大），允许一次替代回答；否则显式失败，不重复同一请求消耗全部预算。截断（`finish_reason=length`）即使被 JSON 修复也按截断处理；一个抽取回答里没有任何可用命题时同样先走 fallback，路由上最后一个回答仍不可用才失败。命题逐条校验：可修复的字段就地修复（写错层级的 citations / topics、选项外的读数、不可解析的列表条目、null 可选字段、多余的键），只有缺陈述、引文、主语或动作，或引文不在来源中的命题才丢弃这一条（原因记在观察的 `discarded_claims`），其余照常采纳；所有命题都不可用才算失败。日志 `news_extraction_claim_schema_invalid index=… errors=[(loc, type)]` 给出不可用命题的字段位置与错误类型，`news_extraction_claim_repaired` 给出被修复的字段，二者都不含模型原文。配置错误立即失败；provider 限流、超时、服务端或传输错误保留有界恢复，错误码保留 LM 错误类型（如 `news_generation_lm_timeout_error`）。先修正具体输出 / 配置原因，再决定是否精确恢复。
+生成错误先按输出与配置分开定位：
+
+| 错误 | 核查重点 |
+| --- | --- |
+| `news_generation_output_truncated` | 输出上限与 `finish_reason`；`length` 即使经 JSON 修复仍算截断 |
+| `news_generation_output_empty` | 路由是否返回有效内容 |
+| `news_generation_output_schema_invalid` | 回答是否满足当前契约，以及逐命题的校验原因 |
+| 配置错误 | 修正配置后再恢复；该错误立即失败 |
+| provider 限流、超时、服务端或传输错误 | 按具名 LM 错误和有界恢复规则处理，如 `news_generation_lm_timeout_error` |
+
+fallback 只有在请求契约有实质差异时才允许一次替代回答，例如模型、端点或输出上限不同；抽取 fallback 的输出上限须更大。没有这样的 fallback 就显式失败，不重复同一请求耗尽预算。一个抽取回答没有任何可用命题时也先走允许的 fallback，最后一路仍不可用才失败。
+
+抽取逐条校验命题。可修复字段就地修复，包括写错层级的 citations / topics、选项外读数、不可解析列表条目、null 可选字段和多余键。缺陈述、引文、主语或动作，或引文不在来源中时，丢弃该条并在观察的 `discarded_claims` 记录原因；其他可用命题继续进入后续理解。所有命题均不可用才算失败。
+
+`news_extraction_claim_schema_invalid index=… errors=[(loc, type)]` 给出不可用字段的位置与错误类型，`news_extraction_claim_repaired` 给出已修复字段；二者都不含模型原文。先修正具体输出或配置原因，再决定是否精确恢复。
 
 状态接口将可领取、等待调度、有效租约和已失败分别记录为 `semantic_pending`、`semantic_deferred`、`semantic_in_progress`、`semantic_failed_exhausted`，不要把最后一类解释成即将自动运行的积压：它计入当前仍失败、等待新证据或人工恢复的修订，只要大于 0，模型健康就至少为 warn。失败行保留真实尝试次数，一次性的契约错误显示 `attempts=1`。
 
@@ -93,9 +107,13 @@ docker compose exec -T workers tracefold news retry-work \
 
 只恢复对应失败工作版本，保留事实、检查点和发送回执。不是更换模型后的全库重跑，也不续期原始来源。最终尝试仍持有有效 lease 时，不能把它当作已经耗尽并手工抢占。
 
-以失败结束的修订（含 Janitor 结算的崩溃最终尝试）会把该次尝试实际送入的任务范围记为隔离（`failed_read_refs`，尝试所读范围在领取时记入 `attempt_read_refs`）：之后该 Event 的新成员只读新材料，不再被同一份坏材料拖累。`retry-work --kind semantic` 清空隔离、重新送入全部隔离材料；只想重读其中一段时，用下节的 `news reanalyze` 按精确修订指定该 `read_ref`。构建冻结输入本身失败（来源缺失、重读范围已变、head 无法解码）只让该 Event 的工作失败，错误码可见，不再让语义消费者故障。
+以失败结束的修订会隔离本次尝试实际读入的任务范围，Janitor 结算的崩溃最终尝试也适用。领取时记入 `attempt_read_refs`，失败结算时记入 `failed_read_refs`。后续新成员只读新材料，不受旧失败范围牵连。
 
-领取读取本 Event 输入遇到 statement timeout 或取消时，记 `news_semantic_input_timeout`，照常计尝试、释放租约并退避；三次耗尽进入可见失败。跨 Event 召回位于领取读取之后，排查这个错误应先查来源、head 与数据库语句，而不是提高召回预算。召回和嵌入失败分别记录 `news_claim_recall` 的 `recall_degraded` 与 `news_embedding_*`。
+`retry-work --kind semantic` 清空隔离，重新送入全部隔离材料。只需重读其中一段时，用下节的 `news reanalyze` 按精确修订指定 `read_ref`。构建冻结输入本身失败，例如来源缺失、重读范围已变或 head 无法解码，只让该 Event 的工作失败；错误码可见，不使语义消费者故障。
+
+Worker 先在只读一致快照中构建输入，再按 wanted revision 做短事务 CAS 领取。读取因 statement timeout 或查询取消失败时，记录 `news_semantic_input_timeout`；只有该版本仍可领取，才增加一次尝试、清除领取租约并退避。三次耗尽进入可见失败。若版本已前进或另有有效 owner，本次旧读取不能扣新版本预算。
+
+跨 Event 召回在成功领取并抽取之后进行。排查输入超时应先查来源、head 与数据库语句。召回和嵌入失败分别记录 `news_claim_recall` 的 `recall_degraded` 与 `news_embedding_*`，不能把它们当成输入读取超时。
 
 ### 命题向量缺失与降级
 
@@ -158,9 +176,30 @@ docker compose exec -T workers tracefold news retry-work \
   --event EVENT_ID --kind notification --revision CONTENT_REVISION
 ```
 
-只作用于状态为 `failed` 的通知工作：控制台和 `news why` 显示“通知失败”与 `last_error_code`。三类真实失败会走到这里：规划异常三次（含整个通知阶段超时）、同一未发送 intent 的卡片失败或可重试 `not_sent` 三次、预检证明未发送但不可重试。命令把该版本工作重置为 pending（尝试数归零），并复活同版本中**没有任何发送账本**的失败 intent，冻结卡片按原身份重用；错误码保留到工作完成。它不等于“忽略已发正文再发一次”：已有 `sending` / `sent` / `ambiguous` / `terminal` 账本的 intent 从不重开。
+命令只作用于精确 content revision 下状态为 `failed` 的通知工作。控制台和 `news why` 显示“通知失败”及 `last_error_code`。以下真实失败会使工作进入该状态：
 
-以下都不是失败，不需要重试：明确的 `no_notification`（先看逐命题的 `retired`、`stale_source`、`stale_occurrence`、`known_to_reader` 或 `reader_feed`）；读者判断暂不可用而暂缓的命题（`reader_unavailable`，采纳 10 分钟后记为 `reader_unassessed`，不推送）；等待链接命题发送结果的命题（`linked_send_in_flight`）；等待本 Event 仍在发送中的命题（`send_outcome_unresolved`，不计尝试，发送结算或孤儿对账后自动继续）；结果不明的命题（`send_outcome_ambiguous`，按可能已送达处理，不重发）；数据库暂时无法应答（不计尝试，推迟一轮后自动再试）。`news_notification_exhausted_legacy` 是 0413 从旧代码耗尽且无原因的工作回填的错误码。
+| 失败位置 | 计入哪份预算 |
+| --- | --- |
+| 规划异常，包括通知准备阶段的期限耗尽 | notify work；第三次失败终结 |
+| 卡片失败或可重试的确定 `not_sent` | 同一 intent；第三次失败终结 |
+| 预检已证明未发送，且错误不可重试 | 未发送 intent 直接终结 |
+
+恢复将该版本工作重置为 pending，尝试数归零，并复活同版本中已证明未送出的 `dead` intent。冻结卡片按原身份重用，错误码保留到工作完成。`dead` 不要求空白账本：可重试的 provider `not_sent` 结果可以已保存在 `settlement`，该记录证明未送出。
+
+`sending` / `sent` / `ambiguous` / `terminal` 的 intent 从不通过此命令重开。不可重试的 provider `not_sent` 结算为 terminal，按其真实结果处理；不能将它与未发送的预检失败混为一类。
+
+以下情况不会进入上述失败恢复。先读原因，再等待或核查对应边界：
+
+| 原因或状态 | 处理方式 |
+| --- | --- |
+| `no_notification` | 读取逐命题 `retired`、`stale_source`、`stale_occurrence`、`known_to_reader` 或 `reader_feed`；这是明确不通知 |
+| `reader_unavailable` | 暂缓；采用 10 分钟后仍不可得记 `reader_unassessed`，不按猜测推送 |
+| `linked_send_in_flight` | 等待链接命题的发送结果 |
+| `send_outcome_unresolved` | 等待本 Event 的在途发送，结算或孤儿对账后自动继续 |
+| `send_outcome_ambiguous` | 按可能已送达处理，不重发；其他命题仍可继续 |
+| 数据库暂时无法应答 | 不计业务尝试，推迟一轮后自动再试 |
+
+等待在途发送不消耗失败预算。孤儿清扫以实际 lease 到期为条件，排除本进程仍持有的发送，并按候选 lease token 与 attempted time 做 CAS；不能仅凭经过固定秒数手工终结。`news_notification_exhausted_legacy` 是 0413 从旧代码耗尽且无原因的工作回填的错误码。
 
 | 发送结果 | 操作原则 |
 | --- | --- |
