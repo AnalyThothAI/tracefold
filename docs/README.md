@@ -23,18 +23,17 @@
 
 | 模块 | 读完后能回答 | 主要入口 |
 | :--- | :--- | :--- |
-| [**News**](modules/news.md)<br/>[语义链路入门](modules/news-semantics-guide.md) | 多来源如何形成知识版本？哪些命题被通知？修订和失败如何恢复？入门篇用一条真实新闻走完全链路 | `news/pipeline` · `news/updates` |
+| [**News**](modules/news.md)<br/>[语义链路入门](modules/news-semantics-guide.md) | 多来源如何形成知识版本？哪些命题被通知？修订和失败如何恢复？入门篇用示意案例走完全链路 | `news/pipeline` · `news/updates` |
 | [**OI 与市场观察**](modules/oi.md) | 测量如何解析和分组？为什么通知阈值不等于交易过滤？ | `news/oi_signals.py` · `news/market_notifications.py` |
 | [**Wallets**](modules/wallets.md) | 完整回执如何支撑同窗口净买入？首次与当前快照有什么区别？ | `news/chain_tape` |
 | [**Market Review**](modules/market-review.md) | 同名资产如何区分？当前报价和发送时价格补充如何计算？ | `news/market_review` |
-
-| [**Review**](modules/review.md) | 离线固定语料校准能证明什么？ | `news/learning` |
+| [**评审器校准**](modules/review.md) | 离线固定语料校准能证明什么？ | `news/learning` |
 
 ### 交易能力 · 研究与真实执行
 
 | 模块 | 读完后能回答 | 主要入口 |
 | :--- | :--- | :--- |
-| [**Trading Analysis**](modules/trading.md) | 来源如何进入 Case？Agent 可读什么？WATCH 和 Signal 如何产生？ | `trading/engine` · `app/trading_*` |
+| [**Trading Analysis**](modules/trading.md) | 来源如何进入 Case？预测、六策略、纸面结果与 Signal 如何产生？ | `trading/engine` · `app/trading_*` |
 | [**Execution**](modules/execution.md) | 谁拥有订单权限？如何保护、对账和归属真实成交？ | `integrations/trading` · `app/executor.py` |
 
 ### 运行与呈现 · 基础设施和只读工作台
@@ -44,7 +43,7 @@
 | [**Platform**](modules/platform.md) | 配置、短事务、物理资源和任务监督如何配合？ | `platform` · `app` · `integrations` |
 | [**Frontend**](FRONTEND.md) | URL、查询缓存、页面与证据展示各由谁负责？ | `web/src` · `web/tests` |
 
-模块页统一提供**职责摘要 → 主流程 → 数据与状态 → 恢复和验证 → 源码入口**。详细时序和特殊规则留在对应模块，不把整个系统挤成一张图。
+模块页说明当前职责、主流程、数据与状态、恢复和验证，并链接实际源码。详细时序和特殊规则留在对应模块。
 
 ## 直接定位一个问题
 
@@ -63,22 +62,32 @@
 | 运行与维护 | 开发与契约 |
 | :--- | :--- |
 | [安装与配置](SETUP.md)<br/>首次启动、能力配置、地址和挂载 | [系统架构](ARCHITECTURE.md)<br/>进程、包依赖、数据所有权与跨域时序 |
-| [运维排障](OPERATIONS.md)<br/>具名诊断、精确恢复、备份与独立 Runtime | [公开契约](CONTRACTS.md)<br/>接口入口、身份、版本与缺失含义 |
+| [运维排障](OPERATIONS.md)<br/>具名诊断、精确恢复、备份与 DEMO Executor | [公开契约](CONTRACTS.md)<br/>接口入口、身份、版本与缺失含义 |
 | [数据库迁移](MIGRATIONS.md)<br/>升级前提、前向切换与配套恢复 | [开发指南](DEVELOPMENT.md)<br/>所有者、变更范围、文档设计与交付 |
 | [安全与权限](SECURITY.md)<br/>秘密、浏览器、模型工具与账户权限 | [测试与 CI](TESTING.md)<br/>当前测试分工、隔离资源和证明范围 |
 
 精确命令与机器契约：[**生成参考**](generated/README.md)。
 
 <details>
-<summary><strong>协作、设计记录与历史研究</strong></summary>
+<summary><strong>协作与离线研究</strong></summary>
 
 AI 开发入口由[共享指引](agents/shared-router.md)同步至 [AGENTS.md](../AGENTS.md) 与 [CLAUDE.md](../CLAUDE.md)。[Issue / PR](agents/issue-tracker.md)负责协作范围，[worktree](agents/worktrees.md)负责隔离；它们不另造一套业务规则。
 
-[本轮视觉审阅样张](design/handbook-visual-review.md) · [复核术语](../CONTEXT.md) · [News 详情设计记录](design/news-event-detail.md) · [Issue 717 固定窗口报告](reports/issue-717-hourly-comparison-2026-09-27.md) · [Issue 725 编辑判断历史对照](reports/issue-725-attention-2026-09-27.md) · [Issue 736 实施处置](reports/issue-736-disposition-2026-09-28.md) · [Issue 791 命题召回评测](reports/issue-791-claim-recall-2026-10-02.md) · [离线研究工作区](../notebooks/README.md)
+[当前术语](../CONTEXT.md) · [离线研究工作区](../notebooks/README.md)
 
-设计截图和报告保留其时间、来源与验证限制。冻结数据、已应用迁移、原始回执不能因清理文档被改写；过时方案从 Git / Issue 历史检索，不继续作为当前操作步骤堆放。
+过时原型、截图、逐函数实施清单和退役评测从 Git / Issue 历史检索。冻结数据、已应用迁移、原始回执与仍支撑当前政策的评测证据保留。
 
 </details>
+
+## 当前评测证据
+
+| 报告 | 仍有价值的范围 |
+| :--- | :--- |
+| [命题召回校准](reports/issue-791-claim-recall-2026-10-02.md) | 固定模型、RRF 校准与已知召回误差；其中独立服务的工程记录属于旧版本 |
+| [读者判断校准](reports/news-791-b.md) | v5 命题读数、reader v3、真实重问与未通过指标；不作为部署健康报告 |
+| [本地 ONNX 与维护验收](reports/news-799.md) | 当前 Workers 本地编码器、兼容性、降级、回填与资源证明 |
+
+报告保留测量时间、版本和局限；当前运行行为以模块手册为准，操作步骤以运维与迁移手册为准。
 
 ---
 

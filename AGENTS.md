@@ -6,7 +6,7 @@
 
 ## 系统
 
-Tracefold 包含 News 与 Trading 两个业务域、React 工作台和 PostgreSQL 账本。Serve、Workers、Analysis 共用应用镜像；可选 Nautilus 执行进程使用独立镜像与生命周期。
+Tracefold 包含 News 与 Trading 两个业务域、React 工作台和 PostgreSQL 账本。Serve、Workers、Analysis、DEMO Executor 是共用应用镜像的四种进程角色，由 Compose 统一管理；账户执行由独立配置控制。
 
 ## 围绕当前请求完成结果
 

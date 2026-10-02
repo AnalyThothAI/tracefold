@@ -1,5 +1,7 @@
 # #791 PR-B: English speech readings and reader v3
 
+**版本范围：** 本页是 #791 B 的 reader v3 / v5 真实重问和校准快照。保留原始结果与未知；文中分支、CI 和部署状态属于当时版本。当前政策见[News 手册](../modules/news.md)，本地编码器的后续兼容证据见[本地嵌入报告](news-799.md)。
+
 B now preserves source numbers, periods and threat triggers, separates distinct facts when choosing a reader anchor, and retains important new terms or grounds of an already reported action. A single current-model calibration selects native cuts **push 2.4 / held 2.5 / P(4) .4 / anchor-none .2**. The owner accepted reasonable model error and narrowed the remaining acceptance work to these business bugs and representative verification. Original formal quality gates are not all satisfied.
 
 [Machine-readable evidence](news-791-b.json) records routes, exact input and journal hashes, selected metrics, source conflicts and limitations. All model calls were direct offline calls without judgment-cache writes or sends. Source exports used bounded read-only transactions. Private source, full receipt and answer journals remain in the persistent `issue-791/b` research directory.

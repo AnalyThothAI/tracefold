@@ -38,18 +38,34 @@ Platform 提供物理基础设施，Integrations 对接外部系统，App 装配
 | 配置与文件 | [config](../../tracefold/platform/config/)、[paths.py](../../tracefold/platform/paths.py) | 校验配置、解析本地路径与密钥文件；不复制业务策略 |
 | PostgreSQL | [postgres](../../tracefold/platform/postgres/) | 连接、迁移、事务设置、维护锁、审计与恢复演练 |
 | 资源 | [resource.py](../../tracefold/platform/resource.py) | 准入、物理完成、取消和资源回收语义 |
-| 可观测性与身份 | [observability](../../tracefold/platform/observability/)、[runtime_identity.py](../../tracefold/platform/runtime_identity.py) | 结构化观测、进程 / 构建身份；不把探针变成业务事实 |
+| 可观测性与身份 | [observability](../../tracefold/platform/observability/)、[runtime_identity.py](../../tracefold/platform/runtime_identity.py)、[market_identity.py](../../tracefold/platform/market_identity.py) | 观测、进程 / 构建身份及共享市场词表；不把探针变成业务事实 |
 | 外部适配 | [integrations](../../tracefold/integrations/) | provider 格式、传输与错误分类 |
 | 部署装配 | [scripts/deploy.py](../../scripts/deploy.py)、[compose.yaml](../../compose.yaml) | 系统 Python 编排生命周期，Compose 拥有服务与挂载；与应用业务装配分开 |
 | App 装配 | [app](../../tracefold/app/)、[workers/wiring](../../tracefold/app/workers/wiring/) | 创建对象、传入能力端口、安排进程与跨域映射 |
 | HTTP / CLI | [http](../../tracefold/app/http/)、[cli](../../tracefold/app/cli/) | 接口语法、查询与显式命令适配，不隐藏额外业务流程 |
+
+平台仅拥有 `alembic_version` 与 `runtime_processes` 两张基础表。News、目录 / 报价及 Trading 的记录由各自仓储维护；[后端边界测试](../../tests/architecture/test_backend_boundaries.py)约束导入、SQL 位置与表所有权。
+
+App 的主要装配接缝如下；它们连接领域公开端口，不把业务 SQL 或决策规则搬到进程入口：
+
+| 装配入口 | 当前职责 |
+| --- | --- |
+| [serve_runtime.py](../../tracefold/app/serve_runtime.py)、[serve_database.py](../../tracefold/app/serve_database.py) | 只读 HTTP 进程、数据库准入、状态测量与关闭 |
+| [workers/root.py](../../tracefold/app/workers/root.py)、[workers/wiring](../../tracefold/app/workers/wiring/) | 单例所有权、任务监督、News / 市场 / 钱包能力及资源回收 |
+| [news_updates.py](../../tracefold/app/news_updates.py)、[learning_runtime.py](../../tracefold/app/learning_runtime.py) | 语义与通知模型、System One 连接、Program 身份及显式回退 |
+| [claim_embedding.py](../../tracefold/app/claim_embedding.py) | Workers 本地命题 embedding 的固定模型、校验和有界推理 |
+| [trading_intake.py](../../tracefold/app/trading_intake.py)、[trading_case_prepare.py](../../tracefold/app/trading_case_prepare.py)、[trading_analysis.py](../../tracefold/app/trading_analysis.py) | 从公开 News 契约映射研究输入、冻结 Case 与 Analysis 生命周期 |
+| [executor.py](../../tracefold/app/executor.py)、[operator_control.py](../../tracefold/app/operator_control.py) | 独立执行进程及本地操作员命令；HTTP 不拥有该写能力 |
+| [analysis_status.py](../../tracefold/app/analysis_status.py)、[execution_status.py](../../tracefold/app/execution_status.py) | 合并平台进程报告与 Trading 领域记录，生成只读诊断 |
 
 <a id="section-单一配置入口"></a>
 ## 02 · 单一配置入口
 
 [paths.py](../../tracefold/platform/paths.py)解析 `TRACEFOLD_HOME`，默认 `~/.tracefold`；[loader.py](../../tracefold/platform/config/loader.py)读取其中的 `config.yaml`，由 [models.py](../../tracefold/platform/config/models.py)校验。Compose 的可选 `.env` 只承载项目名、宿主机目录与端口等部署参数，不替代业务 Settings，也不形成两份 YAML 的隐式合并。
 
-模型 endpoint 的 `api_key`、`base_url`、`model` 是完整配置组；主 News 路由保留 `news_triage_model` 字段名；可选 `news_triage_judgment_model` 只改变同一 endpoint 上语义判断所问的模型名。News 的 `news_judgment` 独立配置；`news_reader_judgment` 是通知决策层独用的 System One 路由，密钥只接受配置目录下的私有 `api_key_file`（默认 `news_reader_judgment_api_key`），不借用其他路由。Trading 已删除旧 Jev 路由，预测使用独立的 Analysis model 与版本化 Program。
+模型 endpoint 的 `api_key`、`base_url`、`model` 是完整配置组；主 News 路由使用 `news_triage_model` 字段名；可选 `news_triage_judgment_model` 只改变同一 endpoint 上语义判断所问的模型名。News 的 `news_judgment` 独立配置；`news_reader_judgment` 是通知决策层独用的 System One 路由，密钥只接受配置目录下的私有 `api_key_file`（初始化创建的 `news_reader_judgment_api_key`），不借用其他路由。Trading 预测使用独立的 Analysis model 与版本化 Program。
+
+`llm.news_embedding` 显式启用 Workers 本地 MiniLM 命题召回增强。模型文件必须先通过 `news embedding prepare` 下载固定 revision，运行时只读本地文件并核验 manifest 与 golden vectors；Serve 不创建 ONNX 会话。模型缺失、自检或推理失败会报告 `news_claim_recall` 不可用，并退回无向量的召回路径，不把相似度当成新事实或采用结论。
 
 未知字段显式报错；去掉旧字段必须按完整 YAML 路径修改，不能做缩进无关的批量文本替换。`tracefold init` 负责初始化与文件权限，不替升级自动解释所有历史配置。
 
@@ -63,8 +79,10 @@ App 通过 [repository_session.py](../../tracefold/app/repository_session.py)装
 | Serve | 7 个连接：6 个普通只读许可、1 个控制许可 | 页面查询不挤占基础状态读取；整个 pool 默认只读 |
 | Workers | 最多 8 个连接：1 个单例所有权、2 个普通业务、4 个 News lane、1 个控制 | 入口与控制任务不被行情复盘或普通业务挤满 |
 | Workers 重型操作 | 单个 heavy gate，再进入普通业务接缝 | 约束重型工作，不另建无界连接池 |
+| Workers 同步外部操作 | [FiniteOperations](../../tracefold/app/workers/capabilities.py) 的 3 个线程 / 许可 | 模型等有限阻塞工作与数据库线程分别计量 |
+| 命题 embedding | 1 个推理线程 / 许可，单批最多 32 条 | ONNX 仅占自身能力，超时后仍等待物理完成释放许可 |
 
-数值与具体超时由 [serve_database.py](../../tracefold/app/serve_database.py)、[worker_database.py](../../tracefold/app/worker_database.py)拥有。它们是当前代码预算，不是“支持多少条每秒”的容量证明。Analysis 与 Runtime 有各自的数据库 / 外部能力装配，不能套用 Workers 的线程数。
+数值与具体超时由 [serve_database.py](../../tracefold/app/serve_database.py)、[worker_database.py](../../tracefold/app/worker_database.py)拥有。它们是当前代码预算，不是“支持多少条每秒”的容量证明。Analysis 与 Executor 有各自的数据库 / 外部能力装配，不能套用 Workers 的线程数。
 
 ```mermaid
 ---
@@ -143,14 +161,16 @@ class Config,Compose,Foundation,Optional,Root,Status,View store;
 
 *监督视图 · 故障影响范围由任务与异常类别决定；探针可用不等于所有业务能力都在推进。*
 
-可选任务因为配置缺失而 unavailable、因 provider 暂时失败而退避、因程序异常而 faulted，是不同状态。任务对象存在不等于能力可用，不能由 runner 列表覆盖装配阶段的诊断。修复程序性 fault 后是否需要重启由当前进程机制决定，不声称有隐式无限自愈任务。
+可选能力因为配置关闭而 `disabled`、因为资源或配置不足而 `unavailable`、因为程序异常而 `faulted`，与循环内 provider 错误的退避分别表达。`news_claim_recall` 属于语义链路调用的本地能力，没有单独的后台 runner；它的可用性由 embedding 自检与推理结果报告。任务对象存在不等于能力可用，不能由 runner 列表覆盖装配阶段的诊断。
+
+共享 PostgreSQL、连接池与物理操作超时异常始终进入根级故障；非基础任务的普通程序异常才限制在该能力。关闭时先停止准入，再在截止时间内等待已提交操作，最后关闭连接、线程和模型资源；回收失败必须留下具名 fatal code，不能以协程已经退出冒充清理完成。
 
 <a id="section-rabbitmq-与持久工作"></a>
 ## 05 · RabbitMQ 与持久工作
 
 [bus.py](../../tracefold/news/bus.py)、[broker_policy.py](../../tracefold/news/broker_policy.py)、[rabbitmq.py](../../tracefold/integrations/rabbitmq.py)维护声明、投递、重试 / 死信和 provider 结果分类。Compose 固定 RabbitMQ 4.3 系列，是 broker 延迟重试等机制的前置条件。
 
-当前语义唤醒仍使用 `news.triage` 队列，消费者为 `news-semantic`。真正待处理版本、预算和租约在 PostgreSQL；通知工作由轮询续接，不再用一条旧的 `news.deliver` 队列代表最终发送状态。
+`news.raw` 驱动输入准入，`news.triage` 唤醒 `news-semantic`。真正待处理版本、尝试预算和租约在 PostgreSQL；恢复循环重新发布未完成工作。通知工作由 `news-deliverer` 轮询续接，通知决定、冻结意图与发送账本各自持久化，队列状态不能代表最终发送状态。
 
 应用必须先提交事实再发布或确认消息，重放靠幂等身份闭合。broker ready 不等于消费正在推进，队列为空也不等于全部语义工作已完成。
 
@@ -171,7 +191,9 @@ News 的展示报价不是执行 tick feed；最新快照不是历史价格证�
 <a id="section-状态与可观测性"></a>
 ## 07 · 状态与可观测性
 
-`/healthz` 是进程存活问题；`/readyz` 是对应角色的就绪问题；业务状态还必须看能力、工作进度、错误、freshness 与测量时钟。`/metrics` 提供该进程的观测，不代表账户资金真实状态。
+Serve 的 `/healthz` 只证明 HTTP 进程存活；`/readyz` 的 `ok` 只要求 PostgreSQL 可连接且 schema 匹配，Workers 报告放在 `composition` 中供诊断。`/api/status` 的 `runtime.ok` 还要求 Workers 状态为 `running`，但不汇总可选能力的完成情况。Workers、Analysis 与 Executor 的就绪由各自进程探针判断，不能互换。
+
+Workers 心跳超过 15 秒时投影为 `stale`，并清空 `capabilities`，避免旧的 running 报告被当成当前状态。业务状态仍需看能力、工作进度、错误、freshness 与测量时钟。`/metrics` 提供所在进程的观测，不代表账户资金真实状态。
 
 平台 [RuntimeProcesses](../../tracefold/platform/postgres/runtime_processes.py) 独占 `runtime_processes` 的读写。Workers 使用 singleton 键，Analysis 和 Executor 使用账户槽位键；每次启动有独立 UUID，旧实例不能更新已接管的行。心跳统一使用毫秒，detail 仅保存进程诊断或能力报告，不承接交易账户、预测和执行事实。App 装配平台与业务仓库，业务存储不读取存活表。
 
