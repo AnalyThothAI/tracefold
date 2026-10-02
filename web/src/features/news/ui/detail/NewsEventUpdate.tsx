@@ -1,4 +1,3 @@
-import { Card } from "@shared/ui/Card";
 import { EmptyNote } from "@shared/ui/EmptyNote";
 import { FactGrid } from "@shared/ui/FactGrid";
 import { ExternalLink } from "lucide-react";
@@ -8,77 +7,222 @@ import type {
   NewsClaimChange,
   NewsEventUpdate,
   NewsProcessing,
-  NewsUpdateEvidence,
   NewsUpdateSource,
 } from "../../api/newsQueries";
 import { absoluteTime, optionalTime, validExternalUrl } from "../../model/newsLabels";
 
 import "./newsEventUpdate.css";
 
-/** Keep one current claim in one reading unit; its historical comparisons and fields remain available. */
-export function NewsUpdateContent({ update }: { update: NewsEventUpdate }) {
+export type NewsDetailTab = "content" | "source" | "market" | "processing";
+export type NewsDetailNavigate = (tab: NewsDetailTab, focus?: string) => void;
+
+function claimTarget(index: number): string {
+  return "news-claim-" + (index + 1);
+}
+
+function sourceTarget(index: number): string {
+  return "source-" + String(index + 1).padStart(2, "0");
+}
+
+/** One current claim is one reading unit; its comparisons do not become extra claims. */
+export function NewsUpdateContent({
+  update,
+  onNavigate,
+}: {
+  update: NewsEventUpdate;
+  onNavigate: NewsDetailNavigate;
+}) {
   const byClaim = new Map<string, NewsClaimChange[]>();
   for (const change of update.changes ?? []) {
     const rows = byClaim.get(change.current_ref) ?? [];
     rows.push(change);
     byClaim.set(change.current_ref, rows);
   }
+  const sourcePositions = new Map(
+    (update.sources ?? []).map((source, index) => [source.evidence_ref, index]),
+  );
+  const onlySource = update.sources?.length === 1 ? update.sources[0] : null;
+  const sharedSource =
+    onlySource &&
+    update.claims.length > 1 &&
+    update.claims.every((claim) =>
+      claim.citations.some((citation) => citation.evidence_ref === onlySource.evidence_ref),
+    );
+
   return (
-    <Card
-      aria-label="新增了什么"
-      className="news-update-content"
-      hint={`${update.claims.length} 条命题 · ${(update.changes ?? []).length} 项变化关系`}
-      id="news-content"
-      title="本次内容"
-    >
+    <section aria-label="新增了什么" className="news-update-content">
+      <header className="news-update-section-head">
+        <h2>这次发生了什么</h2>
+        <span>{update.claims.length} 条命题</span>
+      </header>
+      <p className="news-update-section-note">已记录命题原文</p>
       <section aria-label="命题">
-        <ol className="news-update-claims">
-          {update.claims.map((claim, index) => (
-            <ClaimItem
-              changes={byClaim.get(claim.ref) ?? []}
-              claim={claim}
-              index={index}
-              key={claim.ref}
-            />
-          ))}
-        </ol>
+        {update.claims.length ? (
+          <ol className="news-update-claims">
+            {update.claims.map((claim, index) => (
+              <ClaimItem
+                changes={byClaim.get(claim.ref) ?? []}
+                claim={claim}
+                index={index}
+                key={claim.ref}
+                onNavigate={onNavigate}
+                sourcePositions={sourcePositions}
+              />
+            ))}
+          </ol>
+        ) : (
+          <EmptyNote>当前采用版本没有命题记录。</EmptyNote>
+        )}
       </section>
-    </Card>
+      {sharedSource ? (
+        <p className="news-update-shared-source">
+          {update.claims.length} 条命题引用同一份材料，不代表 {update.claims.length} 个独立来源。
+        </p>
+      ) : null}
+    </section>
   );
 }
 
-export function NewsUpdateSources({ update }: { update: NewsEventUpdate }) {
+export function NewsUpdateSources({
+  update,
+  onNavigate,
+}: {
+  update: NewsEventUpdate;
+  onNavigate: NewsDetailNavigate;
+}) {
+  const sources = update.sources ?? [];
+  const claimPositions = new Map(update.claims.map((claim, index) => [claim.ref, index]));
+  const excerpts = new Map<string, string>();
+  for (const claim of update.claims) {
+    for (const citation of claim.citations) {
+      if (!excerpts.has(citation.evidence_ref)) excerpts.set(citation.evidence_ref, citation.quote);
+    }
+  }
+  const disputed = update.disputed_claim_refs?.length ?? 0;
   return (
-    <Card
-      aria-label="来源与分歧"
-      className="news-detail-update-source"
-      hint={sourcesHint(update)}
-      id="news-source"
-      title="来源与分歧"
-    >
-      <SourceList sources={update.sources ?? []} />
-    </Card>
+    <section aria-label="来源与分歧" className="news-detail-update-source">
+      <header className="news-update-section-head">
+        <h2>来源证据</h2>
+        <span>
+          {sources.length} 份材料
+          {disputed ? " · " + disputed + " 条命题来源分歧" : ""}
+        </span>
+      </header>
+      {!sources.length ? (
+        <EmptyNote>这一版没有引用来源。</EmptyNote>
+      ) : (
+        <ol className="news-update-sources">
+          {sources.map((item, index) => {
+            const excerpt = excerpts.get(item.evidence_ref);
+            return (
+              <li
+                className="news-update-source"
+                id={sourceTarget(index)}
+                key={item.evidence_ref}
+                tabIndex={-1}
+              >
+                <div className="news-update-source-heading">
+                  <span aria-hidden className="news-update-source-number">
+                    {String(index + 1).padStart(2, "0")}
+                  </span>
+                  <SourceLabel source={item.source} />
+                </div>
+                {excerpt ? (
+                  <blockquote className="news-update-source-excerpt">{excerpt}</blockquote>
+                ) : null}
+                <p className="news-update-source-clock">
+                  首次可用：{absoluteTime(item.source.first_available_at_ms)}
+                </p>
+                <ul className="news-update-relations">
+                  {(item.relations ?? []).map((relation) => {
+                    const position = claimPositions.get(relation.claim_ref);
+                    return (
+                      <li
+                        data-relation={relation.relation}
+                        key={relation.claim_ref + "-" + relation.relation}
+                      >
+                        <span className="news-update-badge" data-kind={relation.relation}>
+                          {relation.relation_zh || relation.relation}
+                        </span>
+                        {position !== undefined ? (
+                          <button
+                            className="news-update-text-button"
+                            onClick={() => onNavigate("content", claimTarget(position))}
+                            type="button"
+                          >
+                            命题 {String(position + 1).padStart(2, "0")}
+                          </button>
+                        ) : (
+                          <span>{relation.claim_statement || relation.claim_ref}</span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+                <details
+                  className="news-update-disclosure"
+                  id={"source-text-" + (index + 1)}
+                  tabIndex={-1}
+                >
+                  <summary>来源原文{item.text_truncated ? "（节选）" : ""}</summary>
+                  <p className="news-update-source-text">{item.text}</p>
+                </details>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+    </section>
   );
 }
 
 export function NewsUpdateInference({ update }: { update: NewsEventUpdate }) {
-  if (!update.implications?.length && !update.open_questions?.length) return null;
+  const implications = update.implications ?? [];
+  const questions = update.open_questions ?? [];
+  if (!implications.length && !questions.length) return null;
   return (
-    <Card
-      aria-label="推断与缺口"
-      className="news-detail-update-inference"
-      hint="解释性推断与待补信息，不是已确认事实"
-      title="推断与缺口"
-    >
-      <InferenceList update={update} />
-    </Card>
+    <section aria-label="推断与缺口" className="news-detail-update-inference">
+      <header className="news-update-section-head">
+        <h3>推断与缺口</h3>
+      </header>
+      <p className="news-update-section-note">解释性推断与待补信息，不是已确认事实</p>
+      <div className="news-update-inference">
+        {implications.map((implication, index) => (
+          <section
+            aria-label="推断"
+            className="news-update-implication"
+            key={implication.channel + "-" + index}
+          >
+            <p>
+              <span className="news-update-badge" data-kind="inference">
+                推断 · {implication.origin_zh || implication.origin}
+              </span>
+              <b>{implication.channel}</b>
+            </p>
+            <p>{implication.explanation}</p>
+            {implication.conditions?.length ? (
+              <small>条件：{implication.conditions.join("；")}</small>
+            ) : null}
+          </section>
+        ))}
+        {questions.map((question, index) => (
+          <section
+            aria-label="缺口"
+            className="news-update-question"
+            key={question.question + "-" + index}
+          >
+            <p>
+              <span className="news-update-badge" data-kind="gap">
+                缺口
+              </span>
+              {question.question}
+            </p>
+            {question.target_ref ? <small>可读取：{question.target_ref}</small> : null}
+          </section>
+        ))}
+      </div>
+    </section>
   );
-}
-
-function sourcesHint(update: NewsEventUpdate): string {
-  const disputed = update.disputed_claim_refs?.length ?? 0;
-  const count = `${update.sources?.length ?? 0} 个来源`;
-  return disputed ? `${count} · ${disputed} 条命题来源分歧` : count;
 }
 
 function PriorComparisons({ changes }: { changes: NewsClaimChange[] }) {
@@ -87,13 +231,22 @@ function PriorComparisons({ changes }: { changes: NewsClaimChange[] }) {
       {changes.map((change, index) => (
         <p
           className="news-update-previous"
-          key={`${change.previous_content_ref}-${change.previous_ref}-${change.kind}-${index}`}
+          key={
+            change.previous_content_ref +
+            "-" +
+            change.previous_ref +
+            "-" +
+            change.kind +
+            "-" +
+            index
+          }
         >
           <span className="news-update-badge" data-kind={change.kind}>
             {change.kind_zh || change.kind}
           </span>
           此前：
-          {change.previous_statement ?? `未能读取此前命题（${change.previous_ref?.slice(0, 16)}…）`}
+          {change.previous_statement ??
+            "未能读取此前命题（" + change.previous_ref?.slice(0, 16) + "…）"}
           {change.relation_zh ? <small> · {change.relation_zh}</small> : null}
         </p>
       ))}
@@ -105,7 +258,11 @@ function quantityText(claim: NewsClaim): string {
   return (claim.quantities ?? [])
     .map(
       (quantity) =>
-        `${quantity.name} ${quantity.value}${quantity.unit}${quantity.period ? `（${quantity.period}）` : ""}`,
+        quantity.name +
+        " " +
+        quantity.value +
+        quantity.unit +
+        (quantity.period ? "（" + quantity.period + "）" : ""),
     )
     .join("；");
 }
@@ -114,21 +271,29 @@ function ClaimItem({
   changes,
   claim,
   index,
+  onNavigate,
+  sourcePositions,
 }: {
   changes: NewsClaimChange[];
   claim: NewsClaim;
   index: number;
+  onNavigate: NewsDetailNavigate;
+  sourcePositions: Map<string, number>;
 }) {
   const counts = claim.relation_counts;
   const prior = changes.filter((change) => change.previous_ref);
   const kinds = Array.from(new Map(changes.map((change) => [change.kind, change])).values());
   const firstCitation = claim.citations[0];
   const moreCitations = claim.citations.slice(1);
+  const sourcePosition = firstCitation
+    ? sourcePositions.get(firstCitation.evidence_ref)
+    : undefined;
   return (
     <li
       className="news-update-claim"
       data-retired={claim.retired || claim.superseded || undefined}
-      id={`news-claim-${index + 1}`}
+      id={claimTarget(index)}
+      tabIndex={-1}
     >
       <span aria-hidden className="news-update-claim-number">
         {String(index + 1).padStart(2, "0")}
@@ -140,11 +305,11 @@ function ClaimItem({
               {change.kind_zh || change.kind}
             </span>
           ))}
-          {claim.superseded && (
+          {claim.superseded ? (
             <span className="news-update-badge" data-kind="retired">
               已被后续变化替代
             </span>
-          )}
+          ) : null}
           {claim.retired ? (
             <span className="news-update-badge" data-kind="retired">
               已撤回
@@ -155,36 +320,67 @@ function ClaimItem({
               来源分歧
             </span>
           ) : null}
-          <span className="news-update-badge">{claim.mode_zh || claim.mode}</span>
-          {claim.phase_zh ? <span className="news-update-badge">{claim.phase_zh}</span> : null}
-          <span className="news-update-badge">{claim.content_kind_zh || claim.content_kind}</span>
           {claim.polarity === "negative" ? (
-            <span className="news-update-badge">{claim.polarity_zh}</span>
+            <span className="news-update-badge">{claim.polarity_zh || claim.polarity}</span>
           ) : null}
+          <span className="news-update-claim-kind">
+            {claim.content_kind_zh || claim.content_kind}
+          </span>
         </p>
         <p className="news-update-statement">{claim.statement}</p>
-        {firstCitation ? (
-          <blockquote className="news-update-quote">
-            <p>{firstCitation.quote}</p>
-            {firstCitation.source ? (
-              <footer>
-                <SourceLabel source={firstCitation.source} />
-              </footer>
+        {sourcePosition !== undefined ? (
+          <p className="news-update-claim-evidence">
+            <button
+              className="news-update-text-button"
+              onClick={() => onNavigate("source", sourceTarget(sourcePosition))}
+              type="button"
+            >
+              来源 {String(sourcePosition + 1).padStart(2, "0")}
+              {firstCitation?.source ? " · " + firstCitation.source.publisher_id : ""}
+            </button>
+            {firstCitation?.source ? (
+              <span>
+                {firstCitation.source.source_authority_zh || firstCitation.source.source_authority}
+              </span>
             ) : null}
-          </blockquote>
+          </p>
+        ) : firstCitation?.source ? (
+          <p className="news-update-claim-evidence">
+            <SourceLabel source={firstCitation.source} />
+          </p>
         ) : null}
         <div className="news-update-claim-actions">
           {prior.length ? (
-            <details>
+            <details
+              className="news-update-disclosure"
+              id={"news-claim-history-" + (index + 1)}
+              tabIndex={-1}
+            >
               <summary>历史比较 {prior.length} 项</summary>
               <PriorComparisons changes={prior} />
             </details>
           ) : null}
-          <details>
-            <summary>结构化字段</summary>
+          <details
+            className="news-update-disclosure"
+            id={"news-claim-details-" + (index + 1)}
+            tabIndex={-1}
+          >
+            <summary>引用与命题详情</summary>
+            {firstCitation ? (
+              <blockquote className="news-update-quote">
+                <p>{firstCitation.quote}</p>
+                {firstCitation.source ? (
+                  <footer>
+                    <SourceLabel source={firstCitation.source} />
+                  </footer>
+                ) : null}
+              </blockquote>
+            ) : null}
             <FactGrid
               className="news-update-facts"
               facts={[
+                { label: "表达方式", value: claim.mode_zh || claim.mode },
+                { label: "阶段", value: claim.phase_zh || claim.phase || "" },
                 { label: "主体", value: claim.subject },
                 { label: "动作", value: claim.action },
                 { label: "对象", value: claim.object ?? "" },
@@ -197,17 +393,17 @@ function ClaimItem({
                 {
                   label: "标的",
                   value: (claim.assets ?? [])
-                    .map((asset) => `${asset.symbol}${asset.role === "primary" ? "" : "（提及）"}`)
+                    .map((asset) => asset.symbol + (asset.role === "primary" ? "" : "（提及）"))
                     .join(" "),
                 },
                 {
                   label: "来源关系",
                   value: counts
                     ? [
-                        counts.supports ? `支持 ${counts.supports}` : "",
-                        counts.reports ? `转述 ${counts.reports}` : "",
-                        counts.refutes ? `反驳 ${counts.refutes}` : "",
-                        counts.unresolved ? `未判定 ${counts.unresolved}` : "",
+                        counts.supports ? "支持 " + counts.supports : "",
+                        counts.reports ? "转述 " + counts.reports : "",
+                        counts.refutes ? "反驳 " + counts.refutes : "",
+                        counts.unresolved ? "未判定 " + counts.unresolved : "",
                       ]
                         .filter(Boolean)
                         .join(" · ")
@@ -219,21 +415,35 @@ function ClaimItem({
             />
           </details>
           {moreCitations.length ? (
-            <details>
+            <details
+              className="news-update-disclosure"
+              id={"news-claim-citations-" + (index + 1)}
+              tabIndex={-1}
+            >
               <summary>其余引用 {moreCitations.length} 条</summary>
-              {moreCitations.map((citation, citationIndex) => (
-                <blockquote
-                  className="news-update-quote"
-                  key={`${citation.evidence_ref}-${citationIndex}`}
-                >
-                  <p>{citation.quote}</p>
-                  {citation.source ? (
+              {moreCitations.map((citation, citationIndex) => {
+                const position = sourcePositions.get(citation.evidence_ref);
+                return (
+                  <blockquote
+                    className="news-update-quote"
+                    key={citation.evidence_ref + "-" + citationIndex}
+                  >
+                    <p>{citation.quote}</p>
                     <footer>
-                      <SourceLabel source={citation.source} />
+                      {position !== undefined ? (
+                        <button
+                          className="news-update-text-button"
+                          onClick={() => onNavigate("source", sourceTarget(position))}
+                          type="button"
+                        >
+                          来源 {String(position + 1).padStart(2, "0")}
+                        </button>
+                      ) : null}
+                      {citation.source ? <SourceLabel source={citation.source} /> : null}
                     </footer>
-                  ) : null}
-                </blockquote>
-              ))}
+                  </blockquote>
+                );
+              })}
             </details>
           ) : null}
         </div>
@@ -249,206 +459,234 @@ function SourceLabel({ source }: { source: NewsUpdateSource }) {
       <b>{source.publisher_id}</b>
       {source.attribution ? <span>{source.attribution}</span> : null}
       <span>{source.source_authority_zh || source.source_authority}</span>
-      {source.published_at_ms ? <span>{optionalTime(source.published_at_ms)}</span> : null}
+      {source.published_at_ms != null ? (
+        <time dateTime={new Date(source.published_at_ms).toISOString()}>
+          {optionalTime(source.published_at_ms)}
+        </time>
+      ) : null}
       {url ? (
         <a href={url} rel="noreferrer" target="_blank">
-          原文
-          <ExternalLink aria-hidden />
+          原文 <ExternalLink aria-hidden />
         </a>
       ) : null}
     </span>
   );
 }
 
-function SourceList({ sources }: { sources: NewsUpdateEvidence[] }) {
-  if (!sources.length) return <EmptyNote>这一版没有引用来源。</EmptyNote>;
-  return (
-    <ol className="news-update-sources">
-      {sources.map((item) => (
-        <li className="news-update-source" key={item.evidence_ref}>
-          <SourceLabel source={item.source} />
-          <ul className="news-update-relations">
-            {(item.relations ?? []).map((relation) => (
-              <li
-                data-relation={relation.relation}
-                key={`${relation.claim_ref}-${relation.relation}`}
-              >
-                <span className="news-update-badge" data-kind={relation.relation}>
-                  {relation.relation_zh || relation.relation}
-                </span>
-                <span>{relation.claim_statement || relation.claim_ref}</span>
-              </li>
-            ))}
-          </ul>
-          <details>
-            <summary>来源原文{item.text_truncated ? "（节选）" : ""}</summary>
-            <p className="news-update-source-text">{item.text}</p>
-          </details>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-function InferenceList({ update }: { update: NewsEventUpdate }) {
-  const implications = update.implications ?? [];
-  const questions = update.open_questions ?? [];
-  if (!implications.length && !questions.length) {
-    return <EmptyNote>这一版没有推断，也没有记录缺口。</EmptyNote>;
-  }
-  return (
-    <div className="news-update-inference">
-      {implications.map((implication, index) => (
-        <section
-          aria-label="推断"
-          className="news-update-implication"
-          key={`${implication.channel}-${index}`}
-        >
-          <p>
-            <span className="news-update-badge" data-kind="inference">
-              推断 · {implication.origin_zh || implication.origin}
-            </span>
-            <b>{implication.channel}</b>
-          </p>
-          <p>{implication.explanation}</p>
-          {implication.conditions?.length ? (
-            <small>条件：{implication.conditions.join("；")}</small>
-          ) : null}
-        </section>
-      ))}
-      {questions.map((question, index) => (
-        <section
-          aria-label="缺口"
-          className="news-update-question"
-          key={`${question.question}-${index}`}
-        >
-          <p>
-            <span className="news-update-badge" data-kind="gap">
-              缺口
-            </span>
-            {question.question}
-          </p>
-          {question.target_ref ? <small>可读取：{question.target_ref}</small> : null}
-        </section>
-      ))}
-    </div>
-  );
-}
-
-/**
- * What the pipeline actually did, from its durable rows: the semantic work, the notification plan with one
- * named decision per claim, and every intent with its real state and the exact text a reader received.
- */
-export function NewsProcessingState({ processing }: { processing: NewsProcessing }) {
+/** Current work and historical sends retain their own state, revision, and recorded body. */
+export function NewsProcessingState({
+  processing,
+  update,
+  onNavigate,
+}: {
+  processing?: NewsProcessing | null;
+  update?: NewsEventUpdate | null;
+  onNavigate: NewsDetailNavigate;
+}) {
+  if (!processing) return <EmptyNote>没有处理记录。</EmptyNote>;
   const { semantic, notification } = processing;
   const plan = notification?.plan;
+  const decisions = plan?.claim_decisions ?? [];
   const intents = processing.intents ?? [];
+  const claimPositions = new Map((update?.claims ?? []).map((claim, index) => [claim.ref, index]));
+  const intentPositions = new Map(intents.map((intent, index) => [intent.intent_id, index]));
   return (
-    <Card
-      aria-label="处理状态"
-      className="news-detail-processing"
-      hint="语义处理、通知选择与实际发送"
-      id="news-processing"
-      title="处理记录"
-    >
-      <div className="news-update-processing">
-        {processing.update_error_code ? (
-          <p className="news-update-alert">
-            已采用版本无法按当前合同解码：{processing.update_error_code}
-          </p>
-        ) : null}
-        <p className="news-update-processing-summary">
-          <span>语义处理：{semantic ? semantic.state_zh || semantic.state : "未知"}</span>
-          <span>通知：{notification ? notification.state_zh || notification.state : "待决定"}</span>
-          <span>{intents.length ? `${intents.length} 条发送记录` : "无发送记录"}</span>
+    <section aria-label="处理状态" className="news-detail-processing">
+      <header className="news-update-section-head">
+        <h2>处理记录</h2>
+        <span>语义处理、通知选择与实际发送</span>
+      </header>
+      {processing.update_error_code ? (
+        <p className="news-update-alert">
+          已采用版本无法按当前合同解码：{processing.update_error_code}
         </p>
-        {notification?.plan_error_code ? (
-          <p className="news-update-alert">通知计划无法解码：{notification.plan_error_code}</p>
-        ) : null}
-        <details className="news-update-processing-details">
-          <summary>查看逐条决定和处理详情</summary>
-          <FactGrid
-            facts={[
-              { label: "语义处理", value: semantic ? semantic.state_zh || semantic.state : "" },
-              {
-                label: "材料版本",
-                value: semantic
-                  ? `已完成 ${semantic.done_revision ?? "—"} / 最新 ${semantic.wanted_revision}`
-                  : "",
-              },
-              { label: "尝试次数", value: semantic ? String(semantic.attempts ?? 0) : "" },
-              { label: "最近结果", value: semantic?.last_outcome ?? "" },
-              { label: "错误", value: semantic?.last_error_code ?? "" },
-              { label: "补读", value: semantic?.extra_read_state_zh ?? "" },
-              {
-                label: "通知",
-                value: notification ? notification.state_zh || notification.state : "",
-              },
-              {
-                label: "通知尝试次数",
-                value: notification ? String(notification.attempts ?? 0) : "",
-              },
-              { label: "通知错误", value: notification?.last_error_code ?? "" },
-              { label: "通知决定", value: plan ? `${plan.action_zh} · ${plan.reason_zh}` : "" },
-              { label: "重点", value: plan?.key ? "是" : "" },
-            ]}
-            label="处理状态"
-          />
-          {plan?.claim_decisions?.length ? (
-            <section aria-label="逐条通知决定">
-              <h4>逐条通知决定</h4>
-              <ul className="news-update-decisions">
-                {plan.claim_decisions.map((row) => (
-                  <li data-decision={row.decision} key={row.claim_ref}>
-                    <span className="news-update-badge" data-kind={row.decision}>
-                      {row.decision_zh || row.decision}
-                    </span>
-                    <span>{row.reason_zh || row.reason}</span>
-                    {row.novelty_zh ? (
-                      <span className="news-update-badge" data-kind={row.novelty ?? undefined}>
-                        {row.novelty_zh}
-                      </span>
-                    ) : null}
-                    <small>{row.statement ?? row.claim_ref}</small>
-                  </li>
-                ))}
-              </ul>
-            </section>
+      ) : null}
+      <div className="news-update-processing-summary">
+        <div>
+          <small>语义处理</small>
+          <b>{semantic ? semantic.state_zh || semantic.state : "未记录"}</b>
+          {semantic ? (
+            <span>
+              已完成 {semantic.done_revision ?? "—"} / 最新 {semantic.wanted_revision}
+            </span>
           ) : null}
-          <section aria-label="发送记录">
-            <h4>发送记录</h4>
-            {intents.length ? (
-              <ul className="news-update-intents">
-                {intents.map((intent) => (
-                  <li key={intent.intent_id}>
-                    <p>
-                      <span className="news-update-badge" data-kind={intent.state}>
-                        {intent.state_zh || intent.state}
+        </div>
+        <div>
+          <small>通知决定</small>
+          <b>{notification ? notification.state_zh || notification.state : "未记录"}</b>
+          {plan ? (
+            <span>
+              {plan.action_zh} · {plan.reason_zh}
+            </span>
+          ) : null}
+        </div>
+        <div>
+          <small>发送记录</small>
+          <b>{intents.length ? intents.length + " 条" : "无发送记录"}</b>
+          <span>各次发送按原版本保留</span>
+        </div>
+      </div>
+      {notification?.plan_error_code ? (
+        <p className="news-update-alert">通知计划无法解码：{notification.plan_error_code}</p>
+      ) : null}
+      <details className="news-update-processing-details" id="processing-details" tabIndex={-1}>
+        <summary>语义处理详情</summary>
+        <FactGrid
+          facts={[
+            { label: "语义处理", value: semantic ? semantic.state_zh || semantic.state : "未记录" },
+            {
+              label: "材料版本",
+              value: semantic
+                ? "已完成 " +
+                  (semantic.done_revision ?? "—") +
+                  " / 最新 " +
+                  semantic.wanted_revision
+                : "",
+            },
+            { label: "尝试次数", value: semantic ? String(semantic.attempts ?? 0) : "" },
+            { label: "最近结果", value: semantic?.last_outcome ?? "" },
+            { label: "错误", value: semantic?.last_error_code ?? "" },
+            { label: "补读", value: semantic?.extra_read_state_zh ?? "" },
+          ]}
+          label="语义处理状态"
+        />
+      </details>
+      <details className="news-update-processing-details" id="decision-record" tabIndex={-1}>
+        <summary>
+          逐条通知决定 <span>{decisions.length} 条命题</span>
+        </summary>
+        <FactGrid
+          facts={[
+            {
+              label: "通知",
+              value: notification ? notification.state_zh || notification.state : "未记录",
+            },
+            {
+              label: "通知尝试次数",
+              value: notification ? String(notification.attempts ?? 0) : "",
+            },
+            { label: "通知错误", value: notification?.last_error_code ?? "" },
+            { label: "通知决定", value: plan ? plan.action_zh + " · " + plan.reason_zh : "" },
+            { label: "重点", value: plan ? (plan.key ? "是" : "否") : "" },
+          ]}
+          label="通知状态"
+        />
+        {decisions.length ? (
+          <section aria-label="逐条通知决定">
+            <ul className="news-update-decisions">
+              {decisions.map((row) => {
+                const position = claimPositions.get(row.claim_ref);
+                const earlierIntent = row.earlier_intent_id
+                  ? intentPositions.get(row.earlier_intent_id)
+                  : undefined;
+                return (
+                  <li data-decision={row.decision} key={row.claim_ref}>
+                    <div className="news-update-decision-heading">
+                      {position !== undefined ? (
+                        <button
+                          className="news-update-text-button"
+                          onClick={() => onNavigate("content", claimTarget(position))}
+                          type="button"
+                        >
+                          命题 {String(position + 1).padStart(2, "0")}
+                        </button>
+                      ) : null}
+                      <span className="news-update-badge" data-kind={row.decision}>
+                        {row.decision_zh || row.decision}
                       </span>
-                      {intent.key ? <span className="news-update-badge">重点</span> : null}
-                      <b>{intent.headline_zh ?? `${intent.claim_refs?.length ?? 0} 条命题`}</b>
-                      <small>
-                        {optionalTime(
-                          intent.settled_at_ms ?? intent.attempted_at_ms ?? intent.enqueued_at_ms,
-                        )}
-                      </small>
-                    </p>
-                    {intent.error_code ? <small>错误：{intent.error_code}</small> : null}
-                    {intent.body ? (
-                      <details>
-                        <summary>实际发送正文</summary>
-                        <pre className="news-json">{intent.body}</pre>
-                      </details>
+                      {row.novelty_zh ? (
+                        <span className="news-update-badge" data-kind={row.novelty ?? undefined}>
+                          {row.novelty_zh}
+                        </span>
+                      ) : null}
+                      {row.importance != null ? <small>增量重要性 {row.importance}</small> : null}
+                    </div>
+                    <p>{row.reason_zh || row.reason}</p>
+                    <small>{row.statement ?? row.claim_ref}</small>
+                    {earlierIntent !== undefined ? (
+                      <button
+                        className="news-update-text-button"
+                        onClick={() =>
+                          onNavigate("processing", "news-intent-" + (earlierIntent + 1))
+                        }
+                        type="button"
+                      >
+                        查看关联发送记录
+                      </button>
                     ) : null}
                   </li>
-                ))}
-              </ul>
-            ) : (
-              <EmptyNote>还没有发送意图。</EmptyNote>
-            )}
+                );
+              })}
+            </ul>
           </section>
-        </details>
-      </div>
-    </Card>
+        ) : (
+          <EmptyNote>没有逐条通知决定记录。</EmptyNote>
+        )}
+      </details>
+      <details className="news-update-processing-details" id="delivery-record" tabIndex={-1}>
+        <summary>
+          发送记录 <span>{intents.length} 条</span>
+        </summary>
+        <section aria-label="发送记录">
+          {intents.length ? (
+            <ul className="news-update-intents">
+              {intents.map((intent, index) => (
+                <li id={"news-intent-" + (index + 1)} key={intent.intent_id} tabIndex={-1}>
+                  <p className="news-update-intent-heading">
+                    <span className="news-update-badge" data-kind={intent.state}>
+                      {intent.state_zh || intent.state}
+                    </span>
+                    {intent.key ? <span className="news-update-badge">重点</span> : null}
+                    <b>{intent.headline_zh ?? (intent.claim_refs?.length ?? 0) + " 条命题"}</b>
+                  </p>
+                  <p className="news-update-intent-meta">
+                    <span>
+                      {optionalTime(
+                        intent.settled_at_ms ?? intent.attempted_at_ms ?? intent.enqueued_at_ms,
+                      )}
+                    </span>
+                    <span>
+                      内容版本：<code>{intent.content_revision ?? "未记录"}</code>
+                    </span>
+                  </p>
+                  {intent.error_code ? (
+                    <p className="news-update-alert">错误：{intent.error_code}</p>
+                  ) : null}
+                  {intent.state === "ambiguous" ? (
+                    <p className="news-update-alert">发送结果不明，不能确认已送达。</p>
+                  ) : null}
+                  {intent.body ? (
+                    <details
+                      className="news-update-disclosure"
+                      id={"news-intent-body-" + (index + 1)}
+                      tabIndex={-1}
+                    >
+                      <summary>{intent.state === "sent" ? "实际发送正文" : "冻结意图正文"}</summary>
+                      <pre className="news-update-intent-body">{intent.body}</pre>
+                    </details>
+                  ) : (
+                    <p className="news-update-section-note">没有记录正文。</p>
+                  )}
+                  {intent.receipt ? (
+                    <details
+                      className="news-update-disclosure"
+                      id={"news-intent-receipt-" + (index + 1)}
+                      tabIndex={-1}
+                    >
+                      <summary>提供商回执</summary>
+                      <pre className="news-update-intent-body">
+                        {JSON.stringify(intent.receipt, null, 2)}
+                      </pre>
+                    </details>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <EmptyNote>还没有发送意图。</EmptyNote>
+          )}
+        </section>
+      </details>
+    </section>
   );
 }

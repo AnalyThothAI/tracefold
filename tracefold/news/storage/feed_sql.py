@@ -169,6 +169,7 @@ STATUS_DELIVERY_SQL: Final = f"""
          FROM news_notifications d JOIN news_events e ON e.event_id = d.event_id
          JOIN news_items i ON i.item_id = e.leader_item_id
         WHERE d.kind='update' AND d.state = 'sent' AND d.kind IN {READER_DELIVERY_KINDS_SQL} AND d.settled_at_ms >= %s
+          AND e.ingest_mode = 'live'
           -- The first EventUpdate card this reader received.
           AND NOT EXISTS (
             SELECT 1 FROM news_notifications earlier
@@ -181,6 +182,7 @@ STATUS_DELIVERY_SQL: Final = f"""
          FROM news_notifications d JOIN news_events e ON e.event_id = d.event_id
          JOIN news_items i ON i.item_id = e.leader_item_id
         WHERE d.kind='update' AND d.state = 'sent' AND d.kind IN {READER_DELIVERY_KINDS_SQL} AND d.settled_at_ms >= %s
+          AND e.ingest_mode = 'live'
           -- The first EventUpdate card this reader received.
           AND NOT EXISTS (
             SELECT 1 FROM news_notifications earlier

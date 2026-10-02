@@ -444,7 +444,7 @@ def test_deduper_wakes_semantic_work_for_new_evidence_of_admitted_live_events(mo
             _admitted("ev-3", "listing"),
             # #126: a Strategy Tracefold has no local knowledge of is ordinary work.
             _admitted("ev-4", "general"),
-            # Recovery ingest stores evidence and never wakes semantics, even for an admitted Event.
+            # History-only recovery stores evidence without waking an admitted Event.
             _admitted("ev-1", "macro", inserted=False),
         ]
     )
@@ -505,7 +505,12 @@ def test_deduper_wakes_semantic_work_for_new_evidence_of_admitted_live_events(mo
         await deduper.handle(foreign)
         recovered = _message(
             "raw",
-            {"params": params, "strategy_id": "1018", "ingest_mode": "recovery", "observed_at_ms": NOW_MS - 5},
+            {
+                "params": {**params, "ts": NOW_MS - 30 * 60_000 - 6},
+                "strategy_id": "1018",
+                "ingest_mode": "recovery",
+                "observed_at_ms": NOW_MS - 5,
+            },
             routing_key=RK_RAW_RECOVERY.format(strategy_id="1018"),
         )
         await deduper.handle(recovered)

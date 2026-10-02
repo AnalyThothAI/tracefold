@@ -20,7 +20,7 @@ from ..events.tokens import comparison_tokens
 from ..models import EngineType
 from ..opennews import parse_opennews_message
 from ..pipeline.admission import engine_type, select_near_duplicate, strong_facts
-from ..source_contracts import classify_source_contract, source_contract_admission
+from ..source_contracts import classify_source_contract
 
 
 def _stored_facts(event: Mapping[str, Any]) -> tuple[set[str], set[str]]:
@@ -96,7 +96,7 @@ def replay_hits(
                 instrument_classes=instrument_classes,
             )
         )
-        admission = source_contract_admission(contract, generic_admission=gate.admission, ingest_mode="live")
+        admission = gate.admission
         tokens = comparison_tokens(extracted.comparison)
         window = dedupe_window_ms(dedupe_family_name)
         if len(tokens) >= 3:

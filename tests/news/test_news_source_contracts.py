@@ -11,7 +11,6 @@ from tracefold.news.source_contracts import (
     classify_source_contract,
     classify_source_contracts,
     market_route,
-    source_contract_admission,
 )
 
 
@@ -185,16 +184,3 @@ def test_unbound_scoreless_market_or_wallet_frames_are_stored_as_unknown_market(
     result = classify_source_contract(_metadata("9999", "Unknown source", source_type, "market"))
     assert result.source_contract_family == "unknown_market"
     assert market_route((result,)) == ("unknown_market", None)
-
-
-@pytest.mark.parametrize(
-    ("metadata", "expected"),
-    [
-        (_metadata("9998", "Any enabled listing", "news", "listing"), "listing_deterministic"),
-        (_metadata("9999", "Any enabled news", "news", "news"), "candidate"),
-    ],
-)
-def test_one_pure_composition_selects_the_existing_editorial_route(metadata: dict[str, Any], expected: str) -> None:
-    contract = classify_source_contract(metadata)
-    assert source_contract_admission(contract, generic_admission="candidate", ingest_mode="live") == expected
-    assert source_contract_admission(contract, generic_admission="candidate", ingest_mode="recovery") == "recovery"

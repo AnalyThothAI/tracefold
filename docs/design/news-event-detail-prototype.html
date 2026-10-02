@@ -1,772 +1,454 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>新闻事件详情 · 交互设计稿</title>
-    <style>
-      :root {
-        font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
-        color: #1e2733;
-        background: #f1f3f5;
-        font-synthesis: none;
-      }
-      * {
-        box-sizing: border-box;
-      }
-      body {
-        margin: 0;
-      }
-      a {
-        color: #1e46ad;
-        text-decoration: none;
-      }
-      button,
-      summary {
-        cursor: pointer;
-      }
-      button {
-        font: inherit;
-      }
-      .app {
-        display: grid;
-        grid-template-columns: 204px minmax(0, 1fr);
-        min-height: 100vh;
-      }
-      .sidebar {
-        border-right: 1px solid #e4e8ee;
-        background: #fff;
-      }
-      .brand {
-        height: 54px;
-        display: flex;
-        align-items: center;
-        gap: 9px;
-        padding: 0 18px;
-        border-bottom: 1px solid #e4e8ee;
-        font-weight: 750;
-      }
-      .brand-mark {
-        display: grid;
-        place-items: center;
-        width: 25px;
-        height: 25px;
-        border-radius: 5px;
-        background: #315ddb;
-        color: #fff;
-        font-size: 14px;
-      }
-      .brand small {
-        display: block;
-        color: #6e7781;
-        font-size: 10px;
-        font-weight: 400;
-      }
-      .side-label {
-        margin: 26px 20px 10px;
-        color: #6e7781;
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 0.11em;
-      }
-      .side-link {
-        display: flex;
-        justify-content: space-between;
-        margin: 3px 12px;
-        padding: 12px;
-        border-radius: 6px;
-        color: #444c56;
-        font-size: 13px;
-      }
-      .side-link.active {
-        background: #eaf0ff;
-        color: #1e46ad;
-        font-weight: 700;
-      }
-      .main {
-        min-width: 0;
-      }
-      .topbar {
-        display: flex;
-        align-items: center;
-        gap: 16px;
-        height: 54px;
-        padding: 0 16px;
-        border-bottom: 1px solid #e4e8ee;
-        background: #fff;
-        font-size: 13px;
-      }
-      .topbar strong {
-        white-space: nowrap;
-      }
-      .search {
-        width: 330px;
-        padding: 8px 12px;
-        border: 1px solid #e4e8ee;
-        border-radius: 6px;
-        color: #6e7781;
-      }
-      .top-note {
-        margin-left: auto;
-        color: #6e7781;
-        font-size: 11px;
-      }
-      .canvas {
-        max-width: 1110px;
-        margin: 0 auto;
-        padding: 18px 18px 72px;
-      }
-      .prototype {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin: 0 0 16px;
-        color: #6e7781;
-        font-size: 11px;
-      }
-      .prototype b {
-        padding: 4px 7px;
-        border: 1px solid #c6ccd5;
-        border-radius: 4px;
-        color: #444c56;
-        font-weight: 650;
-      }
-      .back {
-        display: inline-flex;
-        align-items: center;
-        gap: 7px;
-        margin: 0 0 14px;
-        color: #444c56;
-        font-size: 13px;
-      }
-      .hero,
-      .panel {
-        border-radius: 10px;
-        background: #fff;
-        box-shadow: inset 0 0 0 1px rgba(13, 17, 23, 0.07);
-      }
-      .hero {
-        padding: 24px 28px 23px;
-      }
-      .hero-top {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 8px;
-        color: #6e7781;
-        font-size: 12px;
-      }
-      .status {
-        padding: 4px 9px;
-        border-radius: 4px;
-        background: #eaedf1;
-        color: #444c56;
-        font-weight: 700;
-      }
-      .dot {
-        width: 5px;
-        height: 5px;
-        border-radius: 50%;
-        background: #aeb5be;
-      }
-      .hero time {
-        margin-left: auto;
-        font-variant-numeric: tabular-nums;
-      }
-      .hero h1 {
-        max-width: 870px;
-        margin: 18px 0 12px;
-        font-size: clamp(23px, 2vw, 29px);
-        letter-spacing: -0.025em;
-        line-height: 1.3;
-      }
-      .hero-sub {
-        margin: 0;
-        color: #444c56;
-        font-size: 13px;
-        line-height: 1.65;
-      }
-      .hero-sub strong {
-        color: #1e2733;
-      }
-      .hero-foot {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 7px 16px;
-        margin-top: 21px;
-        padding-top: 15px;
-        border-top: 1px solid #eef1f5;
-        color: #5b636e;
-        font-size: 12px;
-      }
-      .hero-foot a {
-        margin-left: auto;
-        font-weight: 650;
-      }
-      .reading-nav {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 2px;
-        margin: 11px 0 16px;
-        border-bottom: 1px solid #dfe4ea;
-      }
-      .reading-nav a {
-        min-width: 92px;
-        padding: 12px 13px;
-        border-bottom: 2px solid transparent;
-        color: #5b636e;
-        text-align: center;
-        font-size: 13px;
-      }
-      .reading-nav a:first-child {
-        border-bottom-color: #315ddb;
-        color: #1e46ad;
-        font-weight: 700;
-      }
-      .layout {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 288px;
-        gap: 14px;
-        align-items: start;
-      }
-      .column {
-        display: grid;
-        gap: 14px;
-        min-width: 0;
-      }
-      .panel-title {
-        display: flex;
-        align-items: baseline;
-        justify-content: space-between;
-        gap: 8px;
-        padding: 18px 20px 15px;
-      }
-      .panel-title h2 {
-        margin: 0;
-        font-size: 17px;
-        letter-spacing: -0.01em;
-      }
-      .panel-title small {
-        color: #6e7781;
-        font-size: 11px;
-      }
-      .panel-body {
-        padding: 0 20px 20px;
-      }
-      .claim-list {
-        margin: 0;
-        padding: 0;
-        list-style: none;
-      }
-      .claim {
-        display: grid;
-        grid-template-columns: 30px minmax(0, 1fr);
-        gap: 12px;
-        padding: 18px 0;
-        border-top: 1px solid #eef1f5;
-      }
-      .claim:first-child {
-        padding-top: 10px;
-        border-top: 0;
-      }
-      .claim-n {
-        padding-top: 3px;
-        color: #98a1ac;
-        font:
-          600 13px/1.5 Menlo,
-          Consolas,
-          monospace;
-      }
-      .claim-main {
-        min-width: 0;
-      }
-      .claim-tags {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
-      }
-      .tag {
-        padding: 3px 7px;
-        border: 1px solid #e4e8ee;
-        border-radius: 4px;
-        color: #5b636e;
-        font-size: 11px;
-      }
-      .tag.change {
-        border-color: rgba(42, 91, 215, 0.3);
-        background: rgba(42, 91, 215, 0.07);
-        color: #1e46ad;
-      }
-      .claim-main h3 {
-        margin: 10px 0 9px;
-        font-size: 16px;
-        font-weight: 650;
-        line-height: 1.45;
-      }
-      .claim-source {
-        margin: 0;
-        color: #5b636e;
-        font-size: 12px;
-        line-height: 1.55;
-      }
-      .claim-source b {
-        color: #444c56;
-      }
-      .claim-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 5px 15px;
-        margin-top: 13px;
-      }
-      .claim-actions details {
-        max-width: 100%;
-      }
-      .claim-actions summary {
-        color: #1e46ad;
-        font-size: 12px;
-        font-weight: 650;
-        list-style: none;
-      }
-      .claim-actions summary::-webkit-details-marker {
-        display: none;
-      }
-      .claim-actions summary::after {
-        content: "⌄";
-        padding-left: 5px;
-      }
-      .claim-actions details[open] summary::after {
-        content: "⌃";
-      }
-      .history {
-        display: grid;
-        gap: 8px;
-        margin-top: 13px;
-        padding: 11px 14px;
-        border-left: 2px solid #cdd9fa;
-        background: #f8f9fb;
-        color: #444c56;
-        font-size: 12px;
-        line-height: 1.55;
-      }
-      .history p {
-        margin: 0;
-      }
-      .history small {
-        color: #6e7781;
-      }
-      .facts {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
-        margin-top: 13px;
-        padding: 12px;
-        background: #f8f9fb;
-        color: #444c56;
-        font-size: 12px;
-      }
-      .facts b {
-        display: block;
-        margin-bottom: 3px;
-        color: #6e7781;
-        font-size: 11px;
-        font-weight: 500;
-      }
-      .decision {
-        padding: 0 18px 19px;
-      }
-      .decision-lead {
-        margin: 2px 0 10px;
-        color: #1e2733;
-        font-size: 15px;
-        font-weight: 700;
-      }
-      .decision-note {
-        margin: 0;
-        color: #5b636e;
-        font-size: 12px;
-        line-height: 1.55;
-      }
-      .decision-list {
-        margin: 15px 0 0;
-        padding: 13px 0 0;
-        border-top: 1px solid #eef1f5;
-        list-style: none;
-      }
-      .decision-list li {
-        display: flex;
-        justify-content: space-between;
-        gap: 7px;
-        padding: 5px 0;
-        color: #444c56;
-        font-size: 12px;
-      }
-      .decision-list b {
-        color: #5b636e;
-        font-weight: 600;
-      }
-      .quote-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 11px;
-      }
-      .quote-table th {
-        color: #6e7781;
-        font-weight: 500;
-        text-align: left;
-      }
-      .quote-table td,
-      .quote-table th {
-        padding: 8px 0;
-        border-bottom: 1px solid #eef1f5;
-      }
-      .quote-table td:last-child,
-      .quote-table th:last-child {
-        text-align: right;
-      }
-      .quote-note {
-        margin: 10px 0 0;
-        color: #6e7781;
-        font-size: 11px;
-        line-height: 1.5;
-      }
-      .source-head {
-        display: flex;
-        gap: 8px;
-        align-items: center;
-        color: #444c56;
-        font-size: 13px;
-      }
-      .source-head strong {
-        color: #1e2733;
-      }
-      .source-text {
-        margin: 12px 0 0;
-        color: #444c56;
-        font-size: 13px;
-        line-height: 1.6;
-      }
-      .source-evidence {
-        margin: 11px 0 0;
-        color: #6e7781;
-        font-size: 12px;
-      }
-      .panel details > summary.detail-summary {
-        margin-top: 13px;
-        color: #1e46ad;
-        font-size: 12px;
-      }
-      .muted {
-        margin: 0;
-        color: #6e7781;
-        font-size: 12px;
-        line-height: 1.55;
-      }
-      @media (max-width: 1050px) {
-        .layout {
-          grid-template-columns: minmax(0, 1fr);
-        }
-        .right {
-          grid-row: 2;
-        }
-      }
-      @media (max-width: 700px) {
-        .app {
-          display: block;
-        }
-        .sidebar {
-          display: none;
-        }
-        .topbar {
-          height: 52px;
-        }
-        .topbar .search {
-          flex: 1;
-          min-width: 0;
-          width: auto;
-        }
-        .topbar strong,
-        .top-note {
-          display: none;
-        }
-        .canvas {
-          padding: 13px 12px 70px;
-        }
-        .hero {
-          padding: 18px 16px;
-        }
-        .hero time {
-          width: 100%;
-          margin-left: 0;
-        }
-        .hero h1 {
-          font-size: 22px;
-        }
-        .hero-foot a {
-          margin-left: 0;
-        }
-        .reading-nav {
-          display: grid;
-          grid-template-columns: repeat(4, 1fr);
-        }
-        .reading-nav a {
-          min-width: 0;
-          padding: 11px 2px;
-          font-size: 12px;
-        }
-        .claim {
-          grid-template-columns: 22px minmax(0, 1fr);
-          gap: 9px;
-        }
-        .panel-title {
-          padding: 16px 15px 13px;
-        }
-        .panel-body {
-          padding: 0 15px 15px;
-        }
-        .facts {
-          grid-template-columns: minmax(0, 1fr);
-        }
-      }
-    </style>
-  </head>
-  <body>
-    <div class="app">
-      <aside class="sidebar" aria-label="工作台导航">
-        <div class="brand">
-          <span class="brand-mark">T</span
-          ><span>Tracefold<small>研究与执行工作台</small></span>
-        </div>
-        <p class="side-label">WORKBENCH</p>
-        <a class="side-link active" href="#content">事件流 <span>391</span></a>
-        <a class="side-link" href="#market">市场研究</a>
-        <a class="side-link" href="#process">交易执行</a>
-      </aside>
-      <div class="main">
-        <header class="topbar">
-          <strong>事件详情</strong>
-          <div class="search">⌕　标的 / 事件关键词</div>
-          <span class="top-note">设计稿 · 静态样例</span>
-        </header>
-        <main class="canvas">
-          <p class="prototype">
-            <b>交互设计稿</b> 示例数据取自事件 cf4ba24a · 不代表实时状态
-          </p>
-          <a class="back" href="#">←　事件流</a>
-          <section class="hero" aria-label="事件概览">
-            <div class="hero-top">
-              <span class="status">未通知</span><span class="dot"></span
-              ><span>仅表态或观点 · 2 条命题</span
-              ><time>2026-09-27 16:15 UTC</time>
-            </div>
-            <h1>
-              Iran's foreign minister said Tehran is ready for 'doomsday' war
-              with the U.S.
-            </h1>
-            <p class="hero-sub">
-              本次提取 <strong>2 条命题</strong>，来自 1
-              条报道。下方逐条展示内容、来源及通知决定。
-            </p>
-            <div class="hero-foot">
-              <span>CNBC · 1 条来源</span><span>2 条命题</span
-              ><span>5 项历史比较</span><a href="#source">查看来源 ↗</a>
-            </div>
-          </section>
-          <nav class="reading-nav" aria-label="事件详情目录">
-            <a href="#content">本次内容</a><a href="#source">来源证据</a
-            ><a href="#process">处理记录</a><a href="#market">行情观察</a>
-          </nav>
-          <div class="layout">
-            <div class="column">
-              <section class="panel" id="content" aria-label="本次内容">
-                <div class="panel-title">
-                  <h2>本次内容</h2>
-                  <small>两条命题，分别保留历史对照</small>
-                </div>
-                <div class="panel-body">
-                  <ol class="claim-list">
-                    <li class="claim">
-                      <span class="claim-n">01</span>
-                      <div class="claim-main">
-                        <div class="claim-tags">
-                          <span class="tag change">参数变化</span
-                          ><span class="tag">表态或观点</span>
-                        </div>
-                        <h3>
-                          Iran's foreign minister said Tehran is ready for
-                          'doomsday' war with the U.S.
-                        </h3>
-                        <p class="claim-source">
-                          <b>CNBC 转述</b> · “Tehran ready for 'doomsday' war
-                          with U.S.”
-                        </p>
-                        <div class="claim-actions">
-                          <details>
-                            <summary>历史比较 1 项</summary>
-                            <div class="history">
-                              <p>
-                                此前：Iran is fully prepared for war to resume.
-                              </p>
-                              <small>补充信息 · 旧命题来自另一事件</small>
-                            </div>
-                          </details>
-                          <details>
-                            <summary>结构化字段</summary>
-                            <div class="facts">
-                              <div><b>主体</b>Abbas Araghchi</div>
-                              <div><b>表达方式</b>表态或观点</div>
-                            </div>
-                          </details>
-                        </div>
-                      </div>
-                    </li>
-                    <li class="claim">
-                      <span class="claim-n">02</span>
-                      <div class="claim-main">
-                        <div class="claim-tags">
-                          <span class="tag change">新事实</span
-                          ><span class="tag">表态或观点</span>
-                        </div>
-                        <h3>
-                          Iran's foreign minister said Tehran leaves diplomacy
-                          on the table.
-                        </h3>
-                        <p class="claim-source">
-                          <b>CNBC 转述</b> · “but leaves diplomacy on the table”
-                        </p>
-                        <div class="claim-actions">
-                          <details>
-                            <summary>历史比较 4 项</summary>
-                            <div class="history">
-                              <p>
-                                此前：Iran is fully prepared for war to resume.
-                              </p>
-                              <p>
-                                此前：Iran stood firm on conditions for
-                                reopening the Strait of Hormuz.
-                              </p>
-                              <p>
-                                此前：The Middle East war is locked in a
-                                stalemate.
-                              </p>
-                              <p>
-                                此前：Iran stood firm despite rejection of its
-                                proposal.
-                              </p>
-                              <small>以上是 4 次比较，不是 4 条新消息</small>
-                            </div>
-                          </details>
-                          <details>
-                            <summary>结构化字段</summary>
-                            <div class="facts">
-                              <div><b>主体</b>Abbas Araghchi</div>
-                              <div><b>表达方式</b>表态或观点</div>
-                            </div>
-                          </details>
-                        </div>
-                      </div>
-                    </li>
-                  </ol>
-                </div>
-              </section>
-              <section class="panel" id="source" aria-label="来源证据">
-                <div class="panel-title">
-                  <h2>来源与分歧</h2>
-                  <small>1 个来源 · 未记录来源分歧</small>
-                </div>
-                <div class="panel-body">
-                  <div class="source-head">
-                    <strong>CNBC</strong><span>可信二手来源 · 16:15</span
-                    ><a
-                      href="https://www.cnbc.com/2026/09/27/iran-foreign-minister-keeps-indirect-talks-with-us-open-state-media.html"
-                      >原文 ↗</a
-                    >
-                  </div>
-                  <p class="source-text">
-                    [UPDATE] Iran's foreign minister says Tehran ready for
-                    'doomsday' war with U.S., but leaves diplomacy on the table.
-                  </p>
-                  <p class="source-evidence">
-                    转述命题 01、02 · 没有独立第二来源
-                  </p>
-                  <details>
-                    <summary class="detail-summary">
-                      查看来源原文和引用关系
-                    </summary>
-                    <p class="muted">保留逐条引用、来源关系与完整原文。</p>
-                  </details>
-                </div>
-              </section>
-              <section class="panel" id="process" aria-label="处理记录">
-                <div class="panel-title">
-                  <h2>处理记录</h2>
-                  <small>语义处理、通知决定、发送</small>
-                </div>
-                <div class="panel-body">
-                  <p class="muted">
-                    语义处理已完成 · 通知计划：不通知 · 无发送记录
-                  </p>
-                  <details>
-                    <summary class="detail-summary">
-                      查看逐条决定和处理时间线
-                    </summary>
-                    <p class="muted">
-                      每条命题的决定、工作版本、尝试和发送意图在此保留。
-                    </p>
-                  </details>
-                </div>
-              </section>
-            </div>
-            <div class="column right">
-              <section class="panel" aria-label="通知判断">
-                <div class="panel-title"><h2>为什么未通知</h2></div>
-                <div class="decision">
-                  <p class="decision-lead">2 条命题仅为表态或观点</p>
-                  <p class="decision-note">
-                    事件已被记录，可继续阅读和追溯；本次没有具体行动、措施或新观测进入通知。
-                  </p>
-                  <ul class="decision-list">
-                    <li><span>准备战争的表态</span><b>不通知</b></li>
-                    <li><span>外交选项的表态</span><b>不通知</b></li>
-                  </ul>
-                </div>
-              </section>
-              <section class="panel" id="market" aria-label="行情观察">
-                <div class="panel-title">
-                  <h2>当前行情</h2>
-                  <small>滚动报价</small>
-                </div>
-                <div class="panel-body">
-                  <table class="quote-table">
-                    <thead>
-                      <tr>
-                        <th>标的</th>
-                        <th>现价</th>
-                        <th>24H</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td>BTC</td>
-                        <td>84,477.30</td>
-                        <td>+0.50%</td>
-                      </tr>
-                      <tr>
-                        <td>CL</td>
-                        <td>93.31</td>
-                        <td>−1.07%</td>
-                      </tr>
-                    </tbody>
-                  </table>
-                  <p class="quote-note">
-                    这是当前行情，不是事件带来的收益。事件后反应另列。
-                  </p>
-                </div>
-              </section>
-            </div>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tracefold · 新闻事件详情设计稿</title>
+  <link rel="icon" href="../../web/public/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../web/src/styles/tokens.css">
+  <link rel="stylesheet" href="../../web/src/features/cockpit/ui/AppBottomNav.css">
+  <style>
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; scroll-padding-top: 124px; }
+    body { margin: 0; background: var(--surface-canvas); color: var(--text-primary); font: var(--type-body); font-synthesis: none; }
+    a { color: var(--accent-strong); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    button, input, summary, select { font: inherit; }
+    button, summary { cursor: pointer; }
+    button, a, input, summary, select { -webkit-tap-highlight-color: transparent; }
+    :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; }
+    h1, h2, h3, p { margin: 0; }
+    h2 { font: var(--type-item-title); }
+    h3 { font-size: 14px; line-height: 1.6; font-weight: 600; }
+    .mono, time { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+    .muted { color: var(--text-muted); }
+    .meta { font: var(--type-meta); color: var(--text-muted); }
+    .icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+    .skip { position: fixed; left: 220px; top: -60px; z-index: 20; padding: 10px; background: white; }
+    .skip:focus { top: 10px; }
+    .sidebar { width: var(--shell-sidebar-width); position: fixed; inset: 0 auto 0 0; background: var(--surface-sidebar); border-right: 1px solid var(--border-subtle); z-index: 5; }
+    .brand { height: var(--shell-topbar-height); display: flex; gap: 9px; align-items: center; padding: 0 20px; border-bottom: 1px solid var(--border-faint); }
+    .brand img { width: 26px; height: 26px; }
+    .brand b { font-size: 16px; line-height: 1.3; }
+    .brand small { display: block; font-size: 10px; color: var(--text-subtle); }
+    .nav-label { font: var(--type-eyebrow); letter-spacing: .1em; color: var(--text-subtle); margin: 30px 20px 15px; }
+    .side-link { margin: 5px 12px; padding: 0 12px; display: flex; align-items: center; gap: 10px; min-height: 44px; color: var(--text-muted); border-radius: var(--radius-sm); }
+    .side-link.active { background: var(--accent-soft); color: var(--accent-strong); font-weight: 600; position: relative; }
+    .side-link.active::before { content: ''; position: absolute; left: 2px; width: 2px; height: 28px; background: var(--accent-primary); }
+    .side-link small { margin-left: auto; font: var(--type-mono-meta); color: var(--text-subtle); }
+    .sidebar-foot { position: absolute; bottom: 18px; padding: 0 20px; font: var(--type-meta); color: var(--text-subtle); }
+    .workspace { margin-left: var(--shell-sidebar-width); min-width: 0; }
+    .topbar { height: var(--shell-topbar-height); display: flex; align-items: center; gap: 14px; position: sticky; top: 0; z-index: 8; padding: 0 22px; background: var(--surface-root); border-bottom: 1px solid var(--border-subtle); }
+    .topbar strong { white-space: nowrap; font-size: 13px; }
+    .shell-search { display: flex; align-items: center; gap: 8px; width: 340px; min-width: 0; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 6px 10px; color: var(--text-subtle); }
+    .shell-search input { width: 100%; border: 0; outline: 0; background: transparent; font-size: 12px; color: var(--text-secondary); }
+    .shell-search kbd { border: 1px solid var(--border-subtle); border-radius: 3px; font-size: 10px; padding: 0 4px; }
+    .design-tag { margin-left: auto; font: var(--type-meta); color: var(--text-muted); white-space: nowrap; }
+    .design-tag b { font-weight: 500; color: var(--accent-strong); }
+    .canvas { max-width: 1104px; padding: 20px 24px 64px; margin: 0 auto; }
+    .toolbar { display: flex; gap: 10px; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+    .breadcrumb { display: flex; align-items: center; gap: 8px; color: var(--text-subtle); font-size: 12px; }
+    .breadcrumb a { color: var(--text-muted); display: flex; gap: 6px; align-items: center; min-height: 32px; }
+    .prototype-note { color: var(--text-subtle); font-size: 11px; }
+    .panel { background: var(--surface-panel); box-shadow: var(--ring-panel); border-radius: var(--radius-lg); min-width: 0; }
+    .hero { padding: 23px 26px 0; }
+    .hero-top { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; background: var(--surface-raised); border: 1px solid var(--border-subtle); border-radius: var(--radius-xs); color: var(--text-muted); font-size: 11px; white-space: nowrap; }
+    .badge.done { background: var(--signal-done-soft); color: var(--accent-strong); border-color: var(--signal-done-border); }
+    .dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+    .hero-top time { margin-left: auto; font-size: 11px; color: var(--text-muted); }
+    h1 { font: var(--type-page-title); letter-spacing: -.5px; max-width: 850px; }
+    .hero-summary { color: var(--text-secondary); margin: 10px 0 20px; font-size: 14px; line-height: 1.7; }
+    .hero-foot { border-top: 1px solid var(--border-faint); display: flex; gap: 16px; align-items: center; min-height: 55px; font-size: 12px; flex-wrap: wrap; }
+    .asset-link { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-weight: 600; color: var(--text-primary); }
+    .asset-mark { background: var(--surface-raised); border: 1px solid var(--border-subtle); border-radius: 50%; width: 22px; height: 22px; display: grid; place-items: center; font-size: 11px; color: var(--text-muted); }
+    .foot-divider { width: 1px; height: 13px; background: var(--border-subtle); }
+    .hero-actions { display: flex; align-items: center; gap: 14px; margin-left: auto; }
+    .button { border: 1px solid var(--border-subtle); background: var(--surface-panel); border-radius: var(--radius-sm); min-height: 34px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 6px 12px; color: var(--text-secondary); font-size: 12px; }
+    .button:hover { background: var(--surface-hover); text-decoration: none; }
+    .button.primary { background: var(--accent-primary); border-color: var(--accent-primary); color: white; }
+    .reading-grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; margin-top: 18px; overflow-anchor: none; }
+    .detail-main { min-width: 0; overflow: clip; }
+    .reading-nav { display: flex; gap: 20px; border-bottom: 1px solid var(--border-subtle); padding: 0 22px; }
+    .reading-nav button { display: inline-flex; align-items: center; gap: 7px; background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 0; color: var(--text-muted); font-size: 13px; padding: 14px 0 12px; min-height: 48px; margin-bottom: -1px; white-space: nowrap; }
+    .reading-nav button[aria-selected="true"] { color: var(--accent-strong); border-bottom-color: var(--accent-primary); font-weight: 600; }
+    .reading-nav button:hover { color: var(--accent-strong); }
+    .reading-nav .count { font: var(--type-mono-meta); color: var(--text-subtle); }
+    .tab-content { min-height: 440px; overflow-anchor: none; }
+    .tab-content > [role="tabpanel"] { outline-offset: -3px; }
+    .tab-content .section-head { padding: 20px 22px 14px; }
+    .tab-content .section-body { padding: 0 22px 20px; }
+    .tab-content .quote-figures { max-width: 360px; }
+    .notification { min-width: 0; }
+    .section-head { padding: 20px 22px 14px; display: flex; gap: 12px; justify-content: space-between; align-items: center; }
+    .section-head small { font: var(--type-meta); color: var(--text-muted); }
+    .section-body { padding: 0 22px 20px; }
+    .language-toggle { display: flex; background: var(--surface-slot); padding: 3px; border-radius: var(--radius-sm); flex-shrink: 0; }
+    .language-toggle button { border: 0; background: transparent; padding: 4px 9px; color: var(--text-muted); font-size: 11px; border-radius: 4px; }
+    .language-toggle button[aria-pressed="true"] { background: white; box-shadow: var(--shadow-pill); color: var(--text-primary); }
+    .content-note { font: var(--type-meta); color: var(--text-muted); padding-bottom: 4px; }
+    .claim-list { list-style: none; padding: 0; margin: 0; }
+    .claim { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 10px; padding: 18px 0; }
+    .claim + .claim { border-top: 1px solid var(--border-faint); }
+    .claim-number { font: var(--type-mono-meta); color: var(--text-subtle); padding-top: 2px; }
+    .claim-heading { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
+    .claim-heading span:first-child { font-size: 11px; color: var(--accent-strong); }
+    .claim-heading span:last-child { font-size: 11px; color: var(--text-muted); }
+    .statement { font-size: 16px; font-weight: 600; line-height: 1.7; overflow-wrap: anywhere; }
+    .claim-evidence { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; margin-top: 9px; color: var(--text-muted); font-size: 12px; }
+    .claim-evidence a { border-bottom: 1px dashed var(--accent-border); }
+    details { font-size: 12px; }
+    summary { min-height: 32px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; list-style: none; }
+    summary::-webkit-details-marker { display: none; }
+    summary::before { content: '›'; font-size: 17px; line-height: 1; width: 10px; transition: transform .15s; }
+    details[open] > summary::before { transform: rotate(90deg); }
+    details[open] > summary { color: var(--accent-strong); }
+    .claim details { margin-top: 7px; }
+    .well { border-radius: var(--radius-md); background: var(--surface-raised); padding: 13px 14px; line-height: 1.7; }
+    .well p + p { margin-top: 8px; }
+    .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 10px 0 0; }
+    .fields dt { color: var(--text-muted); font-size: 11px; }
+    .fields dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+    .shared-source { border-top: 1px solid var(--border-faint); padding-top: 14px; display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--text-muted); }
+    .shared-source .icon { width: 14px; margin-top: 3px; }
+    .notification .section-head, .market .section-head { padding: 19px 18px 13px; }
+    .notification .section-body, .market .section-body { padding: 0 18px 18px; }
+    .decision-lead { font-size: 14px; font-weight: 600; margin-bottom: 5px; }
+    .decision-note { color: var(--text-muted); font-size: 12px; line-height: 1.7; }
+    .decision-rows { display: grid; gap: 10px; margin: 15px 0; padding: 13px 0; border-top: 1px solid var(--border-faint); border-bottom: 1px solid var(--border-faint); }
+    .decision-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+    .decision-row b { font-weight: 500; }
+    .delivery-summary { display: flex; justify-content: space-between; margin-bottom: 7px; }
+    .delivery-summary b { font-size: 12px; color: var(--accent-strong); }
+    .text-link { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; min-height: 32px; }
+    .source-title { display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
+    .source-avatar { display: grid; place-items: center; width: 32px; height: 32px; background: var(--surface-raised); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); font: var(--type-mono-meta); color: var(--text-muted); }
+    .source-title strong { font-size: 13px; }
+    .source-title a { margin-left: auto; }
+    .source-title .meta { font-size: 11px; }
+    .quote { margin: 15px 0 10px; padding: 0 0 0 13px; border-left: 2px solid var(--border-subtle); color: var(--text-secondary); line-height: 1.8; overflow-wrap: anywhere; }
+    .source-context { padding: 12px 0 16px; border-bottom: 1px solid var(--border-faint); color: var(--text-muted); font-size: 12px; }
+    .relations { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 0; font-size: 12px; color: var(--text-muted); }
+    .relations a { background: var(--surface-raised); border: 1px solid var(--border-subtle); padding: 3px 7px; border-radius: var(--radius-xs); }
+    .source-context b { color: var(--text-secondary); font-weight: 500; }
+    .market-identity { display: flex; justify-content: space-between; gap: 8px; align-items: center; padding-bottom: 14px; }
+    .market-identity b { font: 600 14px var(--font-mono); }
+    .quote-figures { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .quote-figures small { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 5px; }
+    .price { font: 550 22px / 1.3 var(--font-mono); }
+    .direction { font: 550 20px / 1.4 var(--font-mono); color: var(--dir-bullish); }
+    .market-clock { border-top: 1px solid var(--border-faint); margin-top: 15px; padding-top: 11px; font-size: 11px; color: var(--text-muted); line-height: 1.7; }
+    .market-clock strong { font-weight: 500; }
+    .process-summary { display: grid; grid-template-columns: 1fr 1fr 1fr; padding: 0 0 18px; border-bottom: 1px solid var(--border-faint); gap: 14px; }
+    .process-summary small { display: block; color: var(--text-muted); font-size: 11px; margin-bottom: 5px; }
+    .process-summary b { font-size: 13px; font-weight: 600; }
+    .process-details { border-bottom: 1px solid var(--border-faint); padding: 5px 0; }
+    .process-details > summary { min-height: 44px; color: var(--text-secondary); }
+    .summary-note { color: var(--text-muted); margin-left: auto; font-size: 11px; }
+    .timeline { list-style: none; padding: 4px 0 14px; margin: 0; }
+    .timeline li { display: grid; grid-template-columns: 70px 1fr 72px; gap: 12px; margin-left: 5px; padding: 0 0 14px 15px; border-left: 1px solid var(--border-subtle); position: relative; }
+    .timeline li::before { content: ''; position: absolute; left: -3px; top: 6px; width: 5px; height: 5px; background: var(--signal-done); border-radius: 50%; }
+    .timeline li:last-child { padding-bottom: 0; }
+    .timeline .meta { font-size: 11px; }
+    .timeline .duration { text-align: right; color: var(--text-muted); font-size: 11px; }
+    .score-table { width: 100%; border-collapse: collapse; text-align: left; margin: 0 0 10px; }
+    .score-table th { font-weight: 400; color: var(--text-muted); font-size: 11px; }
+    .score-table td, .score-table th { padding: 10px 8px; border-bottom: 1px solid var(--border-faint); }
+    .score-table th:first-child, .score-table td:first-child { padding-left: 0; }
+    .receipt { padding: 8px 0 12px; }
+    .receipt-top { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+    .receipt-body { white-space: pre-line; font-size: 13px; }
+    .technical { margin-top: 16px; padding: 0 20px; }
+    .technical > summary { min-height: 52px; color: var(--text-muted); }
+    .technical-body { padding: 0 0 18px; }
+    .technical code { overflow-wrap: anywhere; white-space: normal; font-family: var(--font-mono); font-size: 11px; }
+    .technical label { font-size: 12px; }
+    .technical select { max-width: 100%; margin: 10px 0; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); min-height: 36px; padding: 0 10px; color: var(--text-secondary); background: white; }
+    .footer-note { margin-top: 20px; text-align: center; color: var(--text-muted); font-size: 11px; }
+    .prototype-controls { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 14px; font-size: 11px; color: var(--text-muted); }
+    .prototype-controls select { font-size: 11px; color: var(--text-secondary); background: white; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); min-height: 32px; padding: 0 8px; max-width: 100%; }
+    .state-message { padding: 15px 18px; margin-bottom: 16px; border: 1px solid var(--signal-caution-border); border-radius: var(--radius-md); background: var(--signal-caution-soft); color: var(--text-secondary); }
+    .state-message strong { display: block; margin-bottom: 3px; color: var(--signal-caution); font-weight: 600; }
+    .state-message p { font-size: 12px; }
+    .state-message .button { margin-top: 10px; }
+    .empty-market { padding: 8px 0; }
+    .empty-market p { margin: 6px 0 10px; font-size: 12px; color: var(--text-muted); }
+    .toast { position: fixed; bottom: 28px; left: calc(50% + 102px); transform: translateX(-50%); background: var(--surface-panel); padding: 11px 18px; border-radius: var(--radius-md); box-shadow: var(--shadow-elevated); color: var(--text-secondary); z-index: 20; max-width: calc(100vw - 32px); width: max-content; font-size: 12px; }
+    [hidden] { display: none !important; }
+    .flash { animation: flash 1.8s ease; }
+    @keyframes flash { 0%, 30% { background: var(--accent-soft); } 100% { background: transparent; } }
+    @media (min-width: 1600px) { .canvas { max-width: 1104px; } }
+    @media (max-width: 1100px) { .canvas { padding: 16px 18px 56px; } .reading-grid { grid-template-columns: minmax(0,1fr) 260px; gap: 12px; } .hero-foot { gap: 10px; } .hero { padding-inline: 22px; } }
+    @media (max-width: 950px) { .sidebar { display: none; } .workspace { margin-left: 0; } .topbar { padding-inline: 18px; } .canvas { max-width: 840px; } .toast { left: 50%; } .skip { left: 15px; } }
+    @media (max-width: 767px) {
+      .cockpit-bottom-nav { position: fixed; left: 0; right: 0; bottom: 0; }
+      .cockpit-bottom-nav .icon { width: 18px; height: 18px; }
+      .canvas { padding-bottom: 100px; }
+      .toast { bottom: 90px; }
+    }
+    @media (max-width: 700px) {
+      html { scroll-padding-top: 116px; }
+      .topbar { height: var(--shell-mobile-topbar-height); padding: 0 14px; gap: 9px; }
+      .topbar strong { font-size: 12px; } .shell-search { flex: 1; padding: 5px 8px; } .shell-search input { font-size: 11px; }
+      .shell-search kbd, .design-tag { display: none; }
+      .canvas { padding: 12px 12px 100px; }
+      .toolbar { margin-bottom: 10px; } .prototype-note { font-size: 10px; }
+      .hero { padding: 18px 17px 0; } .hero-top { gap: 8px; margin-bottom: 11px; } .hero-top .meta { font-size: 11px; }
+      .hero-top time { width: 100%; margin: 0; font-size: 10px; }
+      h1 { font-size: 22px; line-height: 1.5; letter-spacing: -.3px; }
+      .hero-summary { font-size: 14px; line-height: 1.8; margin: 9px 0 16px; }
+      .hero-foot { gap: 9px; padding: 12px 0; } .hero-foot > .meta { font-size: 11px; } .hero-foot .foot-divider { display: none; }
+      .hero-actions { width: 100%; margin: 3px 0 0; gap: 8px; } .hero-actions .button { min-height: 44px; }
+      .hero-actions .primary { flex: 1; }
+      .reading-nav { gap: 0; justify-content: space-between; padding: 0 15px; }
+      .reading-nav button { font-size: 12px; padding: 12px 0 10px; gap: 4px; }
+      .reading-nav .count { display: none; }
+      .reading-grid { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
+      .reading-grid > .panel { width: 100%; }
+      .tab-content { min-height: 520px; }
+      .tab-content .section-head { padding: 17px 17px 12px; }
+      .tab-content .section-body { padding: 0 17px 17px; }
+      .section-head { padding: 17px 17px 12px; gap: 6px; } .section-head small { font-size: 11px; }
+      .section-body { padding: 0 17px 17px; } .language-toggle button { min-height: 44px; padding: 3px 7px; }
+      .claim { grid-template-columns: 22px minmax(0,1fr); gap: 7px; padding: 16px 0; } .statement { font-size: 15px; }
+      .claim-evidence { font-size: 11px; } .claim summary { min-height: 44px; }
+      .source-title { gap: 7px; } .source-title a { min-height: 44px; }
+      .relations a { min-height: 44px; display: inline-flex; align-items: center; }
+      .button, .text-link { min-height: 44px; }
+      .process-summary { grid-template-columns: 1fr 1fr; } .process-summary > div:last-child { grid-column: 1/-1; }
+      .timeline li { grid-template-columns: 58px 1fr; gap: 6px; } .timeline .duration { grid-column: 2; text-align: left; }
+      .score-table { font-size: 11px; } .score-table td, .score-table th { padding: 9px 4px; }
+      .summary-note { font-size: 10px; } .technical { padding: 0 17px; } .technical .summary-note { display: none; }
+      .technical select { width: 100%; min-height: 44px; } .technical .fields { grid-template-columns: 1fr; }
+      .prototype-controls { flex-wrap: wrap; } .footer-note { line-height: 1.7; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .flash { animation: none; } }
+    @media print {
+      .topbar, .reading-nav, .cockpit-bottom-nav, .sidebar { position: static; }
+      .sidebar { float: left; min-height: 100vh; }
+      .canvas { padding-bottom: 24px; }
+      .toast { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute"><defs>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M19 12H5m6-6-6 6 6 6"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M14 3h7v7m0-7L10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10" cy="10" r="6.5"/><path d="m15 15 5 5"/></symbol>
+    <symbol id="i-stream" viewBox="0 0 24 24"><path d="M4.5 4.5v15M9 8h10.5M9 12h8M9 16h5"/></symbol>
+    <symbol id="i-market" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 4 12L16 12h5"/></symbol>
+    <symbol id="i-wallet" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 4v8h8"/></symbol>
+    <symbol id="i-trade" viewBox="0 0 24 24"><path d="M8 3.5v13M4.5 13 8 16.5 11.5 13M16 20.5v-13M12.5 11 16 7.5 19.5 11"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h5"/></symbol>
+  </defs></svg>
+  <a class="skip" href="#news-content">跳至事件内容</a>
+  <aside class="sidebar" aria-label="工作台导航">
+    <div class="brand"><img src="../../web/public/favicon.svg" alt=""><span><b>Tracefold</b><small>研究与执行工作台</small></span></div>
+    <p class="nav-label">WORKBENCH</p>
+    <nav>
+      <a class="side-link active" href="http://localhost:8765/news" aria-current="page"><svg aria-hidden="true" class="icon"><use href="#i-stream"/></svg>事件流</a>
+      <a class="side-link" href="http://localhost:8765/news/market"><svg aria-hidden="true" class="icon"><use href="#i-market"/></svg>市场研究</a>
+      <a class="side-link" href="http://localhost:8765/news/wallets"><svg aria-hidden="true" class="icon"><use href="#i-wallet"/></svg>钱包研究</a>
+      <a class="side-link" href="http://localhost:8765/trading"><svg aria-hidden="true" class="icon"><use href="#i-trade"/></svg>交易执行</a>
+    </nav>
+    <p class="sidebar-foot">新闻详情 · 交互设计稿</p>
+  </aside>
+  <div class="workspace">
+    <header class="topbar">
+      <strong>事件详情</strong>
+      <form class="shell-search" id="search-form" role="search"><svg aria-hidden="true" class="icon"><use href="#i-search"/></svg><input aria-label="搜索标的或事件" placeholder="标的 / 事件关键词"><kbd>/</kbd></form>
+      <span class="design-tag"><b>设计预览</b> · 2026.10.02</span>
+    </header>
+    <main class="canvas">
+      <div class="toolbar"><div class="breadcrumb"><a href="http://localhost:8765/news"><svg aria-hidden="true" class="icon"><use href="#i-arrow"/></svg>事件流</a><span>/</span><span>新闻事件</span></div><span class="prototype-note">交互设计稿 · 静态快照</span></div>
+      <div class="state-message" id="state-message" hidden role="status"><strong id="state-heading"></strong><p id="state-description"></p><button class="button" id="state-reset" hidden>恢复正常示例</button></div>
+      <section class="panel hero" aria-label="事件概览">
+        <div class="hero-top"><span class="badge done" id="event-status"><span class="dot"></span><span id="event-status-text">已推送</span></span><span class="meta">新闻 · 市场与交易所</span><time datetime="2026-10-02T07:00:26Z">2026-10-02 07:00:26 UTC</time></div>
+        <h1>Bithumb 解除 The Sandbox（SAND）交易警示指定</h1>
+        <p class="hero-summary">SAND 已从 Bithumb 的交易警示名单中移除。</p>
+        <div class="hero-foot"><a class="asset-link" href="http://localhost:8765/news/symbols/SAND" aria-label="查看 SAND 标的页"><span class="asset-mark">S</span>SAND <span class="meta">加密货币</span></a><span class="foot-divider"></span><span class="meta">1 个来源 · 2 条提取命题</span><div class="hero-actions"><a class="button primary" href="#news-source"><svg aria-hidden="true" class="icon"><use href="#i-doc"/></svg>查看来源证据</a><button class="button" id="copy-link">复制事件链接</button></div></div>
+      </section>
+      <div class="reading-grid">
+        <div class="panel detail-main">
+          <div class="reading-nav" role="tablist" aria-label="事件详情视图">
+            <button type="button" role="tab" id="tab-content" aria-controls="news-content" aria-selected="true" tabindex="0" data-tab="content">事件内容 <span class="count">02</span></button>
+            <button type="button" role="tab" id="tab-source" aria-controls="news-source" aria-selected="false" tabindex="-1" data-tab="source">来源证据 <span class="count">01</span></button>
+            <button type="button" role="tab" id="tab-market" aria-controls="news-market" aria-selected="false" tabindex="-1" data-tab="market">当前行情</button>
+            <button type="button" role="tab" id="tab-processing" aria-controls="news-processing" aria-selected="false" tabindex="-1" data-tab="processing">处理记录</button>
           </div>
-        </main>
+          <div class="tab-content">
+        <section class="content" id="news-content" role="tabpanel" aria-labelledby="tab-content" tabindex="0">
+          <div class="section-head"><h2 id="content-title">这次发生了什么</h2><div class="language-toggle" role="group" aria-label="命题阅读语言"><button type="button" data-lang="zh" aria-pressed="true">中文释义</button><button type="button" data-lang="en" aria-pressed="false">记录原文</button></div></div>
+          <div class="section-body">
+            <p class="content-note" id="language-note">中文释义为设计示例，可切换查看已记录命题。</p>
+            <ol class="claim-list">
+              <li class="claim" id="news-claim-1"><span class="claim-number">01</span><div><div class="claim-heading"><span>新事实</span><span>状态变化</span></div><p class="statement" data-zh="Bithumb 已解除 SAND 的交易警示指定。" data-en="Bithumb removed The Sandbox (SAND) from its list of cautionary trading instruments.">Bithumb 已解除 SAND 的交易警示指定。</p><p class="claim-evidence"><a href="#source-01">来源 01 · CexAlerts</a><span>转述 · 来源权威未知</span></p><details><summary>引用与命题详情</summary><div class="well"><p lang="ko">“샌드박스(SAND) 거래유의종목 지정 해제”</p><dl class="fields"><div><dt>表达方式</dt><dd>观测事实</dd></div><div><dt>阶段</dt><dd>已完成</dd></div><div><dt>首次可用</dt><dd class="mono">2026-10-02 07:00:26 UTC</dd></div><div><dt>历史比较</dt><dd>未记录</dd></div></dl><a class="text-link" href="#source-01">查看完整材料 →</a></div></details></div></li>
+              <li class="claim" id="news-claim-2"><span class="claim-number">02</span><div><div class="claim-heading"><span>新事实</span><span>状态变化</span></div><p class="statement" data-zh="The Sandbox（SAND）已从交易警示名单中移除。" data-en="The Sandbox (SAND) was removed from the list of cautionary trading instruments.">The Sandbox（SAND）已从交易警示名单中移除。</p><p class="claim-evidence"><a href="#source-01">来源 01 · CexAlerts</a><span>转述 · 来源权威未知</span></p><details><summary>引用与命题详情</summary><div class="well"><p lang="ko">“샌드박스(SAND) 거래유의종목 지정 해제”</p><dl class="fields"><div><dt>表达方式</dt><dd>观测事实</dd></div><div><dt>阶段</dt><dd>已完成</dd></div><div><dt>首次可用</dt><dd class="mono">2026-10-02 07:00:26 UTC</dd></div><div><dt>历史比较</dt><dd>未记录</dd></div></dl><a class="text-link" href="#source-01">查看完整材料 →</a></div></details></div></li>
+            </ol>
+            <div class="shared-source"><svg aria-hidden="true" class="icon"><use href="#i-doc"/></svg><p>两条命题来自<strong>同一条报道</strong>，不代表两个独立来源。</p></div>
+          </div>
+        </section>
+        <section class="source" id="news-source" role="tabpanel" aria-labelledby="tab-source" tabindex="0" hidden><div class="section-head"><h2 id="source-title">来源证据</h2><small>1 份材料</small></div><div class="section-body"><div class="source-title" id="source-01"><span class="source-avatar">01</span><div><strong>CexAlerts · Telegram</strong><p class="meta">采集渠道 news-opennews</p></div><a class="text-link" href="https://t.me/CexAlerts/40134" target="_blank" rel="noreferrer">打开原文 <svg aria-hidden="true" class="icon"><use href="#i-link"/></svg></a></div><blockquote class="quote" lang="ko">샌드박스(SAND) 거래유의종목 지정 해제</blockquote><p class="meta">来源时间 <time datetime="2026-10-02T07:00:26Z">2026-10-02 07:00:26 UTC</time></p><p class="source-context"><b>来源权威未知</b> · 当前只有这份转述材料，尚无独立第二来源。</p><div class="relations"><span>该材料转述</span><a href="#news-claim-1">命题 01 ↗</a><a href="#news-claim-2">命题 02 ↗</a></div><details><summary>完整原文</summary><div class="well" lang="ko">#Bithumb News<br>샌드박스(SAND) 거래유의종목 지정 해제<br>샌드박스(SAND) 거래유의종목 지정 해제<br>$SAND<br>Notifer: @CexAlerts</div></details><details><summary>同类报道 · 1 条</summary><div class="well"><span class="mono">07:00:26</span> · 首条报道<p lang="ko">샌드박스(SAND) 거래유의종목 지정 해제</p><a class="text-link" href="https://t.me/CexAlerts/40134" target="_blank" rel="noreferrer">打开报道原文 ↗</a></div></details></div></section>
+        <aside class="market" id="news-market" role="tabpanel" aria-labelledby="tab-market" tabindex="0" hidden><div class="section-head"><h2 id="market-title">当前行情</h2><small>快照示例</small></div><div class="section-body"><div id="market-quote"><div class="market-identity"><div><b>SANDUSDT</b><p class="meta">Binance · 永续合约</p></div><a class="text-link" href="http://localhost:8765/news/symbols/SAND" aria-label="查看 SAND 行情详情"><svg aria-hidden="true" class="icon"><use href="#i-link"/></svg></a></div><div class="quote-figures"><div><small>读取现价 · USDT</small><p class="price">0.05025</p></div><div><small>滚动 24H</small><p class="direction">+13.97%</p></div></div><p class="market-clock"><strong>2026-10-02 观察快照</strong> · 非实时<br>24H 涨跌幅以报价时点为基准，不代表新闻发生后的涨跌。</p></div><div class="empty-market" id="market-empty" hidden><strong>暂时无法读取报价</strong><p>保留资产与来源信息，价格和涨跌幅暂不显示。</p><button class="button" id="market-retry">重新读取 · 演示</button></div></div></aside>
+        <section class="process" id="news-processing" role="tabpanel" aria-labelledby="tab-processing" tabindex="0" hidden><div class="section-head"><h2 id="processing-title">处理记录</h2><small>证据 → 理解 → 通知 → 发送</small></div><div class="section-body"><div class="process-summary"><div><small>语义处理</small><b id="semantic-status">已完成 · 材料版本 1</b></div><div><small>通知决定</small><b>通知 · 有命题值得通知</b></div><div><small>端到端耗时</small><b class="mono">23.6 s</b></div></div>
+          <details class="process-details" id="timeline-record"><summary>处理时间线 <span class="summary-note">7 个步骤</span></summary><ol class="timeline"><li><b>收到</b><span>来源 t.me</span><span class="duration mono">07:00:26</span></li><li><b>门禁</b><span>已送审 · 关联 SAND</span><span class="duration mono">+ 0 ms</span></li><li><b>材料版本</b><span>第 1 版证据</span><span class="duration mono">+ 2.7 s</span></li><li><b>语义理解</b><span>形成新的事件更新</span><span class="duration mono">+ 14.8 s</span></li><li><b>采用更新</b><span>新事实 ×2 · 2 条命题</span><span class="duration mono">+ 7 ms</span></li><li><b>通知决策</b><span>选择通知 2 条命题</span><span class="duration mono">+ 6.1 s</span></li><li><b>推送</b><span>已送达 · 2 条命题</span><span class="duration mono">07:00:49</span></li></ol></details>
+          <details class="process-details" id="decision-record"><summary>逐条通知决定 <span class="summary-note">2 条命题</span></summary><table class="score-table"><thead><tr><th scope="col">对应命题</th><th scope="col">决定</th><th scope="col">增量重要性</th></tr></thead><tbody><tr><td><a href="#news-claim-1">命题 01</a></td><td>通知</td><td class="mono">2.95</td></tr><tr><td><a href="#news-claim-2">命题 02</a></td><td>通知</td><td class="mono">2.96</td></tr></tbody></table><p class="meta" style="padding-bottom:12px">记录理由：新增信息值得推送。推送阈值 ≥ 2.3，重点阈值 ≥ 2.98。</p></details>
+          <details class="process-details" id="delivery-record"><summary>实际发送记录 <span class="summary-note">1 条</span></summary><div class="receipt"><div class="receipt-top"><span class="badge done">已送达</span><time class="meta">2026-10-02 07:00:49 UTC</time></div><p class="meta" style="margin-bottom:8px">实际发送正文 · 保留已记录内容</p><div class="well receipt-body">Bithumb解除The Sandbox(SAND)交易警示指定
+
+The Sandbox (SAND)已被从交易警示工具指定中移除。
+
+Bithumb已将The Sandbox (SAND)从交易警示工具列表中移除。</div></div></details>
+        </div></section>
+          </div>
+        </div>
+        <aside class="panel notification" aria-labelledby="notification-title"><div class="section-head"><h2 id="notification-title">通知与送达</h2></div><div class="section-body"><p class="decision-lead">新增信息值得通知</p><p class="decision-note">两条命题均被选择推送。</p><div class="decision-rows"><div class="decision-row"><a href="#news-claim-1">命题 01</a><b>通知</b></div><div class="decision-row"><a href="#news-claim-2">命题 02</a><b>通知</b></div></div><div class="delivery-summary"><span class="meta">实际发送</span><b id="delivery-status">已送达 · 1 条记录</b></div><p class="meta" id="delivery-time">2026-10-02 07:00:49 UTC</p><a class="text-link" href="#delivery-record" data-open="delivery-record">查看发送正文与记录 →</a><br><a class="text-link" href="#decision-record" data-open="decision-record">查看逐条通知理由 →</a></div></aside>
       </div>
-    </div>
-  </body>
+      <details class="panel technical" id="technical"><summary>技术详情 <span class="summary-note">事件标识 · 报道关联</span></summary><div class="technical-body"><dl class="fields"><div><dt>Event ID</dt><dd><code>5f974d9ed7f4b56c1ba06cd83c22984a8ee061ecec550031542696dd0af48421</code></dd></div><div><dt>材料版本</dt><dd id="technical-revision">已完成 1 / 最新 1</dd></div></dl><label for="related-item">同一报道的关联事件</label><br><select id="related-item"><option value="">选择报道</option><option value="first">샌드박스(SAND) 거래유의종목 지정 해제</option></select><button class="button" id="related-query" disabled>查看关联事件 · 演示</button><p class="meta" id="related-result" hidden>此原型只演示入口，关联结果以实际查询为准。</p></div></details>
+      <p class="footer-note">设计稿 · 基于指定事件的静态内容；中文释义为设计文案，报价为观察快照。</p>
+      <div class="prototype-controls"><label for="state-preview">查看边界状态</label><select id="state-preview"><option value="normal">正常 · 已完成并送达</option><option value="semantic">新材料解析失败 · 保留旧内容</option><option value="delivery">新通知发送失败 · 保留历史回执</option><option value="quote">报价不可用</option><option value="stale">详情读取失败 · 保留缓存</option></select></div>
+    </main>
+  </div>
+  <nav class="cockpit-bottom-nav" aria-label="移动工作台导航">
+    <a href="http://localhost:8765/news" data-active="true" aria-current="page"><svg aria-hidden="true" class="icon"><use href="#i-stream"/></svg><span>事件流</span></a>
+    <a href="http://localhost:8765/news/market"><svg aria-hidden="true" class="icon"><use href="#i-market"/></svg><span>市场研究</span></a>
+    <a href="http://localhost:8765/news/wallets"><svg aria-hidden="true" class="icon"><use href="#i-wallet"/></svg><span>钱包研究</span></a>
+    <a href="http://localhost:8765/trading"><svg aria-hidden="true" class="icon"><use href="#i-trade"/></svg><span>交易执行</span></a>
+  </nav>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script>
+    const eventUrl = 'http://localhost:8765/news/events/5f974d9ed7f4b56c1ba06cd83c22984a8ee061ecec550031542696dd0af48421';
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    const panels = tabs.map(tab => document.getElementById(tab.getAttribute('aria-controls')));
+    const contentSlot = document.querySelector('.tab-content');
+    let reservedHeight = 0;
+    history.scrollRestoration = 'manual';
+    let toastTimer;
+    function notify(message) {
+      const toast = document.querySelector('#toast');
+      toast.textContent = message;
+      toast.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toast.hidden = true; }, 3000);
+    }
+    function reserveHeight() {
+      reservedHeight = Math.max(reservedHeight, contentSlot.getBoundingClientRect().height, contentSlot.scrollHeight);
+      contentSlot.style.minHeight = Math.ceil(reservedHeight) + 'px';
+    }
+    function activate(panelId, { target = null, updateHistory = true, replaceHistory = false, moveFocus = false } = {}) {
+      const index = panels.findIndex(panel => panel.id === panelId);
+      if (index < 0) return;
+      reserveHeight();
+      panels.forEach((panel, position) => { panel.hidden = position !== index; });
+      tabs.forEach((tab, position) => {
+        tab.setAttribute('aria-selected', String(position === index));
+        tab.tabIndex = position === index ? 0 : -1;
+      });
+      if (target) {
+        for (let node = target; node && node !== panels[index]; node = node.parentElement) {
+          if (node.tagName === 'DETAILS') node.open = true;
+        }
+        if (moveFocus) {
+          if (!target.matches('a, button, input, select, textarea, summary, [tabindex]')) target.tabIndex = -1;
+          target.focus({ preventScroll: true });
+          target.classList.remove('flash');
+          void target.offsetWidth;
+          target.classList.add('flash');
+        }
+      }
+      reserveHeight();
+      if (updateHistory) {
+        const url = new URL(location.href);
+        url.hash = '';
+        url.searchParams.set('tab', tabs[index].dataset.tab);
+        if (target && target !== panels[index]) url.searchParams.set('focus', target.id);
+        else url.searchParams.delete('focus');
+        if (replaceHistory) history.replaceState(null, '', url);
+        else if (url.href !== location.href) history.pushState(null, '', url);
+      }
+    }
+    function restoreView() {
+      const query = new URLSearchParams(location.search);
+      const tab = tabs.find(tab => tab.dataset.tab === query.get('tab')) || tabs[0];
+      const panel = document.getElementById(tab.getAttribute('aria-controls'));
+      const target = document.getElementById(query.get('focus'));
+      activate(panel.id, { target: panel.contains(target) ? target : null, replaceHistory: true });
+      if (document.activeElement.closest('[role="tabpanel"][hidden]')) tabs.find(tab => tab.getAttribute('aria-selected') === 'true').focus({ preventScroll: true });
+    }
+    tabs.forEach(tab => tab.addEventListener('click', () => activate(tab.getAttribute('aria-controls'))));
+    document.querySelector('[role="tablist"]').addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      const current = tabs.indexOf(document.activeElement);
+      if (current < 0) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (current + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      activate(tabs[next].getAttribute('aria-controls'));
+      tabs[next].focus({ preventScroll: true });
+    });
+    document.querySelectorAll('a[href^="#"]').forEach(link => link.addEventListener('click', event => {
+      const target = document.getElementById(link.getAttribute('href').slice(1));
+      const panel = target?.closest('[role="tabpanel"]');
+      if (!panel) return;
+      event.preventDefault();
+      activate(panel.id, { target, moveFocus: true });
+    }));
+    window.addEventListener('resize', () => {
+      reservedHeight = 0;
+      contentSlot.style.minHeight = '';
+      reserveHeight();
+    });
+    document.querySelectorAll('[data-lang]').forEach(button => button.addEventListener('click', () => {
+      document.querySelectorAll('[data-lang]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+      document.querySelectorAll('.statement').forEach(statement => { statement.textContent = statement.dataset[button.dataset.lang]; });
+      document.querySelector('#language-note').textContent = button.dataset.lang === 'zh' ? '中文释义为设计示例，可切换查看已记录命题。' : '以下保留已记录的命题原文。';
+    }));
+    document.querySelector('#copy-link').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(eventUrl); notify('已复制当前事件链接'); }
+      catch { notify('请复制事件链接：' + eventUrl); }
+    });
+    document.querySelector('#search-form').addEventListener('submit', event => { event.preventDefault(); notify('顶部搜索沿用现有工作台；此设计稿只演示详情交互'); });
+    document.addEventListener('keydown', event => {
+      if (event.key === '/' && !event.ctrlKey && !event.metaKey && !['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) {
+        event.preventDefault(); document.querySelector('#search-form input').focus();
+      }
+    });
+    document.querySelector('#related-item').addEventListener('change', event => { document.querySelector('#related-query').disabled = !event.target.value; });
+    document.querySelector('#related-query').addEventListener('click', () => { document.querySelector('#related-result').hidden = false; });
+    const messages = {
+      semantic: ['新材料解析失败，当前内容仍可阅读', '演示状态：最新输入未完成；下面保留上一版已采用内容与已有发送记录。'],
+      delivery: ['新通知发送失败，历史回执仍保留', '演示状态：已有送达记录属于历史发送；本次新增发送失败，不能由旧记录推断本次成功。'],
+      stale: ['详情暂时无法刷新，正在显示缓存', '演示状态：保留最后成功读取的内容，标记读取失败并提供重试。']
+    };
+    function previewState(state) {
+      const message = document.querySelector('#state-message');
+      message.hidden = !messages[state];
+      if (messages[state]) {
+        document.querySelector('#state-heading').textContent = messages[state][0];
+        document.querySelector('#state-description').textContent = messages[state][1];
+      }
+      document.querySelector('#state-reset').hidden = state !== 'stale';
+      document.querySelector('#event-status-text').textContent = state === 'semantic' ? '最新解析失败' : state === 'delivery' ? '最新发送失败' : '已推送';
+      const badge = document.querySelector('#event-status');
+      badge.classList.toggle('done', !['semantic', 'delivery'].includes(state));
+      document.querySelector('#semantic-status').textContent = state === 'semantic' ? '旧版已完成 · 最新失败' : '已完成 · 材料版本 1';
+      document.querySelector('#delivery-status').textContent = state === 'delivery' ? '新发送失败 · 历史 1 条送达' : '已送达 · 1 条记录';
+      document.querySelector('#technical-revision').textContent = state === 'semantic' ? '已采用 1 / 最新 2（失败演示）' : '已完成 1 / 最新 1';
+      const historical = ['semantic', 'delivery'].includes(state);
+      document.querySelector('#processing-title').textContent = historical ? '已有处理记录 · 历史' : '处理记录';
+      document.querySelector('#timeline-record .summary-note').textContent = historical ? '上一版 · 7 个步骤' : '7 个步骤';
+      document.querySelector('#delivery-record .summary-note').textContent = historical ? '历史送达 · 1 条' : '1 条';
+      document.querySelector('#delivery-record .badge').textContent = historical ? '历史已送达' : '已送达';
+      document.querySelector('#news-processing .process-summary > div:last-child small').textContent = historical ? '上一版端到端耗时' : '端到端耗时';
+      document.querySelector('#delivery-time').textContent = historical ? '历史记录 · 2026-10-02 07:00:49 UTC' : '2026-10-02 07:00:49 UTC';
+      document.querySelector('#market-quote').hidden = state === 'quote';
+      document.querySelector('#market-empty').hidden = state !== 'quote';
+    }
+    document.querySelector('#state-preview').addEventListener('change', event => { previewState(event.target.value); window.scrollTo({ top: 0, behavior: 'smooth' }); });
+    function resetState() { document.querySelector('#state-preview').value = 'normal'; previewState('normal'); notify('已恢复正常示例'); }
+    document.querySelector('#market-retry').addEventListener('click', resetState);
+    document.querySelector('#state-reset').addEventListener('click', resetState);
+    window.addEventListener('popstate', restoreView);
+    restoreView();
+  </script>
+</body>
 </html>

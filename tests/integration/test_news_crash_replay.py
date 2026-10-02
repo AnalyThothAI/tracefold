@@ -44,6 +44,7 @@ from tracefold.news.bus import (
     RK_RAW_LIVE,
     BrokerUnavailable,
     BusMessage,
+    DeferError,
     TransientError,
     new_trace_id,
     now_ms,
@@ -93,6 +94,7 @@ class FaultInjectingDatabase:
     def __init__(self, conn: Any) -> None:
         self.conn = conn
         self.fail_operations: set[str] = set()
+        self.failure_type: type[Exception] = TransientError
         self.seen: list[str] = []
         self._port = WorkerNewsDatabase(self)
 
@@ -102,7 +104,7 @@ class FaultInjectingDatabase:
     async def tx(self, name: str, fn: Any, *, timeout_seconds: float = 3.0) -> Any:
         self.seen.append(name)
         if name in self.fail_operations:
-            raise TransientError(f"injected_fault:{name}")
+            raise self.failure_type(f"injected_fault:{name}")
         return await self._port.tx(name, fn, timeout_seconds=timeout_seconds)
 
     @contextmanager
@@ -126,11 +128,11 @@ def _module_connection(postgres_module_clone_dsn: str):
 def conn(_module_connection: Any):
     """One private database for the module; each scenario starts from an empty News plane.
 
-    Truncating three roots is enough: `news_events` references `news_items`, and every projection,
-    verdict, delivery and asset row hangs off one of those, so `CASCADE` reaches all of them.
+    Events, projections, verdicts, deliveries and assets cascade from the Items. Generic durable
+    jobs have no Item foreign key, so clear them explicitly before reusing a provider record identity.
     """
 
-    _module_connection.execute("TRUNCATE news_items, news_market_observations RESTART IDENTITY CASCADE")
+    _module_connection.execute("TRUNCATE news_items, news_jobs, news_market_observations RESTART IDENTITY CASCADE")
     _module_connection.execute(
         "UPDATE news_collectors SET incidents='[]',state=state || "
         "'{\"next_incident_id\": 1}'::jsonb WHERE collector_id='opennews'"
@@ -277,6 +279,60 @@ def _recovery_incident(conn: Any, incident_id: int) -> dict[str, Any]:
     ).fetchone()
     assert row is not None
     return dict(row)
+
+
+@pytest.mark.parametrize("failure_type", [DeferError, TransientError])
+def test_frame_accounting_failure_leaves_the_next_frame_to_close_the_incident_once(
+    conn: Any, monkeypatch: pytest.MonkeyPatch, failure_type: type[Exception]
+) -> None:
+    stamp = [now_ms() - 10_000]
+    monkeypatch.setattr("tracefold.news.pipeline.receiver.now_ms", lambda: stamp[0])
+    hit = _one_hit()
+    strategy_id = str((hit.get("strategy") or {}).get("id") or "")
+    bus = RecordingBus()
+    db = FaultInjectingDatabase(conn)
+    db.failure_type = failure_type
+    requests: list[int] = []
+
+    class Recovery:
+        def request(self) -> None:
+            requests.append(stamp[0])
+
+    receiver = OpenNewsReceiver(bus=bus, db=db, ws_client=None, recovery=Recovery())
+
+    async def scenario() -> None:
+        bus.fail_kinds = {"raw"}
+        await receiver._publish_frame({"params": hit}, strategy_id=strategy_id)
+        incident = conn.execute("SELECT * FROM (" + _INCIDENTS_SQL + ") incidents").fetchone()
+        incident_id = int(incident["incident_id"])
+
+        bus.fail_kinds.clear()
+        db.fail_operations = {"news_ingest_frame"}
+        stamp[0] += 1
+        await receiver._publish_frame({"params": hit}, strategy_id=strategy_id)
+        assert len(bus.of_kind("raw")) == 1
+        assert _recovery_incident(conn, incident_id)["closed_at_ms"] is None
+        assert receiver._broker_incident_open and receiver._last_recorded_frame_ms is None
+        assert requests == []
+
+        db.fail_operations.clear()
+        stamp[0] += 1
+        await receiver._publish_frame({"params": hit}, strategy_id=strategy_id)
+        closed_at = stamp[0]
+        assert _recovery_incident(conn, incident_id)["closed_at_ms"] == closed_at
+        assert not receiver._broker_incident_open
+        assert requests == [closed_at]
+
+        # A later accounting transaction sees the same closed interval and cannot request it twice.
+        stamp[0] += 5_001
+        await receiver._publish_frame({"params": hit}, strategy_id=strategy_id)
+        assert len(bus.of_kind("raw")) == 3
+        incident = _recovery_incident(conn, incident_id)
+        assert (incident["closed_at_ms"], incident["recovery_status"]) == (closed_at, "pending")
+        assert requests == [closed_at]
+        assert _count(conn, "SELECT count(*) AS n FROM (" + _INCIDENTS_SQL + ") incidents") == 1
+
+    asyncio.run(scenario())
 
 
 def test_official_empty_history_without_total_durably_recovers_the_incident(conn) -> None:
