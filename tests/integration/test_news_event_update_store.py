@@ -2484,6 +2484,7 @@ def test_slow_reader_permission_releases_event_for_admission(monkeypatch):
 
     pg, db, clock = store()
     head = adopted_head(pg.semantic, clock)
+    seed_event("ev-incoming", fingerprint="incoming")
     snapshot = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
     plan = notify_plan(head, snapshot.reader.revision)
     started = Event()
@@ -2501,16 +2502,23 @@ def test_slow_reader_permission_releases_event_for_admission(monkeypatch):
     async def race():
         planning = asyncio.create_task(pg.notifications.atomic_record_plan(plan))
         assert await asyncio.to_thread(started.wait, 3)
+
+        def admission(repos):
+            assert repos.news.add_member(
+                event_id=EVENT,
+                item_id="it-ev-incoming",
+                joined_at_ms=clock.now_ms,
+                match_kind="near",
+                jaccard_estimate=0.9,
+                provider_score=90,
+                fact_id="incoming",
+                fact_text="New evidence",
+                now_ms=clock.now_ms,
+            )
+            repos.news.semantic_work.request_semantic_revision(event_id=EVENT, lineage_id="same", now_ms=clock.now_ms)
+
         begin = monotonic()
-        await asyncio.wait_for(
-            db.tx(
-                "admission",
-                lambda r: r.news.semantic_work.request_semantic_revision(
-                    event_id=EVENT, lineage_id="same", now_ms=clock.now_ms
-                ),
-            ),
-            0.25,
-        )
+        await asyncio.wait_for(db.tx("admission", admission), 0.25)
         assert monotonic() - begin < 0.25
         return await planning
 
