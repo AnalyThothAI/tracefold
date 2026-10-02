@@ -5,11 +5,14 @@
     "business5-reader-additional-native.jsonl": "5dc62dec5c251cbb16c4c6a371c47f45c14cd439b0d6b0ec9e10b4e0ce883a03",
     "business5-reader-final-input.jsonl": "351e24d8b5eb7b9a862a2181892bceae053bb6df17dd6af01d2065b61c071f2d",
     "business5-reader-additional-input.jsonl": "fd4fa98dcbfdd5961625eee9e85b4e1c522637305ecf60dc898a43d2757c0d9c",
-    "business5-mini-provisional-contexts.jsonl": "334f2a6c30785fcb37dfdb4c3410ca7e0cf7e94db9d52ded5f7b9474f226a6f5"
+    "business5-mini-provisional-contexts.jsonl": "334f2a6c30785fcb37dfdb4c3410ca7e0cf7e94db9d52ded5f7b9474f226a6f5",
+    "business5-final-mini-k16-English-contexts.jsonl": "307b7f50d56a568c755d85f9952b43b559c6d8bc015f3ff38c3a6eb7bd3a8914",
+    "business5-final-mini-k16-native.jsonl": "ec5b9f73a22505b28b7a4da90c06b830655760443a82729367817088cf064ec9"
   },
   "limitations": [
     "Fresh English Claim judgments use controlled fixed contexts selected with historical Claim vectors. These are not new English-Claim retrieval results.",
-    "The different-lookback negative uses a single actual prior three-month receipt, not the complete production model request."
+    "The different-lookback negative uses a single actual prior three-month receipt, not the complete production model request.",
+    "Final k16 cases use actual fresh English probe vectors and selection, but no newly reconstructed chronological semantic adoption or links."
   ],
   "cases": [
     {
@@ -461,6 +464,426 @@
       "input_sha256": "fef14bd4a12fd924d5b7ed3a9d21851d74c9a4c456d7535d6f24edf177bb847d",
       "program_identity": "news_reader_judge:7acdc54a6cfd2bc4e7f9f12b830e6943c98778f47b7e29fa83e5a2fbf0b76c51",
       "context_protocol": "recorded_first_reader_decision_and_exact_frozen_sent_message_bodies",
+      "expected_outcome": "push",
+      "expected_anchor": null
+    },
+    {
+      "case_id": "cl:30861aa076f3f8347b6aaa012e01e7963309fa03dcb69e78f774d74439d861b6:final_k16_English",
+      "statement": "If the USS George Washington remains in the region at that time, the U.S. military will deploy three carrier strike groups in the Middle East simultaneously, the first time since April.",
+      "fields": {
+        "subject": "U.S. military",
+        "action": "deploy three carrier strike groups in the Middle East simultaneously",
+        "object": "three carrier strike groups",
+        "speaker": null,
+        "conditions": [
+          "if the USS George Washington remains in the region at that time"
+        ],
+        "quantities": [
+          {
+            "name": "carrier strike groups",
+            "value": "3",
+            "unit": "carrier strike groups",
+            "period": null
+          }
+        ],
+        "effective_at": null,
+        "occurred_at": null,
+        "statistical_period": null,
+        "polarity": "affirmative",
+        "mode": "forecast",
+        "actor_role": "foreign_or_defense_official",
+        "phase": "proposed",
+        "content_kind": "state_change",
+        "assets": []
+      },
+      "novelty": {
+        "novelty": "unlinked",
+        "intent_id": null,
+        "settled_at_ms": null,
+        "path": [],
+        "linked_intents": []
+      },
+      "first_available_at_ms": 1790877356297,
+      "message_intents": [
+        "intent:b56ecd92ca712db94e98b119b9bd3f2bfc9943320303bd9299fcc9c735dcd7b8",
+        "intent:283f1d1b2a5f00e0ff392d527dc0baf0a425102ef0daa7f3f5560a552213b8f7",
+        "intent:ae420dd32a941c22c7040f90756561cca63bcaa68511810cf037df5c72859a95",
+        "intent:4fb10a9717bff111a063f42b1368d75203ec7bd15c797f4781332dacca00a884"
+      ],
+      "judgment": {
+        "status": "available",
+        "backend": "native",
+        "identity": "news_reader_native:437d5b17560e91c185fdf6e30f0928d980782770b17de3da96784836e574b7d5",
+        "served_model": "typesafe/jev-1.13-20260917",
+        "importance": {
+          "value": 3.01,
+          "probabilities": [
+            0.01,
+            0.0,
+            0.04,
+            0.87,
+            0.08
+          ],
+          "confidence": 0.87
+        },
+        "anchor": {
+          "probabilities": {
+            "m3": 0.0,
+            "m4": 0.0,
+            "none": 0.69,
+            "m2": 0.31,
+            "m1": 0.0
+          },
+          "confidence": 0.61
+        },
+        "error_code": null
+      },
+      "input_sha256": "3ef655c6cb637f98b85d230edba7d8044937b32caa7820a9539b7fe1ffb8a76b",
+      "program_identity": "news_reader_judge:7acdc54a6cfd2bc4e7f9f12b830e6943c98778f47b7e29fa83e5a2fbf0b76c51",
+      "context_protocol": "actual_cold_fresh_English_probe_final_Mini_k16_no_new_semantic_adoption",
+      "expected_outcome": "push",
+      "expected_anchor": null
+    },
+    {
+      "case_id": "cl:96fff9553ec5ea5e6f420390dc053ea0cf1541dd6834e338fd498afe1ac6812f:final_k16_English",
+      "statement": "The United States sanctioned Kremlin-backed fintech A7 for allegedly assisting Iran.",
+      "fields": {
+        "subject": "United States",
+        "action": "sanctioned",
+        "object": "Kremlin-backed fintech A7",
+        "speaker": null,
+        "conditions": [],
+        "quantities": [],
+        "effective_at": null,
+        "occurred_at": null,
+        "statistical_period": null,
+        "polarity": "affirmative",
+        "mode": "decision",
+        "actor_role": "economic_policy_official",
+        "phase": "announced",
+        "content_kind": "official_measure",
+        "assets": []
+      },
+      "novelty": {
+        "novelty": "unlinked",
+        "intent_id": null,
+        "settled_at_ms": null,
+        "path": [],
+        "linked_intents": []
+      },
+      "first_available_at_ms": 1790890648997,
+      "message_intents": [
+        "intent:f3b806cc413f47ca29e05d98c3ab51116d286e6ed37fa020694465a6774dda10",
+        "intent:097ad9c77e81fe3808993b29c779be1afededdfed1e9246978212b3253660e66",
+        "intent:f98951329c4258a9047ab9ef40260b6d6c2d76ec73080826f09548bb70aa0f05",
+        "intent:da2f1755fca2c16ccc9a6e7abadb32be67d10cd6194cc65c3d3aa43891091eee",
+        "intent:c1363ea92d10bf331462072d2874550e47fd8d2052730c2c9ac9dd4e2a858923",
+        "intent:ada4bc61d2728707c027ed887c71f06a0c5f35ea467eb6862a42c4105bb8d3c4",
+        "intent:3163a84eaf21efec2a5e2c1dbbd9dc2270cd63d1ca1c8d2f25d2cf0096f19139",
+        "intent:0addcbb1f40e4e8d8013e6b45995100b8198e6e7e92e54f764088f60fb329e9d",
+        "intent:7949749de809665ea8716ca431b499b00cf0e2c8375d2797cd9525e2b56d7a6f",
+        "intent:32ab2803e83fa38baf4b0291d980f5ffb1e6d1d23a734304cf8a12cbe6aa1f8c",
+        "intent:d6c692928ce7448a48d04df361139c3f23e6a1fbb0be7cfd8cbe3fea8163a5ef",
+        "intent:b5feeabc256966df4cdf8ffd7d614141d7a109c7c515a43aeb7818c365168da4",
+        "intent:0480b6ec34bbe5b7eea02f8367a561a7f845d47e7c166c723397bafb1bb478fb"
+      ],
+      "judgment": {
+        "status": "available",
+        "backend": "native",
+        "identity": "news_reader_native:437d5b17560e91c185fdf6e30f0928d980782770b17de3da96784836e574b7d5",
+        "served_model": "typesafe/jev-1.13-20260917",
+        "importance": {
+          "value": 2.58,
+          "probabilities": [
+            0.07,
+            0.07,
+            0.07,
+            0.79,
+            0.0
+          ],
+          "confidence": 0.66
+        },
+        "anchor": {
+          "probabilities": {
+            "m11": 0.0,
+            "m2": 0.0,
+            "m7": 0.0,
+            "m3": 0.0,
+            "m4": 0.0,
+            "m1": 0.0,
+            "m10": 0.0,
+            "m8": 0.0,
+            "none": 0.11,
+            "m9": 0.16,
+            "m12": 0.0,
+            "m13": 0.0,
+            "m5": 0.73,
+            "m6": 0.0
+          },
+          "confidence": 0.7
+        },
+        "error_code": null
+      },
+      "input_sha256": "76e5d1ab0169c065c2dc27d985c9fe95af47209abd4f51990b0c9db584284c96",
+      "program_identity": "news_reader_judge:7acdc54a6cfd2bc4e7f9f12b830e6943c98778f47b7e29fa83e5a2fbf0b76c51",
+      "context_protocol": "actual_cold_fresh_English_probe_final_Mini_k16_no_new_semantic_adoption",
+      "expected_outcome": "push",
+      "expected_anchor": "intent:c1363ea92d10bf331462072d2874550e47fd8d2052730c2c9ac9dd4e2a858923"
+    },
+    {
+      "case_id": "cl:dcb5ef02114155ac56649cef6257f3ddea7cce2836a166db4ce3e1f4e07b52a4:final_k16_English",
+      "statement": "Reuters reported, citing sources, that the United States hopes the European Union will release 120 million barrels of diesel within the next six months.",
+      "fields": {
+        "subject": "United States",
+        "action": "hopes the European Union will release 120 million barrels of diesel within the next six months",
+        "object": "EU diesel release",
+        "speaker": "sources",
+        "conditions": [],
+        "quantities": [
+          {
+            "name": "diesel release",
+            "value": "120",
+            "unit": "million barrels",
+            "period": "next six months"
+          }
+        ],
+        "effective_at": "within the next six months",
+        "occurred_at": null,
+        "statistical_period": null,
+        "polarity": "affirmative",
+        "mode": "demand",
+        "actor_role": "unknown",
+        "phase": "proposed",
+        "content_kind": "other",
+        "assets": []
+      },
+      "novelty": {
+        "novelty": "unlinked",
+        "intent_id": null,
+        "settled_at_ms": null,
+        "path": [],
+        "linked_intents": []
+      },
+      "first_available_at_ms": 1790905082713,
+      "message_intents": [
+        "intent:586917b62ca81435343c255a7f8de4f47826870a7229e74060a6ae617a0958d7",
+        "intent:27399456d0ee3ce831423f5ca3506d3ea47b17e721d3028b8b66378d25843274",
+        "intent:96fa38b39400bed7d465bf2151a30070a1463e9af36d810b93663583a97c6517",
+        "intent:ee781dee7c9bff14420367004d1b054c9d23ae32e49a5b7875d3c6074485a1df",
+        "intent:ec998a9359a9703ede110d2359fd87ec120364401bd408ccd0c56de5e729c827",
+        "intent:d1ee76a696110986d72ac28b4107c1edeeced1000a0efe763feeace23042aeda",
+        "intent:3e562ac66c4a5d452192e01346ac33047c46623fb45e3a80c1515a72c927b25f",
+        "intent:707cee279106f2535f03b51a8d461cf8600b2108c02dc41a2a49e9f85801c8b9",
+        "intent:38f46be276b68b9f41bee11cbd57f29379c3c0d6e7955b25ac72adc8e8ee8918",
+        "intent:2b581ebbc503df1b4a73a2bbfc970c5d7e5ea0303b042d281372c5f9a00416dd",
+        "intent:37a57dfee3370fda87283ef83e8c3bb54e6a4debd4fae22baf47d48f91cda8c9",
+        "intent:bf940442da691c377c5bd345a20e19eb77cec93e78f09edf982396f25866f1fe",
+        "intent:bd367d0ccbddf48c1f4b93c78ae4dac3441b1a3e0a5ac52ecf4ef0f56a0c9e7d"
+      ],
+      "judgment": {
+        "status": "available",
+        "backend": "native",
+        "identity": "news_reader_native:437d5b17560e91c185fdf6e30f0928d980782770b17de3da96784836e574b7d5",
+        "served_model": "typesafe/jev-1.13-20260917",
+        "importance": {
+          "value": 2.51,
+          "probabilities": [
+            0.03,
+            0.07,
+            0.26,
+            0.64,
+            0.0
+          ],
+          "confidence": 0.59
+        },
+        "anchor": {
+          "probabilities": {
+            "m11": 0.0,
+            "m8": 0.0,
+            "m6": 0.0,
+            "m7": 0.0,
+            "m5": 0.01,
+            "m13": 0.0,
+            "m3": 0.43,
+            "m2": 0.21,
+            "m4": 0.0,
+            "none": 0.32,
+            "m10": 0.0,
+            "m12": 0.0,
+            "m9": 0.0,
+            "m1": 0.03
+          },
+          "confidence": 0.38
+        },
+        "error_code": null
+      },
+      "input_sha256": "8cf567e0f3af52b00029690abfea4167beb36257203b3d77e24e80841b1b085c",
+      "program_identity": "news_reader_judge:7acdc54a6cfd2bc4e7f9f12b830e6943c98778f47b7e29fa83e5a2fbf0b76c51",
+      "context_protocol": "actual_cold_fresh_English_probe_final_Mini_k16_no_new_semantic_adoption",
+      "expected_outcome": "push",
+      "expected_anchor": null
+    },
+    {
+      "case_id": "cl:9480db372740927c193d659349aab485e07f52b84d99133a8b98628b54f8251a:final_k16_English",
+      "statement": "The dollar reached a 17-month high as a global bond rout hit the euro.",
+      "fields": {
+        "subject": "dollar",
+        "action": "reached a 17-month high",
+        "object": "euro",
+        "speaker": null,
+        "conditions": [],
+        "quantities": [],
+        "effective_at": null,
+        "occurred_at": null,
+        "statistical_period": null,
+        "polarity": "affirmative",
+        "mode": "observation",
+        "actor_role": "unknown",
+        "phase": null,
+        "content_kind": "period_record",
+        "assets": []
+      },
+      "novelty": {
+        "novelty": "unlinked",
+        "intent_id": null,
+        "settled_at_ms": null,
+        "path": [],
+        "linked_intents": []
+      },
+      "first_available_at_ms": 1790905760838,
+      "message_intents": [
+        "intent:9bad56c17e667caafb9e28c7140132ac25373c1364e3d96a72a60c1b38c391b8",
+        "intent:70feb83415d35941149ef7d4febcd432735789cce55abfcac521736b4f1457bf",
+        "intent:51bc18050d90dc53aec3a410ba17ec084c744458dacd7742672660dd9bd2389f",
+        "intent:f3000ce515f16cb3e15ed79f9f048e3688ecfa83af716f042f8080bfa2ac1598",
+        "intent:12652de18b40b1da2bdcc9eeaf618d653f107cc3530a96c29f802f326d4ebf6e",
+        "intent:92f85f7deb36810b4123b0bd40924b8eddf3e9f25e08e2ba3c18cd2230bdcf00",
+        "intent:3b08a5fe60f0e839aabc12339e284318b8d13b8755cec2e6e1a62bc73c8d0c3d",
+        "intent:c6dcd18c1e8122c70b4284cb2f8932e6680ebcf608ced5aad97cccc208c8f288",
+        "intent:8c7d69060faf8ff39e6e725d9310942897e1bbca67d2f413b226eb137cc6ccee",
+        "intent:187e4708562112072c100e0039ebccb8224db33dc52c1bb6b478a9995496b542",
+        "intent:2dc2e815eefc80b1f0c8cd0ff2fbc99d14ead3b0af4aab5c972510a99db7cf46",
+        "intent:e8fc9eadec42baaf2bfb93545df90c1415b9ebe33dca091243ec8378d02a2511",
+        "intent:4d6a294892912dc13e9d14ef83d1cb2f87307402bfd71e4c57703d9383a605bc",
+        "intent:38f6dfef55b8ca7affd48f779e67d6f4b9978b2ad78289831f09746fbf8939a7",
+        "intent:3f3738647036aa3054c6c8b1754812e574b59a6c006add3932f9f0fd7ae30c80",
+        "intent:7c80b531ae15637a8663a50ec065243b13f750b8b86788c3120b5eda66597e54"
+      ],
+      "judgment": {
+        "status": "available",
+        "backend": "native",
+        "identity": "news_reader_native:437d5b17560e91c185fdf6e30f0928d980782770b17de3da96784836e574b7d5",
+        "served_model": "typesafe/jev-1.13-20260917",
+        "importance": {
+          "value": 2.08,
+          "probabilities": [
+            0.04,
+            0.38,
+            0.04,
+            0.54,
+            0.0
+          ],
+          "confidence": 0.24
+        },
+        "anchor": {
+          "probabilities": {
+            "m8": 0.0,
+            "m1": 0.74,
+            "m11": 0.0,
+            "m10": 0.0,
+            "m15": 0.0,
+            "m9": 0.0,
+            "m12": 0.0,
+            "m6": 0.0,
+            "m2": 0.0,
+            "none": 0.22,
+            "m13": 0.0,
+            "m5": 0.0,
+            "m7": 0.0,
+            "m16": 0.0,
+            "m14": 0.0,
+            "m4": 0.0,
+            "m3": 0.04
+          },
+          "confidence": 0.71
+        },
+        "error_code": null
+      },
+      "input_sha256": "d4af2ee38facfb88c571b8d082ff569a9c9f8f9da808b7d031c3453bab3deb9c",
+      "program_identity": "news_reader_judge:7acdc54a6cfd2bc4e7f9f12b830e6943c98778f47b7e29fa83e5a2fbf0b76c51",
+      "context_protocol": "actual_cold_fresh_English_probe_final_Mini_k16_no_new_semantic_adoption",
+      "expected_outcome": "feed",
+      "expected_anchor": null
+    },
+    {
+      "case_id": "cl:7f18598187501522cdacb7521af4d5dbafd122ff686098ac3f2aa2f857c47b80:final_k16_English",
+      "statement": "The Treasury said A7 Network used third-country companies and falsified trade documents to evade sanctions.",
+      "fields": {
+        "subject": "US Treasury Department",
+        "action": "said A7 Network used third-country companies and falsified trade documents to evade sanctions",
+        "object": "A7 Network's sanctions evasion methods",
+        "speaker": "US Treasury Department",
+        "conditions": [],
+        "quantities": [],
+        "effective_at": null,
+        "occurred_at": null,
+        "statistical_period": null,
+        "polarity": "affirmative",
+        "mode": "assertion",
+        "actor_role": "economic_policy_official",
+        "phase": null,
+        "content_kind": "other",
+        "assets": []
+      },
+      "novelty": {
+        "novelty": "unlinked",
+        "intent_id": null,
+        "settled_at_ms": null,
+        "path": [],
+        "linked_intents": []
+      },
+      "first_available_at_ms": 1790912077571,
+      "message_intents": [
+        "intent:7949749de809665ea8716ca431b499b00cf0e2c8375d2797cd9525e2b56d7a6f",
+        "intent:f98951329c4258a9047ab9ef40260b6d6c2d76ec73080826f09548bb70aa0f05",
+        "intent:c1363ea92d10bf331462072d2874550e47fd8d2052730c2c9ac9dd4e2a858923",
+        "intent:34c5442ba8503d632559bfa147ac6954e1a3525d527a83c2daedc2111fb161bb",
+        "intent:b268b7b19401aa2cf3fd4663baf4c4ed559e3c2d7687d7c3896b264ffecd2296",
+        "intent:46bad61fbfb0e0ef1e7018822e41ef810dc8214c932bca6caa98e45fa2d9d46b"
+      ],
+      "judgment": {
+        "status": "available",
+        "backend": "native",
+        "identity": "news_reader_native:437d5b17560e91c185fdf6e30f0928d980782770b17de3da96784836e574b7d5",
+        "served_model": "typesafe/jev-1.13-20260917",
+        "importance": {
+          "value": 2.98,
+          "probabilities": [
+            0.0,
+            0.0,
+            0.02,
+            0.98,
+            0.0
+          ],
+          "confidence": 0.97
+        },
+        "anchor": {
+          "probabilities": {
+            "m3": 0.02,
+            "m5": 0.0,
+            "m6": 0.0,
+            "m4": 0.0,
+            "none": 0.97,
+            "m2": 0.0,
+            "m1": 0.01
+          },
+          "confidence": 0.96
+        },
+        "error_code": null
+      },
+      "input_sha256": "42e3f375f35fe2de855a75ba8add254e842f3552d250c3ab135c688c2783a378",
+      "program_identity": "news_reader_judge:7acdc54a6cfd2bc4e7f9f12b830e6943c98778f47b7e29fa83e5a2fbf0b76c51",
+      "context_protocol": "actual_cold_fresh_English_probe_final_Mini_k16_no_new_semantic_adoption",
       "expected_outcome": "push",
       "expected_anchor": null
     }
