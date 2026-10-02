@@ -42,6 +42,7 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
     assert set(services) == {
         "analysis",
         "migrate",
+        "news-embedding",
         "executor",
         "postgres",
         "rabbitmq",

@@ -113,7 +113,7 @@ llm:
     api_key_file:
     base_url:
     model:
-    max_batch_size: 4
+    max_batch_size: 2
   news_reader_judgment:
     # Optional System One route for News notification decisions only (#742), all three or none.
     # The key is the secret file news_reader_judgment_api_key in this directory (created empty by

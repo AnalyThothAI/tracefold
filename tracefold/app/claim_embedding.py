@@ -28,7 +28,7 @@ class ClaimEmbedder:
         api_key: str,
         transport: httpx.AsyncBaseTransport | None = None,
         on_status: Callable[[bool], None] | None = None,
-        max_batch_size: int = 4,
+        max_batch_size: int = 2,
     ) -> None:
         self.identity: EmbedderIdentity = CALIBRATION.embedder
         if model != self.identity.model:

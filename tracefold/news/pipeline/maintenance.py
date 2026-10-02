@@ -234,17 +234,32 @@ class JanitorLoop:
         self.chain_tape_enabled = bool(chain_tape_enabled)
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
+        # Index work is durable NULL-vector work. A single embedding batch on the
+        # retention period cannot catch up with daily arrivals, so drain bounded
+        # batches independently without rerunning all retention sweeps.
+        async with asyncio.TaskGroup() as group:
+            group.create_task(self._maintenance_loop(stop_event=stop_event))
+            if self.claim_recall is not None:
+                group.create_task(self._claim_index_loop(stop_event=stop_event))
+
+    async def _maintenance_loop(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
             await self.turn()
             await _sleep_or_stop(stop_event, self.period)
 
-    async def turn(self) -> None:
-        stamp = now_ms()
-        if self.claim_recall is not None:
+    async def _claim_index_loop(self, *, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            progressed = False
             try:
-                await self.claim_recall.advance()
+                progressed = await self.claim_recall.advance()
             except (TransientError, DeferError) as exc:
                 log.warning("news claim index maintenance deferred error=%s", type(exc).__name__)
+            # Yield between batches; idle and failed routes have a bounded poll
+            # instead of repeatedly hitting the database or external service.
+            await _sleep_or_stop(stop_event, 0.1 if progressed else 30.0)
+
+    async def turn(self) -> None:
+        stamp = now_ms()
         if self.bus is not None:
             try:
                 await self.repair_semantic_wakes()

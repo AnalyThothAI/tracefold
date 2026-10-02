@@ -127,6 +127,37 @@ def test_event_deletion_cascades_index_facts_without_leaving_pending_work() -> N
         conn.close()
 
 
+def test_bounded_embedding_batches_drain_durable_pending_versions_and_report_idle(monkeypatch) -> None:
+    pg, db, clock = store()
+    head = adopted_head(pg.semantic, clock)
+    claim = head.claims[0]
+    versions = [claim, *(claim.model_copy(update={"statement": f"Earlier tariff wording {i}."}) for i in range(5))]
+    asyncio.run(db.tx("versions", lambda r: [r.news.claim_index.index_claim(EVENT, c) for c in versions]))
+    monkeypatch.setattr("tracefold.news.storage.claim_recall.clock_ms", lambda: clock.now_ms)
+    batches = []
+    encoded = vector_bytes([1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))], CALIBRATION.embedder)
+
+    class Embedder:
+        identity = CALIBRATION.embedder
+
+        async def probes(self, texts):
+            assert len(texts) <= 2
+            if texts:
+                batches.append(tuple(texts))
+            return tuple(Probe(text, encoded, self.identity.key) for text in texts)
+
+    recall = PgClaimRecall(db, embedder=Embedder(), embedding_batch_size=2)
+
+    async def drain():
+        assert [await recall.advance() for _ in range(4)] == [True, True, True, False]
+
+    asyncio.run(drain())
+    assert len(batches) == 3 and {text for batch in batches for text in batch} == {c.statement for c in versions}
+    rows = sql("SELECT vector,embedder FROM news_claim_index WHERE event_id=%s", (EVENT,))
+    assert len(rows) == 6 and all(bytes(row["vector"]) == encoded for row in rows)
+    assert all(row["embedder"] == CALIBRATION.embedder.key for row in rows)
+
+
 def test_backfill_finds_historical_text_versions_even_when_the_claim_ref_is_already_indexed() -> None:
     pg, db, clock = store()
     head = adopted_head(pg.semantic, clock)

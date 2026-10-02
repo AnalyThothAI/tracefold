@@ -248,7 +248,7 @@ class NewsEmbeddingConfig(_SecretFileRouteConfig):
     """An independent OpenAI-compatible embedding endpoint with bounded batches."""
 
     error_prefix: ClassVar[str] = "news_embedding"
-    max_batch_size: int = Field(default=4, ge=1, le=32)
+    max_batch_size: int = Field(default=2, ge=1, le=32)
 
 
 class LlmConfig(BaseModel):

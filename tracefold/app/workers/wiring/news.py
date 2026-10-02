@@ -580,7 +580,15 @@ def _compose_news_pipeline(
             retention_chain_tape_days=settings.news.chain_tape.retention_days,
             chain_tape_enabled=settings.news.chain_tape.enabled,
             telemetry=telemetry,
-            claim_recall=None if news_updates is None else PgClaimRecall(cold_db, embedder=news_updates.embedder),
+            claim_recall=(
+                None
+                if news_updates is None
+                else PgClaimRecall(
+                    cold_db,
+                    embedder=news_updates.embedder,
+                    embedding_batch_size=settings.llm.news_embedding.max_batch_size,
+                )
+            ),
         ),
         instruments=_instrument_snapshot_loop(settings, db=news_db, telemetry=telemetry),
         quotes=_quote_snapshot_loop(

@@ -102,7 +102,9 @@ docker compose exec -T workers tracefold news retry-work \
 
 `/api/news/status` 的 `claim_index_pending` 是最近 30 天及 48 小时内已送精确版本的缺向量或旧身份行数；已送命题原始年龄不限制回填。`recall_dense=on` 要求无活动缺失、配置路由且 Workers 的新鲜心跳报告路由可用。运行中批次失败显示降级，下一次成功恢复。配置独立 `llm.news_embedding` 路由的 `api_key_file`、`base_url`、`model` 和 `max_batch_size`；模型名称和固定 revision、token 上限、pooling、dtype 必须对应校准身份。密钥只由 Workers 从私密文件读取，生成式端点不承担嵌入。模型权重在外部服务部署，应用和 PostgreSQL 镜像不包含权重。启动探针遇到网络、429 或服务暂时故障时隔 30 秒重试；模型、维度或探针不匹配保留可见降级，修复后重启。Janitor 每次有界补算，顺序为已送 48 小时、7 天、30 天；无须重新抽取、开启历史通知或写模型缓存。
 
-升级前备份并停止写者，迁移至 0426 后启动新镜像；新索引行随采用和有界历史投影写入。回滚先 downgrade 至 0425，恢复旧检索生成列、函数和三元组索引，再启动旧镜像。PR-A 的采用文档与冻结回执形状不变；应用只保留共享命题召回的单一路径。
+独立模型服务使用 [News embedding runtime](../services/news_embedding/README.md) 的 `embedding-build`、`embedding-download`、`embedding-up` 和 `embedding-status` 命令；它们复用项目部署锁，只操作可选模型服务。默认 `make up` 不启动或下载模型。模型、校准身份和运行时固定探针验证完成后，配置 Workers 使用 `http://news-embedding:8080/v1`，默认批次为 2。模型缓存独立挂载，应用升级不把权重打入应用镜像。
+
+升级前备份并停止写者，迁移至 0426 后启动新镜像；新索引行随采用和有界历史投影写入。Janitor 内的命题索引循环独立排空有界批次，有进展时让出执行后继续，空闲或暂时故障时等待 30 秒；保留原维护清理周期。补算不因每分钟只执行一批而持续落后于新增命题，数据库事务结束后才调用模型。回滚先 downgrade 至 0425，恢复旧检索生成列、函数和三元组索引，再启动旧镜像。PR-A 的采用文档与冻结回执形状不变；应用只保留共享命题召回的单一路径。
 
 每日只读回执运行 `uv run --locked python scripts/news_recall_receipts.py --as-of-ms <冻结时刻>`，连接由 `TRACEFOLD_READONLY_DSN` 提供，不放进命令参数。配套 SQL 统计关系对数、有效关系产出率及 prior / receipt 两端降级占比；历史没有诊断的调用保持未知。漏召回代理检查 48 小时内先后已送、超过校准稠密下限、但无两跳链接或实际读者锚点的命题对。缺失向量单列未知数，代理不能证明同一事实。`tracefold_news_reader_changed_total{stage="plan"|"send"}` 记录最终 CAS 冲突次数，不重复计算内部重读。
 

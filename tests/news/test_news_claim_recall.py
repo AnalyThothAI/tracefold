@@ -226,6 +226,7 @@ def test_embedding_health_reports_an_outage_and_the_next_successful_batch_recove
         api_key="test-key",
         transport=httpx.MockTransport(respond),
         on_status=statuses.append,
+        max_batch_size=4,
     )
 
     async def run():

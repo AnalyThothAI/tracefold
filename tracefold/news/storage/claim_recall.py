@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 class PgClaimRecall:
     def __init__(
-        self, db: NewsDatabasePort, *, embedder: EmbeddingPort | None = None, embedding_batch_size: int = 4
+        self, db: NewsDatabasePort, *, embedder: EmbeddingPort | None = None, embedding_batch_size: int = 2
     ) -> None:
         self.db = db
         self.embedder = embedder
@@ -39,11 +39,13 @@ class PgClaimRecall:
         )
         return PriorBatch(selected, diagnostics)
 
-    async def advance(self, *, limit: int = 64) -> None:
+    async def advance(self, *, limit: int = 64) -> bool:
         now_ms = clock_ms()
-        await self.db.tx("news_claim_index_backfill", lambda r: r.news.claim_index.backfill(limit=limit, now_ms=now_ms))
+        indexed = await self.db.tx(
+            "news_claim_index_backfill", lambda r: r.news.claim_index.backfill(limit=limit, now_ms=now_ms)
+        )
         if self.embedder is None:
-            return
+            return bool(indexed)
         pending = await self.db.read(
             "news_claim_index_pending",
             lambda r: r.news.claim_index.pending(min(limit, self.embedding_batch_size), now_ms=now_ms),
@@ -63,3 +65,4 @@ class PgClaimRecall:
                     embedder=embedder_key,
                 ),
             )
+        return bool(indexed or vectors)

@@ -95,6 +95,8 @@ class Runtime execution;
 
 [compose.yaml](../compose.yaml)定义镜像、依赖、挂载与探针；[Makefile](../Makefile)提供薄命令入口，[scripts/deploy.py](../scripts/deploy.py)统一持锁、启动、迁移等待、镜像和就绪验收。[make/checks.mk](../make/checks.mk)只拥有开发验证，不进入服务启动链路。`rabbitmq-policy`、`migrate` 是一次性准备作业，不是额外业务服务。`make up` 等迁移成功后启动应用角色，executor 随应用镜像部署，启用交易时持有 DEMO 账户执行权限。
 
+News 命题嵌入可使用独立的 [embedding 模型服务](../services/news_embedding/README.md)：固定模型版本和校准身份，模型缓存与应用镜像分离，Workers 在数据库事务外经专用私密路由调用。它由可选 Compose profile 和独立生命周期命令管理，应用升级不会自动下载或启动模型。
+
 ### 外部访问不是所有角色共享
 
 | 角色 | 主要外部访问 | 账户订单写权限 |
