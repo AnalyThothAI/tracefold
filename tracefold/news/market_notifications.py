@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -1783,14 +1784,20 @@ class MarketNotificationLoop:
 
     def _settle(self, repos: Any, claimed: ClaimedCard, outcome: SendOutcome, now_ms: int) -> None:
         news = repos.news
-        news.market_settle_delivery(
+        settled = news.market_settle_delivery(
             delivery_key=claimed.delivery_key,
+            attempts=claimed.attempts,
             state=outcome.state,
             receipt=outcome.receipt,
             error=outcome.error,
             next_attempt_at_ms=None if outcome.retry_in_ms is None else now_ms + outcome.retry_in_ms,
             now_ms=now_ms,
         )
+        if not settled:
+            logging.getLogger(__name__).warning(
+                "news_market_settle_lost_attempt delivery_key=%s attempts=%s", claimed.delivery_key, claimed.attempts
+            )
+            return
         if outcome.state not in {"sent", "unknown"}:
             # A failure told nobody, so it moves no anchor: the next observation of this group opens a
             # first card rather than a follow-up to a card that was never delivered.

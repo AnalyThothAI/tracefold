@@ -632,48 +632,6 @@ def test_okx_quote_and_closed_candle_adapters() -> None:
     assert bars[0].close_at_ms == bars[0].open_at_ms + CANDLE_INTERVAL_MS
 
 
-def test_binance_reaction_candles_drop_a_bar_whose_own_ohlc_disagrees() -> None:
-    """The `reaction_v1` branch reads O/H/L/V only to refuse rows; #460 removed the OHLCV type it built.
-
-    Three rows, one request: a consistent bar, a bar whose high is below its own close, and a bar whose
-    volume will not parse. Only the first may reach `reaction_v1` — a close taken from either of the
-    others is a price no trade printed, and the reaction measurement would carry it as if one had.
-    """
-
-    rows = [
-        [1_787_000_000_000, "1", "2", "0.5", "1.5", "10", 1_787_000_299_999],
-        [1_787_000_300_000, "1", "1.2", "0.5", "1.9", "10", 1_787_000_599_999],
-        [1_787_000_600_000, "1", "2", "0.5", "1.5", "not-a-number", 1_787_000_899_999],
-    ]
-    candles = asyncio.run(
-        fetch_binance_candles(
-            "BTCUSDT",
-            venue="binance.perp",
-            start_ms=1_787_000_000_000,
-            end_ms=1_787_003_600_000,
-            transport=_json_transport({"/fapi/v1/klines": rows}),
-        )
-    )
-
-    assert [candle.open_at_ms for candle in candles] == [1_787_000_000_000]
-    assert candles[0].close == Decimal("1.5")
-    assert candles[0].close_at_ms == candles[0].open_at_ms + CANDLE_INTERVAL_MS
-
-    # The general-interval branch asks for five fields and applies none of that: a `1m` request over the
-    # same inconsistent row keeps it, which is why the two branches are separate functions.
-    minute = asyncio.run(
-        fetch_binance_candles(
-            "BTCUSDT",
-            venue="binance.perp",
-            start_ms=1_787_000_000_000,
-            end_ms=1_787_003_600_000,
-            interval="1m",
-            transport=_json_transport({"/fapi/v1/klines": [rows[1]]}),
-        )
-    )
-    assert [candle.close for candle in minute] == [Decimal("1.9")]
-
-
 def test_hyperliquid_spot_catalogue_stores_queryable_markets_not_token_names() -> None:
     """#88 §3: `spotMeta.tokens` is a registry — `@107` and `PURR/USDC` are what quotes and candles accept."""
 
@@ -703,3 +661,8 @@ def test_hyperliquid_spot_catalogue_stores_queryable_markets_not_token_names() -
     # The quote asset is the market's second token, and `USDC` itself is not a tradeable row.
     assert {instrument.quote_asset for instrument in spot} == {"USDC"}
     assert "USDC" not in {instrument.base_symbol for instrument in spot}
+
+
+def test_retired_five_minute_candles_are_rejected_before_provider_io():
+    with pytest.raises(ValueError, match="candle_interval_unsupported"):
+        asyncio.run(fetch_binance_candles("BTCUSDT", venue="binance.perp", start_ms=0, end_ms=600_000, interval="5m"))

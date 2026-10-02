@@ -20,13 +20,13 @@ from alembic.script import ScriptDirectory
 from tests.postgres_test_utils import connect_postgres_test, prepare_test_migration_database
 from tests.postgres_test_utils import postgres_migration_test_dsn as postgres_test_dsn
 from tests.postgres_test_utils import test_postgres_dsn as admin_postgres_test_dsn
+from tests.support.news_0424_sql import smart_money_source_key
 from tests.support.news_legacy import LEGACY_TRIAGE_POLICY_VERSION
 from tests.support.news_legacy_storage import _persist_triage_verdict, legacy_intent_id, legacy_news
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.events.facts import extract_fact_units
 from tracefold.news.oi_signals import parse_oi_signal
 from tracefold.news.smart_money import PARSER_VERSION
-from tracefold.news.smart_money import source_key as smart_money_source_key
 from tracefold.news.source_contracts import MARKET_CATEGORY_CONFLICT, classify_source_contracts, market_route
 from tracefold.news.storage.wallet_snapshots import wallet_snapshot
 from tracefold.news.wallet_contracts import NetBuySnapshot
@@ -201,6 +201,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20261001_0424",
         "20261001_0423",
         "20261001_0422",
         "20261001_0421",

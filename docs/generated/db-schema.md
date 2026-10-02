@@ -347,6 +347,13 @@
 | `received_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `news_reader_clock`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `singleton` | `BOOLEAN` | False | `true` |
+| `revision` | `BIGINT` | False | `0` |
+
 ## `news_symbol_aliases`
 
 | Column | Type | Nullable | Default |

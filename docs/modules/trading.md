@@ -52,7 +52,7 @@ Assessor 一次输出两侧三类概率与最多 12 条证据驱动，Pydantic �
 tracefold trading scoreboard --since 2026-09-01 --until 2026-09-08
 ```
 
-Replay 只读取已冻结 CaseView，对候选程序打开 DSPy cache，写候选 SHA 的 assessment 与六个动作，不发 Signal、不访问行情或交易所。比较应使用预先登记的同一 Case 窗口；人工修改配置中的 SHA 才晋升。当前没有自动优化器或自动晋升。数据门槛与实验约束见 [Issue #746](https://github.com/AnalyThothAI/tracefold/issues/746)。
+在线 replay CLI 已删除；当前 Case 只保留一个冻结 assessment。候选程序研究在离线 notebook 中进行，不重写生产 Case 或发布 Signal；人工配置程序 SHA 后才启用，见 [notebooks](../../notebooks/README.md)。
 
 ## 接口、迁移与操作
 

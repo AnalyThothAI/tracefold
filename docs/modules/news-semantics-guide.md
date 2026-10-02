@@ -158,7 +158,7 @@ flowchart TB
 ### Item 与修订
 
 - **Item**（`news_items`）是一条供应商记录，`item_id = sha256("news-opennews" ␟ provider_id)`。原始参数、规范化正文 `evidence_text` 及其 sha 只写一次。
-- **Item revision**（`news_item_revisions`）记录同一 provider_id 的正文、来源、链接或制品 id 变化，用哈希链 `sha(prev, content_sha, received_at)` 串起来，所以 A→B→A 会保留成三个版本。
+- **Item revision**（`news_items.revisions` 内的有序 JSON 文档）记录同一 provider_id 的正文、来源、链接或制品 id 变化，用哈希链 `sha(prev, content_sha, received_at)` 串起来，所以 A→B→A 会保留成三个版本。
 - **来源制品**：只有 x.com / twitter.com 链接会解析出 `source_artifact_id = x:{status_id}`，发布时间由 Snowflake id 反推。`reporting_origin` 取 `params.source`，为空时退回 URL 主机名。
 
 **样本**：id 4280747 与 4280749 是同一条推文 `x:2105443679905235344`，`evidence_text_sha256` 都是 `d14486bc…`。但 `item_id` 由 provider_id 派生，所以是两个 Item，`reporting_origin` 分别为 `x.com` 和 `lidofinance`。
@@ -335,7 +335,7 @@ prior 里的相关 Event 命题来自一条有界的召回查询（[storage/evid
 
 *「·」为 unrelated。*
 
-对角线全部正确（6/6 `equivalent`），ref 被复用；非对角线上有 13 个 `adds_information`，同一段原文抽出的兄弟命题被判为互相“补充”，并永久写进了 `news_claim_links`。**「现在」**：这一轮不会再发生（#773）；关系定义已收紧为同一核心事实（#772）；关系判断改为温度 0（#778）。00:16 的 `63cedb41` 那一轮则正常：它唯一的命题与 `5487eae1` 的 c2 判为 `equivalent`。
+对角线全部正确（6/6 `equivalent`），ref 被复用；非对角线上有 13 个 `adds_information`，同一段原文抽出的兄弟命题被判为互相“补充”，并写进了不可变 analysis 的 `document.changes`。**「现在」**：这一轮不会再发生（#773）；关系定义已收紧为同一核心事实（#772）；关系判断改为温度 0（#778）。00:16 的 `63cedb41` 那一轮则正常：它唯一的命题与 `5487eae1` 的 c2 判为 `equivalent`。
 
 <a id="section-组装与原子采用"></a>
 ## 08 · 组装与原子采用

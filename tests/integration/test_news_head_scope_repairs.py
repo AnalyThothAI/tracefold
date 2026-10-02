@@ -7,6 +7,13 @@ import asyncio
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_0424_sql import (
+    ANALYSES_SQL,
+    ANALYSIS_HEADS_SQL,
+    NOTIFY_JOBS_SQL,
+    SEMANTIC_RESULTS_SQL,
+    UPDATE_RECEIPTS_SQL,
+)
 from tests.support.news_head_scope import BODY, historical_head
 from tests.support.news_update_pg import STAMP, Clock, ThreadedDb, notify_plan, save_card, seed_event, sql
 from tracefold.app.repository_session import repositories_for_connection
@@ -15,9 +22,7 @@ from tracefold.news.notifications.contracts import FrozenCard
 from tracefold.news.notifications.ports import SendOutcome
 from tracefold.news.storage.head_scope_repairs import audit_scope_rows
 from tracefold.news.storage.notification_jobs import NotificationJobDetail
-from tracefold.news.storage.notification_rows import NOTIFY_JOBS_SQL, UPDATE_RECEIPTS_SQL
 from tracefold.news.storage.notification_store import PgNotificationStore
-from tracefold.news.storage.semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL, SEMANTIC_RESULTS_SQL
 from tracefold.news.storage.update_commit import lock_event
 from tracefold.news.updates.identity import digest
 

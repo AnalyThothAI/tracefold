@@ -418,7 +418,7 @@ def test_semantic_prior_query_uses_actual_pending_task_scope(case: str, monkeypa
     class Connection:
         def execute(self, sql, params=None):
             if "FROM news_jobs" in sql:
-                return Rows(one=data["work"])
+                return Rows(one={"subject_id": "event", "lease_until_ms": None, "detail": data["work"]})
             if "AS fact_scopes FROM news_events" in sql:
                 return Rows(one={"fact_scopes": data["fact_scopes"]})
             if "jsonb_to_recordset(i.revisions)" in sql:

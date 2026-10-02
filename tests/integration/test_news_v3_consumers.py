@@ -17,6 +17,12 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_0424_sql import (
+    EVIDENCE_VERSIONS_SQL,
+    ITEM_REVISIONS_SQL,
+    SEMANTIC_JOBS_SQL,
+    UPDATE_RECEIPTS_SQL,
+)
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.news.bus import (
@@ -35,8 +41,6 @@ from tracefold.news.pipeline.delivery import DelivererLoop
 from tracefold.news.pipeline.delivery_enrichment import DeliveryEnrichment
 from tracefold.news.pipeline.notification_sender import NotificationSender
 from tracefold.news.pipeline.send_entry import InitialSendEntry
-from tracefold.news.storage.notification_rows import UPDATE_RECEIPTS_SQL
-from tracefold.news.storage.semantic_rows import EVIDENCE_VERSIONS_SQL, ITEM_REVISIONS_SQL, SEMANTIC_JOBS_SQL
 
 pytestmark = pytest.mark.integration
 

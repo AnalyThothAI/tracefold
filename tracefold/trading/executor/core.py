@@ -10,6 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..operator_control import control_entry_block
+
 _CLIENT_ID = re.compile(r"^[\.A-Z\:/a-z0-9_-]{1,36}$")
 Side = Literal["long", "short"]
 Leg = Literal["entry", "sl", "tp", "time_exit", "safety_flatten", "account_flatten"]
@@ -65,8 +67,8 @@ class EntryFacts:
     symbol_position: Decimal
     symbol_regular_orders: int
     symbol_algo_orders: int
-    active_plans: int
-    max_plans: int
+    active_entries: int
+    max_entries: int
     equity_usdt: Decimal
     active_notional_usdt: Decimal
     max_leverage: int
@@ -80,6 +82,8 @@ class EntryFacts:
     market_step: Decimal
     min_notional: Decimal
     hedge_mode: bool = False
+    flatten_in_progress: bool = False
+    unexpected_exposure: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,15 +101,21 @@ def admit(signal: SignalV4, facts: EntryFacts) -> EntryVerdict:
 
     if facts.now_ns >= signal.expires_at_ns:
         return refuse("expired")
-    if facts.emergency_halted:
-        return refuse("emergency_halt")
-    if facts.entries_paused:
-        return refuse("entries_paused")
+    blocked = control_entry_block(
+        {
+            "emergency_halted": facts.emergency_halted,
+            "entries_paused": facts.entries_paused,
+            "flatten_command_id": True if facts.flatten_in_progress else None,
+        },
+        unexpected_exposure=facts.unexpected_exposure,
+    )
+    if blocked is not None:
+        return refuse(blocked)
     if facts.hedge_mode:
         return refuse("hedge_mode_unsupported")
     if facts.symbol_position or facts.symbol_regular_orders or facts.symbol_algo_orders:
         return refuse("symbol_exposure")
-    if facts.active_plans >= facts.max_plans:
+    if facts.active_entries >= facts.max_entries:
         return refuse("capacity")
     if facts.bid <= 0 or facts.ask <= facts.bid or facts.now_ns - facts.quote_at_ns > facts.quote_max_age_ns:
         return refuse("quote_stale")
@@ -135,8 +145,8 @@ def admit(signal: SignalV4, facts: EntryFacts) -> EntryVerdict:
 
 
 @dataclass(frozen=True, slots=True)
-class PlanFacts:
-    """A durable plan joined to the latest REST snapshot; no WebSocket truth is needed."""
+class EntryLifecycleFacts:
+    """A durable entry joined to the latest REST snapshot; no WebSocket truth is needed."""
 
     now_ns: int
     entered_at_ns: int | None
@@ -157,7 +167,7 @@ class PlanFacts:
 
 
 @dataclass(frozen=True, slots=True)
-class PlanStep:
+class EntryStep:
     action: Literal[
         "await_entry",
         "query_entry",
@@ -174,46 +184,55 @@ class PlanStep:
     reason: str
 
 
-def step(facts: PlanFacts) -> PlanStep:
+def step(facts: EntryLifecycleFacts) -> EntryStep:
     """Choose one recoverable action; the runner persists intent before venue I/O."""
 
     if facts.entry_submission_unknown:
-        return PlanStep("query_entry", "entry_submission_unknown")
+        return EntryStep("query_entry", "entry_submission_unknown")
     if facts.entry_order_status not in ("FILLED", "CANCELED", "EXPIRED", "REJECTED", "NOT_SUBMITTED"):
-        return PlanStep("await_entry", "entry_not_terminal")
+        return EntryStep("await_entry", "entry_not_terminal")
     if facts.position_amount == 0:
         if facts.sl_status in ("NEW", "PARTIALLY_FILLED") or facts.tp_status in ("NEW", "PARTIALLY_FILLED"):
-            return PlanStep("cancel_protection", "venue_flat")
+            return EntryStep("cancel_protection", "venue_flat")
         if facts.exit_fill_client_id in facts.sl_client_ids:
-            return PlanStep("terminal", "stop_filled")
+            return EntryStep("terminal", "stop_filled")
         if facts.exit_fill_client_id in facts.tp_client_ids:
-            return PlanStep("terminal", "take_profit")
-        return PlanStep(
+            return EntryStep("terminal", "take_profit")
+        return EntryStep(
             "terminal", "external" if facts.entered_at_ns or facts.entry_order_status == "FILLED" else "not_submitted"
         )
     if facts.entered_at_ns is None:
-        return PlanStep("await_venue", "entry_position_without_terminal_clock")
+        return EntryStep("await_venue", "entry_position_without_terminal_clock")
     if facts.flatten_status in ("NEW", "PARTIALLY_FILLED", "unknown"):
-        return PlanStep("query_flatten", "flatten_pending")
+        return EntryStep("query_flatten", "flatten_pending")
     if facts.flatten_status == "FILLED":
-        return PlanStep("flatten", "flatten_fill_left_exposure")
+        return EntryStep("flatten", "flatten_fill_left_exposure")
     if facts.sl_status == "FILLED" or facts.tp_status == "FILLED":
-        return PlanStep("flatten", "partial_protection_exit")
+        return EntryStep("flatten", "partial_protection_exit")
     if facts.now_ns >= facts.entered_at_ns + facts.max_hold_s * 1_000_000_000:
-        return PlanStep("flatten", "time_exit")
+        return EntryStep("flatten", "time_exit")
     if facts.sl_submission_unknown:
-        return PlanStep("query_sl", "protection_submission_unknown")
+        return EntryStep("query_sl", "protection_submission_unknown")
     if facts.sl_status not in ("NEW", "PARTIALLY_FILLED", "FILLED"):
         if facts.sl_attempts >= 3:
-            return PlanStep("flatten", "protection_failed")
-        return PlanStep("submit_sl", "unprotected")
+            return EntryStep("flatten", "protection_failed")
+        return EntryStep("submit_sl", "unprotected")
     if facts.tp_submission_unknown:
-        return PlanStep("query_tp", "protection_submission_unknown")
+        return EntryStep("query_tp", "protection_submission_unknown")
     if facts.tp_status not in ("NEW", "PARTIALLY_FILLED", "FILLED"):
         if facts.tp_attempts >= 3:
-            return PlanStep("flatten", "protection_failed")
-        return PlanStep("submit_tp", "unprotected")
-    return PlanStep("await_venue", "protected")
+            return EntryStep("flatten", "protection_failed")
+        return EntryStep("submit_tp", "unprotected")
+    return EntryStep("await_venue", "protected")
 
 
-__all__ = ["EntryFacts", "EntryVerdict", "PlanFacts", "PlanStep", "SignalV4", "admit", "client_order_id", "step"]
+__all__ = [
+    "EntryFacts",
+    "EntryLifecycleFacts",
+    "EntryStep",
+    "EntryVerdict",
+    "SignalV4",
+    "admit",
+    "client_order_id",
+    "step",
+]

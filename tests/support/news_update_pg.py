@@ -384,7 +384,7 @@ async def adopt_next(
         source.event_id,
         wanted_revision=source.revision,
         lease_token="storage-test",
-        leased_until_ms=pg.clock() + 180_000,
+        lease_until_ms=pg.clock() + 180_000,
     )
     lease = SemanticLease(source=source, lease_token="storage-test", attempts=1)
     adopted = await pg.atomic_adopt(

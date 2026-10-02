@@ -13,12 +13,9 @@ from ..notifications.ports import BeginSendStatus
 from .errors import EventUpdateConflict
 from .notification_context import NotificationContextStorage
 from .notification_work import INTENT_ATTEMPTS_MAX, IntentOutcome, NotificationWorkStorage
-from .semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL
+from .reader_check import ReaderCheck, reader_unchanged
 from .sql_values import _dumps
 from .update_commit import lock_event
-
-SENDING_ORPHAN_MS: Final = 60_000
-
 
 ORPHAN_SEND_BATCH_MAX: Final = 50
 
@@ -37,6 +34,7 @@ class NotificationDeliveryStorage:
         plan: NotificationPlan,
         card: FrozenCard,
         now_ms: int,
+        check: ReaderCheck,
         timings_json: str | None = None,
     ) -> BeginSendStatus:
         """Recheck head, reader revision, lease and in-flight overlap, then freeze `sending`.
@@ -72,18 +70,19 @@ class NotificationDeliveryStorage:
             return "lease_lost"
         if queued["decision_ref"] != plan.record_ref:
             raise EventUpdateConflict("news_intent_decision_mismatch")
+        if check.event_id != str(identity_row["event_id"]) or not reader_unchanged(self.conn, check):
+            return "reader_changed"
         frozen = queued["card"]
         if frozen is None or FrozenCard.model_validate(frozen) != card:
             raise EventUpdateConflict("news_intent_card_not_frozen")
         event_id = str(queued["event_id"])
         head = self.conn.execute(
-            f"SELECT update_ref FROM ({ANALYSIS_HEADS_SQL}) WHERE event_id = %s",  # noqa: S608 -- fixed SQL; bound values.
+            "SELECT a.update_ref FROM news_events e JOIN news_analyses a ON "
+            "a.analysis_id=e.current_analysis_id WHERE e.event_id=%s",
             (event_id,),
         ).fetchone()
         head_changed = head is None or head["update_ref"] != plan.update_ref
-        reader_changed = (
-            not head_changed and self.context.current_reader_revision(event_id, now_ms=now_ms) != plan.reader_revision
-        )
+        reader_changed = not head_changed and check.revision != plan.reader_revision
         overlap = self.conn.execute(
             """
             SELECT 1 FROM news_notifications
@@ -107,19 +106,19 @@ class NotificationDeliveryStorage:
             )
             return "head_changed" if head_changed else "reader_changed" if reader_changed else "overlap"
         inserted = self.conn.execute(
-            f"""
+            """
             WITH frozen AS (
               SELECT COALESCE(jsonb_agg(claim), '[]'::jsonb) AS claims
-                FROM ({ANALYSES_SQL}) u
+                FROM news_analyses u
                 CROSS JOIN LATERAL jsonb_array_elements(u.document -> 'claims') claim
-               WHERE u.event_id = %(event)s AND u.content_revision = %(revision)s
+               WHERE u.adopted_at_ms IS NOT NULL AND u.event_id = %(event)s AND u.content_revision = %(revision)s
                  AND claim ->> 'ref' = ANY(%(refs)s)
             ), selected AS (
               SELECT DISTINCT upper(asset ->> 'symbol') AS symbol
-                FROM ({ANALYSES_SQL}) u
+                FROM news_analyses u
                 CROSS JOIN LATERAL jsonb_array_elements(u.document -> 'claims') claim
-                CROSS JOIN LATERAL jsonb_array_elements(claim #> '{{fields,assets}}') asset
-               WHERE u.event_id = %(event)s AND u.content_revision = %(revision)s
+                CROSS JOIN LATERAL jsonb_array_elements(claim #> '{fields,assets}') asset
+               WHERE u.adopted_at_ms IS NOT NULL AND u.event_id = %(event)s AND u.content_revision = %(revision)s
                  AND claim ->> 'ref' = ANY(%(refs)s) AND asset ->> 'role' = 'primary'
             ), canonical AS (
               SELECT COALESCE(jsonb_agg(symbol ORDER BY symbol), '[]'::jsonb) AS symbols
@@ -137,24 +136,16 @@ class NotificationDeliveryStorage:
              WHERE e.event_id=%(event)s AND n.intent_id=%(intent)s AND n.state='pending'
                AND n.lease_token=%(lease)s AND n.lease_until_ms>%(now)s
             RETURNING n.state
-            """,  # noqa: S608 -- fixed SQL; bound values.
+            """,
             {
                 "intent": intent_id,
                 "lease": lease_token,
                 "event": event_id,
                 "revision": queued["content_revision"],
                 "refs": list(card.claim_refs),
-                "card": _dumps(card.model_dump(mode="json")),
                 "now": int(now_ms),
-                "claim_refs": _dumps(list(queued["claim_refs"])),
-                "body": card.body,
-                "sha": card.payload_sha256,
-                "key": bool(queued["plan_key"]),
-                "decision": queued["decision_ref"],
                 "headline": card.headline_zh,
                 "timings": timings_json,
-                "copy_digest": queued["card_copy_input_digest"],
-                "copy_document": _dumps(queued["card_copy_document"]),
             },
         ).fetchone()
         return "begun" if inserted is not None else "lease_lost"
@@ -252,20 +243,19 @@ class NotificationDeliveryStorage:
     ) -> int:
         """Hold ambiguous every `sending` row whose owner is gone, and complete the plan it was sent for.
 
-        An owner outlives neither its provider call nor its bounded settlement, so a row older than
-        `SENDING_ORPHAN_MS` has none -- except the sends this process says it still holds. Run at start and
-        periodically, so an orphan never outlives a restart or keeps its claims waiting.
+        A candidate has an expired lease and is not a held send. Recheck its lease token, attempt
+        stamp and expiry after taking the Event lock, so selection cannot settle a replacement owner.
         """
 
         rows = self.conn.execute(
             """
-            SELECT intent_id, event_id FROM news_notifications
-             WHERE kind = 'update' AND state = 'sending' AND attempted_at_ms < %s
+            SELECT intent_id,event_id,lease_token,attempted_at_ms FROM news_notifications
+             WHERE kind = 'update' AND state = 'sending' AND lease_until_ms <= %s
                AND NOT (intent_id = ANY(%s::text[]))
              ORDER BY event_id, intent_id
              LIMIT %s
             """,
-            (int(now_ms) - SENDING_ORPHAN_MS, list(exclude_intent_ids), int(limit)),
+            (int(now_ms), list(exclude_intent_ids), int(limit)),
         ).fetchall()
         settled = 0
         for candidate in rows:
@@ -275,9 +265,18 @@ class NotificationDeliveryStorage:
                 UPDATE news_notifications SET state = 'ambiguous', error_code = 'ambiguous_after_crash',
         settled_at_ms = %s,lease_token=NULL,lease_until_ms=NULL
                  WHERE intent_id = %s AND state = 'sending'
+                   AND lease_token IS NOT DISTINCT FROM %s AND attempted_at_ms=%s
+                   AND lease_until_ms<=%s AND NOT (intent_id=ANY(%s::text[]))
                 RETURNING event_id, content_revision, notification_id AS decision_ref
                 """,
-                (int(now_ms), candidate["intent_id"]),
+                (
+                    int(now_ms),
+                    candidate["intent_id"],
+                    candidate["lease_token"],
+                    candidate["attempted_at_ms"],
+                    int(now_ms),
+                    list(exclude_intent_ids),
+                ),
             ).fetchone()
             if row is None:
                 continue

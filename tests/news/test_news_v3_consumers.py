@@ -311,13 +311,6 @@ class RecordingPrice:
             raise self.error
         return list(self.quotes)
 
-    def event_reactions(self, event_id: str, *, metric_version: str | None = None) -> list[dict[str, Any]]:
-        del event_id
-        self.requested_reaction_versions.append(metric_version)
-        if self.error is not None:
-            raise self.error
-        return list(self.reactions)
-
     def instruments_for_symbols(self, requests: Any) -> dict[Any, tuple[PriceInstrument, ...]]:
         return {request: self.instruments[request.symbol] for request in requests if request.symbol in self.instruments}
 

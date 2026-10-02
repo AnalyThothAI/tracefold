@@ -5,11 +5,11 @@ from contextlib import closing
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_0424_sql import ITEM_REVISIONS_SQL
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.evidence import query_for, text_sha
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
-from tracefold.news.storage.semantic_rows import ITEM_REVISIONS_SQL
 
 pytestmark = pytest.mark.integration
 

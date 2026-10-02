@@ -56,3 +56,18 @@ def test_semantic_reads_skip_completed_history_and_count_completed_failures():
         assert result["ok"], result
         for query in result["queries"]:
             assert query["metrics"]["scanned_rows"] < 50, query
+
+
+def test_failed_backlog_does_not_hide_pending_jobs_or_truncate_counts():
+    seed_event()
+    with closing(connect_postgres_test()) as conn, conn.transaction():
+        conn.execute(
+            "INSERT INTO news_jobs(job_kind,subject_id,state,detail,next_attempt_at_ms,created_at_ms,updated_at_ms) "
+            "SELECT 'semantic','failed:'||g,'failed',detail||jsonb_build_object('last_outcome','failed'),0,0,0 "
+            "FROM news_jobs CROSS JOIN generate_series(1,1500) g WHERE job_kind='semantic' AND subject_id=%s",
+            (EVENT,),
+        )
+        storage = SemanticWorkStorage(conn)
+        assert storage.semantic_wake_state() == {"pending": 1, "expired": 1500, "oldest_pending_at_ms": STAMP}
+        status = storage.semantic_status(now_ms=STAMP + 1)
+        assert status["semantic_pending"] == 1 and status["semantic_failed_exhausted"] == 1500

@@ -32,6 +32,12 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_0424_sql import (
+    ANALYSES_SQL,
+    EVIDENCE_VERSIONS_SQL,
+    SEMANTIC_JOBS_SQL,
+    SEMANTIC_RESULTS_SQL,
+)
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.news.bus import (
@@ -53,12 +59,6 @@ from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.storage.collectors import _INCIDENTS_SQL
-from tracefold.news.storage.semantic_rows import (
-    ANALYSES_SQL,
-    EVIDENCE_VERSIONS_SQL,
-    SEMANTIC_JOBS_SQL,
-    SEMANTIC_RESULTS_SQL,
-)
 
 pytestmark = pytest.mark.integration
 
@@ -560,7 +560,7 @@ def test_a_predecessor_whose_clock_ran_ahead_cannot_open_an_outage_in_the_future
     assert seeded is not None
     ahead_ms = max(int(seeded["updated_at_ms"]), now_ms()) + 3_600_000
     with repos.transaction():
-        repos.news.update_ingest_state(now_ms=ahead_ms, connected=True)
+        repos.news.update_ingest_state(now_ms=ahead_ms, connected=True, last_frame_at_ms=ahead_ms)
     conn.commit()
     assert int(repos.news.ingest_liveness()["updated_at_ms"]) == ahead_ms
 

@@ -5,12 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_0424_sql import EVIDENCE_VERSIONS_SQL
 from tests.support.news_update_pg import ThreadedDb, sql
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.bus import RK_RAW_LIVE, BusMessage
 from tracefold.news.pipeline.admission import append_admission_evidence
 from tracefold.news.storage.events import prepare_evidence_snapshot
-from tracefold.news.storage.semantic_rows import EVIDENCE_VERSIONS_SQL, SEMANTIC_JOBS_SQL
+from tracefold.news.storage.semantic_jobs import semantic_job
 
 TITLE = "Agency orders 25% tariff on steel imports from Canada"
 
@@ -76,7 +77,7 @@ def event_of(record: int) -> str:
 
 
 def work(event_id: str) -> dict[str, Any]:
-    return sql(f"SELECT * FROM ({SEMANTIC_JOBS_SQL}) WHERE event_id = %s", (event_id,))[0]
+    return semantic_job(sql("SELECT * FROM news_jobs WHERE job_kind='semantic' AND subject_id=%s", (event_id,))[0])
 
 
 def snapshots(event_id: str) -> list[dict[str, Any]]:

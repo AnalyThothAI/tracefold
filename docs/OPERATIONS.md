@@ -162,9 +162,9 @@ docker compose exec -T workers tracefold news instruments resolve --symbol SYMBO
 docker compose exec -T workers tracefold news wallets --hours 24 --queue-limit 10
 ```
 
-目录 `snapshot` 是外部读取并写目录的维护操作，不与 `summary` 混用。OI 问题沿**来源 → 解析 → 类型化事实 → 分组 / intent → relay**检查；报价 / Reaction 的缺失不能解释成 OI 为零。
+目录 `snapshot` 是外部读取并写目录的维护操作，不与 `summary` 混用。OI 问题沿**来源 → 解析 → 类型化事实 → 分组 / intent → relay**检查；报价的缺失不能解释成 OI 为零。
 
-钱包沿**已发布名单 → 完整回执前缀 → 净买入资格 → episode → 发送时复查 → 实际回执**检查。价格采样另看目标与实际观察时间，不能拿迟到报价补成触发当时的价格。
+钱包沿**已发布名单 → 完整回执前缀 → 净买入资格 → episode → 发送时复查 → 实际回执**检查。钱包价格 outcome 已删除；实际发送与链上事实按各自时钟对账。
 
 <a id="5-trading-and-account-operations"></a>
 <a id="trading-operations"></a>
@@ -246,3 +246,6 @@ docker compose exec -T postgres pg_restore --list < "$backup"
 ---
 
 [返回文档中心](README.md) · [架构图谱](ARCHITECTURE.md#atlas) · [返回顶部](#运维与故障定位)
+
+
+#764 性能验收使用同一 24 小时窗口的前后增量，按表分别记录 `pg_stat_user_tables.n_tup_upd`、`n_tup_hot_upd`、`n_dead_tup` 和大小，以及 `pg_stat_statements` 的调用数、平均耗时与 p95 采样。重点分类 news_events、news_jobs、news_collectors、news_analyses、news_notifications、trading_accounts。有索引字段变化的状态转换不能 HOT；append-only 表不以零更新计算 HOT 比例。两万条历史任务的本地查询预算证明不能代替生产 24 小时观测，早期约 35% 的全库 HOT 比例也不能当作达标结论。

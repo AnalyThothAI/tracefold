@@ -4,13 +4,12 @@ Both providers report a candle's end inclusively (`closeTime` / `T` are one mill
 open). Normalizing to an exclusive `close_at_ms = open + interval` here means the domain's "last candle
 closed at or before this instant" never has to know whose off-by-one it is looking at.
 
-Only trade prices: no mark, oracle, index or mid history is mixed into the Reaction ledger.
+Only closed one-minute trade-price bars serve active delivery-price readers.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from decimal import Decimal, InvalidOperation
 from typing import Any, Final, Protocol
 
 import httpx
@@ -27,10 +26,10 @@ OKX_BASE_URL: Final = "https://www.okx.com"
 LIGHTER_BASE_URL: Final = "https://mainnet.zklighter.elliot.ai"
 BITGET_BASE_URL: Final = "https://api.bitget.com"
 
-# Binance caps a klines page at 1000 (spot) / 1500 (USD-M); one merged 4 h window is 49 five-minute bars, so
+# Binance caps a klines page at 1000 (spot) / 1500 (USD-M); a four-hour window contains 241 one-minute bars, so
 # the cap is only reached by a backfill range and the request is truncated rather than paged.
 _BINANCE_LIMIT_MAX: Final = 1000
-_INTERVAL_MS: Final = {"1m": 60_000, CANDLE_INTERVAL: CANDLE_INTERVAL_MS}
+_INTERVAL_MS: Final = {CANDLE_INTERVAL: CANDLE_INTERVAL_MS}
 
 
 async def fetch_binance_candles(
@@ -44,16 +43,6 @@ async def fetch_binance_candles(
     spot_base_url: str = BINANCE_SPOT_BASE_URL,
     futures_base_url: str = BINANCE_FUTURES_BASE_URL,
 ) -> tuple[Candle, ...]:
-    if interval == CANDLE_INTERVAL:
-        return await _fetch_binance_reaction_candles(
-            venue_symbol,
-            venue=venue,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            transport=transport,
-            spot_base_url=spot_base_url,
-            futures_base_url=futures_base_url,
-        )
     interval_ms = _interval_ms(interval)
     payload = await _fetch_binance_payload(
         venue_symbol,
@@ -73,54 +62,6 @@ async def fetch_binance_candles(
         open_at_ms, close = _optional_int(entry[0]), parse_price(entry[4])
         if open_at_ms is not None and close is not None:
             out.append(Candle(open_at_ms=open_at_ms, close_at_ms=open_at_ms + interval_ms, close=close))
-    return tuple(out)
-
-
-async def _fetch_binance_reaction_candles(
-    venue_symbol: str,
-    *,
-    venue: str,
-    start_ms: int,
-    end_ms: int,
-    transport: httpx.AsyncBaseTransport | None,
-    spot_base_url: str,
-    futures_base_url: str,
-) -> tuple[Candle, ...]:
-    """The Reaction interval, which reads O/H/L/V it does not keep.
-
-    Only `close` reaches a `Candle`, but a bar whose high is below its own open or close is not a bar
-    that lost precision — it is a row the provider did not mean, and taking its close would put a price
-    into a reaction measurement that no trade ever printed. Parsing all six fields is how that row is
-    recognized, so the general-interval branch below (which asks for five) stays a different function
-    rather than becoming a looser version of this one.
-    """
-
-    payload = await _fetch_binance_payload(
-        venue_symbol,
-        venue=venue,
-        start_ms=start_ms,
-        end_ms=end_ms,
-        interval=CANDLE_INTERVAL,
-        interval_ms=CANDLE_INTERVAL_MS,
-        transport=transport,
-        spot_base_url=spot_base_url,
-        futures_base_url=futures_base_url,
-    )
-    out: list[Candle] = []
-    for entry in payload:
-        if not isinstance(entry, Sequence) or isinstance(entry, str | bytes) or len(entry) < 6:
-            continue
-        open_at_ms = _optional_int(entry[0])
-        prices = tuple(parse_price(entry[index]) for index in range(1, 5))
-        volume = _nonnegative_decimal(entry[5])
-        if open_at_ms is None or any(price is None for price in prices) or volume is None:
-            continue
-        open_price, high, low, close = prices
-        if open_price is None or high is None or low is None or close is None:
-            continue
-        if high < max(open_price, close) or low > min(open_price, close):
-            continue
-        out.append(Candle(open_at_ms=open_at_ms, close_at_ms=open_at_ms + CANDLE_INTERVAL_MS, close=close))
     return tuple(out)
 
 
@@ -221,7 +162,7 @@ async def fetch_okx_candles(
     base_url: str = OKX_BASE_URL,
 ) -> tuple[Candle, ...]:
     interval_ms = _interval_ms(interval)
-    bar = "1m" if interval == "1m" else "5m"
+    bar = CANDLE_INTERVAL
     params = {
         "instId": str(venue_symbol).upper(),
         "bar": bar,
@@ -302,7 +243,7 @@ async def fetch_bitget_candles(
 ) -> tuple[Candle, ...]:
     interval_ms = _interval_ms(interval)
     category = "SPOT" if venue == "bitget.spot" else "USDT-FUTURES"
-    api_interval = "1m" if interval == "1m" else "5m"
+    api_interval = CANDLE_INTERVAL
     async with price_client(transport) as client:
         payload = await get_json(
             client,
@@ -409,14 +350,6 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def _nonnegative_decimal(value: Any) -> Decimal | None:
-    try:
-        parsed = Decimal(str(value))
-    except (InvalidOperation, TypeError, ValueError):
-        return None
-    return parsed if parsed.is_finite() and parsed >= 0 else None
 
 
 __all__ = [

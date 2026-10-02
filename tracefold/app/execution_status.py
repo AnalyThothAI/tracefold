@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from tracefold.trading.operator_control import control_entry_block
+
 _HEARTBEAT_STALE_AFTER_MS = 5_000
 _FULL_RECONCILE_STALE_AFTER_NS = 70_000_000_000
 
@@ -61,7 +63,8 @@ def execution_readiness_projection(
         and now_ns - int(full_at) <= _FULL_RECONCILE_STALE_AFTER_NS
     )
     error = process.get("fault_code")
-    armed = alive and reconciled and not paused and not halted and not unexpected and error is None
+    blocked = control_entry_block(control or result, unexpected_exposure=unexpected)
+    armed = alive and reconciled and blocked is None and error is None
     reason = (
         "executor_heartbeat_stale"
         if not alive
@@ -69,13 +72,7 @@ def execution_readiness_projection(
         if error
         else "account_reconcile_stale"
         if not reconciled
-        else "unexpected_exposure"
-        if unexpected
-        else "emergency_halt"
-        if halted
-        else "entries_paused"
-        if paused
-        else None
+        else blocked
     )
     result.update(
         {

@@ -162,7 +162,6 @@ class Config,Compose,Foundation,Optional,Root,Status,View store;
 | [venues](../../tracefold/integrations/venues/) | News 目录、当前报价、发送时行情；公共只读 REST |
 | [marketdata](../../tracefold/integrations/marketdata/) | Trading 研究的有界原始市场数据 |
 | [Robinhood Chain](../../tracefold/integrations/robinhood_chain.py)、[名单适配](../../tracefold/integrations/robinhoodtrenches.py) | 回执采集和名单刷新，两个独立请求边界 |
-| [Dexscreener](../../tracefold/integrations/dexscreener.py) | 钱包价格等公共证据，不决定首报资格 |
 | [DEMO REST 适配](../../tracefold/integrations/trading/binance.py) | 账户操作与签名 venue evidence；仅执行进程拥有凭据 |
 
 News 的展示报价不是执行 tick feed；最新快照不是历史价格证据；provider transport 不能创建额外 Claim 或私自放宽交易风险。新适配优先复用已有端口，不为每个 helper 新建框架。

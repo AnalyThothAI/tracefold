@@ -34,6 +34,7 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_0424_sql import MARKET_JOBS_SQL, MARKET_NOTIFICATIONS_SQL
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.liquidations import parse_liquidation
 from tracefold.news.market_notifications import (
@@ -49,7 +50,6 @@ from tracefold.news.pipeline.delivery_quotes import read_display_quotes
 from tracefold.news.reader_card import QUOTE_LINE_PREFIX
 from tracefold.news.smart_money import parse_smart_money
 from tracefold.news.source_contracts import MARKET_PROVIDER
-from tracefold.news.storage.notification_rows import MARKET_JOBS_SQL, MARKET_NOTIFICATIONS_SQL
 
 pytestmark = pytest.mark.integration
 
@@ -221,9 +221,6 @@ def _admit(news: Any, record: _Record) -> None:
     elif record.kind == "liquidation":
         liquidation = parse_liquidation(
             record.title,
-            item_id=record.item_id,
-            fact_id=record.item_id,
-            source_strategy_id=record.strategy_id,
             provider_source=record.venue or "",
             event_at_ms=record.at_ms,
             received_at_ms=record.at_ms,

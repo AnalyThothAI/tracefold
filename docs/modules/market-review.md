@@ -106,7 +106,7 @@ class Resolve,QPlan news;
 <a id="section-固定期限-event-reaction"></a>
 ## 05 · 发送时行情与历史适配
 
-#764 P1 删除固定期限 Event Reaction、相关状态和接口字段。发送补充行情与 trailing quote 仍有生产消费者；公共成交和 K 线适配、`Candle`、`select_candle` 与 `return_bps` 保留给实际调用方。目录快照戳改存 `news_collectors.instrument_catalog.state.venues`，部分场所成功只更新对应场所时间。
+#764 P1 删除固定期限 Event Reaction、相关状态和接口字段。发送补充行情与 trailing quote 仍有生产消费者；公共成交和一分钟 K 线适配、`Candle`、`select_candle` 与 `return_bps` 保留给实际调用方。五分钟 Reaction 分支和 DexScreener 钱包 outcome 价格客户端已删除。目录快照戳改存 `news_collectors.instrument_catalog.state.venues`，部分场所成功只更新对应场所时间。
 
 <a id="section-四种收益不能混合"></a>
 ## 06 · 市场变化与账户收益
@@ -132,9 +132,9 @@ class Resolve,QPlan news;
 | 源码 | 职责 |
 | --- | --- |
 | [instruments.py](../../tracefold/news/market_review/instruments.py)、[instrument_storage.py](../../tracefold/news/market_review/instrument_storage.py) | 标的类别、目录快照、匹配与目录存储 |
-| [pricing.py](../../tracefold/news/market_review/pricing.py) | 来源排序、价格类型、时效、K 线选择、期限、收益与资源上限；纯函数 |
-| [loops.py](../../tracefold/news/market_review/loops.py) | `QuoteSnapshotLoop` 和 `EventReactionLoop` 的有界 I/O 编排 |
-| [quote_storage.py](../../tracefold/news/market_review/quote_storage.py) | 目标查询、当前快照与到期 Reaction 存储 |
+| [pricing.py](../../tracefold/news/market_review/pricing.py) | 来源排序、价格类型、时效、一分钟 K 线选择、价格变化与资源上限；纯函数 |
+| [loops.py](../../tracefold/news/market_review/loops.py) | `QuoteSnapshotLoop` 的有界 I/O 编排 |
+| [quote_storage.py](../../tracefold/news/market_review/quote_storage.py) | 有界目标查询与当前快照存储 |
 | [projections.py](../../tracefold/news/market_review/projections.py) | 显示字段、覆盖率与派生结果投影 |
 | [review_storage.py](../../tracefold/news/market_review/review_storage.py) | 价格新鲜度状态读取 |
 | [integrations/venues](../../tracefold/integrations/venues/) | Binance、Hyperliquid、OKX 等来源的公开行情与历史适配 |

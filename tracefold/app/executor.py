@@ -17,7 +17,7 @@ from psycopg.errors import UniqueViolation
 from tracefold.app.repository_session import postgres_connection
 from tracefold.integrations.trading.binance import BinanceFailure, DemoBinance
 from tracefold.platform.postgres.runtime_processes import RuntimeProcesses
-from tracefold.trading.executor.core import EntryFacts, PlanFacts, SignalV4, admit, client_order_id, step
+from tracefold.trading.executor.core import EntryFacts, EntryLifecycleFacts, SignalV4, admit, client_order_id, step
 from tracefold.trading.storage.executor import ExecutorStorage
 
 _LOG = logging.getLogger(__name__)
@@ -214,13 +214,15 @@ class ExecutorRunner:
         state = self.db.account(self.account_slot)
         return EntryFacts(
             now_ns=_now_ns(),
-            entries_paused=bool(control["entries_paused"]) or bool(state and state["unexpected_exposure"]),
+            entries_paused=bool(control["entries_paused"]),
+            flatten_in_progress=control["flatten_command_id"] is not None,
+            unexpected_exposure=bool(state and state["unexpected_exposure"]),
             emergency_halted=bool(control["emergency_halted"]),
             symbol_position=Decimal(str(position_by_symbol.get(signal.native_symbol, {}).get("positionAmt", "0"))),
             symbol_regular_orders=sum(row["symbol"] == signal.native_symbol for row in orders),
             symbol_algo_orders=sum(row["symbol"] == signal.native_symbol for row in algos),
-            active_plans=len(active),
-            max_plans=5,
+            active_entries=len(active),
+            max_entries=5,
             equity_usdt=Decimal(str(account["totalMarginBalance"])),
             active_notional_usdt=notional,
             max_leverage=risk.max_leverage,
@@ -299,41 +301,32 @@ class ExecutorRunner:
             return
         action = intent["action"]
         control = self.db.control(self.account_slot)
-        if action in ("pause_entries", "resume_entries", "emergency_halt"):
-            halted = action == "emergency_halt" or (action != "resume_entries" and bool(control["emergency_halted"]))
-            paused = action != "resume_entries" or halted
+        if action in ("pause_entries", "resume_entries", "emergency_halt", "flatten"):
             with self.conn.transaction():
+                refusal = None
                 if action == "resume_entries" and self.db.newer_entry_stop_applied(
                     account_slot=self.account_slot, seq=int(intent["seq"])
                 ):
+                    refusal = "superseded"
+                elif action == "resume_entries" and control["flatten_command_id"] is not None:
+                    refusal = "flatten_in_progress"
+                if refusal is not None:
                     self.db.record_disposition(
                         kind="intent",
                         input_id=command_id,
                         account_slot=self.account_slot,
                         disposition="refused",
-                        reason="superseded",
+                        reason=refusal,
                         now_ns=now,
                     )
                     return
-                self.db.set_control(account_slot=self.account_slot, paused=paused, halted=halted, now_ns=now)
+                self.db.apply_control(account_slot=self.account_slot, action=action, command_id=command_id, now_ns=now)
                 self.db.record_disposition(
                     kind="intent",
                     input_id=command_id,
                     account_slot=self.account_slot,
                     disposition="accepted",
-                    reason="control_applied",
-                    now_ns=now,
-                )
-            return
-        if action == "flatten":
-            with self.conn.transaction():
-                self.db.request_flatten(account_slot=self.account_slot, command_id=command_id, now_ns=now)
-                self.db.record_disposition(
-                    kind="intent",
-                    input_id=command_id,
-                    account_slot=self.account_slot,
-                    disposition="accepted",
-                    reason="flatten_requested",
+                    reason="flatten_requested" if action == "flatten" else "control_applied",
                     now_ns=now,
                 )
             return
@@ -791,7 +784,7 @@ class ExecutorRunner:
             await self._flatten(current, amount, reason="operator_flatten", now=now)
             return
         last_flatten = latest.get("safety_flatten") or latest.get("time_exit")
-        facts = PlanFacts(
+        facts = EntryLifecycleFacts(
             now_ns=now,
             entered_at_ns=current["opened_at_ns"],
             max_hold_s=current["max_hold_s"],

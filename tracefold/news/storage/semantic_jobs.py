@@ -34,7 +34,6 @@ def semantic_job(row: Any) -> dict[str, Any] | None:
         **dict(row),
         **SemanticJobDetail.model_validate(row["detail"]).model_dump(),
         "event_id": row["subject_id"],
-        "leased_until_ms": row["lease_until_ms"],
     }
 
 
@@ -67,7 +66,7 @@ class SemanticJobs:
                 row["attempts"],
                 row["next_attempt_at_ms"],
                 row["lease_token"],
-                row["leased_until_ms"],
+                row["lease_until_ms"],
                 row["last_error_code"],
                 _dumps(detail.model_dump()),
                 row["updated_at_ms"],

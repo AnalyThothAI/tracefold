@@ -3,9 +3,9 @@ from __future__ import annotations
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_0424_sql import ANALYSES_SQL, EVIDENCE_VERSIONS_SQL
 from tests.support.news_event_updates import persist_analysis_document
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.storage.semantic_rows import ANALYSES_SQL, EVIDENCE_VERSIONS_SQL
 
 pytestmark = pytest.mark.integration
 

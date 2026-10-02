@@ -104,8 +104,8 @@ def _oi(news: Any, item_id: str, *, venue: str, symbol: str, at_ms: int) -> None
     )
 
 
-def _typed(news: Any, fact: Any, *, at_ms: int) -> None:
-    base = news.fixture_observations[fact.item_id]
+def _typed(news: Any, fact: Any, *, item_id: str, at_ms: int) -> None:
+    base = news.fixture_observations[item_id]
     fields = {name: getattr(fact, name) for name in MarketObservation.model_fields if hasattr(fact, name)}
     fields.update(provider=MARKET_PROVIDER, available_at_ms=at_ms)
     if base.kind == "smart_money":
@@ -281,9 +281,6 @@ def test_the_kind_filter_narrows_and_the_source_summary_always_names_every_kind(
     news = repos.news
     liquidation = parse_liquidation(
         "SOL Large Short Liquidation 202.71K at $137.01",
-        item_id="liq-1",
-        fact_id="fact-liq-1",
-        source_strategy_id="2083",
         provider_source="okx",
         event_at_ms=NOW,
         received_at_ms=NOW,
@@ -293,7 +290,7 @@ def test_the_kind_filter_narrows_and_the_source_summary_always_names_every_kind(
         _item(news, "oi-1", kind="oi", at_ms=NOW)
         _oi(news, "oi-1", venue="binance", symbol="BTC", at_ms=NOW)
         _item(news, "liq-1", kind="liquidation", at_ms=NOW + 1)
-        _typed(news, liquidation, at_ms=NOW)
+        _typed(news, liquidation, item_id="liq-1", at_ms=NOW)
 
     assert [group["market_kind"] for group in _groups(news, kinds=("oi",))] == ["oi"]
     assert [group["market_kind"] for group in _groups(news, kinds=("liquidation",))] == ["liquidation"]
@@ -341,7 +338,7 @@ def test_one_item_reads_back_its_stored_payload_and_its_groups_whole_timeline(co
     params = {"relatedAddress": address, "strategy": {"metrics": {"position_value": {"value": 482113.55}}}}
     with repos.transaction():
         _item(news, "wallet-1", kind="smart_money", at_ms=NOW, params=params)
-        _typed(news, account, at_ms=NOW)
+        _typed(news, account, item_id="wallet-1", at_ms=NOW)
 
     detail = news.market_item(item_id="wallet-1")
     assert detail is not None

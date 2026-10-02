@@ -72,14 +72,7 @@ class ServeRepositories:
 
 @dataclass(slots=True)
 class ServeDatabase:
-    """The public serving database boundary.
-
-    Connections default to read-only and nothing on this pool ever opens a
-    read-write transaction: the two ReviewDesk mutations that used to were
-    removed with the console page they served (#256).  `tracefold news review
-    submit` is the one remaining writer of the append-only review fact tables
-    and opens its own connection under the same role.
-    """
+    """The public serving database boundary, with read-only connections and bounded admission."""
 
     api_pool: Any
     telemetry: TelemetryRegistry
@@ -103,6 +96,10 @@ class ServeDatabase:
             statement_timeout_seconds=_SERVE_STATEMENT_TIMEOUT_SECONDS,
             lock_timeout_seconds=0.250,
             read_only=True,
+            keepalives=True,
+            keepalives_idle=10,
+            keepalives_interval=5,
+            keepalives_count=3,
             idle_in_transaction_session_timeout_seconds=5.0,
             session_settings=_SERVE_SESSION_CONFIG,
         )

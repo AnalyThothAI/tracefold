@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import sys
+from collections.abc import Collection, Mapping
+from typing import Any
+
 from alembic import context
+from alembic.runtime.migration import MigrationContext, MigrationInfo
+from psycopg.errors import Diagnostic
 from sqlalchemy import engine_from_config, pool
 
 from tracefold.platform.config.loader import load_settings
@@ -51,6 +57,18 @@ def run_migrations_online() -> None:
         connect_args={"application_name": "tracefold_migrate"},
     )
     with connectable.connect() as connection:
+        driver = connection.connection.driver_connection
+
+        if driver is None:
+            raise RuntimeError("migration_connection_missing")
+
+        # Revision 0424 already installs its own p4_verify handler; retain its published bytes.
+        def migration_notice(diagnostic: Diagnostic) -> None:
+            message = diagnostic.message_primary or ""
+            if not message.startswith("p4_verify"):
+                print(message, file=sys.stderr)
+
+        driver.add_notice_handler(migration_notice)
         if connection.exec_driver_sql("SELECT current_user").scalar() != "tracefold":
             raise RuntimeError("migration_owner_identity_required")
         connection.commit()
@@ -64,7 +82,18 @@ def run_migrations_online() -> None:
             raise RuntimeError("steady_workers_runtime_active")
         connection.commit()
         try:
-            context.configure(connection=connection, target_metadata=target_metadata)
+            # The frozen baseline sets client_min_messages=warning. Restore NOTICE after each
+            # step so a fresh full upgrade captures the same evidence as a staged upgrade.
+            def restore_notice_level(
+                ctx: MigrationContext, step: MigrationInfo, heads: Collection[Any], run_args: Mapping[str, Any]
+            ) -> None:
+                connection.exec_driver_sql("SET LOCAL client_min_messages='notice'")
+
+            connection.exec_driver_sql("SET client_min_messages='notice'")
+            connection.commit()
+            context.configure(
+                connection=connection, target_metadata=target_metadata, on_version_apply=restore_notice_level
+            )
             with context.begin_transaction():
                 context.run_migrations()
         finally:

@@ -29,7 +29,7 @@ from ..updates.identity import identity
 from ..updates.projection import ReadingView, extraction_scopes, item_text, reading_view, reading_views
 from .errors import EventUpdateConflict
 from .evidence import EvidenceStorage
-from .semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL, ITEM_REVISIONS_SQL, SEMANTIC_JOBS_SQL
+from .semantic_jobs import semantic_job
 
 RELATED_PRIOR_EVENTS_MAX: Final = 8
 
@@ -357,15 +357,11 @@ class SemanticInputStorage:
         self.head_document = head_document
 
     def semantic_input_material(self, event_id: str, *, now_ms: int) -> dict[str, Any]:
-        work = self.conn.execute(
-            f"""
-            SELECT wanted_revision, done_revision, lineage_id, attached_evidence, focus_claim_refs,
-                   processed_read_refs, failed_read_refs, last_outcome, last_error_code,
-                   reanalysis_read_ref, reanalysis_reason, reanalysis_head_ref
-              FROM ({SEMANTIC_JOBS_SQL}) WHERE event_id = %s
-            """,  # noqa: S608 -- fixed SQL; bound values.
-            (event_id,),
-        ).fetchone()
+        work = semantic_job(
+            self.conn.execute(
+                "SELECT * FROM news_jobs WHERE job_kind='semantic' AND subject_id=%s", (event_id,)
+            ).fetchone()
+        )
         from .events import EventStorage
 
         events = EventStorage()
@@ -415,14 +411,17 @@ class SemanticInputStorage:
         )
         revisions = (
             self.conn.execute(
-                f"""
-                SELECT r.item_id, r.revision_sha256, r.revision_sequence, r.evidence_text, r.reporting_origin,
+                """
+                SELECT i.item_id, r.revision_sha256, r.revision_sequence, r.evidence_text, r.reporting_origin,
                        r.source_artifact_id,
                        r.canonical_url, r.published_at_ms, r.received_at_ms
-                  FROM ({ITEM_REVISIONS_SQL}) r
-                  JOIN unnest(%s::text[], %s::text[]) AS frozen(item_id, revision_sha256)
-                    ON frozen.item_id = r.item_id AND frozen.revision_sha256 = r.revision_sha256
-                """,  # noqa: S608 -- fixed SQL; bound values.
+                  FROM unnest(%s::text[], %s::text[]) AS frozen(item_id,revision_sha256)
+                  JOIN news_items i ON i.item_id=frozen.item_id
+                  CROSS JOIN LATERAL jsonb_to_recordset(i.revisions) AS r(
+                    revision_sha256 text,revision_sequence bigint,evidence_text text,reporting_origin text,
+                    source_artifact_id text,canonical_url text,published_at_ms bigint,received_at_ms bigint)
+                 WHERE r.revision_sha256=frozen.revision_sha256
+                """,
                 ([row[0] for row in frozen_revisions], [row[1] for row in frozen_revisions]),
             ).fetchall()
             if frozen_revisions
@@ -482,13 +481,13 @@ class SemanticInputStorage:
         """Corrections and conflicts this Event's adopted revisions already published, by claim pair."""
 
         rows = self.conn.execute(
-            f"""
+            """
             SELECT DISTINCT change->>'current_ref' AS current_ref, change->>'previous_ref' AS previous_ref,
                    change->>'relation' AS relation
-              FROM ({ANALYSES_SQL}) u CROSS JOIN LATERAL jsonb_array_elements(u.document->'changes') change
-             WHERE u.event_id = %s AND change->>'relation' IN ('corrects', 'conflicts')
+              FROM news_analyses u CROSS JOIN LATERAL jsonb_array_elements(u.document->'changes') change
+             WHERE u.adopted_at_ms IS NOT NULL AND u.event_id = %s AND change->>'relation' IN ('corrects', 'conflicts')
              ORDER BY 1, 2, 3
-            """,  # noqa: S608 -- fixed SQL; bound values.
+            """,
             (event_id,),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -521,12 +520,11 @@ class SemanticInputStorage:
         if not event_ids:
             return []
         rows = self.conn.execute(
-            f"""
-            SELECT h.event_id, u.document
-              FROM ({ANALYSIS_HEADS_SQL}) h
-              JOIN ({ANALYSES_SQL}) u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
-             WHERE h.event_id = ANY(%s)
-            """,  # noqa: S608 -- fixed SQL; bound values.
+            """
+            SELECT e.event_id,u.document FROM news_events e
+              JOIN news_analyses u ON u.analysis_id=e.current_analysis_id
+             WHERE e.event_id=ANY(%s)
+            """,
             (list(event_ids),),
         ).fetchall()
         by_event = {str(row["event_id"]): dict(row["document"]) for row in rows}

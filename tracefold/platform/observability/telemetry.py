@@ -9,7 +9,6 @@ PROMETHEUS_CONTENT_TYPE = CONTENT_TYPE_LATEST
 
 ExternalDataName = Literal[
     "chain_tape",
-    "event_reaction",
     "instrument_snapshot",
     "opennews_recovery",
     "quote_snapshot",
@@ -26,8 +25,6 @@ ExternalDataSource = Literal[
     "other",
     "robinhood_rpc",
     "robinhoodtrenches",
-    # #572 PR-2: the price feed a wallet card's +1h/+4h receipt is taken from, after the card was sent.
-    "dexscreener",
     "us_reference",
 ]
 ExternalDataOutcome = Literal["error", "partial", "success"]

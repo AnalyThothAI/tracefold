@@ -11,6 +11,17 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_0424_sql import (
+    ANALYSES_SQL,
+    ANALYSIS_HEADS_SQL,
+    CLAIM_LINKS_SQL,
+    NOTIFICATION_DECISIONS_SQL,
+    NOTIFY_JOBS_SQL,
+    SEMANTIC_JOBS_SQL,
+    SEMANTIC_RESULTS_SQL,
+    UPDATE_PENDING_SQL,
+    UPDATE_RECEIPTS_SQL,
+)
 from tests.support.news_current_delivery import seed_delivery
 from tests.support.news_event_updates import persist_analysis_document
 from tests.support.news_reader import PushAll
@@ -65,20 +76,7 @@ from tracefold.news.notifications.recall import (
 from tracefold.news.notifications.service import Notifications
 from tracefold.news.storage.errors import EventUpdateConflict, IntentLeaseLost
 from tracefold.news.storage.judgment_store import PgJudgmentCache
-from tracefold.news.storage.notification_rows import (
-    NOTIFICATION_DECISIONS_SQL,
-    NOTIFY_JOBS_SQL,
-    UPDATE_PENDING_SQL,
-    UPDATE_RECEIPTS_SQL,
-)
 from tracefold.news.storage.semantic_input import frozen_input
-from tracefold.news.storage.semantic_rows import (
-    ANALYSES_SQL,
-    ANALYSIS_HEADS_SQL,
-    CLAIM_LINKS_SQL,
-    SEMANTIC_JOBS_SQL,
-    SEMANTIC_RESULTS_SQL,
-)
 from tracefold.news.updates.contracts import (
     Asset,
     Citation,
@@ -2172,7 +2170,7 @@ def test_final_semantic_crash_is_settled_only_after_lease_expiry_and_retries_exa
     outbox = trade_rows()
     checkpoints = sql("SELECT * FROM news_judgment_cache WHERE cache_key LIKE 'semantic_checkpoint:%'")
     set_semantic_job(
-        None, wanted_revision=2, attempts=3, lease_token="last", leased_until_ms=clock() + 1000, last_outcome=None
+        None, wanted_revision=2, attempts=3, lease_token="last", lease_until_ms=clock() + 1000, last_outcome=None
     )
 
     def settle(r):
@@ -2301,6 +2299,7 @@ def test_targeted_reanalysis_reuses_work_and_preserves_adopted_head() -> None:
         db.tx(
             "reanalysis_request",
             lambda repos: repos.news.semantic_work.request_reanalysis(
+                listing=listing,
                 event_id=EVENT,
                 expected_wanted_revision=1,
                 expected_head_revision=head.content_revision,
@@ -2335,6 +2334,7 @@ def test_targeted_reanalysis_reuses_work_and_preserves_adopted_head() -> None:
             db.tx(
                 "reanalysis_stale",
                 lambda repos: repos.news.semantic_work.request_reanalysis(
+                    listing=listing,
                     event_id=EVENT,
                     expected_wanted_revision=1,
                     expected_head_revision=head.content_revision,
@@ -2474,3 +2474,156 @@ def seed_claim_link(
         )
 
     ThreadedDb()._run("seed-claim-link", persist)
+
+
+def test_slow_reader_permission_releases_event_for_admission(monkeypatch):
+    from threading import Event
+    from time import monotonic
+
+    from tracefold.news.storage.notification_context import NotificationContextStorage
+
+    pg, db, clock = store()
+    head = adopted_head(pg.semantic, clock)
+    snapshot = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
+    plan = notify_plan(head, snapshot.reader.revision)
+    started = Event()
+    original = NotificationContextStorage.current_reader_revision
+
+    def slow(self, event_id, *, now_ms):
+        if not started.is_set():
+            assert self.conn.execute("SHOW transaction_read_only").fetchone()["transaction_read_only"] == "on"
+            started.set()
+            self.conn.execute("SELECT pg_sleep(1)")
+        return original(self, event_id, now_ms=now_ms)
+
+    monkeypatch.setattr(NotificationContextStorage, "current_reader_revision", slow)
+
+    async def race():
+        planning = asyncio.create_task(pg.notifications.atomic_record_plan(plan))
+        assert await asyncio.to_thread(started.wait, 3)
+        begin = monotonic()
+        await asyncio.wait_for(
+            db.tx(
+                "admission",
+                lambda r: r.news.semantic_work.request_semantic_revision(
+                    event_id=EVENT, lineage_id="same", now_ms=clock.now_ms
+                ),
+            ),
+            0.25,
+        )
+        assert monotonic() - begin < 0.25
+        return await planning
+
+    assert asyncio.run(race()).lease is not None
+
+
+def test_sweep_cannot_settle_a_candidate_reowned_after_selection(monkeypatch):
+    import tracefold.news.storage.notification_delivery as delivery
+
+    pg, db, clock = store()
+    adopted_head(pg.semantic, clock)
+    prepared = asyncio.run(notifications(pg.notifications, clock, Sender()).service.prepare(EVENT, "news"))
+    assert asyncio.run(pg.notifications.atomic_begin_send(prepared.lease, prepared.card)) == "begun"
+    clock.now_ms += 120_000
+    original = delivery.lock_event
+    reowned = False
+
+    def replace_owner(conn, event_id):
+        nonlocal reowned
+        if not reowned:
+            reowned = True
+            sql(
+                "UPDATE news_notifications SET lease_token='new-owner',lease_until_ms=%s,attempted_at_ms=%s "
+                "WHERE intent_id=%s",
+                (clock.now_ms + 120_000, clock.now_ms, prepared.lease.intent_id),
+            )
+        original(conn, event_id)
+
+    monkeypatch.setattr(delivery, "lock_event", replace_owner)
+    assert (
+        asyncio.run(
+            db.tx(
+                "sweep", lambda r: r.news.notification_delivery.terminalize_interrupted_deliveries(now_ms=clock.now_ms)
+            )
+        )
+        == 0
+    )
+    row = sql("SELECT state,lease_token FROM news_notifications WHERE intent_id=%s", (prepared.lease.intent_id,))[0]
+    assert row == {"state": "sending", "lease_token": "new-owner"}
+
+
+def test_foreign_writes_do_not_invalidate_news_permission(monkeypatch):
+    from threading import Event
+
+    from tracefold.news.storage.notification_context import NotificationContextStorage
+
+    pg, db, clock = store()
+    head = adopted_head(pg.semantic, clock)
+    snapshot = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
+    plan = notify_plan(head, snapshot.reader.revision)
+    started = Event()
+    original = NotificationContextStorage.current_reader_revision
+
+    def slow(self, event_id, *, now_ms):
+        started.set()
+        self.conn.execute("SELECT pg_sleep(.3)")
+        return original(self, event_id, now_ms=now_ms)
+
+    monkeypatch.setattr(NotificationContextStorage, "current_reader_revision", slow)
+
+    async def race():
+        planned = asyncio.create_task(pg.notifications.atomic_record_plan(plan))
+        assert await asyncio.to_thread(started.wait, 3)
+        await db.tx(
+            "foreign_writer",
+            lambda r: (r.trading.ensure_account("noise"), r.news.record_published_frame(now_ms=clock.now_ms)),
+        )
+        return await planned
+
+    assert asyncio.run(race()).lease is not None
+    assert db.names.count("news_update_plan_permission") == 1
+
+
+def test_receipt_committing_inside_permission_read_invalidates_its_generation(monkeypatch):
+    from threading import Event
+
+    from tracefold.news.storage.notification_context import NotificationContextStorage
+
+    pg, db, clock = store()
+    head = adopted_head(pg.semantic, clock)
+    snapshot = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
+    plan = notify_plan(head, snapshot.reader.revision)
+    seed_event("ev-other", fingerprint="fp-other", title="Agency orders steel tariff", text=TEXT)
+    seed_sent_claim_projection(
+        "ev-other", content_revision=hashlib.sha256(b"ev-other").hexdigest(), claim_ref="cl:fixture", related=True
+    )
+    started = Event()
+    original = NotificationContextStorage.current_reader_revision
+
+    def slow(self, event_id, *, now_ms):
+        if not started.is_set():
+            started.set()
+            self.conn.execute("SELECT pg_sleep(.3)")
+        return original(self, event_id, now_ms=now_ms)
+
+    monkeypatch.setattr(NotificationContextStorage, "current_reader_revision", slow)
+
+    async def race():
+        planned = asyncio.create_task(pg.notifications.atomic_record_plan(plan))
+        assert await asyncio.to_thread(started.wait, 3)
+        await db.tx(
+            "late_receipt",
+            lambda r: seed_delivery(
+                r.conn,
+                event_id="ev-other",
+                at_ms=clock.now_ms - 5_000,
+                history_context={"comparison_title": "Agency orders steel tariff"},
+                card={"header": {"title": {"content": "关税"}}},
+            ),
+        )
+        return await planned
+
+    assert asyncio.run(race()).status == "reader_changed"
+    assert (
+        sql("SELECT count(*) AS n FROM news_notifications WHERE event_id=%s AND state='pending'", (EVENT,))[0]["n"] == 0
+    )

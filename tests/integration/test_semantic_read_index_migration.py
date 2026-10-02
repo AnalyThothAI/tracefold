@@ -15,7 +15,7 @@ from tracefold.platform.postgres.migrations import alembic_config
 pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
 
-def test_read_index_upgrade_preserves_predecessor_job_facts(postgres_migration_dsn):
+def test_read_index_upgrade_preserves_predecessor_job_facts(postgres_migration_dsn, capsys):
     with closing(connect_postgres_test()) as conn, conn.transaction():
         conn.execute("DROP SCHEMA public CASCADE")
         conn.execute("CREATE SCHEMA public")
@@ -23,6 +23,8 @@ def test_read_index_upgrade_preserves_predecessor_job_facts(postgres_migration_d
     config = alembic_config()
     config.attributes["database_url"] = postgres_migration_test_dsn()
     command.upgrade(config, "20261001_0424")
+    notices = capsys.readouterr().err
+    assert all(f"p{phase}_verify ok" in notices for phase in (2, 3, 4))
     with closing(connect_postgres_test()) as conn, conn.transaction():
         conn.execute(
             """INSERT INTO news_jobs(job_kind,subject_id,state,attempts,next_attempt_at_ms,

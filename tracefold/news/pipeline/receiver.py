@@ -46,6 +46,8 @@ class OpenNewsReceiver:
         self.db = db
         self.ws_client = ws_client
         self.recovery = recovery
+        self._last_recorded_frame_ms: int | None = None
+        self._broker_incident_open = False
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         if self.ws_client is None:
@@ -139,18 +141,19 @@ class OpenNewsReceiver:
                 "news_ingest_backpressure",
                 _record_backpressure,
             )
+            self._broker_incident_open = True
             return
-
-        def _published(repos: Any) -> int:
-            closed = repos.news.close_open_incidents(
-                cause_classes=["broker_backpressure", "broker_unavailable"], now_ms=stamp
-            )
-            repos.news.update_ingest_state(
-                now_ms=stamp, last_frame_at_ms=stamp, last_publish_at_ms=stamp, clear_error=True
-            )
-            return int(closed)
-
-        closed = await self.db.tx("news_ingest_frame", _published, timeout_seconds=1.0)
+        if (
+            not self._broker_incident_open
+            and self._last_recorded_frame_ms is not None
+            and stamp - self._last_recorded_frame_ms < 5_000
+        ):
+            return
+        closed = await self.db.tx(
+            "news_ingest_frame", lambda repos: repos.news.record_published_frame(now_ms=stamp), timeout_seconds=1.0
+        )
+        self._last_recorded_frame_ms = stamp
+        self._broker_incident_open = False
         if closed > 0 and self.recovery is not None:
             self.recovery.request()
 

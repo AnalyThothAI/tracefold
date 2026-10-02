@@ -1,5 +1,8 @@
 """Persisted case document shapes; decimal values use lossless strings."""
 
+from decimal import Decimal
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -61,3 +64,34 @@ class PaperDocument(CaseDocument):
     cost_bps: str | None
     net_r: str | None
     labeled_at_ms: int
+
+
+def assessment_view(row: Any) -> dict[str, Any]:
+    return {
+        "case_id": row["case_id"],
+        "program_sha": row["program_sha"],
+        **AssessmentDocument.model_validate(row["assessment"]).model_dump(),
+    }
+
+
+def policy_view(row: Any) -> list[dict[str, Any]]:
+    values = []
+    for document in row["policy_decisions"] or ():
+        value = PolicyDocument.model_validate(document).model_dump()
+        value["expected_r"] = None if value["expected_r"] is None else Decimal(value["expected_r"])
+        values.append({"case_id": row["case_id"], "program_sha": row["program_sha"], **value})
+    return values
+
+
+def paper_view(row: Any) -> list[dict[str, Any]]:
+    values = []
+    for side, document in sorted((row["paper_legs"] or {}).items()):
+        if document.get("side", side) != side:
+            raise ValueError("trading_paper_side_mismatch")
+        value = PaperDocument.model_validate(
+            {key: value for key, value in document.items() if key != "side"}
+        ).model_dump()
+        for key in ("anchor_price", "exit_price", "gross_bps", "cost_bps", "net_r"):
+            value[key] = None if value[key] is None else Decimal(value[key])
+        values.append({"case_id": row["case_id"], "side": side, **value})
+    return values

@@ -9,11 +9,9 @@ from typing import Any
 from ..market_contracts import MARKET_NEWS_PUSHED_MAX, MARKET_NEWS_WINDOW_MS
 from ..models import TelegramDeliveryReceipt
 from .feed_sql import EDITORIAL_EVENT_SQL
-from .notification_rows import UPDATE_RECEIPTS_SQL
 from .sql_values import _dumps
 
-_STORYLINE_LOCK_NAMESPACE = 0x4E455753  # 'NEWS', distinct from App session-lock namespaces.
-_PUSHED_NEWS_PROJECTION = f"""
+_PUSHED_NEWS_PROJECTION = """
     SELECT d.event_id, d.settled_at_ms AS at_ms,
            COALESCE(d.history_context ->> 'storyline_key', '') AS storyline_key,
            COALESCE(d.history_context ->> 'comparison_title', '') AS comparison_title,
@@ -26,8 +24,8 @@ _PUSHED_NEWS_PROJECTION = f"""
            COALESCE(d.history_context -> 'assets', '[]'::jsonb) AS assets,
            COALESCE(d.history_context -> 'canonical_assets', '[]'::jsonb) AS canonical_assets
       FROM news_events e
-      JOIN ({UPDATE_RECEIPTS_SQL}) d ON d.event_id = e.event_id AND d.kind = 'update' AND d.state = 'sent'
-"""  # noqa: S608 -- fixed SQL; bound values.
+      JOIN news_notifications d ON d.event_id = e.event_id AND d.kind = 'update' AND d.state = 'sent'
+"""
 
 
 # #582 §3.3. The News an OI card's instrument already has, in the two numbers that card prints. Here
@@ -127,15 +125,6 @@ class DecisionStorage:
             ],
             "total": int(counted["total"] or 0) if counted is not None else 0,
         }
-
-    def lock_storyline(self, storyline_key: str) -> None:
-        """Transaction-scoped advisory lock on one storyline key so "read reader evidence -> decide -> insert verdict"
-        is serialised per key across concurrent Triage handlers (and processes). Released at commit/rollback. The
-        worker pool's 250 ms ``lock_timeout`` is raised for this transaction only: a same-key holder finishes in a
-        few ms, and a waiter that gave up would re-run the whole handler including a second paid model call."""
-
-        self.conn.execute("SET LOCAL lock_timeout = '2500ms'")
-        self.conn.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (_STORYLINE_LOCK_NAMESPACE, storyline_key))
 
     def begin_delivery_edit(
         self,

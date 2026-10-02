@@ -47,7 +47,6 @@ from .feed_sql import (
     feed_counts_sql,
     feed_page_sql,
 )
-from .semantic_rows import EVIDENCE_VERSIONS_SQL
 
 
 class FeedStorage:
@@ -213,19 +212,18 @@ class FeedStorage:
                 "evidence_version": int(row["evidence_version"]),
                 "focus_fact_id": row["focus_fact_id"],
                 "evidence_sha256": row["evidence_sha256"],
-                "provenance": row["provenance"],
-                "release_eligible": bool(row["release_eligible"]),
+                "provenance": "observed",
+                "release_eligible": True,
                 "created_at_ms": int(row["created_at_ms"]),
             }
             for row in self.conn.execute(
-                f"""
-                SELECT event_id, evidence_version, focus_fact_id, evidence_sha256,
-                       provenance, release_eligible, created_at_ms
-                  FROM ({EVIDENCE_VERSIONS_SQL})
-                 WHERE event_id = %s AND provenance = 'observed'
-                   AND snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-                 ORDER BY evidence_version
-                """,  # noqa: S608 -- fixed SQL; bound values.
+                """
+                SELECT e.event_id,v.evidence_version,v.focus_fact_id,v.evidence_sha256,
+                       v.created_at_ms FROM news_events e
+                CROSS JOIN LATERAL jsonb_to_recordset(e.evidence->'versions') AS v(
+                  evidence_version integer,focus_fact_id text,evidence_sha256 text,created_at_ms bigint)
+                WHERE e.event_id=%s ORDER BY v.evidence_version
+                """,
                 (event_id,),
             ).fetchall()
         ]

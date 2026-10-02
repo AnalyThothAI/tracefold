@@ -1,4 +1,3 @@
-# ruff: noqa: S608 -- SQL composition uses owned constants and bound parameters.
 """Transactional Trading Analysis ledger for frozen LIVE Cases and paired paper legs."""
 
 from __future__ import annotations
@@ -13,8 +12,14 @@ from typing import Any
 from tracefold.trading.engine.forecast import Forecast, PolicyDecision
 from tracefold.trading.engine.paper import PaperLeg
 from tracefold.trading.engine.target import TargetSelection
-from tracefold.trading.storage.case_documents import AssessmentDocument, PaperDocument, PolicyDocument
-from tracefold.trading.storage.case_rows import ACTION_ROWS_SQL, ASSESSMENT_ROWS_SQL, PAPER_ROWS_SQL
+from tracefold.trading.storage.case_documents import (
+    AssessmentDocument,
+    PaperDocument,
+    PolicyDocument,
+    assessment_view,
+    paper_view,
+    policy_view,
+)
 
 ANALYSIS_CASES_SQL = (
     "SELECT c.case_id,c.trigger_kind,c.asset_id,c.native_symbol,c.created_at_ms,c.state,"
@@ -36,9 +41,11 @@ ANALYSIS_CASE_SQL = (
     "geometry_version,stop_bps,tp_bps,half_spread_bps,reference_price,decided_at_ms,failure_code,"
     "updated_at_ms FROM trading_cases WHERE case_id=%s"
 )
-ASSESSMENTS_BY_CASE_SQL = "SELECT * FROM (" + ASSESSMENT_ROWS_SQL + ") a WHERE case_id=%s ORDER BY program_sha"
-ACTIONS_BY_CASE_SQL = "SELECT * FROM (" + ACTION_ROWS_SQL + ") a WHERE case_id=%s ORDER BY program_sha,policy_id"
-PAPER_BY_CASE_SQL = "SELECT * FROM (" + PAPER_ROWS_SQL + ") l WHERE case_id=%s ORDER BY side"
+ASSESSMENTS_BY_CASE_SQL = (
+    "SELECT case_id,program_sha,assessment FROM trading_cases WHERE case_id=%s AND assessment IS NOT NULL"
+)
+ACTIONS_BY_CASE_SQL = "SELECT case_id,program_sha,policy_decisions FROM trading_cases WHERE case_id=%s"
+PAPER_BY_CASE_SQL = "SELECT case_id,paper_legs FROM trading_cases WHERE case_id=%s"
 
 
 def _json(value: object) -> str:
@@ -77,7 +84,7 @@ class AnalysisStorage:
         if not 1 <= limit <= 10:
             raise ValueError("source_context_limit_invalid")
         facts = self.conn.execute(
-            "SELECT input_id AS trigger_id,source_fact_key,kind,payload,first_visible_at_ms "
+            "SELECT input_id,source_fact_key,kind,payload,first_visible_at_ms "
             "FROM trading_inputs WHERE selected_asset_id=%s AND input_id<>%s "
             "AND first_visible_at_ms<=%s AND first_visible_at_ms>=%s "
             "ORDER BY first_visible_at_ms DESC,input_id DESC LIMIT %s",
@@ -117,9 +124,19 @@ class AnalysisStorage:
             return None
         return {
             **dict(row),
-            "assessments": [dict(item) for item in self.conn.execute(ASSESSMENTS_BY_CASE_SQL, (case_id,)).fetchall()],
-            "policy_actions": [dict(item) for item in self.conn.execute(ACTIONS_BY_CASE_SQL, (case_id,)).fetchall()],
-            "paper_legs": [dict(item) for item in self.conn.execute(PAPER_BY_CASE_SQL, (case_id,)).fetchall()],
+            "assessments": [
+                assessment_view(item) for item in self.conn.execute(ASSESSMENTS_BY_CASE_SQL, (case_id,)).fetchall()
+            ],
+            "policy_actions": [
+                view
+                for item in self.conn.execute(ACTIONS_BY_CASE_SQL, (case_id,)).fetchall()
+                for view in policy_view(item)
+            ],
+            "paper_legs": [
+                view
+                for item in self.conn.execute(PAPER_BY_CASE_SQL, (case_id,)).fetchall()
+                for view in paper_view(item)
+            ],
         }
 
     def accept_trigger(
@@ -156,12 +173,8 @@ class AnalysisStorage:
             "version": selection.version,
         }
         self.conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,746))", (f"source|{source_fact_key}",))
-        self.conn.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended(%s,746))",
-            (f"{kind}|{source_fact_key}|{source_revision}",),
-        )
         existing = self.conn.execute(
-            "SELECT input_id AS trigger_id,payload_sha256 FROM trading_inputs "
+            "SELECT input_id,payload_sha256 FROM trading_inputs "
             "WHERE kind=%s AND source_fact_key=%s AND source_revision=%s FOR UPDATE",
             (kind, source_fact_key, source_revision),
         ).fetchone()
@@ -286,9 +299,9 @@ class AnalysisStorage:
 
     def case_trigger(self, case_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
-            "SELECT t.input_id AS trigger_id,t.kind,t.source_fact_key,t.source_revision,t.payload_sha256,"
+            "SELECT t.input_id,t.kind,t.source_fact_key,t.source_revision,t.payload_sha256,"
             "t.payload,t.first_visible_at_ms,t.source_observed_at_ms,t.selected_asset_id,t.target_selection,"
-            "t.exclusion_reason,t.received_at_ms AS created_at_ms FROM trading_cases c JOIN "
+            "t.exclusion_reason,t.received_at_ms FROM trading_cases c JOIN "
             "trading_inputs t ON t.input_id=c.trigger_id WHERE c.case_id=%s",
             (case_id,),
         ).fetchone()
@@ -308,9 +321,9 @@ class AnalysisStorage:
             (f"source|{identity['source_fact_key']}",),
         )
         original = self.conn.execute(
-            "SELECT t.input_id AS trigger_id,t.kind,t.source_fact_key,t.source_revision,t.payload_sha256,"
+            "SELECT t.input_id,t.kind,t.source_fact_key,t.source_revision,t.payload_sha256,"
             "t.payload,t.first_visible_at_ms,t.source_observed_at_ms,t.selected_asset_id,t.target_selection,"
-            "t.exclusion_reason,t.received_at_ms AS created_at_ms FROM trading_cases c JOIN "
+            "t.exclusion_reason,t.received_at_ms FROM trading_cases c JOIN "
             "trading_inputs t ON t.input_id=c.trigger_id "
             "WHERE c.case_id=%s FOR SHARE OF c,t",
             (case_id,),
@@ -330,7 +343,7 @@ class AnalysisStorage:
                 superseded = self.conn.execute(
                     "SELECT 1 FROM trading_inputs WHERE kind='catalyst' AND input_id<>%s "
                     "AND received_at_ms<=%s AND payload->'superseded_claim_refs' ?| %s LIMIT 1",
-                    (original["trigger_id"], now_ms, claims),
+                    (original["input_id"], now_ms, claims),
                 ).fetchone()
                 if superseded is not None:
                     return "source_superseded"
@@ -389,10 +402,10 @@ class AnalysisStorage:
         self, *, trigger_kind: str, known_at_ms: int
     ) -> dict[str, tuple[int, dict[str, Decimal] | None]]:
         rows = self.conn.execute(
-            "SELECT l.side,l.outcome,count(*) AS n FROM (" + PAPER_ROWS_SQL + ") l "
-            "JOIN trading_cases c USING(case_id) WHERE c.trigger_kind=%s "
-            "AND l.status='complete' AND l.labeled_at_ms<%s AND l.exit_at_ms<%s "
-            "AND c.created_at_ms>=%s GROUP BY l.side,l.outcome",
+            "SELECT l.key AS side,l.value->>'outcome' AS outcome,count(*) AS n "
+            "FROM trading_cases c CROSS JOIN LATERAL jsonb_each(c.paper_legs) l WHERE c.trigger_kind=%s "
+            "AND l.value->>'status'='complete' AND (l.value->>'labeled_at_ms')::bigint<%s "
+            "AND (l.value->>'exit_at_ms')::bigint<%s AND c.created_at_ms>=%s GROUP BY l.key,l.value->>'outcome'",
             (trigger_kind, known_at_ms, known_at_ms, known_at_ms - 14 * 86_400_000),
         ).fetchall()
         result: dict[str, tuple[int, dict[str, Decimal] | None]] = {}

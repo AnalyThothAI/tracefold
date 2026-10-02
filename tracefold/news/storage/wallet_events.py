@@ -8,7 +8,6 @@ from typing import Any, Final, cast
 
 from ..chain_tape.contracts import ClassifiedFill
 from ..wallet_contracts import WalletEvent
-from .notification_rows import MARKET_JOBS_SQL, MARKET_NOTIFICATIONS_SQL
 from .sql_values import _dumps
 from .wallet_snapshots import wallet_event_row
 
@@ -65,34 +64,34 @@ NOTIFICATION_PROJECTION: Final = """
                      WHEN d.state IS NULL AND NOT e.notification_eligible THEN 'not_alerted'
                      WHEN d.state IS NULL AND i.notify_state <> 'processed' THEN 'awaiting_decision'
                      WHEN d.state IS NULL THEN 'not_alerted'
-                     WHEN d.state = 'pending' AND d.attempts = 0 AND t.next_due_at_ms IS NULL
+                     WHEN d.state = 'pending' AND d.attempts = 0 AND t.next_attempt_at_ms IS NULL
                        THEN 'not_alerted'
                      ELSE d.state
                    END AS notification_state,
-                   COALESCE(d.error, NULLIF(t.pending_reason, ''), e.notification_reason)
+                   COALESCE(d.error_code, NULLIF((t.detail->>'pending_reason'), ''), e.notification_reason)
                        AS notification_error,
-                   t.next_due_at_ms AS notification_next_due_at_ms"""
+                   t.next_attempt_at_ms AS notification_next_due_at_ms"""
 
 WALLET_EVENTS_SQL: Final = f"""
             SELECT {EVENT_COLUMNS},{NOTIFICATION_PROJECTION},
-                   d.created_at_ms AS intent_at_ms, d.first_attempt_at_ms,
+                   d.created_at_ms AS intent_at_ms, d.attempted_at_ms AS first_attempt_at_ms,
                    d.settled_at_ms, d.attempts
               FROM news_market_wallet_events e
               JOIN news_market_observations i ON i.observation_id = e.item_id
-              LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = i.notification_id
-              LEFT JOIN ({MARKET_JOBS_SQL}) t ON t.group_key = i.notify_group_key
+              LEFT JOIN news_notifications d ON d.kind='market' AND d.notification_id = i.notification_id
+              LEFT JOIN news_jobs t ON t.job_kind='market_notify' AND t.subject_id = i.notify_group_key
              WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
                AND (%s::bigint IS NULL OR (e.event_at_ms,e.item_id) < (%s,%s))
              ORDER BY e.event_at_ms DESC, e.item_id DESC LIMIT %s
         """  # noqa: S608 -- code-owned SQL identifiers.
 
-WALLET_EVENT_TOTALS_SQL: Final = f"""
+WALLET_EVENT_TOTALS_SQL: Final = """
             SELECT count(*) AS total, count(*) FILTER (WHERE e.ended_at_ms IS NULL) AS active,
                    count(*) FILTER (WHERE d.state = 'sent') AS sent
               FROM news_market_wallet_events e JOIN news_market_observations i ON i.observation_id=e.item_id
-              LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = i.notification_id
+              LEFT JOIN news_notifications d ON d.kind='market' AND d.notification_id = i.notification_id
              WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
-        """  # noqa: S608 -- fixed SQL; bound values.
+        """
 
 WALLET_EVENT_FILLS_SQL: Final = """
             SELECT chain_id, tx_hash, log_index, block_number, block_hash, wallet, token,
@@ -126,14 +125,14 @@ WALLET_MEMBER_EPISODES_SQL: Final = """
              GROUP BY 1
         """
 
-WALLET_NOTIFICATION_FUNNEL_SQL: Final = f"""
+WALLET_NOTIFICATION_FUNNEL_SQL: Final = """
             WITH scoped AS (
-                SELECT d.state AS state, d.delivery_key AS delivery_key,
-                       COALESCE(d.error, e.notification_reason, t.pending_reason) AS reason
+                SELECT d.state AS state, d.notification_id AS delivery_key,
+                       COALESCE(d.error_code, e.notification_reason, (t.detail->>'pending_reason')) AS reason
                   FROM news_market_wallet_events e
                   JOIN news_market_observations i ON i.observation_id = e.item_id
-                  LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = i.notification_id
-                  LEFT JOIN ({MARKET_JOBS_SQL}) t ON t.group_key = i.notify_group_key
+                  LEFT JOIN news_notifications d ON d.kind='market' AND d.notification_id = i.notification_id
+                  LEFT JOIN news_jobs t ON t.job_kind='market_notify' AND t.subject_id = i.notify_group_key
                  WHERE e.event_at_ms >= %s AND e.event_at_ms < %s
             ), leading_reason AS (
                 SELECT reason, count(*) AS n FROM scoped
@@ -145,16 +144,16 @@ WALLET_NOTIFICATION_FUNNEL_SQL: Final = f"""
                    (SELECT count(*) FROM scoped WHERE state = 'sent') AS sent,
                    (SELECT reason FROM leading_reason) AS unsent_reason,
                    COALESCE((SELECT n FROM leading_reason), 0) AS unsent_reason_count
-        """  # noqa: S608 -- fixed SQL; bound values.
+        """
 
 WALLET_EVENT_SQL: Final = f"""
             SELECT {EVENT_COLUMNS},{NOTIFICATION_PROJECTION},
-                   d.created_at_ms AS intent_at_ms, d.first_attempt_at_ms,
+                   d.created_at_ms AS intent_at_ms, d.attempted_at_ms AS first_attempt_at_ms,
                    d.settled_at_ms, d.attempts, d.card AS frozen_card
               FROM news_market_wallet_events e
               JOIN news_market_observations i ON i.observation_id = e.item_id
-              LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = i.notification_id
-              LEFT JOIN ({MARKET_JOBS_SQL}) t ON t.group_key = i.notify_group_key
+              LEFT JOIN news_notifications d ON d.kind='market' AND d.notification_id = i.notification_id
+              LEFT JOIN news_jobs t ON t.job_kind='market_notify' AND t.subject_id = i.notify_group_key
              WHERE e.item_id = %s
         """  # noqa: S608 -- code-owned SQL identifiers.
 

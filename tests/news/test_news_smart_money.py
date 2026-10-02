@@ -186,9 +186,6 @@ def test_an_abbreviated_figure_means_the_same_number_on_both_provider_templates(
     account = _parse(f"js-2 Open Long BTC $2.21{suffix} , Price $79,817.87")
     forced = parse_liquidation(
         f"BTC Large Long Liquidation 2.21{suffix} at $79817.87",
-        item_id="b" * 64,
-        fact_id="whole",
-        source_strategy_id="2083",
         provider_source="binance",
         event_at_ms=1_000,
         received_at_ms=2_000,

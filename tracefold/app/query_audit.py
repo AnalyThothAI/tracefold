@@ -21,9 +21,9 @@ from tracefold.trading.storage.analysis import (
     PAPER_BY_CASE_SQL,
 )
 from tracefold.trading.storage.executor import (
+    EXECUTION_ENTRIES_SQL,
     EXECUTION_FILLS_SQL,
     EXECUTION_ORDERS_SQL,
-    EXECUTION_PLANS_SQL,
     EXECUTION_REFUSALS_SQL,
     FILL_LEDGER_SQL,
     OPERATOR_INTENTS_SQL,
@@ -230,7 +230,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ("trading_scoreboard_legs", SCOREBOARD_LEGS_SQL, (ids,)),
         ("trading_scoreboard_executions", SCOREBOARD_EXECUTIONS_SQL, (ids,)),
         ("trading_scoreboard_dispositions", SCOREBOARD_DISPOSITIONS_SQL, (ids,)),
-        ("trading_execution_plans", EXECUTION_PLANS_SQL, (since_ns, None, None, 101)),
+        ("trading_execution_plans", EXECUTION_ENTRIES_SQL, (since_ns, None, None, 101)),
         ("trading_execution_refusals", EXECUTION_REFUSALS_SQL, (since_ns, None, None, 101)),
         ("trading_execution_orders", EXECUTION_ORDERS_SQL, (ids,)),
         ("trading_execution_fills", EXECUTION_FILLS_SQL, (ids,)),

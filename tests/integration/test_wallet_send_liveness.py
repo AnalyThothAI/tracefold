@@ -25,6 +25,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.market_oi import _oi_item
+from tests.support.news_0424_sql import MARKET_NOTIFICATIONS_SQL
 from tests.support.wallet_net_buy import (
     NOW,
     Db,
@@ -37,7 +38,6 @@ from tests.support.wallet_net_buy import (
 )
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_notifications import DEFER_BACKOFF_MS, MarketNotificationLoop
-from tracefold.news.storage.notification_rows import MARKET_NOTIFICATIONS_SQL
 
 pytestmark = pytest.mark.integration
 

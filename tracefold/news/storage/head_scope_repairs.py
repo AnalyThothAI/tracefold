@@ -10,30 +10,27 @@ from ..updates.identity import digest, identity
 from ..updates.projection import PROJECTION_VERSION, extraction_scopes, reading_view
 from ..updates.public import public_updates
 from ..updates.scope_repair import retract_out_of_scope
-from .semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL
 from .trade_projection import TradeProjectionStorage
 from .update_commit import PUBLIC_TRADE_KINDS, ScopeProofSource, commit_update, lock_event
 
-HEAD_SCOPE_MATERIAL_SQL = f"""
-SELECT h.event_id, u.document,
+HEAD_SCOPE_MATERIAL_SQL = """
+SELECT e.event_id, u.document,
        COALESCE((
          SELECT jsonb_agg(jsonb_build_object(
            'item_id', m.item_id, 'fact_id', m.fact_id, 'fact_text', m.fact_text,
            'title', i.title, 'description', i.description, 'evidence_text', i.evidence_text
          ) ORDER BY m.item_id, m.fact_id)
            FROM news_event_members m JOIN news_items i ON i.item_id=m.item_id
-          WHERE m.event_id=h.event_id
+          WHERE m.event_id=e.event_id
        ), '[]'::jsonb) AS members,
-       COALESCE(e.evidence->'fact_scopes','{{}}'::jsonb) AS fact_scopes
-  FROM ({ANALYSIS_HEADS_SQL}) h
-  JOIN news_events e ON e.event_id=h.event_id
-  JOIN ({ANALYSES_SQL}) u ON u.event_id=h.event_id AND u.content_revision=h.content_revision
+       COALESCE(e.evidence->'fact_scopes','{}'::jsonb) AS fact_scopes
+  FROM news_events e JOIN news_analyses u ON u.analysis_id=e.current_analysis_id
  WHERE e.focus_fact_method='explicit_numbered'
- ORDER BY h.event_id
-"""  # noqa: S608 -- fixed SQL; bound values.
-HEAD_SCOPE_EVENT_SQL = HEAD_SCOPE_MATERIAL_SQL.replace(" ORDER BY h.event_id", " AND h.event_id=%s ORDER BY h.event_id")
+ ORDER BY e.event_id
+"""
+HEAD_SCOPE_EVENT_SQL = HEAD_SCOPE_MATERIAL_SQL.replace(" ORDER BY e.event_id", " AND e.event_id=%s ORDER BY e.event_id")
 HEAD_SCOPE_PAGE_SQL = HEAD_SCOPE_MATERIAL_SQL.replace(
-    " ORDER BY h.event_id", " AND h.event_id > %s ORDER BY h.event_id LIMIT %s"
+    " ORDER BY e.event_id", " AND e.event_id > %s ORDER BY e.event_id LIMIT %s"
 )
 
 

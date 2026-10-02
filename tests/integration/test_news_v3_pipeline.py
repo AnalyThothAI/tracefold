@@ -11,6 +11,11 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_0424_sql import (
+    ANALYSES_SQL,
+    ANALYSIS_HEADS_SQL,
+    EVIDENCE_VERSIONS_SQL,
+)
 from tests.support.news_current_delivery import seed_delivery
 from tests.support.news_event_updates import first_update, persist_update
 from tests.support.news_update_pg import Clock, StubAnalyzer, ThreadedDb, draft, run_agent
@@ -19,11 +24,6 @@ from tracefold.news.opennews import parse_opennews_message, source_artifact_iden
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.search import compile_news_search
 from tracefold.news.storage.collectors import RECOVERY_BACKLOG_LIMIT
-from tracefold.news.storage.semantic_rows import (
-    ANALYSES_SQL,
-    ANALYSIS_HEADS_SQL,
-    EVIDENCE_VERSIONS_SQL,
-)
 from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.updates.contracts import Extraction
 from tracefold.news.updates.judgment import ProviderUnavailable

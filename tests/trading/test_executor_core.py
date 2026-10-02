@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import pytest
 
-from tracefold.trading.executor.core import EntryFacts, PlanFacts, SignalV4, admit, client_order_id, step
+from tracefold.trading.executor.core import EntryFacts, EntryLifecycleFacts, SignalV4, admit, client_order_id, step
 
 
 def signal() -> SignalV4:
@@ -43,8 +43,8 @@ def facts() -> EntryFacts:
         symbol_position=Decimal(0),
         symbol_regular_orders=0,
         symbol_algo_orders=0,
-        active_plans=0,
-        max_plans=5,
+        active_entries=0,
+        max_entries=5,
         equity_usdt=Decimal("1000"),
         active_notional_usdt=Decimal(0),
         max_leverage=5,
@@ -80,7 +80,7 @@ def test_client_ids_are_deterministic_bounded_and_distinct_per_leg_attempt() -> 
         ({"emergency_halted": True}, "emergency_halt"),
         ({"symbol_position": Decimal("1")}, "symbol_exposure"),
         ({"symbol_algo_orders": 1}, "symbol_exposure"),
-        ({"active_plans": 5}, "capacity"),
+        ({"active_entries": 5}, "capacity"),
         ({"bid": Decimal("98")}, "spread"),
         ({"ask": Decimal("105")}, "spread"),
         ({"quote_at_ns": -5_000_000_000}, "quote_stale"),
@@ -98,8 +98,8 @@ def test_sizing_counts_inflight_notional_and_market_step() -> None:
     assert result.quantity * facts().ask <= Decimal("500")
 
 
-def plan() -> PlanFacts:
-    return PlanFacts(
+def plan() -> EntryLifecycleFacts:
+    return EntryLifecycleFacts(
         now_ns=20_000_000_000,
         entered_at_ns=10_000_000_000,
         max_hold_s=120,

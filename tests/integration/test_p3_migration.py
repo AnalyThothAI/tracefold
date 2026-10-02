@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from contextlib import closing
 
@@ -15,10 +16,7 @@ from tests.postgres_test_utils import (
     postgres_migration_test_dsn,
     prepare_test_migration_database,
 )
-from tests.support.news_event_updates import first_update, raised_update
-from tests.support.news_update_pg import EVENT, STAMP
-from tracefold.news.storage.notification_context import NotificationContextStorage
-from tracefold.news.storage.semantic_rows import (
+from tests.support.news_0424_sql import (
     ANALYSES_SQL,
     ANALYSIS_HEADS_SQL,
     CLAIM_LINKS_SQL,
@@ -27,6 +25,11 @@ from tracefold.news.storage.semantic_rows import (
     SEMANTIC_JOBS_SQL,
     SEMANTIC_RESULTS_SQL,
 )
+from tests.support.news_event_updates import first_update, raised_update
+from tests.support.news_update_pg import EVENT, STAMP
+from tracefold.news.storage.events import semantic_material
+from tracefold.news.storage.notification_context import NotificationContextStorage
+from tracefold.news.storage.sql_values import _dumps
 from tracefold.news.updates.identity import digest
 from tracefold.platform.postgres.migrations import alembic_config
 
@@ -205,6 +208,9 @@ def test_twenty_read_projections_survive_the_populated_cut(source):
     assert len(queries) == 20
     with closing(connect_postgres_test()) as conn:
         expected = [rows(conn, old) for old, _ in queries]
+        prior_snapshot = conn.execute(
+            "SELECT snapshot FROM news_event_evidence_snapshots ORDER BY evidence_version DESC LIMIT 1"
+        ).fetchone()["snapshot"]
     command.upgrade(source, TARGET)
     with closing(connect_postgres_test()) as conn:
         assert [rows(conn, new) for _, new in queries] == expected
@@ -218,7 +224,11 @@ def test_twenty_read_projections_survive_the_populated_cut(source):
         assert conn.execute("SELECT reloptions FROM pg_class WHERE oid='news_events'::regclass").fetchone()[
             "reloptions"
         ] == ["fillfactor=85"]
-        assert conn.execute("SELECT evidence->>'material_sha256' AS sha FROM news_events").fetchone()["sha"]
+        evidence = conn.execute("SELECT evidence FROM news_events").fetchone()["evidence"]
+        assert (
+            evidence["material_sha256"]
+            == hashlib.sha256(_dumps(semantic_material(prior_snapshot)).encode()).hexdigest()
+        )
         links = conn.execute(CLAIM_LINKS_SQL).fetchall()
         assert len(links) == 1 and links[0]["relation"] == "real_world_change"
         reader = NotificationContextStorage(conn, updates=None)

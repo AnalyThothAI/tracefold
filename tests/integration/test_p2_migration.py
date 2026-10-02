@@ -247,3 +247,20 @@ def test_p2_rejects_mismatched_sources_without_partial_cut(source, column, value
     with closing(connect_postgres_test()) as conn:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == SOURCE
         assert conn.execute("SELECT to_regclass('news_notifications') AS relation").fetchone()["relation"] is None
+
+
+@pytest.mark.parametrize("state", ["decided", "pending", "dead", "sending", "ambiguous", "terminal"])
+def test_edit_trigger_requires_an_actual_sent_receipt(source, state):
+    plan, _card = legacy_notification(state)
+    command.upgrade(source, TARGET)
+    with closing(connect_postgres_test()) as conn:
+        with pytest.raises(Exception, match="news_notification_edit_requires_sent"), conn.transaction():
+            conn.execute(
+                "UPDATE news_notifications SET edit_state='editing' WHERE notification_id=%s", (plan.record_ref,)
+            )
+        assert (
+            conn.execute(
+                "SELECT edit_state FROM news_notifications WHERE notification_id=%s", (plan.record_ref,)
+            ).fetchone()["edit_state"]
+            is None
+        )

@@ -40,3 +40,41 @@ def test_public_lifecycle_has_no_separate_runtime_image() -> None:
     stages = [line.split(" AS ")[1].strip() for line in dockerfile.splitlines() if line.startswith("FROM ")]
     assert stages == ["web-builder", "python-deps", "base", "app"]
     assert (ROOT / ".python-version").read_text().strip() == "3.13"
+
+
+@pytest.mark.parametrize("actual", ["20261001_0424", "20261002_0425"])
+def test_migrate_proves_image_head_before_application_start(actual, capsys):
+    from scripts.deploy import Deployment, DeploymentError
+
+    class FakeDeployment:
+        migrate = Deployment.migrate
+
+        def __init__(self):
+            self.calls = []
+
+        def compose(self, *args, **kwargs):
+            self.calls.append(args)
+
+        def container(self, service):
+            return "migration-container"
+
+        def run(self, *args, **kwargs):
+            return "0"
+
+        def inspect(self, container, format):
+            return "sha256:test"
+
+        def image_head(self, image):
+            return "20261002_0425"
+
+        def database_head(self):
+            return actual
+
+    deploy = FakeDeployment()
+    if actual == "20261001_0424":
+        with pytest.raises(DeploymentError, match="migration head mismatch"):
+            deploy.migrate()
+    else:
+        deploy.migrate()
+        assert "Migration head verified: 20261002_0425" in capsys.readouterr().out
+        assert ("logs", "--no-color", "migrate") in deploy.calls
