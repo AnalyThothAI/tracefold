@@ -8,9 +8,10 @@ from dataclasses import replace
 import pytest
 
 from tests.support.news_update_admission import RecordingBus, event_of, raw, work
-from tests.support.news_update_pg import STAMP, ThreadedDb, sql
+from tests.support.news_update_pg import STAMP, ThreadedDb, seed_event, sql
 from tracefold.news.pipeline.admission import DeduperConsumer
-from tracefold.news.storage.semantic_store import PgSemanticStore
+from tracefold.news.storage.semantic_store import PgSemanticStore, PgSourceReader
+from tracefold.news.updates.contracts import ReadTarget
 
 pytestmark = pytest.mark.integration
 TITLE = "Agency orders 25% tariff on steel imports from Canada"
@@ -64,6 +65,33 @@ def test_new_recovery_evidence_wakes_a_live_event_only_when_timely(
     assert event_of(79112) == event_id
     assert work(event_id)["wanted_revision"] == (2 if age <= 30 * 60_000 else 1)
     assert bool(bus.wakes()) == (age <= 30 * 60_000)
+
+
+@pytest.mark.parametrize("mode", ["live", "recovery"])
+@pytest.mark.parametrize("published", [STAMP - 18_000, STAMP + 1])
+def test_frozen_input_and_optional_read_share_the_first_available_clock(
+    postgres_clone_dsn: str, mode: str, published: int
+) -> None:
+    seed_event("source-clock", at_ms=STAMP)
+    sql(
+        "UPDATE news_items SET first_ingest_mode=%s,published_at_ms=%s WHERE item_id='it-source-clock'",
+        (mode, published),
+    )
+    db = ThreadedDb()
+    target = ReadTarget(
+        ref="news_item:it-source-clock", action="load_prior_statement", description="Stored reporting source"
+    )
+
+    async def scenario() -> None:
+        frozen = await PgSemanticStore(db).input_for("source-clock")
+        optional = await PgSourceReader(db).read(target)
+        assert len(frozen.evidence) == len(optional) == 1
+        expected = min(STAMP, published) if mode == "recovery" else STAMP
+        assert frozen.evidence[0].source.first_available_at_ms == expected
+        assert optional[0].source.first_available_at_ms == expected
+        assert optional[0] == frozen.evidence[0]
+
+    asyncio.run(scenario())
 
 
 def test_recovery_receipts_count_as_sent_but_do_not_enter_live_latency(postgres_clone_dsn: str) -> None:

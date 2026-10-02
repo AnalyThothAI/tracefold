@@ -151,7 +151,7 @@ Claim ref 指向一个命题或真实世界中的一次发生。新增支持、�
 
 补抄时效只由 Gate 判断：`source_age_ms = observed_at_ms - params.ts`，不超过 30 分钟（含边界、负时差）的新闻与实时稿同等准入，上币稿保持 `listing_deterministic`。超过窗口或缺少有效 `ts` 的稿件标为 `recovery`，reason 为 `recovered_after_live_window`。实时稿不受这个时效窗口限制。归组和证据唤醒按本稿的 admission 判断：新鲜补抄稿和实时稿都可并入已准入 Event；历史 recovery Event 不吸收它们。超时补抄可并入已有 Event 追加证据，但不请求语义工作。Event 的 `ingest_mode='recovery'` 保留来源标注，报价工作集按 admission 选择，端到端延迟百分位只统计 live Event。不回补已有的历史 recovery Event。
 
-补抄 Item 的来源首次可见时间为 `min(observed_at_ms, published_at_ms)`，缺有效发布时间时使用 observation；实时 Item 保持 `observed_at_ms`。这个时钟进入命题的首次可见时间，供 `stale_source`、更正判定和 Trading catalyst 使用，不改变身份。边界与持久工作验证见[纯测试](../../tests/news/test_news_recovery_admission.py)和[PostgreSQL 归组与唤醒测试](../../tests/integration/test_news_recovery_admission.py)。
+补抄 Item 的来源首次可见时间为 `min(observed_at_ms, published_at_ms)`，缺有效发布时间时使用 observation；实时 Item 保持 `observed_at_ms`。冻结输入与可选已有来源读取都按 Item 的 `first_ingest_mode` 使用同一规则，归入实时 Event 不抹去补抄来源。这个时钟进入命题的首次可见时间，供 `stale_source`、更正判定和 Trading catalyst 使用，不改变身份。边界与持久工作验证见[纯测试](../../tests/news/test_news_recovery_admission.py)和[PostgreSQL 归组与唤醒测试](../../tests/integration/test_news_recovery_admission.py)。
 
 证据快照记录成员的来源、策略与 provenance，但只有语义材料变化（任务范围、成员记录与事实、正文修订、grounded assets）才请求语义工作；同一记录换策略重发只更新快照，不触发空转。
 

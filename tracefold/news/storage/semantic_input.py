@@ -608,7 +608,7 @@ class SemanticInputStorage:
         row = self.conn.execute(
             """
             SELECT item_id, source_id, source_item_key, source_artifact_id, title, description,
-                   canonical_url, reporting_origin, published_at_ms, observed_at_ms,
+                   canonical_url, reporting_origin, published_at_ms, observed_at_ms, first_ingest_mode,
                    evidence_text, evidence_text_sha256
               FROM news_items WHERE item_id = %s
             """,
