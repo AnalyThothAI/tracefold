@@ -1,0 +1,126 @@
+{
+  "dataset_sha256": "05ae4807a6f0f519657d27aeee5a5aac381cae8cd130a56e17e9ce99957e38a5",
+  "embedder": {
+    "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "dimensions": 384,
+    "normalization": "l2",
+    "template": "claim_embed_text_v1"
+  },
+  "prior": {
+    "queries": 150,
+    "sf_queries": 65,
+    "sf_success": 59,
+    "sf_success_rate": 0.9076923076923077,
+    "strata": {
+      "en": {
+        "success": 38,
+        "total": 44
+      },
+      "zh": {
+        "success": 18,
+        "total": 18
+      },
+      "ru": {
+        "success": 3,
+        "total": 3
+      }
+    },
+    "selected": 856,
+    "labeled_selected": 658,
+    "unjudged_selected": 198,
+    "unrelated_labeled_fraction": 0.36930091185410335,
+    "comparison_change": 0.1102464332036317
+  },
+  "receipt": {
+    "queries": 150,
+    "sf_queries": 32,
+    "sf_success": 31,
+    "sf_success_rate": 0.96875,
+    "strata": {
+      "en": {
+        "success": 21,
+        "total": 22
+      },
+      "zh": {
+        "success": 9,
+        "total": 9
+      },
+      "ru": {
+        "success": 1,
+        "total": 1
+      }
+    },
+    "selected": 1202,
+    "labeled_selected": 429,
+    "unjudged_selected": 773,
+    "unrelated_labeled_fraction": 0.47086247086247085,
+    "comparison_change": null
+  },
+  "degraded_prior": {
+    "queries": 150,
+    "sf_queries": 65,
+    "sf_success": 38,
+    "sf_success_rate": 0.5846153846153846,
+    "strata": {
+      "en": {
+        "success": 35,
+        "total": 44
+      },
+      "zh": {
+        "success": 3,
+        "total": 18
+      },
+      "ru": {
+        "success": 0,
+        "total": 3
+      }
+    },
+    "selected": 946,
+    "labeled_selected": 399,
+    "unjudged_selected": 547,
+    "unrelated_labeled_fraction": 0.3634085213032581,
+    "comparison_change": 0.22697795071335936
+  },
+  "degraded_receipt": {
+    "queries": 150,
+    "sf_queries": 32,
+    "sf_success": 20,
+    "sf_success_rate": 0.625,
+    "strata": {
+      "en": {
+        "success": 19,
+        "total": 22
+      },
+      "zh": {
+        "success": 1,
+        "total": 9
+      },
+      "ru": {
+        "success": 0,
+        "total": 1
+      }
+    },
+    "selected": 1821,
+    "labeled_selected": 271,
+    "unjudged_selected": 1550,
+    "unrelated_labeled_fraction": 0.5018450184501845,
+    "comparison_change": null
+  },
+  "selected_cuts": {
+    "prior": {
+      "k": 8,
+      "dense_floor": 0.55,
+      "lexical_floor": 0.1,
+      "sent_reserved": 2
+    },
+    "receipt": {
+      "k": 16,
+      "dense_floor": 0.4,
+      "lexical_floor": 0.0,
+      "sent_reserved": 0
+    }
+  },
+  "recall_policy": "claim_recall_v1:3cc97ed11723ed912302462af3556a473787e8f156a14ccef59fa22a112bbbeb",
+  "scope": "150-query seed corpus, existing MiniLM fp16 embeddings and PostgreSQL FTS; fit and replay on the same seed; not a held-out or complete 24-hour replay",
+  "acceptance_complete": false
+}

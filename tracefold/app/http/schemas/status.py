@@ -231,6 +231,8 @@ class NewsPrimaryAssetMarketsData(ExactApiSchema):
 
 class NewsStatusData(ExactApiSchema):
     state: Literal["ready", "degraded", "warming", "unavailable"]
+    recall_dense: Literal["on", "degraded"] = "degraded"
+    claim_index_pending: int = 0
     workers_state: str | None = None
     health: NewsHealthData
     funnel_24h: NewsFunnelData

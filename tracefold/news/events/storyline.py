@@ -32,7 +32,7 @@ from typing import Any, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..market_review.instruments import resolve_base_symbol
-from ..models import MarketAsset, base_symbol, market_type_of, same_market_asset
+from ..models import MarketAsset, base_symbol
 
 STORYLINE_REGISTRY_VERSION: Final = "news_storyline_registry_v1"
 _REGISTRY_RESOURCE: Final = "storyline_registry.json"
@@ -274,9 +274,6 @@ def registry_storyline_key(text: str) -> str | None:
 
 _CL_SYMBOLS: Final = frozenset({"CL", "XYZ-CL"})
 
-# The one prefix an instrument-keyed storyline uses. Named because two functions parse it and one writes it.
-_ASSET_KEY_PREFIX: Final = "asset:"
-
 
 def _asset_key(assets: Sequence[MarketAsset], aliases: Mapping[str, str] | None) -> str:
     """``asset:<market>:<SYM>``, or ``asset:<SYM>`` when the market is unknown (#651 §6.2).
@@ -286,9 +283,8 @@ def _asset_key(assets: Sequence[MarketAsset], aliases: Mapping[str, str] | None)
     `SEI` the Cosmos token and `SEI` the NYSE-listed insurer are two storylines, and before this they
     were one — which made the duplicate-comparison set of each contain the other's cards.
 
-    An asset whose market nobody established keeps the untyped key. That is deliberate and is the same
-    rule :func:`same_storyline_key` applies when it compares two of these: unknown cannot contradict, so
-    it must not split a bucket either, or every card written before #651 would leave its own storyline.
+    An asset whose market nobody established keeps the untyped key; the Gate cannot establish a
+    market solely from the provider's tags.
     """
 
     resolved = sorted(
@@ -296,34 +292,6 @@ def _asset_key(assets: Sequence[MarketAsset], aliases: Mapping[str, str] | None)
         key=lambda asset: (asset.symbol, asset.market_type),
     )
     return f"asset:{resolved[0].key}"
-
-
-def storyline_asset(key: str) -> MarketAsset | None:
-    """The instrument an ``asset:`` storyline key names, or ``None`` for any other kind of key."""
-
-    if not key.startswith(_ASSET_KEY_PREFIX):
-        return None
-    body = key[len(_ASSET_KEY_PREFIX) :]
-    market, _, symbol = body.partition(":")
-    return MarketAsset(symbol, market_type_of(market)) if symbol else MarketAsset(body, "unknown")
-
-
-def same_storyline_key(left: str, right: str) -> bool:
-    """Whether two storyline keys name one story, under the #651 §6.2 market rule.
-
-    Exact equality answers every key kind. Two ``asset:`` keys additionally compare as instruments, which
-    is what lets a typed key and an untyped one still meet: the Event's *preliminary* key is computed at
-    Gate time from provider tags, with no judgment and therefore no market, while the delivered cards it
-    is compared against carry the final key a judgment typed. Requiring the strings to match would have
-    dropped every asset-keyed card out of its own storyline tier the moment the final key gained a market.
-    """
-
-    if not left or left == NO_STORYLINE_KEY:
-        return False
-    if left == right:
-        return True
-    one, two = storyline_asset(left), storyline_asset(right)
-    return one is not None and two is not None and same_market_asset(one, two)
 
 
 def preliminary_storyline_key(*, title: str, strong_assets: Sequence[str], asset_class: str, dedupe_family: str) -> str:
@@ -364,7 +332,5 @@ __all__ = [
     "normalize_storyline_text",
     "preliminary_storyline_key",
     "registry_storyline_key",
-    "same_storyline_key",
-    "storyline_asset",
     "storyline_entry",
 ]

@@ -11,41 +11,7 @@ import hashlib
 import html
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any, Final
-
-from pydantic import BaseModel, ConfigDict
-
-from .entities import source_asset_symbols
-from .events.tokens import comparison_tokens
-from .models import MarketAsset
-
-BACKGROUND_WINDOW_MS: Final = 30 * 86_400_000
-RELATION_MAX: Final = 8
-ENTITY_MAX: Final = 24
-SIMILAR_MAX: Final = 32
-CANDIDATE_MAX: Final = 64
-# Similarity candidates come from the member-fact trigram index (#771). One probe costs 20-150 ms on the
-# production copy, and a text reaches the 0.3 trigram threshold only against a fact of comparable length (no
-# task text longer than 531 characters produced a match there). So the channel probes with the first two task
-# texts of at most 600 characters; every task text still scores every candidate in full. Against the
-# window-wide scan on 131 captured production queries: 203 of its 207 similarity rows, none added.
-SIMILARITY_PROBE_TEXTS_MAX: Final = 2
-SIMILARITY_PROBE_CHARS_MAX: Final = 600
-
-
-class Exact(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class EvidenceQuery(Exact):
-    event_id: str
-    texts: tuple[str, ...]
-    source_artifact_ids: tuple[str, ...] = ()
-    canonical_urls: tuple[str, ...] = ()
-    assets: tuple[MarketAsset, ...] = ()
-    terms: tuple[str, ...] = ()
-    cutoff_at_ms: int
-    window_ms: int = BACKGROUND_WINDOW_MS
+from typing import Any
 
 
 def normalized_provider_text(params: Mapping[str, Any]) -> str:
@@ -59,70 +25,6 @@ def normalized_provider_text(params: Mapping[str, Any]) -> str:
 
 def text_sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def query_for(
-    *,
-    event_id: str,
-    task_texts: Sequence[str],
-    source_items: Sequence[Mapping[str, Any]] = (),
-    cutoff: int,
-    assets: Sequence[MarketAsset] = (),
-) -> EvidenceQuery:
-    """Query from explicit pending tasks and sources, before any new Claim exists."""
-    texts = tuple(dict.fromkeys(text.strip() for text in task_texts if text.strip()))
-    assets = tuple(
-        dict.fromkeys(
-            (*assets, *(MarketAsset(symbol, "unknown") for text in texts for symbol in source_asset_symbols(text)))
-        )
-    )
-    terms = tuple(sorted(set().union(*(evidence_terms(text) for text in texts)) | {a.symbol.lower() for a in assets}))[
-        :32
-    ]
-    return EvidenceQuery(
-        event_id=event_id,
-        texts=texts,
-        source_artifact_ids=tuple(
-            sorted({str(row.get("source_artifact_id")) for row in source_items if row.get("source_artifact_id")})
-        ),
-        canonical_urls=tuple(
-            sorted({str(row.get("canonical_url")) for row in source_items if row.get("canonical_url")})
-        ),
-        assets=tuple(assets),
-        terms=terms,
-        cutoff_at_ms=cutoff,
-    )
-
-
-# Retrieval uses the existing tokenizer without changing Event/fact identity.
-_GENERIC = frozenset(
-    {
-        "announce",
-        "report",
-        "company",
-        "news",
-        "update",
-        "today",
-        "inc",
-        "corp",
-        "发布",
-        "宣布",
-        "公司",
-        "报道",
-        "消息",
-        "今日",
-        "表示",
-    }
-)
-
-
-def evidence_terms(text: str) -> frozenset[str]:
-    separated = re.sub(
-        r"([a-zA-Z0-9])([\u4e00-\u9fff])|([\u4e00-\u9fff])([a-zA-Z0-9])",
-        lambda m: (m[1] or m[3]) + " " + (m[2] or m[4]),
-        text,
-    )
-    return comparison_tokens(separated.lower()) - _GENERIC
 
 
 def execution_evidence_views(verdicts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

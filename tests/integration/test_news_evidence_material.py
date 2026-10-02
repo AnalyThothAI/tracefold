@@ -7,7 +7,7 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_0424_sql import ITEM_REVISIONS_SQL
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.evidence import query_for, text_sha
+from tracefold.news.evidence import text_sha
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
 
@@ -83,70 +83,6 @@ def test_raw_payload_late_fill_and_evidence_revisions(postgres_clone_dsn):
         ]
 
 
-def test_real_candidate_channels_recall_unknown_identity_and_explicit_source(postgres_clone_dsn):
-    from tracefold.news.models import MarketAsset
-    from tracefold.news.storage.evidence import BACKGROUND_CANDIDATES_SQL, background_parameters
-
-    with closing(connect_postgres_test(read_only=False)) as conn:
-        repos = repositories_for_connection(conn)
-        first = admit(repos, "BTC acquisition agreement announced; approval pending.", record=21, stamp=1000)
-        second = admit(repos, "BTC acquisition agreement approved; execution pending.", record=22, stamp=2000)
-        item = repos.news.evidence_material([second.item_id])[0]
-        query = query_for(
-            event_id=second.results[0].event_id,
-            task_texts=(item["evidence_text"],),
-            source_items=(item,),
-            cutoff=3000,
-            assets=[MarketAsset("BTC", "crypto")],
-        )
-        unknown = repos.news.evidence_candidates(query)
-        assert first.item_id in {r["item_id"] for r in unknown}
-        # Candidate retrieval names related Events. Claim comparison owns asset compatibility.
-        conn.execute("UPDATE news_items SET canonical_url=%s WHERE item_id=%s", (item["canonical_url"], first.item_id))
-        conn.execute(
-            "INSERT INTO news_event_assets(event_id, symbol, market_type, opened_at_ms) "
-            "VALUES (%s, 'BTC', 'equity', 1000) ON CONFLICT (event_id, symbol) DO UPDATE SET market_type='equity'",
-            (first.results[0].event_id,),
-        )
-        candidates = repos.news.evidence_candidates(query)
-        assert candidates and candidates[0]["retrieval_reason"] == "explicit_origin"
-        assert first.item_id in {r["item_id"] for r in candidates}
-        plan = conn.execute(
-            "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + BACKGROUND_CANDIDATES_SQL, background_parameters(query)
-        ).fetchone()["QUERY PLAN"][0]
-        assert plan["Plan"]["Actual Rows"] <= 64
-
-
-def test_empty_asset_query_skips_entity_scan_and_keeps_text_candidates(postgres_clone_dsn):
-    from tracefold.news.storage.evidence import BACKGROUND_CANDIDATES_SQL, background_parameters
-
-    with closing(connect_postgres_test(read_only=False)) as conn:
-        repos = repositories_for_connection(conn)
-        first = admit(repos, "Business acquisition agreement announced; approval pending.", record=23, stamp=1000)
-        query = query_for(
-            event_id="later",
-            task_texts=("Business acquisition agreement announced; approval pending.",),
-            cutoff=2000,
-        )
-        assert not query.assets
-        candidates = repos.news.evidence_candidates(query)
-        assert first.item_id in {row["item_id"] for row in candidates}
-        plan = conn.execute(
-            "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + BACKGROUND_CANDIDATES_SQL, background_parameters(query)
-        ).fetchone()["QUERY PLAN"][0]["Plan"]
-
-        def nodes(node):
-            yield node
-            for child in node.get("Plans", ()):
-                yield from nodes(child)
-
-        # Returned candidates still need their source tags projected. No other asset scan is
-        # owed by an empty query, including when PostgreSQL inlines or removes the entity CTE.
-        assert sum(
-            node["Actual Loops"] for node in nodes(plan) if node.get("Relation Name") == "news_event_assets"
-        ) <= len(candidates)
-
-
 def test_new_details_never_query_retired_webpage_storage(postgres_clone_dsn):
     with closing(connect_postgres_test(read_only=False)) as conn:
         repos = repositories_for_connection(conn)
@@ -159,67 +95,3 @@ def test_new_details_never_query_retired_webpage_storage(postgres_clone_dsn):
 
         detail = repositories_for_connection(NoDocumentReads()).news.event_detail(event)
         assert detail["event"]["event_id"] == event
-
-
-def test_real_semantic_candidate_routes_recall_pair_spelling_and_member_topic(postgres_clone_dsn):
-    from tracefold.news.entities import asset_features
-    from tracefold.news.models import MarketAsset
-
-    with closing(connect_postgres_test(read_only=False)) as conn:
-        repos = repositories_for_connection(conn)
-        first = admit(repos, "Aster lists SIUSDT perpetual with 5x leverage.", record=31, stamp=1000)
-        event = first.results[0].event_id
-        conn.execute(
-            "INSERT INTO news_event_assets(event_id, symbol, market_type, opened_at_ms) "
-            "VALUES (%s, 'SIUSDT', NULL, 1000) ON CONFLICT DO NOTHING",
-            (event,),
-        )
-        query = query_for(
-            event_id="later",
-            cutoff=2000,
-            task_texts=("Aster DEX上线$SI，最大5倍杠杆",),
-            assets=(MarketAsset("SI", "crypto"),),
-        )
-        rows = repos.news.evidence_candidates(query)
-        assert event in {row["event_id"] for row in rows}
-        assert next(row for row in rows if row["event_id"] == event)["retrieval_reason"] == "entity_event_terms"
-        # A lexical quote suffix is only a comparison candidate; it does not resolve the venue contract.
-        assert asset_features("SIUSDT", "crypto")[0].key != asset_features("SI", "crypto")[0].key
-
-        child = admit(repos, "Atlas launches a quantum networking product.", record=32, stamp=1100)
-        conn.execute(
-            "INSERT INTO news_event_members(event_id,item_id,joined_at_ms,match_kind,fact_id,fact_text) "
-            "VALUES (%s,%s,1100,'near','member-topic','Atlas launches a quantum networking product.')",
-            (event, child.item_id),
-        )
-        member_query = query_for(
-            event_id=child.results[0].event_id,
-            cutoff=2000,
-            task_texts=("Atlas launches a quantum networking product.",),
-        )
-        matched = repos.news.evidence_candidates(member_query)
-        assert event in {row["event_id"] for row in matched}
-        assert max(row["score"] for row in matched if row["event_id"] == event) == 1.0
-        before_member = query_for(
-            event_id="earlier",
-            cutoff=1050,
-            task_texts=("Atlas launches a quantum networking product.",),
-        )
-        assert event not in {row["event_id"] for row in repos.news.evidence_candidates(before_member)}
-
-
-@pytest.mark.parametrize(("pair", "base", "partial"), [("ABCFDUSD", "ABC", "ABCFD"), ("BTCBUSD", "BTC", "BTCB")])
-def test_real_semantic_pair_route_uses_only_the_first_valid_quote_suffix(postgres_clone_dsn, pair, base, partial):
-    with closing(connect_postgres_test(read_only=False)) as conn:
-        repos = repositories_for_connection(conn)
-        first = admit(repos, f"Aster lists {pair} perpetual with leverage.", record=40, stamp=1000)
-        event = first.results[0].event_id
-        # Isolate this actual admission's candidate tag from the helper's default BTC provider tag.
-        conn.execute("DELETE FROM news_event_assets WHERE event_id=%s", (event,))
-        conn.execute(
-            "INSERT INTO news_event_assets(event_id, symbol, market_type, opened_at_ms) VALUES (%s,%s,'crypto',1000)",
-            (event, pair),
-        )
-        for symbol, expected in ((base, True), (partial, False)):
-            query = query_for(event_id="later", cutoff=2000, task_texts=(f"Aster批准${symbol}独家交易。",))
-            assert (event in {row["event_id"] for row in repos.news.evidence_candidates(query)}) is expected

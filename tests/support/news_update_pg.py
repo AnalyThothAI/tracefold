@@ -210,6 +210,7 @@ class StubAnalyzer:
         *,
         rebase_only: bool = False,
         final_attempt: bool = True,
+        relation_pairs: frozenset[tuple[str, str]] | None = None,
     ) -> Extraction:
         return extracted
 

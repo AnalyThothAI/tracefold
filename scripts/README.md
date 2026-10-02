@@ -13,7 +13,7 @@
 | 开发检查 | `require_test_reports.py`、`check_mandatory_docs_links.py`、`sync_agent_router.py` | Make / CI / pre-commit；不参与服务启动 |
 | Hooks | `install_hooks.py`、`run_web_hook.py` | 显式安装 hook，以及暂存前端文件的检查 |
 | 生成契约 | `regen_cli_help.py`、`regen_db_schema.py`、`regen_openapi.py`、`regen_rabbitmq_definitions.py` | 文档约定的生成目标；不是启动迁移 |
-| 离线评测 | `eval_news_reader.py` | 显式运行；在归档 fixture 上评分已记录的读者判断，不调用模型 |
+| 离线评测 | `eval_news_reader.py`、`eval_news_recall.py` | 显式运行；前者评分已记录的读者判断，后者在仓库外的 #791 盲标语料上校准共享召回，只写隔离连接的临时表；均不调用模型或发送通知 |
 
 旧交易分析归档迁移、cohort 导出与评估、价格确认、shadow 评估及价格路径重标注共七个脚本已退役。需要查阅其历史实现时，使用基线提交 `364e0d9abdc5c1f2dcc27aa19c2bb0736b7fffaf`；当前部署和研究路径不调用这些脚本。普通部署不会执行批量改写或研究实验。
 当前可复用的 OI 离线工具位于 [`notebooks/research/`](../notebooks/research/)；运行方式见 [研究说明](../notebooks/README.md)。

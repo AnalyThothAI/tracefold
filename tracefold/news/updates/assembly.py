@@ -20,7 +20,6 @@ from .contracts import (
     EvidenceRelation,
     Extraction,
     FrozenInput,
-    IdentityHint,
     Implication,
     KnowledgeGap,
     Phase,
@@ -49,17 +48,6 @@ def _quantity_key(claim: DraftClaim | Claim) -> QuantityKey:
         sorted(
             (quantity.name.casefold(), Decimal(quantity.value), quantity.unit.casefold(), quantity.period or "")
             for quantity in claim.fields.quantities
-        )
-    )
-
-
-def _known_identity(current: DraftClaim, hints: tuple[IdentityHint, ...]) -> tuple[IdentityHint, ...]:
-    return tuple(
-        hint
-        for hint in hints
-        if any(
-            citation.evidence_ref == hint.evidence_ref and hint.surface in citation.quote
-            for citation in current.citations
         )
     )
 
@@ -138,7 +126,7 @@ def different_listing_assets(current: DraftClaim | Claim, previous: Claim) -> bo
     return True
 
 
-def proven_mismatches(current: DraftClaim, previous: Claim, hints: tuple[IdentityHint, ...] = ()) -> tuple[str, ...]:
+def proven_mismatches(current: DraftClaim, previous: Claim) -> tuple[str, ...]:
     """Return only differences established by comparable evidence, never prose inequality.
 
     An empty result means unknown, not proven equivalent. The same result is sent to the relation
@@ -148,21 +136,6 @@ def proven_mismatches(current: DraftClaim, previous: Claim, hints: tuple[Identit
     mismatches: list[str] = []
     if different_listing_assets(current, previous):
         mismatches.append("listing_asset")
-    current_facts: dict[str, set[str]] = {}
-    previous_facts: dict[str, set[str]] = {}
-    for hint in _known_identity(current, hints):
-        if hint.key not in {"subject_id", "object_id"}:
-            continue
-        current_facts.setdefault(hint.key, set()).add(hint.value)
-    for hint in previous.known_identity:
-        if hint.key not in {"subject_id", "object_id"}:
-            continue
-        previous_facts.setdefault(hint.key, set()).add(hint.value)
-    mismatches.extend(
-        key
-        for key in current_facts.keys() & previous_facts.keys()
-        if len(current_facts[key]) == len(previous_facts[key]) == 1 and current_facts[key] != previous_facts[key]
-    )
     a = current.fields
     b = previous.fields
     if "unknown" not in {a.polarity, b.polarity} and a.polarity != b.polarity:
@@ -182,7 +155,7 @@ def proven_mismatches(current: DraftClaim, previous: Claim, hints: tuple[Identit
             mismatches.append(field)
     # Two numbers are comparable only for the same metric and unit over an aligned period: no period on
     # either side, or one explicit calendar quarter. Who the numbers belong to is not read from free text
-    # ("Nvidia" and "Nvidia Corp" are one issuer); a proven entity difference is `subject_id`/`object_id`.
+    # ("Nvidia" and "Nvidia Corp" are one issuer); free text supplies no proven entity identity.
     if (a.statistical_period is None and b.statistical_period is None) or (
         a_quarter is not None and a_quarter == b_quarter
     ):
@@ -258,7 +231,7 @@ def _equivalent_prior(
         row
         for row in relations
         if row.relation == "equivalent"
-        and not proven_mismatches(draft, previous[row.previous_ref].claim, source.identity_hints)
+        and not proven_mismatches(draft, previous[row.previous_ref].claim)
         # Only a real-world transition can prevent reuse. A conflict or correction
         # with another Claim changes the relationship, not this proposition's identity.
         # Repeating B after A keeps B's antecedents; A -> B -> A has a new predecessor.
@@ -275,7 +248,7 @@ def _equivalent_prior(
             if row.relation == "unrelated"
             and previous[row.previous_ref].event_id == source.event_id
             and draft.statement == previous[row.previous_ref].claim.statement
-            and not proven_mismatches(draft, previous[row.previous_ref].claim, source.identity_hints)
+            and not proven_mismatches(draft, previous[row.previous_ref].claim)
             and set(_quantity_key(draft)) <= set(_quantity_key(previous[row.previous_ref].claim))
             and any(
                 current.quote
@@ -483,7 +456,6 @@ def assemble_update(
                 citations=draft.citations,
                 first_available_at_ms=first,
                 topics=draft.topics,
-                known_identity=_known_identity(draft, source.identity_hints),
                 antecedent_refs=antecedents,
             )
             if same is not None:

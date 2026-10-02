@@ -1,0 +1,24 @@
+{
+  "version": "claim_recall_v1",
+  "embedder": {
+    "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "dimensions": 384,
+    "normalization": "l2",
+    "template": "claim_embed_text_v1"
+  },
+  "prior": {
+    "k": 8,
+    "dense_floor": 0.55,
+    "lexical_floor": 0.1,
+    "sent_reserved": 2
+  },
+  "receipt": {
+    "k": 16,
+    "dense_floor": 0.4,
+    "lexical_floor": 0.0,
+    "sent_reserved": 0
+  },
+  "route_n": 32,
+  "rrf_k": 60,
+  "dataset_sha256": "05ae4807a6f0f519657d27aeee5a5aac381cae8cd130a56e17e9ce99957e38a5"
+}

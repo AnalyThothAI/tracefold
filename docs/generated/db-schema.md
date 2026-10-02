@@ -32,6 +32,21 @@
 | `adopted_at_ms` | `BIGINT` | True | `None` |
 | `document` | `JSONB` | True | `None` |
 
+## `news_claim_index`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `claim_ref` | `TEXT` | False | `None` |
+| `text_sha256` | `TEXT` | False | `None` |
+| `event_id` | `TEXT` | False | `None` |
+| `first_available_at_ms` | `BIGINT` | False | `None` |
+| `embed_text` | `TEXT` | False | `None` |
+| `lexical` | `TSVECTOR` | True | `None` |
+| `numbers` | `ARRAY` | False | `'{}'::text[]` |
+| `structure_keys` | `ARRAY` | False | `'{}'::text[]` |
+| `embedder` | `TEXT` | True | `None` |
+| `vector` | `BYTEA` | True | `None` |
+
 ## `news_collectors`
 
 | Column | Type | Nullable | Default |
@@ -49,8 +64,6 @@
 | `event_id` | `TEXT` | False | `None` |
 | `market_type` | `TEXT` | True | `None` |
 | `opened_at_ms` | `BIGINT` | False | `None` |
-| `retrieval_symbol` | `TEXT` | True | `None` |
-| `retrieval_pair_base` | `TEXT` | True | `None` |
 
 ## `news_event_members`
 

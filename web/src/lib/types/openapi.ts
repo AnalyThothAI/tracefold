@@ -2546,6 +2546,11 @@ export interface components {
         /** NewsStatusData */
         NewsStatusData: {
             broker: components["schemas"]["NewsBrokerStatusData"];
+            /**
+             * Claim Index Pending
+             * @default 0
+             */
+            claim_index_pending: number;
             delivery: components["schemas"]["NewsDeliveryStatusData"];
             funnel_24h: components["schemas"]["NewsFunnelData"];
             health: components["schemas"]["NewsHealthData"];
@@ -2561,6 +2566,12 @@ export interface components {
             primary_asset_markets_24h?: components["schemas"]["NewsPrimaryAssetMarketsData"];
             /** Reasons 24H */
             reasons_24h?: components["schemas"]["NewsReasonCountData"][];
+            /**
+             * Recall Dense
+             * @default degraded
+             * @enum {string}
+             */
+            recall_dense: "on" | "degraded";
             /**
              * State
              * @enum {string}

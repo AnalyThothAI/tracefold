@@ -82,9 +82,13 @@ class _FakeSemanticWork:
 
 
 class _FakeNewsRepository:
+    def status(self):
+        return {"recall_dense": "degraded", "claim_index_pending": 0}
+
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.semantic_work = _FakeSemanticWork(self.calls)
+        self.claim_index = self
         self.events = [_event()]
         self.event_assets_by_id = {"ev-1": ["COPPER", "SPOT"]}
         self.detail_overrides: dict[str, dict[str, Any]] = {}

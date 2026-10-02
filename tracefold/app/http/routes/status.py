@@ -43,6 +43,7 @@ def _measure_news_status(runtime: Any) -> dict[str, Any]:
     with runtime.repositories() as repos:
         snapshot = repos.news.status_snapshot(now_ms=now_ms)
         semantic = repos.news.semantic_work.semantic_status(now_ms=now_ms)
+        recall = repos.news.claim_index.status()
         workers_runtime_row = repos.workers_runtime_row()
         workers_state, _ = _news_workers_observation(workers_runtime_row, now_ms=now_ms)
         instruments = repos.instruments.universe_summary()
@@ -131,6 +132,7 @@ def _measure_news_status(runtime: Any) -> dict[str, Any]:
     )
     data = {
         "state": state,
+        **recall,
         "workers_state": workers_state,
         **health,
         "ingest": ingest,

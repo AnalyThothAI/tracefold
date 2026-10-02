@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from ..bus import DeferError, TransientError
+from ..claim_recall import EmbeddingPort, Probe, embed_text
 from ..clock import clock_ms
 from ..notifications.contracts import NEWS_CHANNEL, CardCopy, FrozenCard, NotificationPlan, ReaderSnapshot
 from ..notifications.novelty import ClaimLink, LinkedReceipt
@@ -41,8 +43,10 @@ class PgNotificationStore:
         clock: Callable[[], int] = clock_ms,
         intent_lease_ms: int = INTENT_LEASE_MS,
         lease_token: Callable[[], str] = _lease_token,
+        embedder: EmbeddingPort | None = None,
     ) -> None:
         self.db = db
+        self.embedder = embedder
         self.clock = clock
         self.intent_lease_ms = int(intent_lease_ms)
         self.lease_token = lease_token
@@ -51,10 +55,19 @@ class PgNotificationStore:
         if channel != NEWS_CHANNEL:
             raise ValueError("news_notification_channel_unknown")
         now_ms = self.clock()
+        probes: dict[str, Probe] = {}
+        if self.embedder is not None:
+            document = await self.db.read(
+                "news_reader_embedding_head", lambda r: r.news.semantic_updates.event_update_head_document(event_id)
+            )
+            if document is not None:
+                head = EventUpdate.model_validate(document)
+                encoded = await self.embedder.probes([embed_text(c) for c in head.current_claims])
+                probes = {c.ref: p for c, p in zip(head.current_claims, encoded, strict=True)}
         material = await self.db.read(
             "news_update_notification_snapshot",
             lambda repos: repos.news.notification_context.notification_snapshot_material(
-                event_id=event_id, channel=channel, now_ms=now_ms
+                event_id=event_id, channel=channel, now_ms=now_ms, probes=probes
             ),
             repeatable_read=True,
         )
@@ -107,6 +120,8 @@ class PgNotificationStore:
             if reserved["status"] != "reader_changed" or check is None or check.revision != plan.reader_revision:
                 break
         status = str(reserved["status"])
+        if status == "reader_changed":
+            logging.getLogger("tracefold.news").info("news_reader_changed stage=plan count=1")
         if status != "committed":
             return PlanCommit(status=status)
         effective = NotificationPlan.model_validate(reserved["plan"])

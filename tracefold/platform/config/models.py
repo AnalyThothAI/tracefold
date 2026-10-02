@@ -255,6 +255,7 @@ class LlmConfig(BaseModel):
     # envelope as `news_triage_model`; unset, they run on `news_triage_model` itself. A proxy can serve a
     # deterministic-decoding variant of the same weights under its own name (#770).
     news_triage_judgment_model: str | None = None
+    news_embedding_model: str | None = None
     request: LlmRequestConfig = Field(default_factory=LlmRequestConfig)
     # Three optional endpoints with one shape. Only the triage fallback names its own incomplete-
     # configuration code, because `llm_fallback_without_primary` reads next to it; the other two
@@ -266,7 +267,9 @@ class LlmConfig(BaseModel):
     news_judgment: NewsJudgmentConfig = Field(default_factory=NewsJudgmentConfig)
     news_reader_judgment: NewsReaderJudgmentConfig = Field(default_factory=NewsReaderJudgmentConfig)
 
-    @field_validator("api_key", "news_triage_model", "news_triage_judgment_model", mode="before")
+    @field_validator(
+        "api_key", "news_triage_model", "news_triage_judgment_model", "news_embedding_model", mode="before"
+    )
     @classmethod
     def parse_optional_string(cls, value: Any) -> str | None:
         if value is None:
@@ -285,6 +288,8 @@ class LlmConfig(BaseModel):
         configured = (self.api_key, self.base_url, self.news_triage_model)
         if any(configured) and not all(configured):
             raise ValueError("llm_direct_configuration_incomplete")
+        if self.news_embedding_model and not all(configured):
+            raise ValueError("llm_embedding_model_without_primary")
         if self.news_triage_judgment_model and not all(configured):
             raise ValueError("llm_judgment_model_without_primary")
         if self.news_triage_fallback.configured and not all(configured):

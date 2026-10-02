@@ -96,7 +96,13 @@ docker compose exec -T workers tracefold news retry-work \
 
 以失败结束的修订（含 Janitor 结算的崩溃最终尝试）会把该次尝试实际送入的任务范围记为隔离（`failed_read_refs`，尝试所读范围在领取时记入 `attempt_read_refs`）：之后该 Event 的新成员只读新材料，不再被同一份坏材料拖累。`retry-work --kind semantic` 清空隔离、重新送入全部隔离材料；只想重读其中一段时，用下节的 `news reanalyze` 按精确修订指定该 `read_ref`。构建冻结输入本身失败（来源缺失、重读范围已变、head 无法解码）只让该 Event 的工作失败，错误码可见，不再让语义消费者故障。
 
-领取时读取输入（含[关联召回](modules/news.md#related-recall)）遇到 statement timeout 或取消，记为 `news_semantic_input_timeout`：该次尝试照常计数，租约释放，`next_attempt_at_ms` 按 15 s / 60 s / 300 s 退避，唤醒修复在到期前不会再领取；第三次仍超时则进入上面的可见失败（`last_outcome=failed`），不隔离任何阅读范围，因为这次尝试没有拿到输入。召回查询在生产副本上 p95 约 0.27 s、最大约 0.45 s，远低于 News lane 默认 3 s 的 statement timeout（领取事务同样使用该默认预算）；这个错误码成片出现说明召回或数据库本身变慢，先看 PostgreSQL 日志里被取消的语句和 `pg_stat_statements`，修复后用 `retry-work` 恢复对应修订，不要靠调大超时或拓宽 News DB 通道掩盖。#771 之前该超时会整笔回滚领取，尝试不计数、不退避也不留错误码，唤醒随即再次领取，持续占满 News DB 通道并表现为成片的 `DeferError db_admission_timeout`。
+领取读取本 Event 输入遇到 statement timeout 或取消时，记 `news_semantic_input_timeout`，照常计尝试、释放租约并退避；三次耗尽进入可见失败。#791 已将跨 Event 召回移出领取读取，排查这个错误应先查来源、head 与数据库语句，而不是提高召回预算。召回和嵌入失败分别记录 `news_claim_recall` 的 `recall_degraded` 与 `news_embedding_*`。
+
+### 命题向量缺失与降级
+
+`/api/news/status` 的 `claim_index_pending` 是持久缺向量或旧身份行数；`recall_dense` 为 `on` / `degraded`。配置 `llm.news_embedding_model` 与校准文件相同的模型，模型在外部路由部署，不改 PostgreSQL 镜像。启动固定探针失败时禁用稠密；先检查模型路由日志和维度，修复后重启。Janitor 每次有界补算，顺序为已送 48 小时、7 天、30 天；无须重新抽取、开启历史通知或写模型缓存。
+
+升级前备份并停止写者，迁移至 0426 后启动新镜像；新索引行随采用和有界历史投影写入。回滚先 downgrade 至 0425，恢复旧检索生成列、函数和三元组索引，再启动旧镜像。采用文档与冻结回执形状保持兼容。
 
 ### 已完成或已失败工作的定向重读
 

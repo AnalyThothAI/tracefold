@@ -48,7 +48,11 @@ class SemanticAnalyzer:
         # The whole codebook is one native request; refuse a codebook that cannot be one.
         if len(topics) > MAX_QUESTIONS_PER_REQUEST:
             raise ValueError("news_topic_codebook_too_large")
-        self.identity = identity("semantic", "event_understanding_v2", extractor.identity, judgments.identity, topics)
+        from ..claim_recall import RECALL_POLICY
+
+        self.identity = identity(
+            "semantic", "event_understanding_v3", RECALL_POLICY, extractor.identity, judgments.identity, topics
+        )
 
     async def extract(self, source: FrozenInput, budget: Budget) -> Extraction:
         """Extract and ground claims one by one. Only material whose every claim was unusable fails."""
@@ -69,6 +73,7 @@ class SemanticAnalyzer:
         *,
         rebase_only: bool = False,
         final_attempt: bool = True,
+        relation_pairs: frozenset[tuple[str, str]] | None = None,
     ) -> Extraction:
         """Complete the narrow judgments of one extraction.
 
@@ -82,7 +87,9 @@ class SemanticAnalyzer:
         validate_extraction(source, result)
         if not rebase_only:
             result = await self._clarify_modes(source, result, budget)
-        result = await self._relations(source, result, budget, final_attempt=final_attempt)
+        result = await self._relations(
+            source, result, budget, final_attempt=final_attempt, relation_pairs=relation_pairs
+        )
         return await self._supports(source, result, budget, final_attempt=final_attempt)
 
     async def _clarify_modes(self, source: FrozenInput, extraction: Extraction, budget: Budget) -> Extraction:
@@ -117,7 +124,13 @@ class SemanticAnalyzer:
         return replace_extraction(extraction, claims=tuple(claims))
 
     async def _relations(
-        self, source: FrozenInput, extraction: Extraction, budget: Budget, *, final_attempt: bool
+        self,
+        source: FrozenInput,
+        extraction: Extraction,
+        budget: Budget,
+        *,
+        final_attempt: bool,
+        relation_pairs: frozenset[tuple[str, str]] | None = None,
     ) -> Extraction:
         """Judge every new claim against every supplied current prior; no model outside the judge decides one.
 
@@ -129,12 +142,18 @@ class SemanticAnalyzer:
         pairs: dict[str, tuple[DraftClaim, PriorClaim]] = {}
         for claim in extraction.claims:
             for prior in source.prior:
+                if (
+                    relation_pairs is not None
+                    and prior.event_id != source.event_id
+                    and (claim.slot, prior.claim.ref) not in relation_pairs
+                ):
+                    continue
                 item_id = identity("pair", claim.slot, prior.claim.ref)
                 pairs[item_id] = (claim, prior)
                 payload = {
                     "current": claim,
                     "previous": prior.claim,
-                    "proven_mismatches": proven_mismatches(claim, prior.claim, source.identity_hints),
+                    "proven_mismatches": proven_mismatches(claim, prior.claim),
                 }
                 questions.append(Question(item_id=item_id, payload_json=canonical_json(payload)))
         if not questions:

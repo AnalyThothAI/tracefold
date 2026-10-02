@@ -6094,6 +6094,11 @@
           "broker": {
             "$ref": "#/components/schemas/NewsBrokerStatusData"
           },
+          "claim_index_pending": {
+            "default": 0,
+            "title": "Claim Index Pending",
+            "type": "integer"
+          },
           "delivery": {
             "$ref": "#/components/schemas/NewsDeliveryStatusData"
           },
@@ -6129,6 +6134,15 @@
             },
             "title": "Reasons 24H",
             "type": "array"
+          },
+          "recall_dense": {
+            "default": "degraded",
+            "enum": [
+              "on",
+              "degraded"
+            ],
+            "title": "Recall Dense",
+            "type": "string"
           },
           "state": {
             "enum": [

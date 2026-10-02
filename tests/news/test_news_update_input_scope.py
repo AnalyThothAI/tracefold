@@ -13,8 +13,7 @@ from tracefold.news.adapters.extraction import DspyExtractor
 from tracefold.news.events.facts import extract_fact_units
 from tracefold.news.events.gate import grounded_assets
 from tracefold.news.storage.errors import EventUpdateConflict
-from tracefold.news.storage.evidence import EvidenceStorage
-from tracefold.news.storage.semantic_input import SemanticInputStorage, frozen_input
+from tracefold.news.storage.semantic_input import frozen_input
 from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import Citation, Extraction, FrozenInput, SourceAssetCandidate
 from tracefold.news.updates.extraction import validate_extraction
@@ -365,186 +364,6 @@ def test_explicit_cashtag_survives_collision_but_plain_word_does_not(strong_only
     assert grounded_assets("$NEAR rises", [], strong_only=strong_only) == ()
 
 
-@pytest.mark.parametrize("case", ["new_member", "numbered_task", "changed_body", "whole_item"])
-def test_semantic_prior_query_uses_actual_pending_task_scope(case: str, monkeypatch) -> None:
-    data = input_material()
-    # The already read leader had these same tags; newly attaching a candidate would correctly
-    # make its unchanged body a new reading input rather than leave it settled.
-    data["card"] = {
-        "leader_item_id": "digest",
-        "provider_metadata": {"coins": [{"symbol": "OLD", "grade": "A", "market_type": "equity"}]},
-    }
-    completed = [view.read_ref for view in reading_views(frozen_input("event", data))]
-    data["work"] = {"wanted_revision": 2, "lineage_id": "l2", "processed_read_refs": []}
-    if case == "new_member":
-        data["work"]["processed_read_refs"] = completed[:1]
-        data["items"][1]["evidence_text"] = "New issuer launches a $SI product."
-    elif case == "whole_item":
-        data["work"]["processed_read_refs"] = completed[:1]
-        data["items"][1]["evidence_text"] = "Issuer launches a product."
-        data["members"][1]["provider_metadata"] = {
-            "coins": [
-                {"symbol": "MYSTERY", "grade": "A"},
-                {"symbol": "KNOWN", "grade": "A", "market_type": "equity"},
-            ]
-        }
-    elif case == "changed_body":
-        data["work"]["processed_read_refs"] = completed
-        data["members"][0]["evidence_revisions"] = ["changed"]
-        data["revisions"] = [
-            {
-                "item_id": "digest",
-                "revision_sha256": "changed",
-                "revision_sequence": 1,
-                "evidence_text": BODY.replace("\n2.", "\nOnly after network recovery.\n2."),
-                "published_at_ms": 150,
-                "received_at_ms": 151,
-            }
-        ]
-    if case in {"numbered_task", "changed_body"}:
-        data["members"][0]["provider_metadata"] = {
-            "coins": [
-                {"symbol": "NEAR", "grade": "A", "market_type": "crypto"},
-                {"symbol": "BETA", "grade": "A", "market_type": "equity"},
-                {"symbol": "GAMMA", "grade": "A", "market_type": "equity"},
-            ]
-        }
-
-    class Rows:
-        def __init__(self, rows=(), one=None):
-            self.rows, self.one = rows, one
-
-        def fetchall(self):
-            return self.rows
-
-        def fetchone(self):
-            return self.one
-
-    class Connection:
-        def execute(self, sql, params=None):
-            if "FROM news_jobs" in sql:
-                return Rows(one={"subject_id": "event", "lease_until_ms": None, "detail": data["work"]})
-            if "AS fact_scopes FROM news_events" in sql:
-                return Rows(one={"fact_scopes": data["fact_scopes"]})
-            if "jsonb_to_recordset(i.revisions)" in sql:
-                return Rows(rows=data.get("revisions", ()))
-            if "FROM news_items" in sql:
-                return Rows(rows=data["items"])
-            if "FROM news_analyses" in sql:
-                return Rows()
-            if "JOIN news_market_instruments" in sql:
-                return Rows()
-            raise AssertionError(sql)
-
-    from tracefold.news.storage.events import EventStorage
-
-    monkeypatch.setattr(
-        EventStorage,
-        "latest_evidence_snapshot",
-        lambda self, event_id: {
-            "evidence_version": 2,
-            "snapshot": {
-                "card": {
-                    "leader_item_id": "digest",
-                    "leader_title": "Old unrelated leader acquisition",
-                    "asset_class": "crypto",
-                    "grounded_assets": ["OLD"],
-                    "provider_metadata": {"coins": [{"symbol": "OLD", "grade": "A", "market_type": "equity"}]},
-                },
-                "members": data["members"],
-            },
-        },
-    )
-
-    class Candidates:
-        def evidence_candidates(self, query):
-            self.query = query
-            return []
-
-    candidates = Candidates()
-    store = SemanticInputStorage(
-        Connection(),
-        evidence=cast(EvidenceStorage, candidates),
-        head_document=lambda event_id: None,
-    )
-    result = store.semantic_input_material("event", now_ms=200)
-    query = candidates.query
-    shown = " ".join(query.texts)
-    assert "Old unrelated leader acquisition" not in shown
-    assert "Beta announces earnings" not in shown and "Gamma launches a product" not in shown
-    assert "OLD" not in {asset.symbol for asset in query.assets}
-    assert not {"BETA", "GAMMA"} & {asset.symbol for asset in query.assets}
-    if case == "new_member":
-        assert shown == "New issuer launches a $SI product."
-        assert query.source_artifact_ids == ("followup",)
-        assert [(asset.symbol, asset.market_type) for asset in query.assets] == [("SI", "unknown")]
-    elif case == "whole_item":
-        # Provider-resolved whole-item tags remain valid retrieval features without a literal ticker;
-        # the Event's aggregate crypto class cannot invent the individual asset types.
-        assert {(asset.symbol, asset.market_type) for asset in query.assets} == {
-            ("MYSTERY", "unknown"),
-            ("KNOWN", "equity"),
-        }
-    elif case == "changed_body":
-        assert "Only after network recovery" in shown
-        assert query.source_artifact_ids == ("digest",)
-    else:
-        assert "Exchange suspends $NEAR withdrawals" in shown
-    assert result["related_heads"] == []
-
-
-def test_a_mentioned_cashtag_does_not_become_the_actor_identity_or_veto_equivalence() -> None:
-    from tracefold.news.updates.contracts import DraftClaim, RelationDraft
-
-    def source_data(symbol: str, head=None):
-        text = f"Exchange resumes withdrawals. ${symbol} remains volatile."
-        return {
-            "item_ids": ["item"],
-            "items": [
-                {
-                    "item_id": "item",
-                    "source_id": "wire",
-                    "source_item_key": "item",
-                    "observed_at_ms": 100,
-                    "evidence_text": text,
-                }
-            ],
-            "grounded_assets": [symbol],
-            "head": None if head is None else head.model_dump(mode="json"),
-        }
-
-    def extraction(source, symbol: str, relations=()):
-        evidence = source.evidence[0]
-        claim = DraftClaim.model_validate(
-            {
-                "slot": "a",
-                "statement": "Exchange resumes withdrawals.",
-                "fields": {
-                    "subject": "Exchange",
-                    "action": "resumes",
-                    "object": "withdrawals",
-                    "mode": "observation",
-                    "assets": [{"symbol": symbol, "market_type": "crypto", "role": "mentioned"}],
-                },
-                "citations": [{"evidence_ref": evidence.ref, "quote": evidence.text}],
-            }
-        )
-        return Extraction(claims=(claim,), relations=relations)
-
-    first = frozen_input("event", source_data("BTC"))
-    head = assemble_update(first, extraction(first, "BTC"), None, adopted_at_ms=100)
-    assert head is not None and head.claims[0].known_identity == ()
-    second = frozen_input("event", source_data("ETH", head))
-    assert second.identity_hints == ()
-    updated = assemble_update(
-        second,
-        extraction(second, "ETH", (RelationDraft(slot="a", previous_ref=head.claims[0].ref, relation="equivalent"),)),
-        head,
-        adopted_at_ms=200,
-    )
-    assert updated is not None and updated.claims[0].ref == head.claims[0].ref
-
-
 def make_head(event: str, texts: list[str]):
     sources = tuple(material(t, revision=i + 1) for i, t in enumerate(texts))
     update = assemble_update(
@@ -568,21 +387,6 @@ def make_head(event: str, texts: list[str]):
     return update
 
 
-def test_related_claims_rank_all_candidates_against_new_material_before_eight_limit() -> None:
-    noise = make_head("first", [f"Company {i} announces quarterly earnings." for i in range(8)])
-    relevant = make_head("last", ["Exchange suspends $NEAR withdrawals."])
-    data = input_material()
-    data["related_heads"] = [h.model_dump(mode="json") for h in (noise, relevant)]
-    result = frozen_input("event", data)
-    assert len(result.prior) == 8 and result.prior[0].claim.ref == relevant.claims[0].ref
-    assert frozen_input("event", data).prior == result.prior
-    own = make_head("event", [f"Local fact {i} about an earlier change." for i in range(10)])
-    data["head"] = own.model_dump(mode="json")
-    result = frozen_input("event", data)
-    assert len([p for p in result.prior if p.event_id == "event"]) == 10
-    assert len([p for p in result.prior if p.event_id != "event"]) == 8
-
-
 def test_scope_metadata_cannot_supply_a_fact_citation(monkeypatch) -> None:
     from tests.support.news_update_semantic import MemoryCache, TaskBackend
     from tracefold.news.updates.judgment import Budget, ContractFault, NewsJudgments
@@ -599,27 +403,6 @@ def test_scope_metadata_cannot_supply_a_fact_citation(monkeypatch) -> None:
     )
     with pytest.raises(ContractFault, match="news_citation_not_in_frozen_source"):
         asyncio.run(analyzer.extract(source, Budget.start(5)))
-
-
-def test_explicit_predecessor_survives_external_budget_and_own_claim_is_not_duplicated() -> None:
-    from tracefold.news.storage.semantic_input import _related_prior
-
-    old = make_head("old", ["The original exchange statement."])
-    noise = make_head("noise", [f"Exchange {i} changes NEAR network withdrawals." for i in range(8)])
-    result = _related_prior(
-        [noise.model_dump(mode="json"), old.model_dump(mode="json")],
-        set(),
-        evidence=(material("Exchange changes NEAR network withdrawals."),),
-        preferred_refs={old.claims[0].ref},
-    )
-    assert len(result) == 8 and result[0].claim.ref == old.claims[0].ref
-    result = _related_prior(
-        [noise.model_dump(mode="json"), old.model_dump(mode="json")],
-        {old.claims[0].ref},
-        evidence=(),
-        preferred_refs={old.claims[0].ref},
-    )
-    assert len(result) == 8 and old.claims[0].ref not in {p.claim.ref for p in result}
 
 
 # ---------------------------------------------------------------- #742 U3 / W6 / S3 / S5
@@ -640,7 +423,7 @@ def test_input_identity_ignores_related_claims_but_not_the_events_own() -> None:
     related = make_head("related", ["Exchange suspends NEAR withdrawals again."])
     data["related_heads"] = [related.model_dump(mode="json")]
     with_related = frozen_input("event", data)
-    assert with_related.prior and with_related.input_sha == base.input_sha
+    assert not with_related.prior and with_related.input_sha == base.input_sha
     # Related claims are comparison candidates only; extraction never reads them.
     assert extraction_input(with_related)["prior"] == []
     own = make_head("event", ["Exchange suspends $NEAR withdrawals."])

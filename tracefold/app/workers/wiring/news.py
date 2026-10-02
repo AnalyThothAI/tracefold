@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from tracefold.app.claim_embedding import ClaimEmbedder
 from tracefold.app.learning_runtime import (
     NewsModelRoute,
     compose_news_models,
@@ -59,6 +60,7 @@ from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.news.pipeline.runtime import NewsDatabasePort
 from tracefold.news.pipeline.semantic import SemanticWorker
 from tracefold.news.pipeline.send_entry import InitialSendEntry
+from tracefold.news.storage.claim_recall import PgClaimRecall
 from tracefold.news.storage.judgment_store import PgJudgmentCache
 from tracefold.news.storage.notification_store import PgNotificationStore
 from tracefold.news.storage.semantic_store import PgSemanticStore, PgSourceReader
@@ -184,6 +186,8 @@ async def _wire_news_pipeline(
     )
 
     news_updates = _news_updates_or_fault(settings, news_db=news_db, capabilities=capabilities)
+    if news_updates is not None and news_updates.embedder is not None:
+        await news_updates.embedder.self_test()
     pipeline = _compose_news_pipeline(
         settings,
         bus=bus,
@@ -304,9 +308,17 @@ def _news_updates_or_fault(
         if models is None:
             capabilities.disabled(NEWS_EDITORIAL, "news_models_not_configured")
             return None
+        embedder = None
+        if settings.llm.news_embedding_model is not None:
+            embedder = ClaimEmbedder(
+                model=settings.llm.news_embedding_model,
+                base_url=str(settings.llm.base_url),
+                api_key=str(settings.llm.api_key),
+            )
+        recall = PgClaimRecall(news_db, embedder=embedder)
         runtime = compose_news_updates(
             semantic_store=PgSemanticStore(news_db),
-            notification_store=PgNotificationStore(news_db),
+            notification_store=PgNotificationStore(news_db, embedder=embedder),
             relation_cache=PgJudgmentCache(news_db),
             extraction_lm_factory=_route_factory(models.extraction),
             card_lm_factory=_route_factory(models.card),
@@ -317,7 +329,10 @@ def _news_updates_or_fault(
             news_judgment=models.news_judgment,
             news_reader_judgment=news_reader_judgment_endpoint(settings),
             source_reader=PgSourceReader(news_db),
+            recall=recall,
         )
+        runtime.embedder = embedder
+        runtime.claim_recall = recall
     except SHARED_RESOURCE_FAILURES:
         raise
     except SecretFileError as exc:
@@ -539,6 +554,7 @@ def _compose_news_pipeline(
             retention_chain_tape_days=settings.news.chain_tape.retention_days,
             chain_tape_enabled=settings.news.chain_tape.enabled,
             telemetry=telemetry,
+            claim_recall=None if news_updates is None else PgClaimRecall(cold_db, embedder=news_updates.embedder),
         ),
         instruments=_instrument_snapshot_loop(settings, db=news_db, telemetry=telemetry),
         quotes=_quote_snapshot_loop(

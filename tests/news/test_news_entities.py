@@ -13,8 +13,6 @@ from tracefold.news.entities import (
     source_mentions_asset,
     stored_asset_codes,
 )
-from tracefold.news.evidence import query_for
-from tracefold.news.models import MarketAsset
 
 
 def test_exact_key_equality_uses_namespace_and_identifier_only() -> None:
@@ -79,19 +77,3 @@ def test_scoped_provider_tags_need_visible_ticker_or_existing_commodity_evidence
     assert not source_mentions_asset("BETA", "equity", "NEAR withdrawals resume.")
     assert not source_mentions_asset("SI", "crypto", "SILVER prices increase.")
     assert not source_mentions_asset("solana:AbC123", "crypto", "solana:abc123")
-
-
-def test_pending_task_text_and_sources_replace_old_leader_retrieval_material() -> None:
-    query = query_for(
-        event_id="event",
-        cutoff=200,
-        task_texts=("New issuer product launch", "New issuer product launch"),
-        source_items=({"source_artifact_id": "new", "canonical_url": "https://example.org/new"},),
-        assets=(MarketAsset("NEW", "unknown"),),
-    )
-    assert query.texts == ("New issuer product launch",)
-    assert "launch" in query.terms and "acquisition" not in query.terms
-    assert query.source_artifact_ids == ("new",)
-    assert query.canonical_urls == ("https://example.org/new",)
-    empty = query_for(event_id="event", cutoff=200, task_texts=())
-    assert empty.texts == () and empty.terms == ()

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .chain_tape import ChainTapeStorage
+from .claim_index import ClaimIndexStorage
 from .collectors import CollectorsStorage
 from .decisions import DecisionStorage
 from .events import EventStorage
@@ -42,6 +43,7 @@ class NewsRepository(
 ):
     def __init__(self, conn: Any) -> None:
         self.conn = conn
+        self.claim_index = ClaimIndexStorage(conn)
         self.semantic_work = SemanticWorkStorage(conn)
         self.semantic_updates = SemanticUpdateStorage(conn, work=self.semantic_work, outbox=self)
         self.semantic_input = SemanticInputStorage(
