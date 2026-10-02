@@ -133,8 +133,8 @@ describe("NewsPage", () => {
     expect(inRow.queryByText("宏观")).toBeNull();
     /*
      * The meta line is 来源 · 方向 · 类型 · 资产 and nothing else. Magnitude and the merged-report count are
-     * real facts, but they belong to the Event, not to a scan: both are one click away in the drawer and on
-     * the Event's own page, and a fifth and sixth item here pushed the assets onto a second line.
+     * real facts, but they belong to the Event, not to a scan: both are one click away on the Event's own
+     * page, and a fifth and sixth item here pushed the assets onto a second line.
      */
     expect(inRow.queryByText("4 条报道")).toBeNull();
     expect(inRow.queryByText("影响明显")).toBeNull();
@@ -159,7 +159,22 @@ describe("NewsPage", () => {
     }
   });
 
-  it("labels the drawer from the persisted Event kind", async () => {
+  it("follows the Event href immediately and carries the feed filters as route state", async () => {
+    const feedSearch = "q=tariff&outcome=held&hours=168&event_kind=news";
+    renderNews(<NewsPage token="test-token" view="feed" />, `/news?${feedSearch}`);
+
+    const headline = await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ });
+    expect(headline).toHaveAttribute("href", "/news/events/evt-global-policy");
+    fireEvent.click(headline);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent("/news/events/evt-global-policy"),
+    );
+    expect(JSON.parse(screen.getByTestId("route-state").textContent!)).toEqual({ feedSearch });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("labels the detail page from the persisted Event kind", async () => {
     /*
      * Two kinds since #553 PR-1, and the badge still reads the persisted one rather than the admission:
      * 强平 / OI 帧 / 未支持市场 are market observations now, and no Event carries those words at all.
@@ -180,12 +195,13 @@ describe("NewsPage", () => {
         }),
       ),
     );
-    renderNews(<NewsPage token="test-token" view="feed" />);
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
+    );
 
-    fireEvent.click(await screen.findByRole("link", { name: /央行政策转向，风险资产承压/ }));
-
-    const drawer = await screen.findByRole("dialog");
-    const kind = (await within(drawer).findByText("上币/下币")).closest(".news-kind");
+    const detailPage = await screen.findByRole("region", { name: "新闻事件详情" });
+    const kind = (await within(detailPage).findByText("上币/下币")).closest(".news-kind");
     expect(kind).toHaveAttribute("data-kind", "listing");
     expect(kind).toHaveTextContent("上币/下币");
   });
@@ -1623,6 +1639,7 @@ function LocationProbe() {
   return (
     <>
       <span data-testid="location">{`${location.pathname}${location.search}${location.hash}`}</span>
+      <span data-testid="route-state">{JSON.stringify(location.state)}</span>
       <button onClick={() => navigate(-1)} type="button">
         测试后退
       </button>

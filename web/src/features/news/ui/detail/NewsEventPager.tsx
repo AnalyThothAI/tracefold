@@ -11,8 +11,8 @@ import { formatCount } from "../../model/newsLabels";
  * 上一条 / 下一条 over the feed the reader came from.
  *
  * The list is whatever `/news` was showing: the search string travels in the navigation state, and reading the
- * feed under those exact filters hits the query React Query already has, so no request is made for the sake of
- * the pager. A cold URL carries no such state — the pager renders nothing rather than inventing an order, and
+ * feed under those exact filters reads its first-page Query. A cold URL carries no such state — the pager
+ * renders nothing rather than inventing an order, and
  * a paged-in Event that is not on the first page simply has no neighbours here.
  */
 export function NewsEventPager({

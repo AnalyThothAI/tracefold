@@ -21,6 +21,7 @@ const everyViewport = [
   "page-layout.spec.ts",
   "research-execution.spec.ts",
   "event-feed-controls.spec.ts",
+  "news-event-navigation.spec.ts",
   // #706: the EventUpdate detail sections must stay inside the page at every width.
   "news-event-update.spec.ts",
   "price-plane.spec.ts",
@@ -28,7 +29,6 @@ const everyViewport = [
 ];
 const desktop = specs(
   ...everyViewport,
-  "news-event-drawer.spec.ts",
   "sidebar-navigation.spec.ts",
   "topbar-layout.spec.ts",
   "trading-desk.spec.ts",

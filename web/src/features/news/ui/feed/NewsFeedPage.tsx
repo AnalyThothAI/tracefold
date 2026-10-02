@@ -1,10 +1,9 @@
-import { useMediaQuery } from "@shared/hooks/useMediaQuery";
 import { newsFeedIdentity } from "@shared/query/queryKeys";
 import { ActionButton } from "@shared/ui/ActionButton";
 import { PageHeader } from "@shared/ui/PageHeader";
 import { PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
-import { useRef, useState } from "react";
+import { useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import {
@@ -25,9 +24,9 @@ import {
 import { newsFeedGroups } from "../../model/feedGroups";
 import { absoluteTime, formatCount, hoursLabel, outcomeTabLabel } from "../../model/newsLabels";
 import { useAnchoredEventFeed } from "../../state/useAnchoredEventFeed";
+import { useNewsListPosition } from "../../state/useNewsReadingPosition";
 import { NewsPageStamp } from "../chrome/NewsChrome";
 import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
-import { NewsEventDrawer } from "../detail/NewsEventDrawer";
 
 import { NewsEventRow } from "./NewsEventRow";
 import { NewsFeedToolbar } from "./NewsFeedToolbar";
@@ -36,23 +35,21 @@ import { NewsFunnelCard } from "./NewsFunnelCard";
 import "./newsFeed.css";
 
 /**
- * Where the Event drawer earns its place: wide enough that a 420px sheet still leaves the list readable
- * beside it. Below this, opening an Event is a page.
- */
-const DRAWER_QUERY = "(min-width: 1024px)";
-
-/**
  * The decision-first scan surface over the flat Event feed. The browser never clusters, scores, triages,
  * throttles or reorders — it asks the server for a page and renders one row per Event.
  *
- * Live inserts are held back so polling never shifts the row under the pointer. On a wide screen, opening an
- * Event uses the existing drawer so the list stays visible; every row remains a real detail link.
+ * Live inserts are held back so polling never shifts the row under the pointer. Every row links directly
+ * to the Event detail page, carrying the current search and filters into its return path.
  */
 export function NewsFeedPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = parseFeedFilters(searchParams);
   const feedWindow = useNewsFeedWindowWithToken(token, filters);
   const query = feedWindow.query;
+  useNewsListPosition(
+    `feed:${JSON.stringify([...newsFeedIdentity(filters), feedWindow.generation])}`,
+    Boolean(query.data),
+  );
   const statusQuery = useNewsStatusWithToken(token);
   const feedIdentity = [...newsFeedIdentity(filters), query.data?.pageParams[0] ?? "first"].join(
     "",
@@ -82,9 +79,6 @@ export function NewsFeedPage({ token }: { token: string }) {
     ]),
   );
   const feedSearch = nextFeedParams(filters, {}).toString();
-  const wideEnoughForDrawer = useMediaQuery(DRAWER_QUERY);
-  const [drawerId, setDrawerId] = useState<string | null>(null);
-  const drawerTriggerRef = useRef<HTMLAnchorElement | null>(null);
 
   const updateFeedParams = (changes: FeedFilterChanges) => {
     setSearchParams(nextFeedParams(filters, changes), { replace: true });
@@ -189,14 +183,6 @@ export function NewsFeedPage({ token }: { token: string }) {
                         event={event}
                         fresh={eventFeed.freshIds.has(event.event_id)}
                         key={event.event_id}
-                        onOpen={
-                          wideEnoughForDrawer
-                            ? (eventId, trigger) => {
-                                drawerTriggerRef.current = trigger;
-                                setDrawerId(eventId);
-                              }
-                            : undefined
-                        }
                         quotes={quotes}
                         searchState={feedSearch}
                       />
@@ -222,14 +208,6 @@ export function NewsFeedPage({ token }: { token: string }) {
           </NewsQuoteReadState>
         </PageState.Stale>
       ) : null}
-
-      <NewsEventDrawer
-        eventId={wideEnoughForDrawer ? drawerId : null}
-        feedSearch={feedSearch}
-        onClose={() => setDrawerId(null)}
-        restoreFocusTo={drawerTriggerRef.current}
-        token={token}
-      />
     </PageShell>
   );
 }

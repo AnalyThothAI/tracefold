@@ -17,7 +17,7 @@ configure({ asyncUtilTimeout: 5_000 });
 /**
  * jsdom has no layout, so `matchMedia` has to be told what width it is standing at. The shell now *mounts*
  * a different navigation per breakpoint rather than hiding one with CSS, so a stub that answered `false` to
- * everything left component tests on a tablet with a closed drawer and no navigation at all.
+ * everything left component tests with only the closed tablet navigation sheet mounted.
  *
  * The nominal width is desktop, which is the console's primary surface. Phone and tablet frames are a
  * layout question and are covered where layout exists — the Playwright `mobile-390` and `tablet-834`

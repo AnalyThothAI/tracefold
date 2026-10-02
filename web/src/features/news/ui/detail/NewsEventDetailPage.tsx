@@ -29,6 +29,7 @@ import {
   timelineEndToEnd,
   validExternalUrl,
 } from "../../model/newsLabels";
+import { useNewsDetailStart } from "../../state/useNewsReadingPosition";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsTechnical } from "../chrome/NewsChrome";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
@@ -66,6 +67,7 @@ function zonedTime(value: number) {
 export function NewsEventDetailPage({ eventId, token }: { eventId: string; token: string }) {
   const query = useNewsEventWithToken(token, eventId);
   const detail = query.data;
+  useNewsDetailStart(`event:${eventId}`, !detail);
   const feedSearch = (useLocation().state as { feedSearch?: string } | null)?.feedSearch ?? null;
   return (
     <PageShell archetype="case" className="news-detail-shell" label="新闻事件详情">
@@ -104,6 +106,8 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
 
 function EventDocument({ detail, token }: { detail: NewsEventDetail; token: string }) {
   const { event, outcome } = detail;
+  // Run before the query focus effect so a shared target can still bring its record into view.
+  useNewsDetailStart(`event:${event.event_id}`);
   const update = detail.event_update;
   const assets = event.assets ?? [];
   const quotesQuery = useNewsQuotesWithToken(token, assets);
