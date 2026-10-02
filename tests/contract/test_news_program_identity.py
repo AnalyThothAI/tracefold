@@ -57,11 +57,11 @@ def test_program_and_signature_schema_identities_are_pinned() -> None:
         ).identity,
     }
     assert actual == {
-        "extractor": "extractor:7204fbc298fe556aff9d5fec35bc9181519ff34c49252e6c8c2e37b418085e3f",
+        "extractor": "extractor:e3637ba24ee21d2ecd50cdf600a7f6e838edd03a5e5faaeeab8194446c4f77ec",
         "copy": "news_card_copy:410f061c5d2ead4ecb1011ed64d4895d831266aceb836a446cf5225fc8125876",
-        "generated": "generated_judgment:215cc821d69b67d56d1e44a069847cc323ce385573e7b20638abf6894658a376",
-        "native": "native_judgment:d7853cc09ecc397d56f1c6691066224f976a2584ee6bb2453eddbdbd998b9cff",
-        "reader": "news_reader_judge:ca908cb11da0e0e7f68e67aa9f2db532cf796e9e63dbf8783d7b48e745752895",
+        "generated": "generated_judgment:59a8be20d63b8ba3c8b29aff590486774ce2c56bff75de22b8fd1f47f4cf4c7f",
+        "native": "native_judgment:0b0c7a11510f5d0f22095b42810311a0fa5f30b23e17ce7cf433395c7b1627c8",
+        "reader": "news_reader_judge:8da64dd6febbb9d6e316d38981a91ef4505ff90b32f307b0222ea492f452b820",
     }
     assert {
         "extract": digest(ExtractSignature.model_json_schema()),
@@ -74,5 +74,5 @@ def test_program_and_signature_schema_identities_are_pinned() -> None:
         "copy": "27c46b662ab3832abc75669acea346cc3a4dbecbed1a7675cfcddad287e5b64e",
         "judge": "a0878d7aef415b4f4dfe64a0ff99adc03a86bfb3aa3e0448b2efa5e9d038e42e",
         "native": "f3a475e9ce2ee597e078d877cdbefa79acc41550caaf7180cd48534e6fc6abd6",
-        "reader": "b7f4a51c708aacd1460c96dfdc4eaac64949cf0713dbb9a76e36472c6915affd",
+        "reader": "848ad2e014208b83cf5ef4e78c1428f42e8d40d52cb79e23954436ea39c8e8f8",
     }

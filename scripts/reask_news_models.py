@@ -23,14 +23,14 @@ from tracefold.news.notifications.reader import ReaderInput
 from tracefold.news.updates.contracts import FrozenInput
 from tracefold.news.updates.extraction import ground_extraction, validate_extraction
 from tracefold.news.updates.identity import canonical_json, digest
-from tracefold.news.updates.judgment import OPTIONS, Budget, Question
+from tracefold.news.updates.judgment import OPTIONS, Budget, Question, error_code
 from tracefold.news.updates.topics import CODEBOOK
 from tracefold.platform.config.loader import load_settings
 from tracefold.platform.config.secret_file import read_secure_secret_text
 
 
 def input_digest(row: dict[str, Any], kind: str) -> str:
-    """Labels and sampling metadata cannot change an exact model input."""
+    """Reader hashes its exact model input; source tasks bind the complete supplied case."""
     return digest(row["reader_input"]) if kind == "reader" else digest(row)
 
 
@@ -63,6 +63,8 @@ async def reask(args: argparse.Namespace) -> None:
     if len({row["case_id"] for row in rows}) != len(rows):
         raise ValueError("news_offline_duplicate_case")
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.touch(mode=0o600, exist_ok=True)
+    args.output.chmod(0o600)
     completed = set()
     if args.output.exists():
         journal = {row["case_id"]: row for row in map(json.loads, args.output.read_text().splitlines())}
@@ -115,6 +117,7 @@ async def reask(args: argparse.Namespace) -> None:
             except Exception as exc:
                 for result in results.values():
                     result["error_class"] = type(exc).__name__
+                    result["error_code"] = error_code(exc, default="news_offline_call_failed")
             with args.output.open("a", encoding="utf-8") as stream:
                 for result in results.values():
                     stream.write(json.dumps(result, ensure_ascii=False) + "\n")
@@ -147,6 +150,7 @@ async def reask(args: argparse.Namespace) -> None:
             except Exception as exc:
                 # Provider exception strings can contain URLs or credentials. Keep a bounded class only.
                 result["error_class"] = type(exc).__name__
+                result["error_code"] = error_code(exc, default="news_offline_call_failed")
             with args.output.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(result, ensure_ascii=False) + "\n")
             completed.add(row["case_id"])

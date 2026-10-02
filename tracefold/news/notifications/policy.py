@@ -66,12 +66,14 @@ class ReaderCuts:
     anchor_none_below: float
 
 
-# Initial #791 grid values. A new rubric requires real native and generated reasks and
-# independent labels before release; the historical #742 scores cannot calibrate it.
-# Reports in docs/reports/news-791-b.md record the measured gates and any pending proof.
+# #791 current-v3 reasks calibrate importance and the level-4 tail separately.
+# Lower held preserves important new terms/grounds of an already reported action;
+# a .4 tail keeps routine ordinary pushes from being marked key. The native route
+# has all 1,497 answers; generated calibration uses its available subset only.
+# Measurements and remaining error are recorded in docs/reports/news-791-b.md.
 READER_CUTS: Final[dict[ReaderBackend, ReaderCuts]] = {
-    "native": ReaderCuts(push=2.3, held=2.98, key_tail=0.05, anchor_none_below=0.2),
-    "generated": ReaderCuts(push=2.4, held=3.05, key_tail=0.05, anchor_none_below=0.2),
+    "native": ReaderCuts(push=2.4, held=2.5, key_tail=0.4, anchor_none_below=0.2),
+    "generated": ReaderCuts(push=2.4, held=2.6, key_tail=0.4, anchor_none_below=0.2),
 }
 
 

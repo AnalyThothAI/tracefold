@@ -542,7 +542,7 @@ P010 = (
     ("importance", "outcome"),
     [
         (READER_CUTS["native"].push, "feed"),
-        (2.59, "feed"),
+        (READER_CUTS["native"].held - 0.02, "feed"),
         (READER_CUTS["native"].held - 0.01, "feed"),
         (READER_CUTS["native"].held, "push"),
     ],
@@ -588,7 +588,7 @@ def test_a_background_link_does_not_raise_the_bar_for_an_actual_unanchored_actio
     )
     result = reader_decision(
         ReaderNovelty(novelty="increment", intent_id="hack", linked_intents=("hack",)),
-        _judgment(2.6, {"m1": 0.2, "none": 0.8}),
+        _judgment(2.45, {"m1": 0.2, "none": 0.8}),
         first_available_at_ms=20,
         message_intents=("hack",),
         claim_fields=fields,
@@ -608,7 +608,7 @@ def test_an_actual_action_keeps_exact_known_inflight_and_anchor_protections() ->
     for novelty, expected in (("known", "known"), ("in_flight", "in_flight"), ("increment", "feed")):
         result = reader_decision(
             ReaderNovelty.model_validate({"novelty": novelty, "intent_id": "ra"}),
-            _judgment(2.6, anchor),
+            _judgment(2.45, anchor),
             first_available_at_ms=20,
             message_intents=("ra",),
             claim_fields=fields,

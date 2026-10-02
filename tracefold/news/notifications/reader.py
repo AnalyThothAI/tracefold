@@ -54,10 +54,12 @@ READER_INSTRUCTIONS: Final = (
     "make a new consequential policy size, horizon, recipient, target or attributed grounds a "
     "repeat; judge that addition on its own merits. A newly attributed cross-border allegation "
     "supporting a concrete sanctions or enforcement action is distinct information from the "
-    "action's announcement. For the anchor, require the same concrete actor and recipient or "
-    "target, action, object and realization; a different statistical comparison period or a later "
-    "realization is a different core fact. A mentioned actor or the same broad story alone does "
-    "not establish an anchor."
+    "action's announcement. For the anchor, compare the underlying occurrence or attributed "
+    "proposition across languages, paraphrases, aliases and broader or more specific descriptions. "
+    "New details about the same occurrence do not themselves prevent an anchor; judge their "
+    "importance separately. A different statistical comparison period or a transition from an "
+    "announced action to a later or conditional outcome is a different core fact. A mentioned "
+    "actor or the same broad story alone does not establish an anchor."
 )
 IMPORTANCE_QUESTION: Final = (
     "How strongly does the information this claim adds beyond `messages` deserve a push notification to this "
@@ -120,14 +122,15 @@ IMPORTANCE_LEVELS: Final[tuple[str, ...]] = (
     ),
 )
 ANCHOR_QUESTION: Final = (
-    "Compare the claim with the complete supplied `messages`, which may be in another language. Which "
-    "message already reported this exact core fact: the same actor and recipient or target, action, "
-    "object, instrument and realization? For a record or measurement, the statistical comparison period "
-    "is part of the fact: a different period or milestone is not the same record. An announced action "
-    "and a later or conditional projected outcome are different realizations. A claim may still add "
-    "details, figures, a new allegation or a cause to the same concrete action; that does not erase its "
-    "new information or prevent an anchor. Sharing only a topic or story never establishes an anchor. "
-    "Choose none unless a supplied message already reported all the core parts of the fact."
+    "Which message explicitly reported the same core fact, across languages, aliases and paraphrases? "
+    "For an action, match the acting party, affected target and occurrence or stage. For an attributed "
+    "statement, match its speaker and proposition. For a market or statistical milestone, match the "
+    "instrument, direction and comparison period or record. A different record or lookback horizon, "
+    "a different speaker's attribution, or an announced action versus a later or conditional outcome "
+    "is a different core fact: choose none even when the topic or underlying story matches. "
+    "Added figures, terms, grounds or consequences of the same already reported action may retain "
+    "an anchor; judge those additions' importance separately. Do not infer an unstated actor, "
+    "instrument or occurrence from related background."
 )
 ANCHOR_NONE_TEXT: Final = "No supplied message reported the claim's core fact; the same topic or story is not enough."
 

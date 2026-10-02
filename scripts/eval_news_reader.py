@@ -48,7 +48,7 @@ CLUSTERS = (
 )
 VERDICTS = ("keep", "borderline", "demote")
 CUT_TABLE = (1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8)
-HELD_TABLE = (2.7, 2.8, 2.9, 2.98, 3.0, 3.05, 3.1)
+HELD_TABLE = (2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.98, 3.0, 3.05, 3.1)
 TAIL_TABLE = (0.02, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
 OFFICIAL_ROLES = frozenset(
     {
@@ -303,7 +303,7 @@ def fit_cuts(
     """Fit native and generated independently; refuse a passing claim when the labelled gates fail."""
     table = []
     for push in (2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6):
-        for held in (2.7, 2.8, 2.9, 3.0, 3.1):
+        for held in HELD_TABLE:
             for tail in TAIL_TABLE:
                 metrics = decision_row(
                     rows, answers, push=push, held=held, key_tail=tail, anchor_none_below=anchor_none_below

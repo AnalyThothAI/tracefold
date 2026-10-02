@@ -39,12 +39,25 @@ async def label(args: argparse.Namespace) -> None:
     rows = [json.loads(line) for line in args.input.read_text().splitlines() if line.strip()]
     if any(set(row) - _ALLOWED for row in rows):
         raise ValueError("news_blind_label_input_has_scores_or_readings")
+    by_id = {row["case_id"]: row for row in rows}
+    if len(by_id) != len(rows):
+        raise ValueError("news_blind_label_duplicate_case")
+    annotation_identity = digest(INSTRUCTION)
     done = {}
     if args.output.exists():
-        done = {row["case_id"]: row for row in map(json.loads, args.output.read_text().splitlines())}
+        journal = [json.loads(line) for line in args.output.read_text().splitlines() if line.strip()]
+        done = {row["case_id"]: row for row in journal}
+        if len(done) != len(journal) or set(done) - set(by_id):
+            raise ValueError("news_blind_label_resume_cases_changed")
+        if any(row.get("annotation_identity") != annotation_identity for row in journal):
+            raise ValueError("news_blind_label_resume_instruction_changed")
+        if any(row["input_sha256"] != digest(by_id[row["case_id"]]) for row in journal):
+            raise ValueError("news_blind_label_resume_input_changed")
     pending = [row for row in rows if row["case_id"] not in done]
     sem = asyncio.Semaphore(args.concurrency)
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.touch(mode=0o600, exist_ok=True)
+    args.output.chmod(0o600)
 
     async def batch(group: list[dict[str, Any]]) -> None:
         async with sem:
@@ -73,11 +86,14 @@ async def label(args: argparse.Namespace) -> None:
                 if result.startswith("```"):
                     result = result.split("\n", 1)[1].rsplit("```", 1)[0].strip()
                 labels = json.loads(result)
-                if {row["case_id"] for row in labels} != {row["case_id"] for row in group}:
+                if len(labels) != len(group) or {row["case_id"] for row in labels} != {row["case_id"] for row in group}:
                     raise ValueError("news_blind_label_batch_incomplete")
                 for row in labels:
                     if row["verdict"] not in {"keep", "borderline", "demote"} or not isinstance(row["key"], bool):
                         raise ValueError("news_blind_label_invalid")
+                    if not row.get("story_id") or not row.get("reason"):
+                        raise ValueError("news_blind_label_explanation_required")
+                    row["annotation_identity"] = annotation_identity
                     row["annotator_models"] = sorted(envelope.get("modelUsage", {}))
                     row["annotator_effort"] = "low"
                     row["protocol"] = "news_reader_blind_labels_v3"

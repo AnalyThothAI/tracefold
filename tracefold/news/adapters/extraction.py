@@ -52,6 +52,9 @@ when it is a person, government, institution or organization; use unknown otherw
 demand, commitment, guidance or forecast in fields.conditions, its stated deadline or horizon in fields.effective_at
 as written (never a computed date), and its sizes in fields.quantities. A hedge such as may, possible or considering
 stays in the statement and conditions; it does not turn a threat or a commitment into an opinion or a forecast.
+A threat's condition is the trigger for the adverse action. Preserve its polarity: an ultimatum
+that demands compliance or else imposes a consequence makes failure or refusal to comply the
+trigger for that consequence, not compliance itself. Do not reverse an unless or otherwise condition.
 
 Write statement, subject, action, object, speaker, conditions, and quantity names, units and periods in English,
 translating the source faithfully; keep every number with its exact scale, converting ten-thousand and
@@ -59,8 +62,12 @@ hundred-million units exactly, and give names in their usual English form. Citat
 spans in the source language. A statistical period belongs only to the quantity it qualifies: never copy
 an adjacent comparison's year, month or deadline into a quantity with an unstated period. Preserve an
 unstated year as unstated; never infer it from the publication date or a neighbouring comparison.
-Before returning, check every non-quote text field is English and each quantity
-still has exactly its source value, scale, unit and own stated period.
+This precision rule applies to every time field, including statistical_period, occurred_at,
+effective_at and each quantity's period, even for a claim without quantities. When the source
+names only a month, keep only that month: an added year is an invented fact. A year mentioned
+elsewhere does not qualify this period unless the source explicitly connects them.
+Before returning, check every non-quote text field is English, each quantity still has exactly
+its source value, scale and unit, and every time field preserves only its own stated period.
 Advertising, product descriptions, slogans and promotional performance claims without a new concrete event
 are promotion even when written as facts or evaluations; an actual own launch, listing, integration,
 partnership or newly available product remains a decision or observation.

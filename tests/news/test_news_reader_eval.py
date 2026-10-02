@@ -65,7 +65,7 @@ def test_recorded_native_baseline_arithmetic(fixtures: Any) -> None:
         at_push["precision_keep_borderline"],
         at_push["keep_recall"],
     )
-    assert pinned == (345, 24, 0.531, 0.725)
+    assert pinned == (289, 0, 0.589, 0.711)
     cut = report["cuts"]["anchor_none_below"]
     fully_said = next(row for row in report["anchor"]["fully_said"] if row["none_below"] == cut)
     assert (fully_said["anchor_recall"], fully_said["false_anchor_rate"]) == (0.98, 0.0)
@@ -91,9 +91,8 @@ def test_recorded_generated_baseline_arithmetic(fixtures: Any) -> None:
     assert report["importance"]["auc_keep_borderline_vs_demote"] >= 0.80
     at_push = next(row for row in report["decision_table"]["push"] if row["cut"] == report["cuts"]["push"])
     assert at_push["precision_keep_borderline"] >= 0.40
-    # The fallback scores developments higher, so its push cut also keeps the Starship sequence to three
-    # distinct developments (liftoff, in orbit, satellites deployed); today's production claims put it at
-    # about 310 messages a day against the native route's 370 (#742 PR-5).
+    # Archived scores exercise current policy arithmetic; they do not establish
+    # current model quality or current-day notification volume.
     pinned = (
         at_push["claims_per_day"],
         at_push["key_per_day"],
@@ -101,8 +100,8 @@ def test_recorded_generated_baseline_arithmetic(fixtures: Any) -> None:
         at_push["keep_recall"],
     )
     # #759 restores L098 (withdrawals resumed), without promoting parameter details.
-    assert pinned == (344, 271, 0.519, 0.7)
-    assert [len(cluster["pushed"]) for cluster in report["clusters"]] == [2, 11]
+    assert pinned == (278, 6, 0.53, 0.636)
+    assert [len(cluster["pushed"]) for cluster in report["clusters"]] == [2, 3]
 
 
 def test_a_recorded_answer_round_trips(fixtures: Any) -> None:
@@ -115,6 +114,7 @@ def test_a_recorded_answer_round_trips(fixtures: Any) -> None:
 
 def test_recorded_recovery_is_an_action_while_partnership_terms_remain_details(fixtures: Any) -> None:
     from scripts.eval_news_reader import decision
+    from tracefold.news.notifications.policy import ReaderCuts
 
     replay, *_ = fixtures
     rows = {row["case_id"]: row for row in replay}
@@ -123,8 +123,10 @@ def test_recorded_recovery_is_an_action_while_partnership_terms_remain_details(f
     assert terms["label"]["verdict"] == "demote"
     assert recovery["reader_novelty"].novelty == terms["reader_novelty"].novelty == "increment"
     answers = recorded((recovery, terms), "generated")
-    # These are archived production answers; no threshold or probability has been altered.
+    # These are archived answers. An explicit test cut between push and held isolates
+    # the action bypass; their old score scale does not calibrate the current rubric.
     assert answers["L098"].importance is not None and answers["L098"].importance.value == 2.8
     assert answers["L240"].importance is not None and answers["L240"].importance.value == 2.8
-    assert decision(recovery, answers["L098"]).outcome == "push"
-    assert decision(terms, answers["L240"]).outcome == "feed"
+    cuts = ReaderCuts(push=2.4, held=2.9, key_tail=0.4, anchor_none_below=0.2)
+    assert decision(recovery, answers["L098"], cuts).outcome == "push"
+    assert decision(terms, answers["L240"], cuts).outcome == "feed"
