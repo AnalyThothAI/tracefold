@@ -9,6 +9,10 @@ from tracefold.platform.config.loader import load_settings
 
 
 def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
+    if args.news_command == "embedding":
+        from .news_embedding import handle_embedding
+
+        return handle_embedding(args)
     if args.news_command == "bus-check":
         from .news_bus import _handle_bus_check
 

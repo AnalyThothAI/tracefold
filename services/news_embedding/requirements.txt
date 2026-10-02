@@ -1,6 +1,0 @@
-# The audited CPU environment; CUDA overrides only the explicitly pinned Torch wheel.
-sentence-transformers==6.1.0
-transformers==5.18.0
-huggingface-hub==1.33.0
-safetensors==0.8.0
-numpy==2.5.3

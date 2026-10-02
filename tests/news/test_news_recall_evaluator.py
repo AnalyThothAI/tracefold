@@ -118,7 +118,7 @@ def bundle_files(tmp_path: Path) -> tuple[Path, Path]:
     "mutation,reason",
     [
         ("order", "claim_order"),
-        ("identity", "embedder_identity"),
+        ("identity", "model_identity"),
         ("array", "array_file_digest"),
         ("text", "claim_texts_digest"),
         ("query", "query_slot_binding"),

@@ -108,12 +108,11 @@ llm:
     base_url:
     model:
   news_embedding:
-    # Independent OpenAI-compatible embeddings, all endpoint fields or none. The key is a private
-    # news_embedding_api_key file created empty by init and mounted only into Workers.
-    api_key_file:
-    base_url:
+    # Opt-in Workers-local FP32 MiniLM. Prepare its fixed revision explicitly before enabling it.
+    # model: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
     model:
-    max_batch_size: 2
+    cache_dir: cache/news-embedding
+    max_batch_size: 32
   news_reader_judgment:
     # Optional System One route for News notification decisions only (#742), all three or none.
     # The key is the secret file news_reader_judgment_api_key in this directory (created empty by

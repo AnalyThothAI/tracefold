@@ -7,11 +7,9 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
-import httpx
 import pytest
 
-from tracefold.app.claim_embedding import ClaimEmbedder
-from tracefold.news.bus import DeferError
+from tracefold.news.bus import DeferError, TransientError
 from tracefold.news.claim_recall import CALIBRATION
 from tracefold.news.pipeline import maintenance
 from tracefold.news.pipeline.maintenance import JanitorLoop
@@ -23,17 +21,17 @@ class PendingDatabase:
 
     def __init__(self) -> None:
         self.in_transaction = False
-        self.backfill_calls = 0
+        self.historical_reads = 0
         self.vector_writes: list[Any] = []
         self.pending_version = {"claim_ref": "event:claim", "text_sha256": "version", "embed_text": "A policy changed."}
         self.repos = SimpleNamespace(news=SimpleNamespace(claim_index=self))
 
-    def backfill(self, **_kwargs: Any) -> int:
-        self.backfill_calls += 1
-        return 0
+    def historical_batch(self, **_kwargs: Any) -> list[Any]:
+        self.historical_reads += 1
+        return []
 
     def pending(self, limit: int, **_kwargs: Any) -> list[dict[str, str]]:
-        assert limit == 2
+        assert limit == 64
         return [dict(self.pending_version)]
 
     def save_vectors(self, rows: list[Any], **_kwargs: Any) -> None:
@@ -51,30 +49,30 @@ class PendingDatabase:
         return await self.tx(_name, fn)
 
 
-def route(transport: httpx.MockTransport) -> ClaimEmbedder:
-    return ClaimEmbedder(
-        model=CALIBRATION.embedder.model,
-        base_url="https://embedding.test/v1",
-        api_key="test-only-key",
-        transport=transport,
-        max_batch_size=2,
-    )
+class UnavailableEmbedding:
+    identity = CALIBRATION.embedder
+
+    def __init__(self, respond) -> None:
+        self.respond = respond
+
+    async def probes(self, texts):
+        return await self.respond(texts)
 
 
-def test_temporary_embedding_503_leaves_pending_fact_and_does_not_stop_retention() -> None:
+def test_temporary_embedding_failure_leaves_pending_fact_and_does_not_stop_retention() -> None:
     async def run() -> None:
         db = PendingDatabase()
         requests = 0
         turns = 0
         stop = asyncio.Event()
 
-        def respond(_request: httpx.Request) -> httpx.Response:
+        async def respond(_texts):
             nonlocal requests
             assert not db.in_transaction
             requests += 1
-            return httpx.Response(503)
+            raise TransientError("embedding_unavailable")
 
-        embedder = route(httpx.MockTransport(respond))
+        embedder = UnavailableEmbedding(respond)
         loop = JanitorLoop(db=db, cold_db=db, claim_recall=PgClaimRecall(db, embedder=embedder), period_seconds=0.01)
 
         async def retention() -> None:
@@ -85,17 +83,14 @@ def test_temporary_embedding_503_leaves_pending_fact_and_does_not_stop_retention
 
         loop.turn = retention  # type: ignore[method-assign]
         before = dict(db.pending_version)
-        try:
-            await asyncio.wait_for(loop.run(stop_event=stop), timeout=1)
-        finally:
-            await embedder.aclose()
-        assert turns == 3 and requests == 1 and db.backfill_calls == 1
+        await asyncio.wait_for(loop.run(stop_event=stop), timeout=1)
+        assert turns == 3 and requests == 1 and db.historical_reads == 0
         assert db.pending_version == before and db.vector_writes == []
 
     asyncio.run(run())
 
 
-def test_cancellation_during_external_encoding_drains_both_tasks_without_writing_a_vector() -> None:
+def test_cancellation_during_encoding_drains_both_tasks_without_writing_a_vector() -> None:
     async def run() -> None:
         db = PendingDatabase()
         encoding = asyncio.Event()
@@ -103,7 +98,7 @@ def test_cancellation_during_external_encoding_drains_both_tasks_without_writing
         retention_started = asyncio.Event()
         retention_cancelled = asyncio.Event()
 
-        async def respond(_request: httpx.Request) -> httpx.Response:
+        async def respond(_texts):
             assert not db.in_transaction
             encoding.set()
             try:
@@ -112,7 +107,7 @@ def test_cancellation_during_external_encoding_drains_both_tasks_without_writing
                 cancelled.set()
             raise AssertionError("cancelled inference returned")
 
-        embedder = route(httpx.MockTransport(respond))
+        embedder = UnavailableEmbedding(respond)
         loop = JanitorLoop(db=db, cold_db=db, claim_recall=PgClaimRecall(db, embedder=embedder))
 
         async def retention() -> None:
@@ -134,7 +129,6 @@ def test_cancellation_during_external_encoding_drains_both_tasks_without_writing
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-            await embedder.aclose()
         assert cancelled.is_set() and retention_cancelled.is_set()
         assert db.pending_version == before and db.vector_writes == []
         assert not db.in_transaction
@@ -160,7 +154,7 @@ def test_cold_lane_admission_deferral_retries_without_stopping_the_maintenance_t
                 await maintenance_running.wait()
                 if calls == 1:
                     attempted.set()
-                    raise DeferError("db_admission_timeout:news_claim_index_backfill")
+                    raise DeferError("db_admission_timeout:news_claim_index_pending")
                 stop.set()
                 return False
 

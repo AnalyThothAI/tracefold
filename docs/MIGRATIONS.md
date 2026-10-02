@@ -64,6 +64,10 @@ P4 拒绝未执行 P0、同 case 多个 assessment、输入/动作/计划/处置
 
 </details>
 
+`20261002_0428`（[#799](https://github.com/AnalyThothAI/tracefold/issues/799)）从已上线的 0427 升级，将既有 `news_analyses_adopted`、`news_notifications_sent` 两条部分索引分别补齐为 `(adopted_at_ms,analysis_id)` 与 `(settled_at_ms,intent_id)`，保留索引名和计数查询使用的时间前缀，删除被替换的单列定义。历史回填先按稳定源文档游标取有界页面，再展开 claim，避免每个页面重复排序整个历史 JSON。已有事实、向量与 guard 不变；避免单列、复合索引并存导致分页重复排序同一时间组；模型缓存准备与向量回填由独立命令完成，不进入 migration。
+
+0428 采用正常停写维护窗口、5 秒锁超时与 600 秒语句超时，索引创建失败整笔回滚。升级后只启动匹配 0428 镜像。需要恢复已上线的 0427 镜像时，停止写者后用 0428 镜像运行 `alembic downgrade 20261002_0427`，核对 head，再恢复旧配置、匹配旧镜像及独立模型服务；该降级只恢复这两条索引的原单列定义。不得跨越 0427 的前向读数转换。验证见[游标迁移测试](../tests/integration/test_news_claim_backfill_migration.py)。
+
 <a id="section-确认源镜像与数据库版本"></a>
 ## 01 · 确认源、镜像与数据库版本
 
@@ -79,7 +83,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20261002_0427`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20261002_0428`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序

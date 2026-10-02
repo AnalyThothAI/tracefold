@@ -14,6 +14,7 @@
 | Hooks | `install_hooks.py`、`run_web_hook.py` | 显式安装 hook，以及暂存前端文件的检查 |
 | 生成契约 | `regen_cli_help.py`、`regen_db_schema.py`、`regen_openapi.py`、`regen_rabbitmq_definitions.py` | 文档约定的生成目标；不是启动迁移 |
 | 离线评测 | `eval_news_reader.py`、`eval_news_recall.py` | 显式运行；前者评分已记录的读者判断，后者在仓库外的 #791 盲标语料上校准共享召回，只写隔离连接的临时表；均不调用模型或发送通知 |
+| 本地嵌入验收 | `verify_news_embedding.py`、`benchmark_news_embedding_runtime.py`、`benchmark_news_embedding_backfill.py` | 使用已准备的固定模型缓存；分别验证冻结新旧向量及业务选择、应用镜像内资源、隔离测试库的真实全量回填；不调用 LLM 或发送通知，回填基准只创建自己的测试 clone |
 | 每日召回回执 | `news_recall_receipts.py`、`news_recall_receipts.sql` | 读取最近 24 小时的关系对数、产出率与逐调用降级占比，以及 48 小时已送精确版本的高相似、无链接且无锚点代理；短只读快照后在事务外用共享核心算余弦，不调用模型或写库 |
 
 `eval_news_recall.py` 要求原审计绑定目录、只读导出 manifest、固定模型向量 manifest 和完整候选池的阅读 provenance。它验证源文件、数组、顺序键、文本、模型包装和精确版本的摘要，使用生产 PostgreSQL FTS 适配器和 `prepare_rank()` / `rank()`；回执指标进一步经过生产 `select_for_claim()`，统计最终最多 16 条消息。池外未标注事实保持 unknown，缺失 SF 输入仍计入分母。

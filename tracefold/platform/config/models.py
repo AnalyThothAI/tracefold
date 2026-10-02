@@ -244,11 +244,30 @@ class NewsReaderJudgmentConfig(_SecretFileRouteConfig):
     error_prefix: ClassVar[str] = "news_reader_judgment"
 
 
-class NewsEmbeddingConfig(_SecretFileRouteConfig):
-    """An independent OpenAI-compatible embedding endpoint with bounded batches."""
+class NewsEmbeddingConfig(BaseModel):
+    """Opt-in fixed local News encoder; weights are prepared independently of startup."""
 
-    error_prefix: ClassVar[str] = "news_embedding"
-    max_batch_size: int = Field(default=2, ge=1, le=32)
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    model: str | None = None
+    cache_dir: str = "cache/news-embedding"
+    max_batch_size: int = Field(default=32, ge=1, le=32)
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def optional_model(cls, value: Any) -> str | None:
+        return str(value or "").strip() or None
+
+    @field_validator("cache_dir", mode="before")
+    @classmethod
+    def local_cache(cls, value: Any) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("news_embedding_cache_dir_invalid")
+        return normalized
+
+    @property
+    def configured(self) -> bool:
+        return self.model is not None
 
 
 class LlmConfig(BaseModel):
@@ -806,8 +825,9 @@ class Settings(BaseModel):
     def news_reader_judgment_api_key_file(self) -> Path | None:
         return self._configured_path(self.llm.news_reader_judgment.api_key_file)
 
-    def news_embedding_api_key_file(self) -> Path | None:
-        return self._configured_path(self.llm.news_embedding.api_key_file)
+    def news_embedding_cache_dir(self) -> Path:
+        configured = Path(self.llm.news_embedding.cache_dir).expanduser()
+        return configured if configured.is_absolute() else self._config_dir / configured
 
     def trading_binance_usdm_api_key_file(self) -> Path | None:
         return self._configured_path(self.trading.execution.credentials.api_key_file)

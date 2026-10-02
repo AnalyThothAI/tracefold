@@ -197,7 +197,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "event_kind, opened_at_ms DESC, event_id DESC" in news_v3_indexes["ix_news_events_kind_opened"]
     # Semantic jobs own rescue selection; published_at_ms is updated by Event primary key.
     assert "ix_news_events_unpublished" not in news_v3_indexes
-    assert version == latest_migration_version() == "20261002_0427"
+    assert version == latest_migration_version() == "20261002_0428"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -222,7 +222,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20261002_0427"
+    assert version == latest_migration_version() == "20261002_0428"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:

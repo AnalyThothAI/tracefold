@@ -234,9 +234,9 @@ class JanitorLoop:
         self.chain_tape_enabled = bool(chain_tape_enabled)
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
-        # Index work is durable NULL-vector work. A single embedding batch on the
-        # retention period cannot catch up with daily arrivals, so drain bounded
-        # batches independently without rerunning all retention sweeps.
+        # Normal adoption commits its vector. Repair only durable missing rows;
+        # historical projection belongs to the resumable operator bulk command.
+        # Bounded repairs drain independently of the retention sweep.
         async with asyncio.TaskGroup() as group:
             group.create_task(self._maintenance_loop(stop_event=stop_event))
             if self.claim_recall is not None:

@@ -163,10 +163,11 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,bus-policy,instruments,learning,replay,wallets,why,retry-work,reanalyze,repair-head-scopes,dlq} ...
+                      {embedding,bus-check,bus-policy,instruments,learning,replay,wallets,why,retry-work,reanalyze,repair-head-scopes,dlq} ...
 
 positional arguments:
-  {bus-check,bus-policy,instruments,learning,replay,wallets,why,retry-work,reanalyze,repair-head-scopes,dlq}
+  {embedding,bus-check,bus-policy,instruments,learning,replay,wallets,why,retry-work,reanalyze,repair-head-scopes,dlq}
+    embedding           prepare and verify the offline claim encoder
     bus-check           declare the News topology and report queue state,
                         effective retry policy, and topology drift
     bus-policy          apply or verify the checked-in RabbitMQ retry/dead-
@@ -191,6 +192,59 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
+
+```
+
+## `news embedding`
+
+```
+usage: tracefold news embedding [-h] {prepare,check,backfill} ...
+
+positional arguments:
+  {prepare,check,backfill}
+    prepare             explicitly download the fixed ONNX/tokenizer snapshot;
+                        no DB
+    check               verify the local snapshot and golden vectors offline;
+                        no DB
+    backfill            resume the bounded historical claim/vector backfill
+
+options:
+  -h, --help            show this help message and exit
+
+```
+
+## `news embedding prepare`
+
+```
+usage: tracefold news embedding prepare [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `news embedding check`
+
+```
+usage: tracefold news embedding check [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `news embedding backfill`
+
+```
+usage: tracefold news embedding backfill [-h] [--batch-size BATCH_SIZE]
+                                         --checkpoint CHECKPOINT
+
+options:
+  -h, --help            show this help message and exit
+  --batch-size BATCH_SIZE
+                        projection page size, 32 through 512
+  --checkpoint CHECKPOINT
+                        local restart checkpoint path for this database
 
 ```
 

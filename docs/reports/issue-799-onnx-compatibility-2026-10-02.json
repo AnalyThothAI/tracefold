@@ -1,0 +1,111 @@
+{
+  "protocol": "799_offline_onnx_compatibility_v1",
+  "ok": true,
+  "model_snapshot": {
+    "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "revision": "e8f8c211226b894fcb81acc59f3b34ba3efd5f42",
+    "files": {
+      "tokenizer.json": "2c3387be76557bd40970cec13153b3bbf80407865484b209e655e5e4729076b8",
+      "onnx/model.onnx": "10f7a088420252b26caf819236ca2c9d2987afd0fc06fec7553b542a5655a05a"
+    }
+  },
+  "fixture_sha256": {
+    "issue_791_recall_golden_vectors.json": "b0d5e9fe722a542a59ca4e863c99dd811811320781554d040b9b2dfd9c7632e5",
+    "issue_750_gold_recall.json": "b9e645d62a97e263c1c1dd0b8e333cccc019dc2a05b91cf0c95f1c87f06ac7bb",
+    "reader_791_business_regressions.json": "a4b296cc75433556d9cd255a57f122f4fbc8b664db2e2c0eea6562a4153a4142"
+  },
+  "runtime": {
+    "python": "3.13.13",
+    "packages": {
+      "onnxruntime": "1.24.3",
+      "tokenizers": "0.23.1",
+      "numpy": "2.5.3"
+    },
+    "provider": "CPUExecutionProvider",
+    "intra_op_threads": 2,
+    "tokenizers_parallelism": "false",
+    "native_threads_before_encoder": 32,
+    "native_threads_after_startup": 34,
+    "native_threads_after_55_encodings": 34,
+    "startup_golden_ms": 3792.1151669997926,
+    "frozen_55_encoding_ms": 1497.5502580000466
+  },
+  "vectors": {
+    "count": 55,
+    "cosine_min": 0.9999999980283021,
+    "cosine_p50": 0.9999999999981666,
+    "cosine_mean": 0.9999999998115853,
+    "max_abs_error": 6.076873352063583e-05,
+    "max_abs_error_p50": 1.907349084585234e-06,
+    "identical_fp16_vectors": 7,
+    "required_cosine": 0.9999
+  },
+  "rank_compatibility": {
+    "prior": {
+      "queries": 55,
+      "old_candidate_mismatches": 0,
+      "mixed_candidate_mismatches": 0
+    },
+    "receipt": {
+      "queries": 55,
+      "old_candidate_mismatches": 0,
+      "mixed_candidate_mismatches": 0
+    }
+  },
+  "issue_750": {
+    "gold_receipts": [
+      "191d10",
+      "235d95",
+      "585497",
+      "eca8e3"
+    ],
+    "selected_receipts": [
+      "0b4d11",
+      "177218",
+      "191d10",
+      "204f5d",
+      "235d95",
+      "252a7b",
+      "2dfdfb",
+      "33c89b",
+      "3b629d",
+      "585497",
+      "7339eb",
+      "8af1f7",
+      "9ba696",
+      "a84d9c",
+      "ccf429",
+      "eca8e3"
+    ],
+    "negative_receipts": 0,
+    "empty_data_selection": true,
+    "selection_matches_previous": true
+  },
+  "issue_755": {
+    "selected": [
+      "The House Oversight Committee widens its insider trading probe to Hyperliquid"
+    ],
+    "related_selected": true,
+    "unrelated_selected": 0,
+    "selection_matches_previous": true
+  },
+  "eleven_statement_batch": {
+    "fixture": "reader_791_business_regressions.json",
+    "statements": 11,
+    "unique_statements": 5,
+    "batch_ms": [
+      167.01634600030957,
+      159.62097400006314,
+      159.59974200086435
+    ],
+    "batch_ms_p50": 159.62097400006314,
+    "batch_vs_single_cosine_min": 0.9999999999999999,
+    "order_preserved": true
+  },
+  "limitations": [
+    "Frozen historical FP16 vectors are the baseline; PyTorch is not invoked again.",
+    "Rank and reader-selector verification uses frozen eligible candidates; PostgreSQL retrieval, transaction budgets, concurrent Workers and production-scale backfill are separate evidence.",
+    "The eleven-statement batch contains eleven frozen reader business cases, including a repeated statement; it is not one reconstructed eleven-claim extraction.",
+    "No new LLM judgment, chronological adoption or delivery is performed."
+  ]
+}

@@ -10,6 +10,13 @@ def add_news_commands(
 ) -> None:
     news = subcommands.add_parser("news", help="News broker and judge calibration commands")
     news_subcommands = news.add_subparsers(dest="news_command", required=True)
+    embedding = news_subcommands.add_parser("embedding", help="prepare and verify the offline claim encoder")
+    embedding_commands = embedding.add_subparsers(dest="embedding_command", required=True)
+    embedding_commands.add_parser("prepare", help="explicitly download the fixed ONNX/tokenizer snapshot; no DB")
+    embedding_commands.add_parser("check", help="verify the local snapshot and golden vectors offline; no DB")
+    backfill = embedding_commands.add_parser("backfill", help="resume the bounded historical claim/vector backfill")
+    backfill.add_argument("--batch-size", type=_positive_int, default=32, help="projection page size, 32 through 512")
+    backfill.add_argument("--checkpoint", required=True, help="local restart checkpoint path for this database")
     news_subcommands.add_parser(
         "bus-check",
         help="declare the News topology and report queue state, effective retry policy, and topology drift",

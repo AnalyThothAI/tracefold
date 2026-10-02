@@ -10,7 +10,16 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Final
 
-from ..claim_recall import RECEIPT_WINDOW_MS, Probe, embed_text, lexical_text, prepare_rank, rank
+from ..claim_recall import (
+    CALIBRATION,
+    RECEIPT_WINDOW_MS,
+    Candidate,
+    Probe,
+    embed_text,
+    lexical_text,
+    prepare_rank,
+    rank,
+)
 from ..notifications.contracts import NEWS_CHANNEL, DeliveredText
 from ..notifications.novelty import ClaimLink, LinkedReceipt, current_links, reader_novelty
 from ..notifications.recall import select_for_claim
@@ -126,7 +135,8 @@ class NotificationContextStorage:
             dict(r)
             for r in self.conn.execute(
                 """SELECT d.intent_id,d.event_id,d.kind,d.settled_at_ms,d.state,
-                       d.sent_claims IS NULL AS missing_projection
+                       d.sent_claims IS NULL AS missing_projection,d.card->>'body' AS body,
+                       d.card->>'payload_sha256' AS payload_sha256
                   FROM news_notifications d
                  WHERE d.kind='update' AND d.state='sent'
                    AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
@@ -314,33 +324,44 @@ class NotificationContextStorage:
         index = ClaimIndexStorage(self.conn)
         selections = {}
         recall_diagnostics = {}
-        ordinary_intents = sorted(str(row["intent_id"]) for row in ordinary)
+        ordinary_available = frozenset(str(row["intent_id"]) for row in ordinary if delivered_text(row) is not None)
+        # Validate receipt bodies before route_n; malformed receipts cannot take
+        # a slot from valid reader evidence. Frozen vectors are shared by queries.
+        pool = index.receipt_pool(sorted(ordinary_available))
+        stored_probes = index.query_probes(tuple(queries.values()))
         for ref, claim in queries.items():
-            probe = (probes or {}).get(ref, Probe(embed_text(claim)))
-            if probe.text != embed_text(claim):
-                probe = Probe(embed_text(claim))
+            probe = (probes or {}).get(ref, stored_probes.get(ref, Probe(embed_text(claim))))
+            if (
+                probe.text != embed_text(claim)
+                or probe.embedder != CALIBRATION.embedder.key
+                or probe.vector is None
+                or len(probe.vector) != CALIBRATION.embedder.dimensions * 2
+            ):
+                probe = stored_probes.get(ref, Probe(embed_text(claim)))
             sources = tuple(
                 key
                 for citation in claim.citations
                 if citation.evidence_ref in evidence_items
                 for key in source_keys(evidence_items[citation.evidence_ref].source)
             )
-            projected = index.receipt_candidates(ordinary_intents, sources=sources)
-            candidates = tuple(candidate for candidate, _ in projected)
+            candidates = tuple(
+                Candidate(
+                    key,
+                    row["vector"],
+                    row["embedder"],
+                    same_source=bool(set(row["structure_keys"]) & set(sources)),
+                    group=str(row["intent_id"]),
+                )
+                for key, row in pool.items()
+            )
             prepared = prepare_rank(probe, candidates, "receipt")
-            eligible_intents = {
-                str(candidate.group) for candidate in candidates if candidate.key in prepared.eligible_keys
-            }
+            lexical = index.lexical_pool_scores(lexical_text(claim), pool, prepared=prepared)
+            ranking = rank(prepared, tuple(replace(c, lexical=lexical.get(c.key, 0.0)) for c in candidates))
+            eligible_intents = {hit.key for hit in ranking.hits}
             rows.update(
                 (str(row["intent_id"]), row)
                 for row in self._complete_receipt_rows(sorted(eligible_intents - rows.keys()))
             )
-            eligible_claims = {
-                (intent, claim.ref, embed_text(claim)): claim
-                for intent in eligible_intents
-                for value in rows[intent].get("historical_claims") or ()
-                for claim in (Claim.model_validate(value),)
-            }
             available = available | frozenset(
                 intent
                 for intent in eligible_intents
@@ -348,21 +369,6 @@ class NotificationContextStorage:
                 and text.state == "sent"
                 and text.received_at_ms is not None
                 and text.received_at_ms < now_ms
-            )
-            verified = {
-                candidate.key: eligible_claims[occurrence]
-                for candidate, occurrence in projected
-                if candidate.key in prepared.eligible_keys
-                and occurrence[0] in available
-                and occurrence in eligible_claims
-            }
-            lexical = index.lexical_scores(
-                lexical_text(claim),
-                [(key, claim) for key, claim in verified.items() if key in prepared.fts_eligible_keys],
-            )
-            ranking = rank(
-                prepared,
-                tuple(replace(c, lexical=lexical.get(c.key, 0.0)) for c in candidates if c.key in verified),
             )
             selections[ref] = select_for_claim(novelties[ref], ranking, available=available)
             recall_diagnostics[ref] = ranking.diagnostics()

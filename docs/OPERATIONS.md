@@ -100,11 +100,26 @@ docker compose exec -T workers tracefold news retry-work \
 
 ### 命题向量缺失与降级
 
-`/api/news/status` 的 `claim_index_pending` 是最近 30 天及 48 小时内已送精确版本的缺向量或旧身份行数；已送命题原始年龄不限制回填。`recall_dense=on` 要求无活动缺失、配置路由且 Workers 的新鲜心跳报告路由可用。运行中批次失败显示降级，下一次成功恢复。配置独立 `llm.news_embedding` 路由的 `api_key_file`、`base_url`、`model` 和 `max_batch_size`；模型名称和固定 revision、token 上限、pooling、dtype 必须对应校准身份。密钥只由 Workers 从私密文件读取，生成式端点不承担嵌入。模型权重在外部服务部署，应用和 PostgreSQL 镜像不包含权重。启动探针遇到网络、429 或服务暂时故障时隔 30 秒重试；模型、维度或探针不匹配保留可见降级，修复后重启。Janitor 每次有界补算，顺序为已送 48 小时、7 天、30 天；无须重新抽取、开启历史通知或写模型缓存。
+`/api/news/status` 的 `claim_index_pending` 是最近 30 天及 48 小时内已送精确版本的缺向量或旧身份行数。`recall_dense=on` 同时要求活动索引完整和 Workers 新鲜心跳报告编码器可用。命题嵌入在 Workers 内使用固定 MiniLM FP32 ONNX；模型权重不进入应用镜像，运行时只读缓存，不发网络请求。
 
-独立模型服务使用 [News embedding runtime](../services/news_embedding/README.md) 的 `embedding-build`、`embedding-download`、`embedding-up` 和 `embedding-status` 命令；它们复用项目部署锁，只操作可选模型服务。默认 `make up` 不启动或下载模型。模型、校准身份和运行时固定探针验证完成后，配置 Workers 使用 `http://news-embedding:8080/v1`，默认批次为 2。模型缓存独立挂载，应用升级不把权重打入应用镜像。
+配置 `llm.news_embedding.model` 为校准文件的固定模型名，`cache_dir` 默认 `cache/news-embedding`（相对 operator home），`max_batch_size` 默认 32、上限 32。目录按完整 revision 隔离，准备命令下载 tokenizer 与 ONNX、记录文件摘要并完整发布；加载时核对文件和黄金向量。编码器启用时关闭进程级 tokenizer Rayon 并行，仅由专用执行器与 ONNX 的两个内部线程处理，避免按宿主核数创建线程池。缺文件、损坏、权限失败或自检失败仅使稠密路线降级；修复缓存后重启 Workers。Serve、Analysis 和普通 CLI 不加载权重。
 
-升级前备份并停止写者，迁移至当前 0427 head 后启动匹配新镜像；新索引行随采用和有界历史投影写入。Janitor 内的命题索引循环独立排空有界批次，有进展时让出执行后继续，空闲或暂时故障时等待 30 秒；保留原维护清理周期。补算不因每分钟只执行一批而持续落后于新增命题，数据库事务结束后才调用模型。0427 是前向 mode 转换，应用后回退须恢复已核验的迁移前完整备份和对应旧镜像，不得仅 downgrade 0426/0425 或直接启动旧镜像。PR-A 的采用文档与冻结回执形状不变；应用只保留共享命题召回的单一路径。
+```bash
+# 显式联网下载；使用新应用镜像，与 Workers 共享挂载缓存。不会启动业务或访问数据库。
+docker compose run --rm --no-deps workers tracefold news embedding prepare
+# 离线数值自检，不访问数据库。
+docker compose run --rm --no-deps workers tracefold news embedding check
+# 写操作：投影已采用事实并补向量，不重抽取、不重判、不发送通知。
+# 中断后复用同一 checkpoint 继续；不要把 checkpoint 用于另一数据库或模型。
+docker compose run --rm --no-deps workers tracefold news embedding backfill \
+  --batch-size 32 --checkpoint /root/.tracefold/cache/claim-index-backfill.json
+```
+
+回填按冻结起点和持久游标读取已送精确版本及最近 30 天已采用命题，批次幂等提交后才推进本地 checkpoint，完成后 `ANALYZE news_claim_index`。模型调用和文件 checkpoint 在数据库事务外。一次回填命令会另载一份模型，应计入宿主机总内存；避免并发运行多个全量任务。Janitor 只补索引中直接记录的偶发 pending，不再循环扫描历史分析 JSON。正常采用时复用抽取向量，仅当最终采用文本与模型身份完全匹配时保存；通知优先读取相同精确版本的向量，缺失时才事务外编码。
+
+**从已上线的 #791 A/B 升级：** 本改动增加 0428，仅将现有两条时间索引补齐稳定 ID，作为历史回填游标索引，不重写事实或已有向量。先保存完整备份、配对的旧镜像 ID、私密配置和原模型文件。另备新格式私密配置副本，先删除 embedding 的旧端点和密钥字段并设置本地缓存，再为准备命令指定该新 operator 目录（`TRACEFOLD_HOME`），用新镜像准备并检查缓存；新命令会拒绝旧配置字段，不能先用旧配置运行 prepare。旧应用继续使用原配置。在停写维护窗口切换新配置并按[迁移手册](MIGRATIONS.md)升级至 0428；启动匹配的新应用后核对 dense 状态、pending 和真实通知处理。删除 Compose 定义不会自动停掉旧容器：使用 `docker ps -a --filter label=com.docker.compose.project=YOUR_PROJECT --filter label=com.docker.compose.service=news-embedding` 核对所属项目和容器 ID，再执行 `docker stop VERIFIED_CONTAINER_ID`。回滚窗口内保留旧镜像、权重、密钥和旧配置；不删除卷。
+
+回滚到已上线的 0427 版本时，先按正常顺序停止所有写者，用当前镜像执行 Alembic 的 0428→0427 降级并核实数据库 head；这一步只将两条索引恢复为原单列定义，不改变采用文档、回执或向量。恢复配对旧配置，再用旧 checkout 启动其匹配镜像及独立模型服务。`make deploy-image` 要求 image/database head 相同，不能直接把 0427 镜像接到 0428。若回滚到 0427 之前，仍须恢复核验过的迁移前备份及匹配镜像。
 
 每日只读回执运行 `uv run --locked python scripts/news_recall_receipts.py --as-of-ms <冻结时刻>`，连接由 `TRACEFOLD_READONLY_DSN` 提供，不放进命令参数。配套 SQL 统计关系对数、有效关系产出率及 prior / receipt 两端降级占比；历史没有诊断的调用保持未知。漏召回代理检查 48 小时内先后已送、超过校准稠密下限、但无两跳链接或实际读者锚点的命题对。缺失向量单列未知数，代理不能证明同一事实。`tracefold_news_reader_changed_total{stage="plan"|"send"}` 记录最终 CAS 冲突次数，不重复计算内部重读。
 
@@ -211,7 +226,7 @@ docker compose exec -T executor tracefold trading issue '/pause maintenance' \
 
 ### #764 P4 账本收敛
 
-P4 在 `20261001_0424` 完成账本收敛，当前 head 为 `20261002_0427`。P4 切换前保存应用状态和交易所持仓/挂单，停 Analysis 并在 300 秒内排空 pending，再停 Executor、Workers 和 Serve；完整备份和 14 张旧表导出应记录 sha256。迁移用 13 组校验确认事实与投影一致，启动后核对 pause/halt、订单身份与 70 秒内的账户对账。0425 增加语义任务索引及 reader clock；0426 增加共享命题召回，0427 前向转换历史 mode 读数，无退役表导出。仍按迁移前停写者、核验完整 dump 与旧镜像身份、成功后启动匹配镜像的顺序执行；0427 后回退必须恢复配套备份与旧镜像。具体顺序及回滚见 [迁移手册](MIGRATIONS.md)。进程 UUID 与毫秒心跳属于平台，停止或过期的 executor 心跳不能证明可以发布 Signal；账户的签名对账证据仍属于 Trading。
+P4 在 `20261001_0424` 完成账本收敛，当前 head 为 `20261002_0428`。P4 切换前保存应用状态和交易所持仓/挂单，停 Analysis 并在 300 秒内排空 pending，再停 Executor、Workers 和 Serve；完整备份和 14 张旧表导出应记录 sha256。迁移用 13 组校验确认事实与投影一致，启动后核对 pause/halt、订单身份与 70 秒内的账户对账。0425 增加语义任务索引及 reader clock；0426 增加共享命题召回，0427 前向转换历史 mode 读数，无退役表导出。仍按迁移前停写者、核验完整 dump 与旧镜像身份、成功后启动匹配镜像的顺序执行；0428 仅替换两条历史回填游标索引，可在停写窗口降级到 0427；0427 的读数转换仍只能通过配套备份与旧镜像回退。具体顺序及回滚见 [迁移手册](MIGRATIONS.md)。进程 UUID 与毫秒心跳属于平台，停止或过期的 executor 心跳不能证明可以发布 Signal；账户的签名对账证据仍属于 Trading。
 
 ### #746 Trading 硬切
 

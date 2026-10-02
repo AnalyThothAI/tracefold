@@ -37,11 +37,6 @@ ACTIONS = (
     "serve-shell",
     "workers-shell",
     "topology",
-    "embedding-build",
-    "embedding-download",
-    "embedding-up",
-    "embedding-down",
-    "embedding-status",
 )
 MUTATIONS = frozenset(
     {
@@ -51,10 +46,6 @@ MUTATIONS = frozenset(
         "deploy-image",
         "down",
         "db-migrate",
-        "embedding-build",
-        "embedding-download",
-        "embedding-up",
-        "embedding-down",
     }
 )
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -113,7 +104,6 @@ class Deployment:
             str(self.root / "compose.yaml"),
         ]
         self._model: dict[str, Any] | None = None
-        self._embedding_model: dict[str, Any] | None = None
         self.wait_seconds = str(int(self.env.get("TRACEFOLD_COMPOSE_WAIT_SECONDS") or "300"))
 
     def run(self, *args: str, capture: bool = False, timeout: float | None = None) -> str:
@@ -130,105 +120,6 @@ class Deployment:
 
     def compose(self, *args: str, capture: bool = False) -> str:
         return self.run(*self.prefix, *args, capture=capture)
-
-    def embedding_compose(self, *args: str, capture: bool = False) -> str:
-        runtime = self.env.get("TRACEFOLD_NEWS_EMBEDDING_RUNTIME", "cpu")
-        if runtime not in {"cpu", "cuda"}:
-            raise DeploymentError("embedding runtime must be cpu or cuda")
-        override = ("-f", str(self.root / "services/news_embedding/compose.cuda.yaml")) if runtime == "cuda" else ()
-        return self.run(*self.prefix, *override, "--profile", "news-embedding", *args, capture=capture)
-
-    @property
-    def embedding_model(self) -> dict[str, Any]:
-        if self._embedding_model is None:
-            self._embedding_model = json.loads(self.embedding_compose("config", "--format", "json", capture=True))
-        return self._embedding_model
-
-    def embedding_mount(self, target: str) -> Path:
-        for mount in self.embedding_model["services"]["news-embedding"]["volumes"]:
-            if mount["target"] == target:
-                return Path(mount["source"])
-        raise DeploymentError("embedding service is missing a required mount")
-
-    def embedding_build(self) -> str:
-        self.env["TRACEFOLD_BUILD_REVISION"] = self.revision()
-        self._embedding_model = None
-        image_name = self.embedding_model["services"]["news-embedding"]["image"]
-        self.embedding_compose("build", "news-embedding")
-        image = self.image_id(image_name)
-        self.env["TRACEFOLD_NEWS_EMBEDDING_IMAGE"] = image
-        self._embedding_model = None
-        print(f"Built dedicated News embedding image {image}", flush=True)
-        return image
-
-    def embedding_download(self) -> None:
-        image = self.embedding_build()
-        cache = self.embedding_mount("/weights")
-        cache.mkdir(parents=True, exist_ok=True, mode=0o700)
-        user = self.embedding_model["services"]["news-embedding"]["user"]
-        self.run(
-            "docker",
-            "run",
-            "--rm",
-            "--user",
-            user,
-            "--cpus",
-            "1",
-            "--memory",
-            "1g",
-            "--mount",
-            f"type=bind,source={cache},target=/weights",
-            "--entrypoint",
-            "python",
-            image,
-            "/service/server.py",
-            "download",
-        )
-
-    def embedding_up(self) -> None:
-        self.embedding_build()
-        cache = self.embedding_mount("/weights")
-        key_file = self.embedding_mount("/run/secrets/news_embedding_api_key")
-        if not cache.is_dir():
-            raise DeploymentError("embedding weights are missing; run make embedding-download first")
-        if not key_file.is_file() or len(key_file.read_text().strip()) < 16:
-            raise DeploymentError("embedding private key file is missing or empty")
-        self.embedding_compose(
-            "up",
-            "-d",
-            "--no-build",
-            "--no-deps",
-            "--force-recreate",
-            "--wait",
-            "--wait-timeout",
-            self.wait_seconds,
-            "news-embedding",
-        )
-        self.embedding_status()
-
-    def embedding_status(self) -> None:
-        container = self.embedding_compose("ps", "-q", "news-embedding", capture=True)
-        if not container:
-            raise DeploymentError("news-embedding: missing")
-        if self.inspect(container, "{{.State.Status}}") != "running":
-            raise DeploymentError("news-embedding: not running")
-        if self.inspect(container, "{{.State.Health.Status}}") != "healthy":
-            raise DeploymentError("news-embedding: not healthy")
-        opener = build_opener(ProxyHandler({}))
-        binding = self.embedding_model["services"]["news-embedding"]["ports"][0]
-        host = binding.get("host_ip", "127.0.0.1")
-        host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)  # noqa: S104 -- local probe
-        if ":" in host:
-            host = f"[{host}]"
-        with opener.open(f"http://{host}:{binding['published']}/readyz", timeout=5) as response:
-            ready = json.loads(response.read())
-        if ready.get("ready") is not True:
-            raise DeploymentError("news-embedding: not ready")
-        image = self.inspect(container, "{{.Image}}")
-        expected = self.env.get("TRACEFOLD_NEWS_EMBEDDING_IMAGE")
-        if expected and IMAGE_ID.fullmatch(expected) and image != expected:
-            raise DeploymentError("news-embedding: immutable image mismatch")
-        print(json.dumps({"ok": True, "image_digest": image, "data": ready}, indent=2))
 
     @property
     def model(self) -> dict[str, Any]:
@@ -495,17 +386,7 @@ class Deployment:
         return self.app_command("config")
 
     def dispatch(self, action: str) -> None:
-        if action == "embedding-build":
-            self.embedding_build()
-        elif action == "embedding-download":
-            self.embedding_download()
-        elif action == "embedding-up":
-            self.embedding_up()
-        elif action == "embedding-down":
-            self.embedding_compose("stop", "news-embedding")
-        elif action == "embedding-status":
-            self.embedding_status()
-        elif action == "init":
+        if action == "init":
             self.initialize(self.build())
         elif action == "build":
             self.build()
