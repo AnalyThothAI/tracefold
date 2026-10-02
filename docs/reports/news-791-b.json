@@ -1027,6 +1027,23 @@
       "news_and_identity_migration_authoring_tests": 1439,
       "static_checks": "make check-static passed: Ruff check/format, mypy391 source files, CLI/router/RabbitMQ generated drift, 38 Markdown links/anchors, compileall"
     },
-    "remote_ci": "not yet reported passed for this B head"
+    "remote_ci": "not yet started for current B head; waits for A squash merge and B rebase to main",
+    "final_A_base": "5a5759686",
+    "final_A_base_checks": {
+      "news_identity_migration_authoring_tests": 1456,
+      "http_openapi_type_codegen_tests": 82,
+      "frontend_typecheck": "npm --prefix web run typecheck passed",
+      "postgres_selected_unique_cases": 110,
+      "postgres_initial": {
+        "passed": 108,
+        "failed": 2,
+        "failure": "current-head literals still pinned to A 0426"
+      },
+      "postgres_rerun": {
+        "passed": 5,
+        "scope": "schema runtime and 0427 after replacing two pins with 0427"
+      },
+      "static_checks": "make check-static passed; Ruff check/format, mypy391 source files, CLI/router/definitions, docs38 and compileall"
+    }
   }
 }

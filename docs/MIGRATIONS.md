@@ -46,6 +46,10 @@ P4 拒绝未执行 P0、同 case 多个 assessment、输入/动作/计划/处置
 
 [索引迁移测试](../tests/integration/test_semantic_read_index_migration.py)验证 0424→0425 且任务事实完全不变；[有界读取测试](../tests/integration/test_news_semantic_read_costs.py)用两万条已完成历史任务验证查询预算与已完成失败计数。feed 页面沿 Event 的 analysis 指针读取 head，并按 Event 查找待发送意图；全量 counts 保留批量读取，输出契约不变。
 
+`20261002_0426`（#791 A）增加共享命题召回索引、精确版本向量身份与 canonical FTS 投影；`20261002_0427`（#791 B）把持久结构化读数 `commentary` 转为 `unknown`、`conditional_threat` 转为 `threat`，最终只接受当前 v5 mode 与 reader v3 契约。转换覆盖采用文档、冻结回执、检查点和待发公开 payload，保留来源引文、claim/update 引用、输入出处、已送正文与结果；公开 payload 的摘要随转换更新，不重新采用或发送。0427 在事务内暂时关闭两项不可变 guard，排空延迟约束后恢复，失败会整体回滚。
+
+0426→0427 与配套镜像须在同一个停写维护窗口完成：先按正常顺序停止所有写者，核实没有写者会话；保存完整 custom-format `pg_dump`、sha256、`pg_restore --list` 核验结果、源 head 和旧镜像身份。迁移成功后核对实际 head 为 0427，并只启动匹配镜像。0427 是前向转换，回退必须恢复已核验的迁移前完整备份和对应旧镜像；不得仅 downgrade 0426/0425 或让旧镜像读取已转换的事实。[带数据迁移测试](../tests/integration/test_news_speech_migration.py)验证来源、引用、回执及 guard 的保留；业务证据见 [B 报告](reports/news-791-b.md)。
+
 迁移连接统一将 NOTICE 写入 stderr，并在每个 revision 后恢复 NOTICE 级别，防止冻结 baseline 的 warning 设置屏蔽后续证明。P2/P3 的 `p2_verify ok` / `p3_verify ok` 与 P4 自带的 `p4_verify ok` 都可见。0420–0424 发布文件不修改。历史日志未包含 P2/P3 NOTICE 只能说明当时未采集，不能追认缺失日志；已有 head 证明事务内校验完成。今后部署还需比对迁移容器镜像 head 与实际数据库 head，并输出迁移日志后才启动角色。
 
 <details>
@@ -75,7 +79,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20261002_0425`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20261002_0427`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序
