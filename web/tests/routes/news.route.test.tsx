@@ -13,8 +13,11 @@ describe("news route", () => {
   beforeEach(() => setupAppRouteTest(mockAppRoutes));
 
   it("shows current adopted sources without a legacy evidence projection", async () => {
-    renderAppRoute("/news/events/evt-global-policy");
+    renderAppRoute("/news/events/evt-global-policy?tab=source");
     expect(await screen.findByRole("region", { name: "来源与分歧" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "来源证据" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getAllByRole("tabpanel")).toHaveLength(1);
+    expect(screen.getByRole("tabpanel", { name: "来源证据" })).toBeVisible();
     expect(screen.queryByRole("region", { name: "本次判断的证据" })).toBeNull();
     expect(apiMock.readApi).toHaveBeenCalledWith(
       "/api/news/events/evt-global-policy",

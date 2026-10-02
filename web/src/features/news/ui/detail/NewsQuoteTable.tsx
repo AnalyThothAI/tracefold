@@ -9,9 +9,8 @@ import "./newsQuoteTable.css";
 /**
  * 当前报价 (#88): what these contracts are worth *now*, on named venues.
  *
- * Deliberately never merged with 事件后反应 below it. One is a moving current value and the other is a fixed
- * measurement anchored at this Event; one table would invite reading a rolling 24 h change as the market's
- * answer to this headline, which is the single wrong conclusion this whole plane exists to prevent.
+ * Price kind, source and clock remain attached to each quote. A rolling 24 h change is not a return
+ * measured from the Event, and the reading surface names that distinction explicitly.
  */
 export function NewsQuoteTable({
   compact = false,
