@@ -217,6 +217,56 @@ def test_backfill_finds_historical_text_versions_even_when_the_claim_ref_is_alre
     assert asyncio.run(db.tx("backfill", lambda r: r.news.claim_index.backfill(limit=64, now_ms=clock.now_ms))) == 0
 
 
+def test_backfill_drains_missing_versions_newest_first_across_the_seven_day_boundary() -> None:
+    pg, db, clock = store()
+    head = adopted_head(pg.semantic, clock)
+    versions = []
+    previous = head.content_revision
+    for name, age in (("recent", 1), ("older", 8 * 86400_000), ("expired", 31 * 86400_000)):
+        claim = head.claims[0].model_copy(update={"statement": f"Agency announced the {name} tariff proposal."})
+        historical = head.model_copy(
+            update={
+                "claims": (claim,),
+                "previous_content_revision": previous,
+                "content_revision": content_revision_for(head.content_sha, previous),
+            }
+        )
+        previous = historical.content_revision
+        versions.append(claim)
+        sql(
+            """INSERT INTO news_analyses(analysis_id,event_id,origin,input_revision,completed_at_ms,work_id,
+                 input_sha256,program_identity,understanding,content_revision,update_ref,adopted_at_ms,document)
+               VALUES (%s,%s,'semantic',1,%s,%s,%s,'fixture','{}',%s,%s,%s,%s::jsonb)""",
+            (
+                name,
+                EVENT,
+                clock.now_ms - age,
+                name,
+                name,
+                historical.content_revision,
+                historical.ref,
+                clock.now_ms - age,
+                json.dumps(historical.model_dump(mode="json")),
+            ),
+        )
+
+    def advance():
+        return asyncio.run(db.tx("backfill", lambda r: r.news.claim_index.backfill(limit=1, now_ms=clock.now_ms)))
+
+    assert advance() == 1
+    assert {row["text_sha256"] for row in sql("SELECT text_sha256 FROM news_claim_index")} == {
+        text_sha(head.claims[0]),
+        text_sha(versions[0]),
+    }
+    assert advance() == 1
+    assert {row["text_sha256"] for row in sql("SELECT text_sha256 FROM news_claim_index")} == {
+        text_sha(head.claims[0]),
+        text_sha(versions[0]),
+        text_sha(versions[1]),
+    }
+    assert advance() == 0
+
+
 def seed_frozen_receipt(head, claim, *, settled_at_ms: int, intent: str = "frozen-version") -> None:
     sql(
         """INSERT INTO news_notifications(notification_id,intent_id,event_id,kind,origin,state,
