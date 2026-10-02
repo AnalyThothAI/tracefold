@@ -10,9 +10,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Final
 
-from pydantic import TypeAdapter
-
-from ..claim_recall import RECEIPT_WINDOW_MS, Probe, embed_text, prepare_rank, rank, text_sha
+from ..claim_recall import RECEIPT_WINDOW_MS, Probe, embed_text, prepare_rank, rank
 from ..notifications.contracts import NEWS_CHANNEL, DeliveredText
 from ..notifications.novelty import ClaimLink, LinkedReceipt, current_links, reader_novelty
 from ..notifications.recall import select_for_claim
@@ -83,7 +81,6 @@ def listing_compatible_links(links: Iterable[ClaimLink], claims: Mapping[str, Cl
 
 
 log = logging.getLogger("tracefold.news")
-_FROZEN_CLAIMS = TypeAdapter(tuple[Claim, ...])
 
 
 class NotificationContextStorage:
@@ -126,17 +123,29 @@ class NotificationContextStorage:
 
     def _recall_receipt_rows(self, *, now_ms: int) -> list[dict[str, Any]]:
         return [
-            {**dict(r), "historical_claims": _FROZEN_CLAIMS.validate_json(r["historical_claims_json"])}
+            dict(r)
             for r in self.conn.execute(
-                """SELECT d.intent_id,d.event_id,d.kind,d.card->>'body' AS body,
-                       d.card->>'payload_sha256' AS payload_sha256,d.settled_at_ms,d.state,d.claim_refs,
-                       COALESCE(d.sent_claims,'[]'::jsonb)::text AS historical_claims_json,
+                """SELECT d.intent_id,d.event_id,d.kind,d.settled_at_ms,d.state,
                        d.sent_claims IS NULL AS missing_projection
                   FROM news_notifications d
                  WHERE d.kind='update' AND d.state='sent'
                    AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
                  ORDER BY d.intent_id""",
                 (now_ms - RECEIPT_WINDOW_MS, now_ms),
+                binary=True,
+            ).fetchall()
+        ]
+
+    def _complete_receipt_rows(self, intents: Sequence[str]) -> list[dict[str, Any]]:
+        if not intents:
+            return []
+        return [
+            dict(row)
+            for row in self.conn.execute(
+                f"""SELECT {_RECEIPT_COLUMNS},d.state,
+                           COALESCE(d.sent_claims,'[]'::jsonb) AS historical_claims
+                      FROM news_notifications d WHERE d.intent_id=ANY(%s::text[])""",  # noqa: S608
+                (list(intents),),
                 binary=True,
             ).fetchall()
         ]
@@ -251,7 +260,7 @@ class NotificationContextStorage:
         links = self._claim_links(sorted(active), as_of_ms=now_ms)
         reached = active | {str(row[key]) for row in links for key in ("current_ref", "previous_ref")}
         linked = self._link_receipt_rows(sorted(reached), now_ms=now_ms, until_ms=now_ms)
-        rows = {str(row["intent_id"]): row for row in (*linked, *ordinary)}
+        rows = {str(row["intent_id"]): row for row in linked}
         frozen_by_intent = {
             intent: tuple(Claim.model_validate(value) for value in row.get("historical_claims") or ())
             for intent, row in rows.items()
@@ -305,12 +314,7 @@ class NotificationContextStorage:
         index = ClaimIndexStorage(self.conn)
         selections = {}
         recall_diagnostics = {}
-        keyed_claims = {
-            intent: tuple((f"{claim.ref}:{text_sha(claim)}", claim) for claim in claims)
-            for intent, claims in frozen_by_intent.items()
-            if intent in available
-        }
-        frozen = {key: claim for row in ordinary for key, claim in keyed_claims.get(str(row["intent_id"]), ())}
+        ordinary_intents = sorted(str(row["intent_id"]) for row in ordinary)
         for ref, claim in queries.items():
             probe = (probes or {}).get(ref, Probe(embed_text(claim)))
             if probe.text != embed_text(claim):
@@ -321,42 +325,49 @@ class NotificationContextStorage:
                 if citation.evidence_ref in evidence_items
                 for key in source_keys(evidence_items[citation.evidence_ref].source)
             )
-            indexed = {r.key: r for r in index.claim_candidates(frozen, sources=sources)}
-            candidates_and_claims = tuple(
-                (replace(indexed[key], key=f"{intent}:{key}", group=intent), frozen[key])
-                for r in ordinary
-                for intent in (str(r["intent_id"]),)
-                if intent in available
-                for key, _ in keyed_claims[intent]
-                if key in indexed
-            )
-            candidates = tuple(candidate for candidate, _ in candidates_and_claims)
+            projected = index.receipt_candidates(ordinary_intents, sources=sources)
+            candidates = tuple(candidate for candidate, _ in projected)
             prepared = prepare_rank(probe, candidates, "receipt")
+            eligible_intents = {
+                str(candidate.group) for candidate in candidates if candidate.key in prepared.eligible_keys
+            }
+            rows.update(
+                (str(row["intent_id"]), row)
+                for row in self._complete_receipt_rows(sorted(eligible_intents - rows.keys()))
+            )
+            eligible_claims = {
+                (intent, claim.ref, embed_text(claim)): claim
+                for intent in eligible_intents
+                for value in rows[intent].get("historical_claims") or ()
+                for claim in (Claim.model_validate(value),)
+            }
+            available = available | frozenset(
+                intent
+                for intent in eligible_intents
+                if (text := delivered_text(rows[intent])) is not None
+                and text.state == "sent"
+                and text.received_at_ms is not None
+                and text.received_at_ms < now_ms
+            )
+            verified = {
+                candidate.key: eligible_claims[occurrence]
+                for candidate, occurrence in projected
+                if candidate.key in prepared.eligible_keys
+                and occurrence[0] in available
+                and occurrence in eligible_claims
+            }
             lexical = index.lexical_scores(
                 probe,
-                [
-                    (candidate.key, claim)
-                    for candidate, claim in candidates_and_claims
-                    if candidate.key in prepared.fts_eligible_keys
-                ],
+                [(key, claim) for key, claim in verified.items() if key in prepared.fts_eligible_keys],
             )
-            ranking = rank(prepared, tuple(replace(c, lexical=lexical.get(c.key, 0.0)) for c in candidates))
+            ranking = rank(
+                prepared,
+                tuple(replace(c, lexical=lexical.get(c.key, 0.0)) for c in candidates if c.key in verified),
+            )
             selections[ref] = select_for_claim(novelties[ref], ranking, available=available)
             recall_diagnostics[ref] = ranking.diagnostics()
         selected_ids = {intent for selection in selections.values() for intent in selection.intent_ids}
-        # Ranking needs frozen propositions and exact body hashes. Fetch card,
-        # provider receipt and history only for the selected comparisons.
-        selected_rows = (
-            self.conn.execute(
-                f"""SELECT {_RECEIPT_COLUMNS},d.state,
-                           COALESCE(d.sent_claims,'[]'::jsonb) AS historical_claims
-                      FROM news_notifications d WHERE d.intent_id=ANY(%s::text[])""",  # noqa: S608
-                (sorted(selected_ids),),
-                binary=True,
-            ).fetchall()
-            if selected_ids
-            else ()
-        )
+        selected_rows = [rows[intent] for intent in sorted(selected_ids)]
         return {
             "event": None if event is None else dict(event),
             "sending": sending,

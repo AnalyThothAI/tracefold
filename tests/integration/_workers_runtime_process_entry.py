@@ -330,6 +330,7 @@ async def _main() -> None:
             db: Any,
             runtime_id: str,
             heartbeat_at_ms: int,
+            capabilities: dict[str, dict[str, Any]],
         ) -> None:
             nonlocal native_timeout_calls
             with native_timeout_lock:
@@ -343,7 +344,7 @@ async def _main() -> None:
                     raise
                 raise AssertionError("native transaction timeout missing")
             print("CONTROL_NATIVE_TIMEOUT_RECOVERED", flush=True)
-            original_runtime_heartbeat(db, runtime_id, heartbeat_at_ms)
+            original_runtime_heartbeat(db, runtime_id, heartbeat_at_ms, capabilities)
 
         workers._runtime_heartbeat = native_timeout_runtime_heartbeat
 

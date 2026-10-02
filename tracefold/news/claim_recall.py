@@ -48,12 +48,27 @@ def structure_keys(claim: Claim | DraftClaim) -> tuple[str, ...]:
 class EmbedderIdentity:
     model: str
     dimensions: int
+    revision: str
+    max_tokens: int
+    pooling: str
+    dtype: str
     normalization: str = "l2"
     template: str = TEXT_TEMPLATE
 
     @property
     def key(self) -> str:
-        return digest((self.model, self.dimensions, self.normalization, self.template))
+        return digest(
+            (
+                self.model,
+                self.dimensions,
+                self.revision,
+                self.max_tokens,
+                self.pooling,
+                self.dtype,
+                self.normalization,
+                self.template,
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)

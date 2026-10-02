@@ -15,9 +15,12 @@ if TYPE_CHECKING:
 
 
 class PgClaimRecall:
-    def __init__(self, db: NewsDatabasePort, *, embedder: EmbeddingPort | None = None) -> None:
+    def __init__(
+        self, db: NewsDatabasePort, *, embedder: EmbeddingPort | None = None, embedding_batch_size: int = 4
+    ) -> None:
         self.db = db
         self.embedder = embedder
+        self.embedding_batch_size = embedding_batch_size
 
     async def priors(self, source: FrozenInput, extracted: Extraction) -> PriorBatch:
         texts = [embed_text(c) for c in extracted.claims]
@@ -42,7 +45,8 @@ class PgClaimRecall:
         if self.embedder is None:
             return
         pending = await self.db.read(
-            "news_claim_index_pending", lambda r: r.news.claim_index.pending(limit, now_ms=now_ms)
+            "news_claim_index_pending",
+            lambda r: r.news.claim_index.pending(min(limit, self.embedding_batch_size), now_ms=now_ms),
         )
         probes = await self.embedder.probes([str(row["embed_text"]) for row in pending])
         vectors = [

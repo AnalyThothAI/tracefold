@@ -111,6 +111,42 @@ class ClaimIndexStorage:
         ).fetchall()
         return {str(row["key"]): float(row["lexical"]) for row in rows}
 
+    def receipt_candidates(
+        self, intents: Sequence[str], *, sources: Sequence[str]
+    ) -> tuple[tuple[Candidate, tuple[str, str, str]], ...]:
+        """Rank projection of the exact frozen versions, before complete eligible-claim reads."""
+        if not intents:
+            return ()
+        self.conn.execute("SET LOCAL jit = off")
+        rows = self.conn.execute(
+            """SELECT n.intent_id,c->>'ref' AS claim_ref,c->>'statement' AS statement,
+                      ci.text_sha256,ci.vector,ci.embedder,
+                      COALESCE(ci.structure_keys && %s::text[],false) AS same_source
+                 FROM news_notifications n
+                 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(n.sent_claims,'[]'::jsonb)) c
+                 LEFT JOIN LATERAL (
+                   SELECT ci.text_sha256,ci.vector,ci.embedder,ci.structure_keys
+                     FROM news_claim_index ci
+                    WHERE ci.claim_ref=c->>'ref' AND ci.embed_text=c->>'statement' OFFSET 0
+                 ) ci ON true
+                WHERE n.intent_id=ANY(%s::text[])""",
+            (list(sources), list(intents)),
+            binary=True,
+        ).fetchall()
+        return tuple(
+            (
+                Candidate(
+                    f"{r['intent_id']}:{r['claim_ref']}:{r['text_sha256'] or digest(r['statement'])}",
+                    r["vector"],
+                    r["embedder"],
+                    same_source=bool(r["same_source"]),
+                    group=str(r["intent_id"]),
+                ),
+                (str(r["intent_id"]), str(r["claim_ref"]), str(r["statement"])),
+            )
+            for r in rows
+        )
+
     def prior(
         self,
         event_id: str,
@@ -140,11 +176,11 @@ class ClaimIndexStorage:
                )
                SELECT ci.claim_ref,ci.text_sha256,ci.event_id,ci.vector,ci.embedder,
                       ci.structure_keys && %s::text[] AS same_source,
-                      u.analysis_id,u.content_revision,ci.embed_text,NULL::text AS frozen_intent
-                 FROM news_claim_index ci JOIN news_events e ON e.event_id=ci.event_id
-                 JOIN news_analyses u ON u.analysis_id=e.current_analysis_id
+                      NULL::text AS analysis_id,NULL::text AS content_revision,
+                      ci.embed_text,NULL::text AS frozen_intent
+                 FROM news_claim_index ci
                 WHERE ci.event_id<>%s AND ci.first_available_at_ms >= %s
-                  AND ci.first_available_at_ms < %s AND u.adopted_at_ms < %s
+                  AND ci.first_available_at_ms < %s
                UNION ALL
                SELECT s.claim_ref,ci.text_sha256,s.event_id,ci.vector,ci.embedder,
                       COALESCE(ci.structure_keys && %s::text[],false),
@@ -162,7 +198,6 @@ class ClaimIndexStorage:
                 list(sources),
                 event_id,
                 now_ms - PRIOR_WINDOW_MS,
-                now_ms,
                 now_ms,
                 list(sources),
             ),
@@ -191,16 +226,19 @@ class ClaimIndexStorage:
         # Every key that could enter any route is validated before route_n/k.
         # Stale wording can neither consume a slot nor hide a current version.
         eligible_rows = [by_key[key] for key in prepared.eligible_keys]
-        selected_analyses = list({str(row["analysis_id"]) for row in eligible_rows if row["analysis_id"] is not None})
+        selected_events = list({str(row["event_id"]) for row in eligible_rows if row["frozen_intent"] is None})
         documents = (
             self.conn.execute(
-                "SELECT analysis_id,document FROM news_analyses WHERE analysis_id=ANY(%s::text[])",
-                (selected_analyses,),
+                """SELECT e.event_id,u.document FROM news_events e
+                   JOIN news_analyses u ON u.analysis_id=e.current_analysis_id
+                   WHERE e.event_id=ANY(%s::text[]) AND u.adopted_at_ms < %s""",
+                (selected_events, now_ms),
+                binary=True,
             ).fetchall()
-            if selected_analyses
+            if selected_events
             else ()
         )
-        heads = {str(row["analysis_id"]): EventUpdate.model_validate(row["document"]) for row in documents}
+        heads = {str(row["event_id"]): EventUpdate.model_validate(row["document"]) for row in documents}
         intents = sorted({str(row["frozen_intent"]) for row in eligible_rows if row["frozen_intent"] is not None})
         frozen_rows = (
             self.conn.execute(
@@ -227,7 +265,7 @@ class ClaimIndexStorage:
         for key in prepared.eligible_keys:
             row = by_key[key]
             occurrence = (
-                str(row["frozen_intent"] or row["analysis_id"]),
+                str(row["frozen_intent"] or row["event_id"]),
                 str(row["claim_ref"]),
                 str(row["embed_text"]),
             )
@@ -246,7 +284,11 @@ class ClaimIndexStorage:
         return tuple(
             PriorClaim(
                 event_id=str(by_key[key]["event_id"]),
-                content_revision=str(by_key[key]["content_revision"]),
+                content_revision=(
+                    str(by_key[key]["content_revision"])
+                    if by_key[key]["frozen_intent"] is not None
+                    else heads[str(by_key[key]["event_id"])].content_revision
+                ),
                 claim=claims[key],
             )
             for hit in ranking.hits

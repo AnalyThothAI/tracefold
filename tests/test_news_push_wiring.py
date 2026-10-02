@@ -455,9 +455,19 @@ def test_configured_models_compose_the_semantic_worker_as_a_confined_editorial_t
 
 
 def test_wrong_embedding_identity_disables_dense_recall_and_preserves_semantic_processing(tmp_path: Path) -> None:
+    key = tmp_path / "embedding_key"
+    key.write_text("embedding-test-key", encoding="utf-8")
+    key.chmod(0o600)
     capabilities = CapabilityStates()
     runtime = news_wiring._news_updates_or_fault(
-        _with_models(tmp_path, news_embedding_model="uncalibrated-model"),
+        _with_models(
+            tmp_path,
+            news_embedding={
+                "model": "uncalibrated-model",
+                "base_url": "https://embeddings.test/v1",
+                "api_key_file": "embedding_key",
+            },
+        ),
         news_db=object(),
         capabilities=capabilities,
     )
@@ -468,6 +478,32 @@ def test_wrong_embedding_identity_disables_dense_recall_and_preserves_semantic_p
         "state": "faulted",
         "reason": "news_embedding_configuration_invalid",
     }
+
+
+def test_embedding_endpoint_uses_its_own_private_key_and_route(tmp_path: Path) -> None:
+    from tracefold.news.claim_recall import CALIBRATION
+
+    key = tmp_path / "embedding_key"
+    key.write_text("embedding-test-key", encoding="utf-8")
+    key.chmod(0o600)
+    settings = _with_models(
+        tmp_path,
+        news_embedding={
+            "model": CALIBRATION.embedder.model,
+            "base_url": "https://embeddings.test/v1",
+            "api_key_file": "embedding_key",
+            "max_batch_size": 2,
+        },
+    )
+    runtime = news_wiring._news_updates_or_fault(settings, news_db=object(), capabilities=CapabilityStates())
+    assert runtime is not None and runtime.embedder is not None
+    try:
+        assert str(runtime.embedder.client.base_url) == "https://embeddings.test/v1/"
+        assert runtime.embedder.client.headers["Authorization"] == "Bearer embedding-test-key"
+        assert runtime.embedder.max_batch_size == 2
+        assert runtime.claim_recall is not None and runtime.claim_recall.embedding_batch_size == 2
+    finally:
+        asyncio.run(runtime.embedder.aclose())
 
 
 def test_a_configured_news_judgment_route_opens_its_own_connection_and_changes_the_program(tmp_path: Path) -> None:

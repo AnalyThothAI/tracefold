@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -13,6 +14,7 @@ import numpy as np
 from tracefold.news.claim_recall import CALIBRATION, EmbedderIdentity, Probe, vector_bytes
 
 EMBEDDING_SECONDS = 5.0
+SELF_TEST_RETRY_SECONDS = 30.0
 SELF_TEST = ("A central bank cuts interest rates.", "央行下调利率。", "A software vendor releases a game.")
 log = logging.getLogger("tracefold.news")
 
@@ -26,11 +28,15 @@ class ClaimEmbedder:
         api_key: str,
         transport: httpx.AsyncBaseTransport | None = None,
         on_status: Callable[[bool], None] | None = None,
+        max_batch_size: int = 4,
     ) -> None:
         self.identity: EmbedderIdentity = CALIBRATION.embedder
         if model != self.identity.model:
             raise ValueError("news_embedding_calibration_identity_mismatch")
+        if max_batch_size < 1:
+            raise ValueError("news_embedding_batch_size_invalid")
         self.model = model
+        self.max_batch_size = max_batch_size
         self.client = httpx.AsyncClient(
             base_url=base_url.rstrip("/") + "/",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -39,6 +45,7 @@ class ClaimEmbedder:
         )
         self.ready = False
         self._tested = False
+        self._retry_self_test_at = 0.0
         self._test_lock = asyncio.Lock()
         self.on_status = on_status
 
@@ -59,18 +66,36 @@ class ClaimEmbedder:
             raise ValueError("news_embedding_response_cardinality")
         return tuple(vector_bytes(row["embedding"], self.identity) for row in rows)
 
+    async def _vectors(self, texts: Sequence[str]) -> tuple[bytes, ...]:
+        batches = [
+            await self._encode(texts[start : start + self.max_batch_size])
+            for start in range(0, len(texts), self.max_batch_size)
+        ]
+        return tuple(vector for batch in batches for vector in batch)
+
     async def self_test(self) -> bool:
         async with self._test_lock:
             if self._tested:
                 return self.ready
+            if time.monotonic() < self._retry_self_test_at:
+                return False
+            retryable = False
             try:
-                vectors = await self._encode(SELF_TEST)
+                vectors = await self._vectors(SELF_TEST)
                 matrix = np.stack([np.frombuffer(v, dtype="<f2").astype(np.float32) for v in vectors])
                 # A multilingual paraphrase must place the translation above an unrelated fact.
                 self.ready = float(matrix[0] @ matrix[1]) > float(matrix[0] @ matrix[2])
-            except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError):
+            except httpx.HTTPStatusError as exc:
                 self.ready = False
-            self._tested = True
+                retryable = exc.response.status_code == 429 or exc.response.status_code >= 500
+            except (httpx.RequestError, TimeoutError):
+                self.ready = False
+                retryable = True
+            except (ValueError, KeyError, TypeError):
+                self.ready = False
+            self._tested = not retryable
+            if retryable:
+                self._retry_self_test_at = time.monotonic() + SELF_TEST_RETRY_SECONDS
             self._report(self.ready)
             if not self.ready:
                 log.warning("news_embedding_self_test_failed recall_degraded=true")
@@ -81,7 +106,7 @@ class ClaimEmbedder:
             return ()
         if await self.self_test():
             try:
-                vectors = await self._encode(texts)
+                vectors = await self._vectors(texts)
                 self._report(True)
                 return tuple(Probe(t, v, self.identity.key) for t, v in zip(texts, vectors, strict=True))
             except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError):

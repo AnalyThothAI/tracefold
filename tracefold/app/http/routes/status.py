@@ -69,7 +69,7 @@ def _measure_news_status(runtime: Any) -> dict[str, Any]:
         NEWS_CLAIM_RECALL
     )
     if (
-        settings.llm.news_embedding_model is None
+        not settings.llm.news_embedding.configured
         or workers_state != "running"
         or recall_capability is None
         or recall_capability["state"] != "running"

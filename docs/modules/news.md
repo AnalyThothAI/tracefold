@@ -185,7 +185,7 @@ flowchart TB
 <a id="related-recall"></a>
 #### 抽取后的共享命题召回
 
-领取只冻结本 Event 当前命题、未处理证据与 artifact / URL 相同的补读目标。抽取后在事务外调用 `llm.news_embedding_model`，再做短只读查询；逐命题选择跨 Event prior，只有选中命题对进入关系判断，本 Event 仍全对比较。
+领取只冻结本 Event 当前命题、未处理证据与 artifact / URL 相同的补读目标。抽取后在事务外分批调用独立 `llm.news_embedding` 路由，再做短只读查询；逐命题选择跨 Event prior，只有选中命题对进入关系判断，本 Event 仍全对比较。
 
 [claim_recall.py](../../tracefold/news/claim_recall.py)是语义、回执与离线重放的唯一排序器：7 天 prior / 48 小时回执窗口内，精确稠密路线、PostgreSQL FTS 与同源候选以 RRF 融合。各消费方的预算、下限与已送保留名额在 [校准文件](../../tracefold/news/claim_recall_calibration.json)，策略身份带校准摘要。类型化资产与数字是记录的特征，不是硬性实体过滤。
 

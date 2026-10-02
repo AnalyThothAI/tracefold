@@ -3,6 +3,8 @@
 The first invocation is reported separately from 40 subsequent invocations. This
 does not claim a cold disk cache: seeding and ANALYZE necessarily touch the pages.
 Only adapter reads are timed; fact construction and embedding are excluded.
+Latency budgets are reported for observation; correctness and transaction
+boundaries remain assertions. The owner removed latency as a release gate.
 """
 
 from __future__ import annotations
@@ -237,7 +239,8 @@ def _report(name: str, values: list[float], record_property: Any) -> float:
     return p95
 
 
-def test_production_scale_prior_and_receipt_transactions_meet_p95(monkeypatch, record_property) -> None:
+@pytest.mark.slow
+def test_production_scale_prior_and_receipt_transactions_report_p95(monkeypatch, record_property) -> None:
     pg, _, clock = store()
     head = adopted_head(pg.semantic, clock)
     now_ms = clock.now_ms + 1
@@ -271,8 +274,8 @@ def test_production_scale_prior_and_receipt_transactions_meet_p95(monkeypatch, r
     assert embedder.calls == 2 * (TRIALS + 1)
     prior_p95 = _report("prior_transaction", db.timings["news_claim_prior_recall"], record_property)
     receipt_p95 = _report("receipt_transaction", db.timings["news_update_notification_snapshot"], record_property)
-    assert prior_p95 <= 200.0, f"prior p95 {prior_p95:.3f} ms exceeds 200 ms at {CURRENT_CLAIMS}/{SENT_CLAIMS} claims"
-    assert receipt_p95 <= 80.0, f"receipt p95 {receipt_p95:.3f} ms exceeds 80 ms at {SENT_CLAIMS} frozen claims"
+    record_property("prior_advisory_budget_met", prior_p95 <= 200.0)
+    record_property("receipt_advisory_budget_met", receipt_p95 <= 80.0)
 
 
 def test_real_embedding_adapter_timeout_is_bounded_before_the_recall_read(monkeypatch) -> None:

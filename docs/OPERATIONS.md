@@ -100,7 +100,7 @@ docker compose exec -T workers tracefold news retry-work \
 
 ### 命题向量缺失与降级
 
-`/api/news/status` 的 `claim_index_pending` 是最近 30 天及 48 小时内已送精确版本的缺向量或旧身份行数；已送命题原始年龄不限制回填。`recall_dense=on` 要求无活动缺失、配置路由且 Workers 的新鲜心跳报告路由可用。运行中批次失败显示降级，下一次成功恢复。配置 `llm.news_embedding_model` 与校准文件相同的模型，模型在外部路由部署，不改 PostgreSQL 镜像。启动固定探针失败时禁用稠密；检查模型路由日志和维度，修复后重启。Janitor 每次有界补算，顺序为已送 48 小时、7 天、30 天；无须重新抽取、开启历史通知或写模型缓存。
+`/api/news/status` 的 `claim_index_pending` 是最近 30 天及 48 小时内已送精确版本的缺向量或旧身份行数；已送命题原始年龄不限制回填。`recall_dense=on` 要求无活动缺失、配置路由且 Workers 的新鲜心跳报告路由可用。运行中批次失败显示降级，下一次成功恢复。配置独立 `llm.news_embedding` 路由的 `api_key_file`、`base_url`、`model` 和 `max_batch_size`；模型名称和固定 revision、token 上限、pooling、dtype 必须对应校准身份。密钥只由 Workers 从私密文件读取，生成式端点不承担嵌入。模型权重在外部服务部署，应用和 PostgreSQL 镜像不包含权重。启动探针遇到网络、429 或服务暂时故障时隔 30 秒重试；模型、维度或探针不匹配保留可见降级，修复后重启。Janitor 每次有界补算，顺序为已送 48 小时、7 天、30 天；无须重新抽取、开启历史通知或写模型缓存。
 
 升级前备份并停止写者，迁移至 0426 后启动新镜像；新索引行随采用和有界历史投影写入。回滚先 downgrade 至 0425，恢复旧检索生成列、函数和三元组索引，再启动旧镜像。PR-A 的采用文档与冻结回执形状不变；应用只保留共享命题召回的单一路径。
 

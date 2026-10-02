@@ -1087,9 +1087,13 @@ def test_dense_status_requires_a_current_healthy_embedding_route_and_complete_ac
             "llm": {
                 "base_url": "https://example.test/v1",
                 "api_key": "fixture-key",
-                "news_embedding_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+                "news_embedding": {
+                    "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+                    "base_url": "https://embeddings.test/v1",
+                    "api_key_file": "news_embedding_api_key",
+                }
                 if configured
-                else None,
+                else {},
                 "news_triage_model": "fixture-model",
             },
         }

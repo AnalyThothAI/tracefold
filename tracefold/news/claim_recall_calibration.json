@@ -3,6 +3,10 @@
   "embedder": {
     "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
     "dimensions": 384,
+    "revision": "e8f8c211226b894fcb81acc59f3b34ba3efd5f42",
+    "max_tokens": 256,
+    "pooling": "mean",
+    "dtype": "float32",
     "normalization": "l2",
     "template": "claim_embed_text_v1"
   },

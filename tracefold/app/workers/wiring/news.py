@@ -312,7 +312,8 @@ def _news_updates_or_fault(
             capabilities.disabled(NEWS_CLAIM_RECALL, "news_models_not_configured")
             return None
         embedder = None
-        if settings.llm.news_embedding_model is not None:
+        embedding_route = settings.llm.news_embedding
+        if embedding_route.configured:
             capabilities.unavailable(NEWS_CLAIM_RECALL, "news_embedding_self_test_pending")
 
             def embedding_status(available: bool) -> None:
@@ -322,17 +323,23 @@ def _news_updates_or_fault(
                     capabilities.unavailable(NEWS_CLAIM_RECALL, "news_embedding_unavailable")
 
             try:
+                embedding_key_file = settings.news_embedding_api_key_file()
+                if embedding_key_file is None:
+                    raise ValueError("news_embedding_key_file_missing")
                 embedder = ClaimEmbedder(
-                    model=settings.llm.news_embedding_model,
-                    base_url=str(settings.llm.base_url),
-                    api_key=str(settings.llm.api_key),
+                    model=str(embedding_route.model),
+                    base_url=str(embedding_route.base_url),
+                    api_key=read_secure_secret_text(embedding_key_file),
+                    max_batch_size=embedding_route.max_batch_size,
                     on_status=embedding_status,
                 )
+            except SecretFileError as exc:
+                capabilities.unavailable(NEWS_CLAIM_RECALL, f"news_embedding_key_{exc.code}")
             except ValueError:
                 capabilities.faulted(NEWS_CLAIM_RECALL, "news_embedding_configuration_invalid")
         else:
             capabilities.disabled(NEWS_CLAIM_RECALL, "news_embedding_not_configured")
-        recall = PgClaimRecall(news_db, embedder=embedder)
+        recall = PgClaimRecall(news_db, embedder=embedder, embedding_batch_size=embedding_route.max_batch_size)
         runtime = compose_news_updates(
             semantic_store=PgSemanticStore(news_db),
             notification_store=PgNotificationStore(news_db, embedder=embedder, telemetry=telemetry),

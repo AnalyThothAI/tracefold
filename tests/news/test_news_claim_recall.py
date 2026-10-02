@@ -11,7 +11,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from tracefold.app.claim_embedding import ClaimEmbedder
+from tracefold.app import claim_embedding
+from tracefold.app.claim_embedding import SELF_TEST_RETRY_SECONDS, ClaimEmbedder
 from tracefold.news.claim_recall import CALIBRATION, Candidate, Probe, prepare_rank, rank, vector_bytes
 from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
 from tracefold.news.notifications.recall import select_for_claim
@@ -19,7 +20,7 @@ from tracefold.news.updates.contracts import Claim
 
 
 def vector(x: float, y: float = 0) -> bytes:
-    return vector_bytes((x, y, *([0.0] * 382)), CALIBRATION.embedder)
+    return vector_bytes((x, y, *([0.0] * (CALIBRATION.embedder.dimensions - 2))), CALIBRATION.embedder)
 
 
 def test_one_rank_fuses_routes_deterministically_and_groups_receipts_by_best_claim() -> None:
@@ -88,11 +89,9 @@ def test_missing_vectors_use_the_calibrated_degraded_lexical_floor_per_candidate
 
 def golden_vectors() -> dict[str, bytes]:
     data = json.loads((Path(__file__).parents[1] / "fixtures/news/issue_791_recall_golden_vectors.json").read_text())
-    assert (data["model"], data["dimensions"], data["normalization"], data["template"]) == (
-        CALIBRATION.embedder.model,
-        CALIBRATION.embedder.dimensions,
-        CALIBRATION.embedder.normalization,
-        CALIBRATION.embedder.template,
+    assert all(
+        data[field] == getattr(CALIBRATION.embedder, field)
+        for field in ("model", "dimensions", "revision", "max_tokens", "pooling", "dtype", "normalization", "template")
     )
     return {text: base64.b64decode(value, validate=True) for text, value in data["vectors"].items()}
 
@@ -154,7 +153,15 @@ def test_issue_755_shared_words_do_not_admit_unrelated_market_stories_above_the_
     assert len({hit.key for hit in ranking.hits} & set(noise)) <= 1
 
 
-@pytest.mark.parametrize("values", [[], [0.0] * 384, [float("nan")] * 384, [1.0] * 383])
+@pytest.mark.parametrize(
+    "values",
+    [
+        [],
+        [0.0] * CALIBRATION.embedder.dimensions,
+        [float("nan")] * CALIBRATION.embedder.dimensions,
+        [1.0] * (CALIBRATION.embedder.dimensions - 1),
+    ],
+)
 def test_embedding_rejects_invalid_provider_vectors(values) -> None:
     with pytest.raises(ValueError):
         vector_bytes(values, CALIBRATION.embedder)
@@ -200,7 +207,14 @@ def test_embedding_health_reports_an_outage_and_the_next_successful_batch_recove
             200,
             json={
                 "data": [
-                    {"index": i, "embedding": [1.0 if i != 2 else 0.0, 1.0 if i == 2 else 0.0, *([0.0] * 382)]}
+                    {
+                        "index": i,
+                        "embedding": [
+                            1.0 if i != 2 else 0.0,
+                            1.0 if i == 2 else 0.0,
+                            *([0.0] * (CALIBRATION.embedder.dimensions - 2)),
+                        ],
+                    }
                     for i in range(len(texts))
                 ]
             },
@@ -223,3 +237,101 @@ def test_embedding_health_reports_an_outage_and_the_next_successful_batch_recove
 
     asyncio.run(run())
     assert calls == 3 and statuses == [True, False, True]
+
+
+def test_startup_outage_recovers_after_backoff_without_restarting_workers(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = 100.0
+    monkeypatch.setattr(claim_embedding.time, "monotonic", lambda: now)
+    statuses: list[bool] = []
+    batches: list[list[str]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        texts = json.loads(request.content)["input"]
+        batches.append(texts)
+        if len(batches) == 1:
+            return httpx.Response(503)
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "index": index,
+                        "embedding": [0.0, 1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 2))]
+                        if "software" in text
+                        else [1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))],
+                    }
+                    for index, text in enumerate(texts)
+                ]
+            },
+        )
+
+    route = ClaimEmbedder(
+        model=CALIBRATION.embedder.model,
+        base_url="https://example.test/v1",
+        api_key="private-key",
+        transport=httpx.MockTransport(respond),
+        on_status=statuses.append,
+    )
+
+    async def run() -> None:
+        nonlocal now
+        assert await route.probes(["policy"]) == (Probe("policy"),)
+        now += SELF_TEST_RETRY_SECONDS - 1
+        assert await route.probes(["second"]) == (Probe("second"),)
+        assert len(batches) == 1
+        now += 1
+        (probe,) = await route.probes(["third"])
+        assert probe.vector == vector(1) and probe.embedder == CALIBRATION.embedder.key
+        await route.aclose()
+
+    asyncio.run(run())
+    assert statuses == [False, True, True]
+
+
+def test_bounded_batches_preserve_provider_order_and_never_publish_partial_probe_vectors() -> None:
+    batches: list[list[str]] = []
+    outage = False
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        texts = json.loads(request.content)["input"]
+        batches.append(texts)
+        assert len(texts) <= 2
+        if outage and "fact-2" in texts:
+            return httpx.Response(503)
+        rows = []
+        for index, text in enumerate(texts):
+            second = 1.0 if "software" in text else float(text[-1]) if text.startswith("fact-") else 0.0
+            rows.append(
+                {
+                    "index": index,
+                    "embedding": [
+                        0.0 if "software" in text else 1.0,
+                        second,
+                        *([0.0] * (CALIBRATION.embedder.dimensions - 2)),
+                    ],
+                }
+            )
+        return httpx.Response(200, json={"data": list(reversed(rows))})
+
+    route = ClaimEmbedder(
+        model=CALIBRATION.embedder.model,
+        base_url="https://example.test/v1",
+        api_key="private-key",
+        max_batch_size=2,
+        transport=httpx.MockTransport(respond),
+    )
+    texts = [f"fact-{i}" for i in range(5)]
+
+    async def run() -> None:
+        nonlocal outage
+        probes = await route.probes(texts)
+        assert [probe.text for probe in probes] == texts
+        assert [probe.vector for probe in probes] == [vector(1, i) for i in range(5)]
+        assert batches[-3:] == [texts[:2], texts[2:4], texts[4:]]
+        outage = True
+        assert await route.probes(texts) == tuple(Probe(text) for text in texts)
+        outage = False
+        assert all(probe.vector is not None for probe in await route.probes(texts))
+        await route.aclose()
+
+    asyncio.run(run())

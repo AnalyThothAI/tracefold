@@ -1,4 +1,5 @@
 {
+  "stage": "historical_minilm_seed_fit",
   "dataset_sha256": "05ae4807a6f0f519657d27aeee5a5aac381cae8cd130a56e17e9ce99957e38a5",
   "embedder": {
     "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
@@ -122,5 +123,56 @@
   },
   "recall_policy": "claim_recall_v1:3cc97ed11723ed912302462af3556a473787e8f156a14ccef59fa22a112bbbeb",
   "scope": "150-query seed corpus, existing MiniLM fp16 embeddings and PostgreSQL FTS; fit and replay on the same seed; not a held-out or complete 24-hour replay",
-  "acceptance_complete": false
+  "acceptance_complete": false,
+  "owner_delivery_decision": "Prioritize business completion and actual bugs; merge, deploy and check production when complete. Latency budgets are advisory observations, not independent release gates.",
+  "subsequent_business_evidence": {
+    "minilm_full_replay": {
+      "draft_slots": 2550,
+      "baseline_relation_pairs": 14085,
+      "baseline_foreign_pairs": 13304,
+      "baseline_own_pairs": 781,
+      "candidate_relation_pairs": 7551,
+      "blind_queries": 50,
+      "blind_messages": 186,
+      "blind_unrelated_messages": 171,
+      "accepted": false
+    },
+    "bge_provisional": {
+      "model": "BAAI/bge-m3",
+      "revision": "5617a9f61b028005a4858fdac845db406aefb181",
+      "shared_core_prior_sf": [59, 65],
+      "shared_core_chinese_sf": [17, 18],
+      "shared_core_russian_sf": [3, 3],
+      "shared_core_receipt_sf": [31, 32],
+      "shared_core_duplicate_receipts": [20, 20],
+      "shared_core_degraded_prior_sf": [39, 65],
+      "shared_core_degraded_receipt_sf": [24, 32],
+      "blind_queries": 50,
+      "blind_messages": 33,
+      "blind_unrelated_messages": 27,
+      "accepted": false
+    },
+    "minilm_reader_v2": {
+      "changed_inputs": 206,
+      "native_answers": 412,
+      "unavailable_answers": 0,
+      "duplicate_no_longer_key": [20, 20],
+      "independently_labeled_changes": 30,
+      "new_false_anchors": 2,
+      "true_new_detail_demotions": 3,
+      "pure_feed_upgrades": 0,
+      "accepted": false
+    },
+    "advisory_latency": {
+      "topology": "Application runner and owned PostgreSQL container on one Docker bridge",
+      "current_claims": 17500,
+      "frozen_sent_claims_older_than_7d": 2000,
+      "warm_trials": 40,
+      "prior_first_ms": 374.929,
+      "receipt_first_ms": 123.788,
+      "prior_p95_ms": 489.019,
+      "receipt_p95_ms": 140.15,
+      "release_gate": false
+    }
+  }
 }

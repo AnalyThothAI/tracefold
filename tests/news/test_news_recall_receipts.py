@@ -17,7 +17,7 @@ def fixture():
         )
         for ref in ("a", "b")
     ]
-    vector = vector_bytes([1.0, *([0.0] * 383)], CALIBRATION.embedder)
+    vector = vector_bytes([1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))], CALIBRATION.embedder)
     candidates = {
         f"{c.ref}:{text_sha(c)}": Candidate(f"{c.ref}:{text_sha(c)}", vector, CALIBRATION.embedder.key) for c in claims
     }

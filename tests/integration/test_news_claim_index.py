@@ -39,7 +39,7 @@ def test_adoption_indexes_each_claim_version_and_vector_completion_does_not_chan
     assert len(rows) == 1 and rows[0]["claim_ref"] == claim.ref and rows[0]["text_sha256"] == text_sha(claim)
     assert rows[0]["embed_text"] == embed_text(claim) and rows[0]["vector"] is None
     generation = sql("SELECT revision FROM news_reader_clock")[0]["revision"]
-    vector = vector_bytes([1.0, *([0.0] * 383)], CALIBRATION.embedder)
+    vector = vector_bytes([1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))], CALIBRATION.embedder)
     asyncio.run(
         db.tx(
             "vector",
@@ -66,7 +66,7 @@ def test_prior_uses_only_the_current_exact_text_and_excludes_own_and_future_vers
     head = adopted_head(pg.semantic, clock)
     claim = head.claims[0]
     seed_event("query-event", fingerprint="query")
-    vector = vector_bytes([1.0, *([0.0] * 383)], CALIBRATION.embedder)
+    vector = vector_bytes([1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))], CALIBRATION.embedder)
     fake = claim.model_copy(update={"statement": "A different historical proposition."})
     asyncio.run(db.tx("old-version", lambda r: r.news.claim_index.index_claim(EVENT, fake)))
     asyncio.run(
@@ -92,7 +92,7 @@ def test_frozen_receipt_candidate_keeps_its_version_when_a_head_or_index_changes
     pg, db, clock = store()
     head = adopted_head(pg.semantic, clock)
     claim = head.claims[0]
-    vector = vector_bytes([1.0, *([0.0] * 383)], CALIBRATION.embedder)
+    vector = vector_bytes([1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))], CALIBRATION.embedder)
     newer = claim.model_copy(update={"statement": "The tariff was cancelled."})
 
     async def run():
@@ -193,7 +193,7 @@ def test_sent_48h_prior_uses_the_frozen_exact_version_beyond_7d_and_excludes_exp
             "first_available_at_ms": clock.now_ms - 45 * 86400_000,
         }
     )
-    vector = vector_bytes([1.0, *([0.0] * 383)], CALIBRATION.embedder)
+    vector = vector_bytes([1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))], CALIBRATION.embedder)
     asyncio.run(db.tx("frozen-index", lambda r: r.news.claim_index.index_claim(EVENT, old)))
     asyncio.run(
         db.tx(

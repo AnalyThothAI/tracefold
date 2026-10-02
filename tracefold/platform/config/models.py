@@ -216,15 +216,8 @@ class NewsJudgmentConfig(_SystemOneRouteConfig):
     error_prefix: ClassVar[str] = "news_judgment"
 
 
-class NewsReaderJudgmentConfig(_SystemOneRouteConfig):
-    """The News notification decision route (#742): the reader coverage and importance questions only.
-
-    Its key is a secret file (`api_key_file`, relative to the config directory), never an inline value. It is
-    never inferred from `news_judgment`; unset, the generative News route answers the
-    same questions with its own measured cuts.
-    """
-
-    error_prefix: ClassVar[str] = "news_reader_judgment"
+class _SecretFileRouteConfig(_SystemOneRouteConfig):
+    """One complete endpoint whose credential is owned by a private file."""
 
     api_key_file: str | None = None
 
@@ -238,11 +231,24 @@ class NewsReaderJudgmentConfig(_SystemOneRouteConfig):
     @classmethod
     def key_by_file_only(cls, value: str | None) -> None:
         if value is not None:
-            raise ValueError("news_reader_judgment_api_key_inline")
+            raise ValueError(f"{cls.error_prefix}_api_key_inline")
 
     @property
     def key_configured(self) -> bool:
         return self.api_key_file is not None
+
+
+class NewsReaderJudgmentConfig(_SecretFileRouteConfig):
+    """The independent News notification decision endpoint (#742)."""
+
+    error_prefix: ClassVar[str] = "news_reader_judgment"
+
+
+class NewsEmbeddingConfig(_SecretFileRouteConfig):
+    """An independent OpenAI-compatible embedding endpoint with bounded batches."""
+
+    error_prefix: ClassVar[str] = "news_embedding"
+    max_batch_size: int = Field(default=4, ge=1, le=32)
 
 
 class LlmConfig(BaseModel):
@@ -255,7 +261,7 @@ class LlmConfig(BaseModel):
     # envelope as `news_triage_model`; unset, they run on `news_triage_model` itself. A proxy can serve a
     # deterministic-decoding variant of the same weights under its own name (#770).
     news_triage_judgment_model: str | None = None
-    news_embedding_model: str | None = None
+    news_embedding: NewsEmbeddingConfig = Field(default_factory=NewsEmbeddingConfig)
     request: LlmRequestConfig = Field(default_factory=LlmRequestConfig)
     # Three optional endpoints with one shape. Only the triage fallback names its own incomplete-
     # configuration code, because `llm_fallback_without_primary` reads next to it; the other two
@@ -267,9 +273,7 @@ class LlmConfig(BaseModel):
     news_judgment: NewsJudgmentConfig = Field(default_factory=NewsJudgmentConfig)
     news_reader_judgment: NewsReaderJudgmentConfig = Field(default_factory=NewsReaderJudgmentConfig)
 
-    @field_validator(
-        "api_key", "news_triage_model", "news_triage_judgment_model", "news_embedding_model", mode="before"
-    )
+    @field_validator("api_key", "news_triage_model", "news_triage_judgment_model", mode="before")
     @classmethod
     def parse_optional_string(cls, value: Any) -> str | None:
         if value is None:
@@ -288,8 +292,6 @@ class LlmConfig(BaseModel):
         configured = (self.api_key, self.base_url, self.news_triage_model)
         if any(configured) and not all(configured):
             raise ValueError("llm_direct_configuration_incomplete")
-        if self.news_embedding_model and not all(configured):
-            raise ValueError("llm_embedding_model_without_primary")
         if self.news_triage_judgment_model and not all(configured):
             raise ValueError("llm_judgment_model_without_primary")
         if self.news_triage_fallback.configured and not all(configured):
@@ -803,6 +805,9 @@ class Settings(BaseModel):
 
     def news_reader_judgment_api_key_file(self) -> Path | None:
         return self._configured_path(self.llm.news_reader_judgment.api_key_file)
+
+    def news_embedding_api_key_file(self) -> Path | None:
+        return self._configured_path(self.llm.news_embedding.api_key_file)
 
     def trading_binance_usdm_api_key_file(self) -> Path | None:
         return self._configured_path(self.trading.execution.credentials.api_key_file)
