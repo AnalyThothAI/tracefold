@@ -49,7 +49,7 @@ CLUSTERS = (
 VERDICTS = ("keep", "borderline", "demote")
 CUT_TABLE = (1.6, 1.7, 1.8, 1.9, 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8)
 HELD_TABLE = (2.7, 2.8, 2.9, 2.98, 3.0, 3.05, 3.1)
-TAIL_TABLE = (0.02, 0.03, 0.05, 0.08, 0.1, 0.15)
+TAIL_TABLE = (0.02, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
 OFFICIAL_ROLES = frozenset(
     {
         "head_of_state_or_government",
@@ -58,7 +58,7 @@ OFFICIAL_ROLES = frozenset(
         "foreign_or_defense_official",
     }
 )
-NONE_THRESHOLDS = (0.1, 0.2, 0.3, 0.4, 0.6, 0.8)
+NONE_THRESHOLDS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8)
 PUSHED = ("correction", "key", "push")
 
 
@@ -193,13 +193,19 @@ def decision_row(
     push: float,
     held: float,
     key_tail: float,
+    anchor_none_below: float | None = None,
 ) -> dict[str, Any]:
     """One cut triple; event volume collapses sibling claims, stratum weights estimate one day."""
     labelled = [row for row in rows if row["case_id"] in answers and row.get("label")]
     outcomes = {}
     for row in labelled:
         own = cuts_for(answers[row["case_id"]])
-        recut = ReaderCuts(push=push, held=held, key_tail=key_tail, anchor_none_below=own.anchor_none_below)
+        recut = ReaderCuts(
+            push=push,
+            held=held,
+            key_tail=key_tail,
+            anchor_none_below=own.anchor_none_below if anchor_none_below is None else anchor_none_below,
+        )
         outcomes[row["case_id"]] = decision(row, answers[row["case_id"]], recut).outcome
     pushed = [row for row in labelled if outcomes[row["case_id"]] in PUSHED]
     keys = [row for row in pushed if outcomes[row["case_id"]] == "key"]
@@ -209,6 +215,14 @@ def decision_row(
     keep_weight = sum(row["weight"] for row in labelled if row["label"]["verdict"] == "keep")
     official_keep = [row for row in labelled if is_official(row) and row["label"]["verdict"] == "keep"]
     official_demote = [row for row in labelled if is_official(row) and row["label"]["verdict"] == "demote"]
+    nonofficial_keep = [row for row in labelled if not is_official(row) and row["label"]["verdict"] == "keep"]
+    baseline = [row for row in nonofficial_keep if "production_pushed" in row]
+    baseline_weight = sum(row["weight"] for row in baseline)
+    production_recall = (
+        round(sum(row["weight"] for row in baseline if row["production_pushed"]) / baseline_weight, 3)
+        if baseline_weight and len(baseline) == len(nonofficial_keep)
+        else None
+    )
 
     def rate(subset: Sequence[Mapping[str, Any]]) -> float | None:
         total = sum(row["weight"] for row in subset)
@@ -235,6 +249,8 @@ def decision_row(
         "keep_recall": round(kept / keep_weight, 3) if keep_weight else None,
         "official_keep_recall": rate(official_keep),
         "official_demote_push_rate": rate(official_demote),
+        "nonofficial_keep_recall": rate(nonofficial_keep),
+        "nonofficial_production_keep_recall": production_recall,
         "official_keep_stories_pushed": len(
             {
                 row["label"].get("story_id", row["event_id"])
@@ -276,28 +292,55 @@ def decision_table(
     }
 
 
-def fit_cuts(rows: Sequence[Mapping[str, Any]], answers: Mapping[str, ReaderJudgment]) -> dict[str, Any]:
+def fit_cuts(
+    rows: Sequence[Mapping[str, Any]],
+    answers: Mapping[str, ReaderJudgment],
+    *,
+    regression: Sequence[Mapping[str, Any]],
+    regression_answers: Mapping[str, ReaderJudgment],
+    anchor_none_below: float | None = None,
+) -> dict[str, Any]:
     """Fit native and generated independently; refuse a passing claim when the labelled gates fail."""
     table = []
     for push in (2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6):
         for held in (2.7, 2.8, 2.9, 3.0, 3.1):
             for tail in TAIL_TABLE:
-                metrics = decision_row(rows, answers, push=push, held=held, key_tail=tail)
-                table.append({"push": push, "held": held, "key_tail": tail, **metrics})
+                metrics = decision_row(
+                    rows, answers, push=push, held=held, key_tail=tail, anchor_none_below=anchor_none_below
+                )
+                reg = decision_row(
+                    regression,
+                    regression_answers,
+                    push=push,
+                    held=held,
+                    key_tail=tail,
+                    anchor_none_below=anchor_none_below,
+                )
+                table.append({"push": push, "held": held, "key_tail": tail, **metrics, "regression": reg})
     official_auc = importance_report(rows, answers)["official_auc_keep_vs_demote"]
+    complete = (
+        len(rows) >= 1100
+        and len(regression) == 397
+        and all(row["case_id"] in answers and row.get("label") for row in rows)
+        and all(row["case_id"] in regression_answers and row.get("label") for row in regression)
+    )
     passing = [
         row
         for row in table
-        if official_auc is not None
+        if complete
+        and official_auc is not None
         and official_auc >= 0.75
         and row["official_keep_recall"] is not None
         and row["official_keep_recall"] >= 0.70
         and row["official_demote_push_rate"] is not None
         and row["official_demote_push_rate"] <= 0.15
-        and row["keep_recall"] is not None
-        and row["keep_recall"] >= 0.70
-        and row["precision_keep_borderline"] is not None
-        and row["precision_keep_borderline"] >= 0.52
+        and row["regression"]["keep_recall"] is not None
+        and row["regression"]["keep_recall"] >= 0.70
+        and row["regression"]["precision_keep_borderline"] is not None
+        and row["regression"]["precision_keep_borderline"] >= 0.52
+        and row["nonofficial_keep_recall"] is not None
+        and row["nonofficial_production_keep_recall"] is not None
+        and row["nonofficial_keep_recall"] >= row["nonofficial_production_keep_recall"] - 0.03
         and row["key_precision"] is not None
         and row["key_precision"] >= 0.5
         and not row["key_demote_cases"]
@@ -311,14 +354,21 @@ def fit_cuts(rows: Sequence[Mapping[str, Any]], answers: Mapping[str, ReaderJudg
     return {
         "dataset_sha256": digest([{k: v for k, v in row.items() if k != "reader_novelty"} for row in rows]),
         "rows": len(rows),
-        "relabels": sum("relabel" in row.get("label", {}) for row in rows),
+        "complete_inputs": complete,
+        "anchor_none_below": anchor_none_below,
+        "regression_rows": len(regression),
+        "relabels_by_rule": dict(
+            Counter(row["label"]["relabel"]["rule"] for row in regression if "relabel" in row.get("label", {}))
+        ),
         "official_auc_keep_vs_demote": official_auc,
         "selected": chosen,
         "passing_triples": len(passing),
         "table": table,
         "limitations": [
             "A6 and A8 require sequential cluster reasks and independent repeat answers; "
-            "aggregate fitting does not prove those gates."
+            "aggregate fitting does not prove those gates.",
+            "Event volume uses maximum stratum weight per Event; shared Event sampling is an estimate.",
+            "The official missed-story count requires separately identified original missed stories.",
         ],
     }
 
@@ -423,15 +473,28 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--backend", choices=("native", "generated"), default="native")
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--input", type=Path, help="Current v3 labelled JSONL, or an archived v1/v2 recording.")
-    parser.add_argument("--fit", action="store_true", help="Fit cut triples on the supplied labelled dataset.")
+    parser.add_argument("--input", type=Path, help="Current v3 labelled JSONL.")
+    parser.add_argument("--fit", action="store_true", help="Fit cut triples on the full day and 397 regression set.")
+    parser.add_argument("--regression-input", type=Path, help="Relabelled current-v3 397 regression JSONL for --fit.")
+    parser.add_argument("--anchor-none-below", type=float, help="Separately evaluated anchor cut for --fit.")
     args = parser.parse_args()
+    if args.fit and (args.input is None or args.regression_input is None):
+        parser.error("--fit requires --input and --regression-input")
+    if args.anchor_none_below is not None and not 0 <= args.anchor_none_below <= 1:
+        parser.error("--anchor-none-below must be in [0,1]")
     replay, anchors, coverage, clusters = (load(args.input), [], [], []) if args.input else load_all()
     everything = [*replay, *anchors, *coverage, *(row for rows in clusters for row in rows)]
     report = evaluate(replay, anchors, coverage, clusters, recorded(everything, args.backend), args.backend)
     report["contract"] = sorted({row["reader_input"]["schema_version"] for row in everything})
     if args.fit:
-        report["calibration"] = fit_cuts(replay, recorded(replay, args.backend))
+        regression = load(args.regression_input)
+        report["calibration"] = fit_cuts(
+            replay,
+            recorded(replay, args.backend),
+            regression=regression,
+            regression_answers=recorded(regression, args.backend),
+            anchor_none_below=args.anchor_none_below,
+        )
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")

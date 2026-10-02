@@ -1,6 +1,6 @@
 {
   "generated_at_utc": "2026-10-02T08:57:51.246796+00:00",
-  "status": "draft; quality gates are not all satisfied",
+  "status": "draft; raw journals lost in WSL restart; quality gates remain unproven or failed",
   "models": {
     "extraction": "qwen3.8-27b",
     "generated_judgment": "qwen3.8-27b:judge",
@@ -149,5 +149,27 @@
     "extraction-audit-input": "daa1452492993a4da376aad663e50e7af4673c1dc55d1855b31f36fbb29e368d",
     "reader-reask-input": "01aa342bb5447d4e8949fe04475355197b04fb87f8d54e98865628792a565f77",
     "blind-label-input": "788e7fe79727e622b1b963ed440f5323096af8e72ecbffd738db71dd7e9afabc"
+  },
+  "evidence_status": {
+    "historical_counts": "observed earlier, not retained final calibration proof",
+    "retained": "tool scripts and printed output copied from durable Windows session; ten complete native probability distributions for five business regressions",
+    "missing": "bulk exact-input and per-case answer journals, blind labels, complete current extraction output",
+    "recovery_directory": "private persistent issue-791/b/session-recovery",
+    "next": "recover exact data or reconstruct from immutable facts before new targeted reasks; do not infer completion from progress logs"
+  },
+  "current_changes": [
+    "source-owned statistical periods and unstated years",
+    "source-first speech act classification preserves genuine launches",
+    "reader material-clause comparison and realization/statistical-period anchor distinctions",
+    "owner-authorized deviation from initial unchanged importance/anchor questions; identities updated",
+    "strict reask resume identity and real extraction grounding",
+    "P4 grid through .8; independent full-day plus 397 regression and nonofficial baseline constraints"
+  ],
+  "current_engineering_validation": {
+    "news_tests": 1404,
+    "mypy_files": 151,
+    "ruff": "passed",
+    "documentation_files": 38,
+    "CI": "not reported as passed"
   }
 }

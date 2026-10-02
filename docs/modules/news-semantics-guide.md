@@ -266,7 +266,7 @@ S 曲线的拐点约在 0.42，低于判定阈值 0.55：LSH 负责高召回，�
 | 接地 | 每条引文都必须是冻结原文的子串，并落在本轮可见的片段里；`locate_quote` 容忍大小写、空白和包裹的引号，保存的是原文片段（[extraction.py](../../tracefold/news/updates/extraction.py)） |
 | 资产 | 只按被引来源的标签恢复拼写和市场类型，跨来源冲突记 unknown；资产只指可交易标的，地点、国家、组织等不算（#766） |
 
-**命题契约**（`ClaimFields`）：`subject · action · object · speaker · conditions[] · quantities[{name, value（十进制原文）, unit, period}] · effective_at · occurred_at · statistical_period · polarity · mode（9 种）· phase（8 种）· content_kind（8 种）· assets[{symbol, market_type, role}]`，另有 `statement`、`topics`（IPTC 子集，至多 3 个）和 `citations[]`。各字段由模型还是代码负责，见 [News 手册 · 抽取、判断与采用各司其职](news.md#抽取判断与采用各司其职)。
+**命题契约**（`ClaimFields`）：`subject · action · object · speaker · conditions[] · quantities[{name, value（十进制原文）, unit, period}] · effective_at · occurred_at · statistical_period · polarity · mode（11 种）· actor_role（9 种，可空）· phase（8 种）· content_kind（8 种）· assets[{symbol, market_type, role}]`，另有 `statement`、`topics`（IPTC 子集，至多 3 个）和 `citations[]`。各字段由模型还是代码负责，见 [News 手册 · 抽取、判断与采用各司其职](news.md#抽取判断与采用各司其职)。
 
 **样本第一轮**：6 条命题，2,300 输出 token，27.7 s。
 
@@ -368,7 +368,7 @@ S 曲线的拐点约在 0.42，低于判定阈值 0.55：LSH 负责高召回，�
 
 | 命题 | 分布 [0, 1, 2, 3, 4] | 期望值 | conf | 结果 |
 | --- | --- | ---: | ---: | --- |
-| c1 采取预防措施 | .00 .01 .06 .92 .01 | 2.93 | .92 | 推送；差 0.05 未达重点 |
+| c1 采取预防措施 | .00 .01 .06 .92 .01 | 2.93 | .92 | 推送；P(4)=.01 未达重点尾部线 |
 | c2 退出 Lido 验证节点 | .01 .01 .11 .87 .00 | 2.84 | .87 | 推送 |
 | c3 已开始退出，10/7 完成 | .01 .11 .28 .60 .00 | 2.47 | .54 | 推送 |
 | c4 45 天内回流 | .20 .11 .62 .07 .00 | 1.56 | .52 | 信息流 |
@@ -377,7 +377,7 @@ S 曲线的拐点约在 0.42，低于判定阈值 0.55：LSH 负责高召回，�
 
 ### decide()
 
-[`decide()`](../../tracefold/news/notifications/policy.py) 按固定顺序逐命题应用 12 条规则（退休、发送未决、stale、known、更正、上币保护、大幅当日变动、读者判断……），完整表格见 [News 手册](news.md#notification)。样本的 6 条命题都走到读者判断这一条：c1–c3 推送，c4–c6 只进信息流；没有命题达到 2.98，所以不是重点。
+[`decide()`](../../tracefold/news/notifications/policy.py) 按固定顺序逐命题应用 12 条规则（退休、发送未决、stale、known、更正、上币保护、大幅当日变动、读者判断……），完整表格见 [News 手册](news.md#notification)。样本的 6 条命题都走到读者判断这一条：c1–c3 推送，c4–c6 只进信息流；这些是历史样本分数：没有命题的 P(4) 达到当前重点尾部线；历史分数不能证明 reader v3 rubric 的质量。
 
 <a id="section-卡片与发送"></a>
 ## 10 · 卡片与发送

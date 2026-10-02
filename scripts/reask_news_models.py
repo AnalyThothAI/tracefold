@@ -21,6 +21,7 @@ from tracefold.news.adapters.reader_judge import DspyReaderJudge
 from tracefold.news.adapters.semantic_judgments import GeneratedJudgments
 from tracefold.news.notifications.reader import ReaderInput
 from tracefold.news.updates.contracts import FrozenInput
+from tracefold.news.updates.extraction import ground_extraction, validate_extraction
 from tracefold.news.updates.identity import canonical_json, digest
 from tracefold.news.updates.judgment import OPTIONS, Budget, Question
 from tracefold.news.updates.topics import CODEBOOK
@@ -56,11 +57,20 @@ async def reask(args: argparse.Namespace) -> None:
             reader_judgment=endpoint,
         )
     rows = [json.loads(line) for line in args.input.read_text().splitlines() if line.strip()]
+    expected_identity = {"speech": generated.identity, "extraction": extractor.identity, "reader": reader.identity}[
+        args.kind
+    ]
+    if len({row["case_id"] for row in rows}) != len(rows):
+        raise ValueError("news_offline_duplicate_case")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     completed = set()
     if args.output.exists():
         journal = {row["case_id"]: row for row in map(json.loads, args.output.read_text().splitlines())}
         by_id = {row["case_id"]: row for row in rows}
+        if set(journal) - set(by_id):
+            raise ValueError("news_offline_resume_cases_changed")
+        if any(record.get("program_identity") != expected_identity for record in journal.values()):
+            raise ValueError("news_offline_resume_program_changed")
         if any(
             case in by_id and record["input_sha256"] != input_digest(by_id[case], args.kind)
             for case, record in journal.items()
@@ -119,12 +129,14 @@ async def reask(args: argparse.Namespace) -> None:
                 "case_id": row["case_id"],
                 "input_sha256": input_digest(row, args.kind),
                 "kind": args.kind,
+                "program_identity": expected_identity,
             }
             try:
                 async with asyncio.timeout(args.timeout):
                     if args.kind == "extraction":
                         source = FrozenInput.model_validate(row["source"])
-                        extracted = await extractor.extract(source)
+                        extracted = ground_extraction(source, await extractor.extract(source))
+                        validate_extraction(source, extracted)
                         result.update(program_identity=extractor.identity, extraction=extracted.model_dump(mode="json"))
                     else:
                         reader_input = ReaderInput.model_validate(row["reader_input"])

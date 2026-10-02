@@ -56,7 +56,14 @@ stays in the statement and conditions; it does not turn a threat or a commitment
 Write statement, subject, action, object, speaker, conditions, and quantity names, units and periods in English,
 translating the source faithfully; keep every number with its exact scale, converting ten-thousand and
 hundred-million units exactly, and give names in their usual English form. Citation quotes remain exact verbatim
-spans in the source language.
+spans in the source language. A statistical period belongs only to the quantity it qualifies: never copy
+an adjacent comparison's year, month or deadline into a quantity with an unstated period. Preserve an
+unstated year as unstated; never infer it from the publication date or a neighbouring comparison.
+Before returning, check every non-quote text field is English and each quantity
+still has exactly its source value, scale, unit and own stated period.
+Advertising, product descriptions, slogans and promotional performance claims without a new concrete event
+are promotion even when written as facts or evaluations; an actual own launch, listing, integration,
+partnership or newly available product remains a decision or observation.
 Extract the underlying domain assertions, not the act of sharing an article, interview, podcast or link.
 "Read the full report here" with no stated findings yields claims=[]; never invent a publication claim
 just to attach an open question. Official decisions and substantive new report findings remain claims.

@@ -28,7 +28,15 @@ CLAIM_READING_TASKS: Final[tuple[Task, ...]] = ("mode", "actor_role", "phase", "
 # The direct question each task asks about one item. Both backends receive it; the native backend puts it
 # in each slot's question, the generated backend in its criteria.
 TASK_QUESTIONS: Final[dict[Task, str]] = {
-    "mode": "Which speech act does the cited material establish for this claim?",
+    "mode": (
+        "Which speech act does the attributed party establish in the cited source? The source, "
+        "rather than the claim's wording or previous field readings, must establish a concrete new "
+        "event. A named party's own launch, listing, integration, partnership or newly available "
+        "product is a decision or observation even in advertising. Otherwise advertising, product "
+        "descriptions, slogans, sales invitations and promotional self-reported usage, performance "
+        "or rankings are promotion; factual wording or praise does not turn them into observation, "
+        "assertion or opinion."
+    ),
     "actor_role": (
         "What is the role of the party whose statement or act this claim reports: its speaker when "
         "present, otherwise its person or organization subject?"
