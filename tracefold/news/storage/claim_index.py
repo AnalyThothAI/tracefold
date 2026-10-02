@@ -373,9 +373,8 @@ class ClaimIndexStorage:
                        WHERE NOT EXISTS (SELECT 1 FROM news_claim_index ci
                                           WHERE ci.claim_ref=c->>'ref'
                                             AND ci.embed_text=c->>'statement'))
-                ORDER BY CASE WHEN u.adopted_at_ms >= %s THEN 0 ELSE 1 END,
-                         u.adopted_at_ms DESC,u.analysis_id LIMIT %s""",
-            (now_ms - 30 * 86400_000, now_ms - PRIOR_WINDOW_MS, limit - filled),
+                ORDER BY u.adopted_at_ms DESC,u.analysis_id LIMIT %s""",
+            (now_ms - 30 * 86400_000, limit - filled),
         ).fetchall()
         for row in rows:
             self.index_update(EventUpdate.model_validate(row["document"]))
