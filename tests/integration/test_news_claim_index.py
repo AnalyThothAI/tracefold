@@ -185,7 +185,7 @@ def test_bounded_embedding_batches_drain_durable_pending_versions_and_report_idl
     assert all(row["embedder"] == CALIBRATION.embedder.key for row in rows)
 
 
-def test_backfill_finds_historical_text_versions_even_when_the_claim_ref_is_already_indexed() -> None:
+def test_keyset_projection_finds_historical_text_versions_even_when_the_claim_ref_is_already_indexed() -> None:
     pg, db, clock = store()
     head = adopted_head(pg.semantic, clock)
     old_claim = head.claims[0].model_copy(update={"statement": "Agency announced an earlier tariff proposal."})
@@ -209,62 +209,36 @@ def test_backfill_finds_historical_text_versions_even_when_the_claim_ref_is_alre
             json.dumps(old.model_dump(mode="json")),
         ),
     )
-    assert asyncio.run(db.tx("backfill", lambda r: r.news.claim_index.backfill(limit=64, now_ms=clock.now_ms))) == 1
+    rows = asyncio.run(
+        db.read(
+            "historical",
+            lambda r: r.news.claim_index.historical_batch(
+                phase="adopted", after=[0, "", 0], limit=64, now_ms=clock.now_ms + 1
+            ),
+        )
+    )
+    asyncio.run(db.tx("project", lambda r: r.news.claim_index.project_batch(rows)))
     assert {row["text_sha256"] for row in sql("SELECT text_sha256 FROM news_claim_index")} == {
         text_sha(head.claims[0]),
         text_sha(old_claim),
     }
-    assert asyncio.run(db.tx("backfill", lambda r: r.news.claim_index.backfill(limit=64, now_ms=clock.now_ms))) == 0
-
-
-def test_backfill_drains_missing_versions_newest_first_across_the_seven_day_boundary() -> None:
-    pg, db, clock = store()
-    head = adopted_head(pg.semantic, clock)
-    versions = []
-    previous = head.content_revision
-    for name, age in (("recent", 1), ("older", 8 * 86400_000), ("expired", 31 * 86400_000)):
-        claim = head.claims[0].model_copy(update={"statement": f"Agency announced the {name} tariff proposal."})
-        historical = head.model_copy(
-            update={
-                "claims": (claim,),
-                "previous_content_revision": previous,
-                "content_revision": content_revision_for(head.content_sha, previous),
-            }
+    last = rows[-1]
+    assert (
+        asyncio.run(
+            db.read(
+                "end",
+                lambda r: r.news.claim_index.historical_batch(
+                    phase="adopted",
+                    after=[last["cursor_ms"], last["cursor_id"], last["cursor_claim"]],
+                    limit=64,
+                    now_ms=clock.now_ms + 1,
+                ),
+            )
         )
-        previous = historical.content_revision
-        versions.append(claim)
-        sql(
-            """INSERT INTO news_analyses(analysis_id,event_id,origin,input_revision,completed_at_ms,work_id,
-                 input_sha256,program_identity,understanding,content_revision,update_ref,adopted_at_ms,document)
-               VALUES (%s,%s,'semantic',1,%s,%s,%s,'fixture','{}',%s,%s,%s,%s::jsonb)""",
-            (
-                name,
-                EVENT,
-                clock.now_ms - age,
-                name,
-                name,
-                historical.content_revision,
-                historical.ref,
-                clock.now_ms - age,
-                json.dumps(historical.model_dump(mode="json")),
-            ),
-        )
-
-    def advance():
-        return asyncio.run(db.tx("backfill", lambda r: r.news.claim_index.backfill(limit=1, now_ms=clock.now_ms)))
-
-    assert advance() == 1
-    assert {row["text_sha256"] for row in sql("SELECT text_sha256 FROM news_claim_index")} == {
-        text_sha(head.claims[0]),
-        text_sha(versions[0]),
-    }
-    assert advance() == 1
-    assert {row["text_sha256"] for row in sql("SELECT text_sha256 FROM news_claim_index")} == {
-        text_sha(head.claims[0]),
-        text_sha(versions[0]),
-        text_sha(versions[1]),
-    }
-    assert advance() == 0
+        == []
+    )
+    asyncio.run(db.tx("repeat", lambda r: r.news.claim_index.project_batch(rows)))
+    assert len(sql("SELECT text_sha256 FROM news_claim_index")) == 2
 
 
 def seed_frozen_receipt(head, claim, *, settled_at_ms: int, intent: str = "frozen-version") -> None:
@@ -342,7 +316,7 @@ def test_sent_48h_prior_uses_the_frozen_exact_version_beyond_7d_and_excludes_exp
     )
 
 
-def test_backfill_and_pending_prioritize_the_exact_sent_version_even_when_older_than_30d() -> None:
+def test_sent_projection_and_pending_prioritize_the_exact_version_even_when_older_than_30d() -> None:
     pg, db, clock = store()
     head = adopted_head(pg.semantic, clock)
     current = head.claims[0]
@@ -355,8 +329,29 @@ def test_backfill_and_pending_prioritize_the_exact_sent_version_even_when_older_
     unreceived = old.model_copy(update={"statement": "A different unreceived wording."})
     asyncio.run(db.tx("unreceived", lambda r: r.news.claim_index.index_claim(EVENT, unreceived)))
     seed_frozen_receipt(head, old, settled_at_ms=clock.now_ms - 1)
-    assert asyncio.run(db.tx("backfill-sent", lambda r: r.news.claim_index.backfill(limit=1, now_ms=clock.now_ms))) == 1
-    assert asyncio.run(db.tx("repeat-sent", lambda r: r.news.claim_index.backfill(limit=1, now_ms=clock.now_ms))) == 0
+    batch = asyncio.run(
+        db.read(
+            "sent-batch",
+            lambda r: r.news.claim_index.historical_batch(phase="sent", after=[0, "", 0], limit=1, now_ms=clock.now_ms),
+        )
+    )
+    assert len(batch) == 1 and batch[0]["claim"]["statement"] == old.statement
+    asyncio.run(db.tx("project-sent", lambda r: r.news.claim_index.project_batch(batch)))
+    last = batch[-1]
+    assert (
+        asyncio.run(
+            db.read(
+                "sent-end",
+                lambda r: r.news.claim_index.historical_batch(
+                    phase="sent",
+                    after=[last["cursor_ms"], last["cursor_id"], last["cursor_claim"]],
+                    limit=1,
+                    now_ms=clock.now_ms,
+                ),
+            )
+        )
+        == []
+    )
     rows = asyncio.run(db.read("pending", lambda r: r.news.claim_index.pending(64, now_ms=clock.now_ms)))
     assert [(r["claim_ref"], r["text_sha256"]) for r in rows] == [
         (old.ref, text_sha(old)),

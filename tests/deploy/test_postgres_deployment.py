@@ -42,7 +42,6 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
     assert set(services) == {
         "analysis",
         "migrate",
-        "news-embedding",
         "executor",
         "postgres",
         "rabbitmq",
@@ -198,16 +197,13 @@ def test_compose_preserves_non_postgres_secret_isolation() -> None:
         "${TRACEFOLD_HOME:-${HOME}/.tracefold}/news_reader_judgment_api_key:"
         "/root/.tracefold/news_reader_judgment_api_key:ro"
     ) in worker_volumes
-    assert (
-        "${TRACEFOLD_HOME:-${HOME}/.tracefold}/news_embedding_api_key:/root/.tracefold/news_embedding_api_key:ro"
-    ) in worker_volumes
+    assert services["workers"]["deploy"]["resources"]["limits"]["memory"] == "3G"
     # #528 deleted the Telegram control ingress, so nothing reads a webhook secret any more.
     assert all("telegram_webhook_secret" not in volume for volume in worker_volumes)
     assert all("binance_usdm_api_" not in volume for volume in worker_volumes)
     assert all("hyperliquid_private_key" not in volume for volume in worker_volumes)
     assert all("telegram_bot_token" not in volume for volume in serve_volumes)
     assert all("news_reader_judgment_api_key" not in volume for volume in serve_volumes)
-    assert all("news_embedding_api_key" not in volume for volume in serve_volumes)
     assert all("telegram_webhook_secret" not in volume for volume in serve_volumes)
     # #520 PR-B: Serve authenticates the one command write with the bootstrap token it already
     # holds, so it mounts no secret file at all.

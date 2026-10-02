@@ -89,6 +89,8 @@ make logs
 
 **`make status-app` 检查应用栈；`make status` 还会检查可选执行 Runtime。** 未启用 Runtime 时报告 `disabled`；应用检查失败也会继续报告 Runtime。默认禁用的 Analysis 正常等待关闭信号，健康检查不会再将它误判为启动故障。
 
+命题稠密召回使用 Workers 内的离线 ONNX 编码器。配置固定 `llm.news_embedding.model` 后，先显式准备并检查挂载缓存，参见[命题向量运维](OPERATIONS.md#命题向量缺失与降级)。应用启动不会下载权重，缺模型只降级稠密路线。
+
 ### 单一职责与配置归属
 
 | 关注点 | 唯一所有者 |

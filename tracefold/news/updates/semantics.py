@@ -48,11 +48,7 @@ class SemanticAnalyzer:
         # The whole codebook is one native request; refuse a codebook that cannot be one.
         if len(topics) > MAX_QUESTIONS_PER_REQUEST:
             raise ValueError("news_topic_codebook_too_large")
-        from ..claim_recall import RECALL_POLICY
-
-        self.identity = identity(
-            "semantic", "event_understanding_v3", RECALL_POLICY, extractor.identity, judgments.identity, topics
-        )
+        self.identity = identity("semantic", "event_understanding_v3", extractor.identity, judgments.identity, topics)
 
     async def extract(self, source: FrozenInput, budget: Budget) -> Extraction:
         """Extract and ground claims one by one. Only material whose every claim was unusable fails."""

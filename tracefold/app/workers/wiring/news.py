@@ -320,21 +320,18 @@ def _news_updates_or_fault(
                 if available:
                     capabilities.running(NEWS_CLAIM_RECALL)
                 else:
-                    capabilities.unavailable(NEWS_CLAIM_RECALL, "news_embedding_unavailable")
+                    capabilities.unavailable(
+                        NEWS_CLAIM_RECALL,
+                        "news_embedding_unavailable" if embedder is None else embedder.unavailable_reason,
+                    )
 
             try:
-                embedding_key_file = settings.news_embedding_api_key_file()
-                if embedding_key_file is None:
-                    raise ValueError("news_embedding_key_file_missing")
                 embedder = ClaimEmbedder(
                     model=str(embedding_route.model),
-                    base_url=str(embedding_route.base_url),
-                    api_key=read_secure_secret_text(embedding_key_file),
+                    cache_dir=settings.news_embedding_cache_dir(),
                     max_batch_size=embedding_route.max_batch_size,
                     on_status=embedding_status,
                 )
-            except SecretFileError as exc:
-                capabilities.unavailable(NEWS_CLAIM_RECALL, f"news_embedding_key_{exc.code}")
             except ValueError:
                 capabilities.faulted(NEWS_CLAIM_RECALL, "news_embedding_configuration_invalid")
         else:

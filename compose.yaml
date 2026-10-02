@@ -14,49 +14,6 @@ x-tracefold-app: &tracefold-app
     TRACEFOLD_IMAGE_DIGEST: ${TRACEFOLD_IMAGE_DIGEST:-}
 
 services:
-  # Optional model runtime. Application upgrades never download weights or start this profile.
-  news-embedding:
-    profiles: [news-embedding]
-    image: ${TRACEFOLD_NEWS_EMBEDDING_IMAGE:-${COMPOSE_PROJECT_NAME:-tracefold}-news-embedding:local}
-    build:
-      context: .
-      dockerfile: services/news_embedding/Dockerfile
-      args:
-        TRACEFOLD_BUILD_REVISION: ${TRACEFOLD_BUILD_REVISION:-}
-    init: true
-    restart: unless-stopped
-    user: "${TRACEFOLD_NEWS_EMBEDDING_UID:-1000}:${TRACEFOLD_NEWS_EMBEDDING_GID:-1000}"
-    read_only: true
-    security_opt: [no-new-privileges:true]
-    cap_drop: [ALL]
-    tmpfs:
-      - /tmp:size=128m,mode=1777
-    environment:
-      EMBEDDING_DEVICE: cpu
-      EMBEDDING_MAX_BATCH_SIZE: "2"
-      EMBEDDING_CPU_THREADS: "4"
-      EMBEDDING_API_KEY_FILE: /run/secrets/news_embedding_api_key
-      HF_HUB_OFFLINE: "1"
-      TRANSFORMERS_OFFLINE: "1"
-    ports:
-      - "${TRACEFOLD_NEWS_EMBEDDING_HOST:-127.0.0.1}:${TRACEFOLD_NEWS_EMBEDDING_PORT:-8767}:8080"
-    volumes:
-      - ${TRACEFOLD_NEWS_EMBEDDING_CACHE:-${TRACEFOLD_HOME:-${HOME}/.tracefold}/embedding-cache}:/weights:ro
-      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/news_embedding_api_key:/run/secrets/news_embedding_api_key:ro
-    stop_grace_period: 15s
-    deploy:
-      resources:
-        limits:
-          cpus: "4.0"
-          memory: 4G
-    healthcheck:
-      test:
-        ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8080/readyz', timeout=1).read()"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-      start_period: 90s
-
   postgres:
     image: postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
     restart: unless-stopped
@@ -243,7 +200,6 @@ services:
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/postgres_database_password:/root/.tracefold/postgres_database_password:ro
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/news_reader_judgment_api_key:/root/.tracefold/news_reader_judgment_api_key:ro
-      - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/news_embedding_api_key:/root/.tracefold/news_embedding_api_key:ro
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/cache:/root/.tracefold/cache
       - ${TRACEFOLD_HOME:-${HOME}/.tracefold}/logs:/root/.tracefold/logs
     command: ["tracefold", "workers"]
@@ -252,7 +208,7 @@ services:
       resources:
         limits:
           cpus: "2.0"
-          memory: 2G
+          memory: 3G
     healthcheck:
       # Readiness, not liveness: `make up` waits on this, and a deploy is not finished until Workers is
       # actually consuming. That makes the whole startup path part of the budget — wiring every Program,

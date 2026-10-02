@@ -66,13 +66,27 @@ class PgNotificationStore:
         now_ms = self.clock()
         probes: dict[str, Probe] = {}
         if self.embedder is not None:
-            document = await self.db.read(
-                "news_reader_embedding_head", lambda r: r.news.semantic_updates.event_update_head_document(event_id)
-            )
-            if document is not None:
+
+            def embedding_input(repos: Any) -> tuple[EventUpdate | None, dict[str, Probe]]:
+                document = repos.news.semantic_updates.event_update_head_document(event_id)
+                if document is None:
+                    return None, {}
                 head = EventUpdate.model_validate(document)
-                encoded = await self.embedder.probes([embed_text(c) for c in head.current_claims])
-                probes = {c.ref: p for c, p in zip(head.current_claims, encoded, strict=True)}
+                return head, repos.news.claim_index.query_probes(head.current_claims)
+
+            head, probes = await self.db.read("news_reader_embedding_head", embedding_input, repeatable_read=True)
+            if head is not None:
+                missing = [
+                    c
+                    for c in head.current_claims
+                    if (p := probes.get(c.ref)) is None
+                    or p.vector is None
+                    or p.embedder != self.embedder.identity.key
+                    or p.text != embed_text(c)
+                ]
+                if missing:
+                    encoded = await self.embedder.probes([embed_text(c) for c in missing])
+                    probes.update((c.ref, p) for c, p in zip(missing, encoded, strict=True))
         material = await self.db.read(
             "news_update_notification_snapshot",
             lambda repos: repos.news.notification_context.notification_snapshot_material(

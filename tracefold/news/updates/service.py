@@ -7,6 +7,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
+from ..claim_recall import RECALL_POLICY, Probe
 from ..clock import clock_ms
 from .assembly import assemble_update
 from .contracts import EventUpdate, Extraction, FrozenInput, PriorClaim, ReadTarget, SemanticLease
@@ -98,6 +99,7 @@ class NewsAgent:
             extracted = await self.store.save_extraction(work_id, extracted)
         relation_pairs: frozenset[tuple[str, str]] | None = None
         recall_manifest = None
+        probes: dict[str, Probe] = {}
         if self.recall is not None:
             async with asyncio.timeout(budget.remaining()):
                 batch = await self.recall.priors(source, extracted)
@@ -107,6 +109,7 @@ class NewsAgent:
                 "queries": dict(batch.diagnostics),
                 "pair_count": len(relation_pairs),
             }
+            probes = {p.text: p for p in batch.probes.values()}
             priors = {p.claim.ref: p for p in source.prior}
             priors.update((p.claim.ref, p) for rows in selected.values() for p in rows)
             source = FrozenInput.model_validate({**dict(source), "prior": tuple(priors.values())})
@@ -156,6 +159,7 @@ class NewsAgent:
                 observation=observation,
                 update=update,
                 public=public,
+                probes=probes,
             )
             if adopted:
                 await self.store.finish_semantic_work(work_id, lease=lease, reason="adopted")
@@ -175,6 +179,7 @@ class NewsAgent:
         *,
         recall: dict[str, Any] | None = None,
     ) -> SemanticObservation:
+        recall = {"policy": RECALL_POLICY, "queries": {}, "pair_count": 0, **(recall or {})}
         return SemanticObservation(
             result_id=identity("semantic_result", self.program_identity, work_id, source.prior, understood, recall),
             work_id=work_id,
@@ -189,17 +194,11 @@ class NewsAgent:
                 "evidence": [{"ref": e.ref, "source": e.source.model_dump(mode="json")} for e in source.evidence],
                 "read_refs": [view.read_ref for view in reading_views(source)],
                 "prior_claim_refs": [row.claim.ref for row in source.prior],
-                **(
-                    {}
-                    if recall is None
-                    else {
-                        "recall": {
-                            **recall,
-                            "pair_count": recall["pair_count"]
-                            + len(understood.claims) * sum(p.event_id == source.event_id for p in source.prior),
-                        }
-                    }
-                ),
+                "recall": {
+                    **recall,
+                    "pair_count": recall["pair_count"]
+                    + len(understood.claims) * sum(p.event_id == source.event_id for p in source.prior),
+                },
             },
             read_refs=tuple(view.read_ref for view in reading_views(source)),
             reanalysis_reason=source.reanalysis_reason,

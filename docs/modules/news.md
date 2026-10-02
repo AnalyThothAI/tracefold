@@ -189,13 +189,13 @@ flowchart TB
 <a id="related-recall"></a>
 #### 抽取后的共享命题召回
 
-领取只冻结本 Event 当前命题、未处理证据与 artifact / URL 相同的补读目标。抽取后在事务外分批调用独立 `llm.news_embedding` 路由，再做短只读查询；逐命题选择跨 Event prior，只有选中命题对进入关系判断，本 Event 仍全对比较。
+领取只冻结本 Event 当前命题、未处理证据与 artifact / URL 相同的补读目标。抽取后在事务外由 Workers 内的固定 ONNX 编码器分批生成向量，再做短只读查询；逐命题选择跨 Event prior，只有选中命题对进入关系判断，本 Event 仍全对比较。
 
 [claim_recall.py](../../tracefold/news/claim_recall.py)是语义、回执与离线重放的唯一排序器：7 天 prior / 48 小时回执窗口内，精确稠密路线、PostgreSQL FTS 与同源候选以 RRF 融合。各消费方的预算、下限与已送保留名额在 [校准文件](../../tracefold/news/claim_recall_calibration.json)，策略身份带校准摘要。类型化资产与数字是记录的特征，不是硬性实体过滤。稠密输入只用 statement；FTS 的唯一投影 `claim_lexical_text_v1` 依次拼接 statement、subject、action、object、speaker 和 quantities 的 name、unit、value、period。候选与查询都使用这一投影，冻结回执按冻结字段生成；不补写别名或推断字段。
 
-每个采用命题版本写入 `news_claim_index`，主键 `(claim_ref,text_sha256)`，向量以带嵌入器身份的 fp16 `bytea` 保存。缺失向量是持久待办；Janitor 按已送 48 小时、7 天、30 天优先级有界回填，网络调用在事务外。无需 pgvector、超级用户或应用镜像内模型权重。
+每个采用命题版本写入 `news_claim_index`，主键 `(claim_ref,text_sha256)`，向量以带嵌入器身份的 fp16 `bytea` 保存。抽取向量按最终采用的精确文本版本复用，和采用原子写入；模型故障时缺失向量仍为持久待办。通知先读该精确版本的向量，只在缺失时事务外计算。一次性历史回填由显式命令负责，Janitor 只补索引中的 pending，不再逐轮扫描历史 JSON。无需 pgvector、超级用户或镜像内权重。
 
-嵌入器由独立模型路由提供；启动时将固定英文、中文、俄文和长文本截断探针与包内真实模型向量逐项比较，要求 cosine ≥0.998 且最大分量误差 ≤0.01。自检失败时关闭稠密路线，FTS 与同源继续工作，采用和发送继续。每批响应核对模型名与完整嵌入身份，防止同一端点切换模型后保存错配向量。状态提供 `recall_dense` 和 `claim_index_pending`；`on` 同时要求当前 Workers 心跳、路由可用与活动回填窗口内无缺失。运行中批次失败会降级，下次成功后恢复。每次召回记录路线命中、最高分、降级与耗时；采用观察的 `input_manifest` 与通知决定的 `input_snapshot` 记录稳定的召回诊断。更换模型、维度、归一化或文本模板必须重新校准。
+嵌入器在 Workers 内离线加载固定 MiniLM FP32 ONNX，tokenizer、256 token 截断、attention-mask mean pooling 和 L2 与既有校准一致。模型准备、自检、升级与恢复由[运维命题向量说明](../OPERATIONS.md#命题向量缺失与降级)维护。推理使用独立有界单线程执行器；启动自检失败或运行批次失败仅关闭稠密路线，FTS 与同源继续工作。缺向量的 FTS 先由 PostgreSQL 检索有界候选，精确当前 / 冻结版本在名额截断前验证。状态提供 `recall_dense`、`claim_index_pending` 与稳定诊断；召回政策保留在观察结果和 manifest，不进入抽取 checkpoint 身份。更换编码契约需更新完整模型身份、黄金向量、索引与校准。
 
 <a id="agent"></a>
 <a id="section-newsagent-到底做了什么"></a>
@@ -237,6 +237,8 @@ sequenceDiagram
 ```
 
 *时序 · 展示一次能够采用的正常尝试。缓存命中、无变化、重试与 head 冲突会改变实际调用数量。*
+
+[本地嵌入与维护验收](../reports/news-799.md)记录固定向量兼容、缺模型 Worker、批量回填、原生事务预算和容器资源的实际范围。
 
 ### 冻结输入与增量范围
 
@@ -350,9 +352,9 @@ unknown: No person or organization speaks or acts in the claim, or the text does
 | 身份 | 实际绑定内容与用途 |
 | --- | --- |
 | `read_ref` | 实际任务阅读范围，用于已处理/隔离范围；来源正文修订与范围有各自依据 |
-| 语义 `work_id` / extraction checkpoint | event、input revision、input SHA、analyzer identity；同一 analyzer/input 可续用成功抽取，不因文案路由变化失效 |
+| 语义 `work_id` / extraction checkpoint | event、input revision、input SHA、analyzer identity；召回校准参数不进入该身份，同一 analyzer/input 可续用成功抽取 |
 | 语义 `program_identity` | 语义模型和实际语义源码 fingerprint；不含 `card_model_identity`，文案 adapter 仍有独立 identity |
-| 观察 `result_id` | program identity、work_id、prior 与 understanding；旧 program 的未采用观察不能与新 program 的不可变结果发生同 ID 内容冲突 |
+| 观察 `result_id` | program identity、work_id、prior、understanding 与召回 policy/manifest；旧 program 的未采用观察不能与新 program 的不可变结果发生同 ID 内容冲突 |
 | `claim.ref` / `content_revision` | 命题或一次真实发生 / 采用前驱与内容；A→B→A 不被吞掉 |
 | 判断缓存 key | 判断器、答案 schema 与实际冻结输入；改变 policy 不改变模型证据 identity |
 | 计划 input digest / 决策 ref | judge、policy 与 per-claim ReaderInput 摘要等实际决定材料；规则变化形成新决定 |

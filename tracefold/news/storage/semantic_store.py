@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
 from ..clock import clock_ms
@@ -16,6 +16,7 @@ from .sql_values import _dumps
 from .update_commit import PUBLIC_TRADE_KINDS
 
 if TYPE_CHECKING:
+    from ..claim_recall import Probe
     from ..pipeline.runtime import NewsDatabasePort
 
 
@@ -117,6 +118,7 @@ class PgSemanticStore:
         observation: SemanticObservation,
         update: EventUpdate,
         public: tuple[PublicUpdate, ...],
+        probes: Mapping[str, Probe] | None = None,
     ) -> bool:
         if observation.event_id != update.event_id:
             raise ValueError("news_adopt_observation_event_mismatch")
@@ -137,6 +139,7 @@ class PgSemanticStore:
                     observation_result_id=observation.result_id,
                     public_rows=public_rows,
                     now_ms=now_ms,
+                    probes=probes,
                 ),
             )
         )

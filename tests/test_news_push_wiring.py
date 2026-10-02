@@ -455,19 +455,9 @@ def test_configured_models_compose_the_semantic_worker_as_a_confined_editorial_t
 
 
 def test_wrong_embedding_identity_disables_dense_recall_and_preserves_semantic_processing(tmp_path: Path) -> None:
-    key = tmp_path / "embedding_key"
-    key.write_text("embedding-test-key", encoding="utf-8")
-    key.chmod(0o600)
     capabilities = CapabilityStates()
     runtime = news_wiring._news_updates_or_fault(
-        _with_models(
-            tmp_path,
-            news_embedding={
-                "model": "uncalibrated-model",
-                "base_url": "https://embeddings.test/v1",
-                "api_key_file": "embedding_key",
-            },
-        ),
+        _with_models(tmp_path, news_embedding={"model": "uncalibrated-model"}),
         news_db=object(),
         capabilities=capabilities,
     )
@@ -480,28 +470,18 @@ def test_wrong_embedding_identity_disables_dense_recall_and_preserves_semantic_p
     }
 
 
-def test_embedding_endpoint_uses_its_own_private_key_and_route(tmp_path: Path) -> None:
+def test_embedding_owns_one_lazy_local_encoder_and_resolves_cache_from_app_home(tmp_path: Path) -> None:
     from tracefold.news.claim_recall import CALIBRATION
 
-    key = tmp_path / "embedding_key"
-    key.write_text("embedding-test-key", encoding="utf-8")
-    key.chmod(0o600)
-    settings = _with_models(
-        tmp_path,
-        news_embedding={
-            "model": CALIBRATION.embedder.model,
-            "base_url": "https://embeddings.test/v1",
-            "api_key_file": "embedding_key",
-            "max_batch_size": 2,
-        },
-    )
+    settings = _with_models(tmp_path, news_embedding={"model": CALIBRATION.embedder.model, "max_batch_size": 32})
     runtime = news_wiring._news_updates_or_fault(settings, news_db=object(), capabilities=CapabilityStates())
     assert runtime is not None and runtime.embedder is not None
     try:
-        assert str(runtime.embedder.client.base_url) == "https://embeddings.test/v1/"
-        assert runtime.embedder.client.headers["Authorization"] == "Bearer embedding-test-key"
-        assert runtime.embedder.max_batch_size == 2
-        assert runtime.claim_recall is not None and runtime.claim_recall.embedding_batch_size == 2
+        assert runtime.embedder.cache_dir == tmp_path / "cache/news-embedding"
+        assert runtime.embedder._encoder is None
+        assert runtime.embedder.max_batch_size == 32
+        assert runtime.claim_recall is not None and runtime.claim_recall.embedder is runtime.embedder
+        assert runtime.claim_recall.embedding_batch_size == 32
     finally:
         asyncio.run(runtime.embedder.aclose())
 

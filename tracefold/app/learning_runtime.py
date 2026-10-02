@@ -256,7 +256,7 @@ def news_runtime_manifest_sha(settings: Any, *, image_digest: str, runtime_revis
             "claim_embedding": (
                 {
                     "model": settings.llm.news_embedding.model,
-                    "base_url": settings.llm.news_embedding.base_url,
+                    "cache_dir": str(settings.news_embedding_cache_dir()),
                     "max_batch_size": settings.llm.news_embedding.max_batch_size,
                 }
                 if settings.llm.news_embedding.configured

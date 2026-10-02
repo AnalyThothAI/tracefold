@@ -239,33 +239,22 @@ def test_news_reader_judgment_is_never_inferred_from_news_judgment() -> None:
         LlmConfig.model_validate({"trading_semantics": route})
 
 
-def test_news_embedding_owns_its_complete_route_and_rejects_the_retired_setting() -> None:
-    route = {
-        "api_key_file": "news_embedding_api_key",
-        "base_url": "http://news-embedding:8080/v1/",
-        "model": "tested-model",
-        "max_batch_size": 2,
-    }
+def test_news_embedding_owns_its_local_configuration_and_rejects_retired_routes() -> None:
+    route = {"model": "tested-model", "cache_dir": "cache/news-embedding", "max_batch_size": 32}
     configured = LlmConfig(news_embedding=route).news_embedding
-    assert configured.configured is True and configured.base_url == "http://news-embedding:8080/v1"
-    assert configured.max_batch_size == 2
-    assert (
-        LlmConfig(
-            api_key="generative-key", base_url="https://generative.test/v1", news_triage_model="generative-model"
-        ).news_embedding.configured
-        is False
-    )
-    for missing in ("api_key_file", "base_url", "model"):
-        with pytest.raises(ValidationError, match="news_embedding_configuration_incomplete"):
-            LlmConfig(news_embedding={key: value for key, value in route.items() if key != missing})
-    with pytest.raises(ValidationError, match="news_embedding_api_key_inline") as caught:
-        LlmConfig(news_embedding={**route, "api_key": "private-embedding-key"})
-    assert "private-embedding-key" not in str(caught.value)
-    with pytest.raises(ValidationError, match="news_embedding_base_url_invalid"):
-        LlmConfig(news_embedding={**route, "base_url": "news-embedding:8080/v1"})
+    assert configured.configured and configured.cache_dir == "cache/news-embedding"
+    assert configured.max_batch_size == 32
+    assert not LlmConfig(
+        api_key="generative-key", base_url="https://generative.test/v1", news_triage_model="generative-model"
+    ).news_embedding.configured
+    for retired in ("base_url", "api_key_file", "api_key"):
+        with pytest.raises(ValidationError, match="Extra inputs"):
+            LlmConfig(news_embedding={**route, retired: "retired"})
     for max_batch_size in (0, 33):
         with pytest.raises(ValidationError):
             LlmConfig(news_embedding={**route, "max_batch_size": max_batch_size})
+    with pytest.raises(ValidationError, match="cache_dir_invalid"):
+        LlmConfig(news_embedding={**route, "cache_dir": " "})
     with pytest.raises(ValidationError, match="news_embedding_model"):
         LlmConfig.model_validate({"news_embedding_model": "retired-model"})
 

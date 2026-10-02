@@ -1,0 +1,119 @@
+{
+  "schema": "news_799_recall_latency_v1",
+  "measured_date_utc": "2026-10-02",
+  "source_tests": [
+    "tests/integration/test_news_claim_recall_latency.py",
+    "tests/integration/test_news_claim_recall_bounded.py"
+  ],
+  "environment": "Local WSL, isolated PostgreSQL fixture databases; no production access.",
+  "healthy_window": {
+    "current_claims_7d": 17500,
+    "frozen_sent_claims_48h": 2000,
+    "first_invocations": 1,
+    "warm_invocations": 40
+  },
+  "quantile_method": "Nearest rank: sorted warm values at ceil(n * quantile) - 1.",
+  "healthy_database_transactions_ms": {
+    "prior_pool_transaction": {
+      "first_ms": 616.721239999606,
+      "trials": 40,
+      "warm_max_ms": 822.5240310002846,
+      "warm_p50_ms": 562.7297420014656,
+      "warm_p90_ms": 702.625359999729,
+      "warm_p95_ms": 739.4751970005018
+    },
+    "prior_all_transactions": {
+      "first_ms": 969.0772619997006,
+      "trials": 40,
+      "warm_max_ms": 1251.6908359993977,
+      "warm_p50_ms": 914.5516480002698,
+      "warm_p90_ms": 1086.9939630010776,
+      "warm_p95_ms": 1180.1663209989783
+    },
+    "prior_transaction": {
+      "first_ms": 352.3560220000945,
+      "trials": 40,
+      "warm_max_ms": 493.11871499958215,
+      "warm_p50_ms": 312.11106999944604,
+      "warm_p90_ms": 410.146189000443,
+      "warm_p95_ms": 440.69112399847654
+    },
+    "receipt_transaction": {
+      "first_ms": 202.28739500089432,
+      "trials": 40,
+      "warm_max_ms": 237.2971430013422,
+      "warm_p50_ms": 135.5420370000502,
+      "warm_p90_ms": 157.23405300013837,
+      "warm_p95_ms": 205.40020800035563
+    }
+  },
+  "normal_notification_embedding_calls": 0,
+  "native_transaction_timeout_seconds": 8,
+  "statement_timeout_seconds": 3,
+  "degraded_multi_claim_native_worker": [
+    {
+      "claims": 4,
+      "elapsed_seconds": 2.8546494239999447,
+      "minimum_comparison_seconds": 2.8,
+      "native_transaction_timeout_seconds": 8,
+      "vectors": "missing"
+    },
+    {
+      "claims": 4,
+      "elapsed_seconds": 2.856036158000279,
+      "minimum_comparison_seconds": 2.8,
+      "native_transaction_timeout_seconds": 8,
+      "vectors": "partial"
+    },
+    {
+      "claims": 11,
+      "elapsed_seconds": 7.832005787000526,
+      "minimum_comparison_seconds": 7.699999999999999,
+      "native_transaction_timeout_seconds": 8,
+      "vectors": "missing"
+    },
+    {
+      "claims": 11,
+      "elapsed_seconds": 7.828645457999301,
+      "minimum_comparison_seconds": 7.699999999999999,
+      "native_transaction_timeout_seconds": 8,
+      "vectors": "partial"
+    },
+    {
+      "claims": 12,
+      "elapsed_seconds": 8.543647338001392,
+      "minimum_comparison_seconds": 8.399999999999999,
+      "native_transaction_timeout_seconds": 8,
+      "vectors": "missing"
+    },
+    {
+      "claims": 12,
+      "elapsed_seconds": 8.532892839999477,
+      "minimum_comparison_seconds": 8.399999999999999,
+      "native_transaction_timeout_seconds": 8,
+      "vectors": "partial"
+    }
+  ],
+  "degraded_fixture": {
+    "current_prior_claims": 2,
+    "missing_mode": "Both prior vectors absent; query probe ready.",
+    "partial_mode": "One prior vector ready, one absent; query probe ready.",
+    "injected_comparison_statement_seconds": 0.7,
+    "result": "All comparisons selected valid priors and completed without DeferError or transaction timeout."
+  },
+  "validation": {
+    "latency_suite_passed": 2,
+    "bounded_suite_passed": 12,
+    "related_domain_and_postgres_suite_passed": 62,
+    "ruff": "passed",
+    "mypy_storage_files": "passed"
+  },
+  "limits": [
+    "Healthy retrieval timing excludes model inference and fixture construction; vectors are precomputed.",
+    "prior_all_transactions adds the pool and per-claim selection read; it is the comparable complete database boundary.",
+    "The first read is not a cold disk-cache measurement: fixture seeding and ANALYZE touch pages.",
+    "4, 11 and 12-claim degraded cases prove transaction separation on a small exact-version fixture with injected work, not production throughput.",
+    "No production end-to-end latency, concurrent production traffic, model quality improvement or 75k bulk throughput is claimed by this report.",
+    "Advisory 200ms prior and 80ms receipt budgets remain observations, not release gates."
+  ]
+}

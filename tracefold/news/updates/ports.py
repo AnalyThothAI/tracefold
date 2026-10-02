@@ -7,8 +7,8 @@ outside it, and the adopted PostgreSQL head remains the authority.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any, Protocol
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import Field
 
@@ -24,11 +24,15 @@ from .contracts import (
     SemanticLease,
 )
 
+if TYPE_CHECKING:
+    from ..claim_recall import Probe
+
 
 @dataclass(frozen=True, slots=True)
 class PriorBatch:
     by_slot: Mapping[str, tuple[PriorClaim, ...]]
     diagnostics: Mapping[str, Mapping[str, Any]]
+    probes: Mapping[str, Probe] = field(default_factory=dict)
 
 
 class PriorRecall(Protocol):
@@ -85,6 +89,7 @@ class SemanticStore(Protocol):
         observation: SemanticObservation,
         update: EventUpdate,
         public: tuple[PublicUpdate, ...],
+        probes: Mapping[str, Probe] | None = None,
     ) -> bool:
         """CAS the adopted head, save update + public outbox + notification_pending.
 
@@ -93,6 +98,8 @@ class SemanticStore(Protocol):
         retain the first payload; conflicting payload on an ID is an error.
         A `possible_new` change is adopted content and marks notification work,
         but it never has a public row: `public` already excludes it.
+        Reuse probes only for the final adopted claim's exact statement and
+        current embedder identity; retrieval slots are not durable claim refs.
         """
         ...
 

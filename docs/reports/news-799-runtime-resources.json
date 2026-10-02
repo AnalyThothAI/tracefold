@@ -1,0 +1,56 @@
+{
+  "protocol": "799_application_image_resource_v1",
+  "ok": true,
+  "measured_at": "2026-10-02T13:56:22.056319+00:00",
+  "cgroup_limits": {
+    "memory.max": "3221225472",
+    "cpu.max": "200000 100000"
+  },
+  "model_snapshot": {
+    "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "revision": "e8f8c211226b894fcb81acc59f3b34ba3efd5f42",
+    "files": {
+      "tokenizer.json": "2c3387be76557bd40970cec13153b3bbf80407865484b209e655e5e4729076b8",
+      "onnx/model.onnx": "10f7a088420252b26caf819236ca2c9d2987afd0fc06fec7553b542a5655a05a"
+    }
+  },
+  "baseline": {
+    "VmRSS": 71992,
+    "Threads": 32
+  },
+  "loaded": {
+    "VmRSS": 950488,
+    "Threads": 34
+  },
+  "after_five_batches": {
+    "VmRSS": 1435136,
+    "Threads": 34
+  },
+  "after_close": {
+    "VmRSS": 484948,
+    "Threads": 32
+  },
+  "peak_rss_mib": 1400.33984375,
+  "rss_model_delta_mib": 857.90625,
+  "startup_golden_ms": 3574.0197710001667,
+  "batch_size": 32,
+  "tokens": 256,
+  "batch_ms": [
+    3416.765445001147,
+    3796.1122559991054,
+    3301.323870999113,
+    3307.918444999814,
+    3178.183047000857
+  ],
+  "event_loop_lag_ms_max": {
+    "startup": 1133.4263390001433,
+    "inference": 244.9890840000444,
+    "close": 0
+  },
+  "event_loop_samples": {
+    "startup": 105,
+    "inference": 1658,
+    "close": 0
+  },
+  "limits": "Encoder-only process in the application image; production Workers coexistence and 24h load are not measured."
+}

@@ -17,13 +17,11 @@ from collections.abc import Callable, Sequence
 from contextlib import closing
 from typing import Any
 
-import httpx
 import numpy as np
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_update_pg import EVENT, TEXT, Clock, adopted_head, extraction_for, store
-from tracefold.app.claim_embedding import EMBEDDING_SECONDS, ClaimEmbedder, golden_vectors
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.claim_recall import CALIBRATION, PRIOR_WINDOW_MS, RECEIPT_WINDOW_MS, Probe, vector_bytes
 from tracefold.news.notifications.contracts import NEWS_CHANNEL
@@ -65,6 +63,7 @@ class MeasuredDb:
             if repeatable:
                 conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             conn.execute("SELECT set_config('statement_timeout',%s,true)", (str(int(timeout * 1000)),))
+            conn.execute("SET LOCAL transaction_timeout = '8s'")
             assert not self.active
             self.active = True
             try:
@@ -233,7 +232,14 @@ def _report(name: str, values: list[float], record_property: Any) -> float:
     warm = sorted(values[1:])
     assert len(warm) == TRIALS
     p95 = warm[math.ceil(len(warm) * 0.95) - 1]
-    result = {"first_ms": values[0], "warm_p95_ms": p95, "warm_max_ms": warm[-1], "trials": len(warm)}
+    result = {
+        "first_ms": values[0],
+        "warm_p50_ms": warm[math.ceil(len(warm) * 0.5) - 1],
+        "warm_p90_ms": warm[math.ceil(len(warm) * 0.9) - 1],
+        "warm_p95_ms": p95,
+        "warm_max_ms": warm[-1],
+        "trials": len(warm),
+    }
     record_property(name, json.dumps(result, sort_keys=True))
     print(f"{name}: {json.dumps(result, sort_keys=True)}")
     return p95
@@ -247,6 +253,11 @@ def test_production_scale_prior_and_receipt_transactions_report_p95(monkeypatch,
     monkeypatch.setattr("tracefold.news.storage.claim_recall.clock_ms", lambda: now_ms)
     vector = vector_bytes([1.0, *([0.0] * (CALIBRATION.embedder.dimensions - 1))], CALIBRATION.embedder)
     _seed_windows(head, now_ms, vector)
+    with closing(connect_postgres_test()) as conn, conn.transaction():
+        conn.execute(
+            "UPDATE news_claim_index SET vector=%s,embedder=%s WHERE claim_ref=%s",
+            (vector, CALIBRATION.embedder.key, head.claims[0].ref),
+        )
     source = FrozenInput(event_id=EVENT, revision=1, lineage_id="latency-query", evidence=head.evidence)
     extracted = extraction_for(source)
     db = MeasuredDb()
@@ -271,69 +282,49 @@ def test_production_scale_prior_and_receipt_transactions_report_p95(monkeypatch,
             assert snapshot.reader.receipts and len(snapshot.reader.receipts) <= CALIBRATION.receipt.k
 
     asyncio.run(measure())
-    assert embedder.calls == 2 * (TRIALS + 1)
+    # Notification queries reuse the exact adopted vector; only fresh semantic
+    # extraction queries encode once per turn.
+    assert embedder.calls == TRIALS + 1
+    _report("prior_pool_transaction", db.timings["news_claim_prior_pool"], record_property)
+    _report(
+        "prior_all_transactions",
+        [
+            pool + selection
+            for pool, selection in zip(
+                db.timings["news_claim_prior_pool"], db.timings["news_claim_prior_recall"], strict=True
+            )
+        ],
+        record_property,
+    )
     prior_p95 = _report("prior_transaction", db.timings["news_claim_prior_recall"], record_property)
     receipt_p95 = _report("receipt_transaction", db.timings["news_update_notification_snapshot"], record_property)
     record_property("prior_advisory_budget_met", prior_p95 <= 200.0)
     record_property("receipt_advisory_budget_met", receipt_p95 <= 80.0)
 
 
-def test_real_embedding_adapter_timeout_is_bounded_before_the_recall_read(monkeypatch, record_property) -> None:
+def test_embedding_cancellation_leaves_no_database_transaction(monkeypatch) -> None:
     pg, _, clock = store()
     head = adopted_head(pg.semantic, clock)
     source = FrozenInput(event_id="timeout-query", revision=1, lineage_id="timeout-query", evidence=head.evidence)
     monkeypatch.setattr("tracefold.news.storage.claim_recall.clock_ms", lambda: clock.now_ms + 1)
     db = MeasuredDb()
     cancelled = []
-    provider_elapsed = []
-    requests = []
-    golden_texts, golden_matrix = golden_vectors(CALIBRATION.embedder)
-    expected = dict(zip(golden_texts, golden_matrix.tolist(), strict=True))
 
-    async def respond(request: httpx.Request) -> httpx.Response:
-        assert not db.active
-        texts = json.loads(request.content)["input"]
-        requests.append(texts)
-        if all(text in expected for text in texts):
-            rows = [{"index": index, "embedding": expected[text]} for index, text in enumerate(texts)]
-            return httpx.Response(
-                200,
-                json={"model": CALIBRATION.embedder.model, "embedder_identity": CALIBRATION.embedder.key, "data": rows},
+    class BlockingEmbedding:
+        identity = CALIBRATION.embedder
+
+        async def probes(self, _texts):
+            assert not db.active
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(True)
+
+    async def run():
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(
+                PgClaimRecall(db, embedder=BlockingEmbedding()).priors(source, extraction_for(source)), timeout=0.01
             )
-        provider_started = time.perf_counter()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            cancelled.append(True)
-            provider_elapsed.append(time.perf_counter() - provider_started)
-            raise
-        raise AssertionError("the embedding timeout did not cancel the request")
 
-    async def recall() -> Any:
-        embedder = ClaimEmbedder(
-            model=CALIBRATION.embedder.model,
-            base_url="https://embedding.invalid/v1",
-            api_key="test-only",
-            transport=httpx.MockTransport(respond),
-            max_batch_size=4,
-        )
-        try:
-            return await PgClaimRecall(db, embedder=embedder).priors(source, extraction_for(source))  # type: ignore[arg-type]
-        finally:
-            await embedder.aclose()
-
-    started = time.perf_counter()
-
-    async def bounded_recall() -> Any:
-        # The outer guard makes removal of the provider deadline fail this
-        # test. It allows unrelated connection/scheduler overhead after the
-        # provider's cancellation, which is reported separately.
-        return await asyncio.wait_for(recall(), timeout=EMBEDDING_SECONDS + 15.0)
-
-    result = asyncio.run(bounded_recall())
-    elapsed = time.perf_counter() - started
-    assert cancelled == [True] and len(requests) == (len(golden_texts) + 3) // 4 + 1
-    record_property("embedding_cancelled_after_seconds", provider_elapsed[0])
-    record_property("recall_including_connection_seconds", elapsed)
-    assert result.by_slot["a"]
-    assert len(db.timings["news_claim_prior_recall"]) == 1
+    asyncio.run(run())
+    assert cancelled == [True] and db.timings == {} and not db.active

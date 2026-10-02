@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from ..updates.contracts import NOTIFICATION_CHANGES, EventUpdate
 from .sql_values import _dumps
 from .trade_projection import TradeProjectionStorage
+
+if TYPE_CHECKING:
+    from ..claim_recall import Probe
 
 # The public kind of a PublicUpdate in the News outbox. A catalyst delta keeps the existing kind.
 PUBLIC_TRADE_KINDS: Final[dict[str, str]] = {"catalyst_delta": "catalyst", "source_update": "source_update"}
@@ -46,6 +49,7 @@ def commit_update(
     source: SemanticSource | ScopeProofSource,
     public_rows: Sequence[tuple[str, Mapping[str, Any]]],
     now_ms: int,
+    probes: Mapping[str, Probe] | None = None,
 ) -> bool:
     """Write the source, immutable analysis adoption, head pointer, public outbox and work in one transaction.
 
@@ -117,7 +121,7 @@ def commit_update(
         raise ValueError("news_event_update_revision_exists")
     from .claim_index import ClaimIndexStorage
 
-    ClaimIndexStorage(conn).index_update(update)
+    ClaimIndexStorage(conn).index_update(update, probes=probes)
     conn.execute("UPDATE news_events SET current_analysis_id=%s WHERE event_id=%s", (analysis_id, event_id))
     for kind, payload in public_rows:
         if not outbox.enqueue_trade_event(

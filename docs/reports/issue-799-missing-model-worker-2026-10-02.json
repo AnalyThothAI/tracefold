@@ -1,0 +1,188 @@
+{
+  "test": "tests/integration/test_news_missing_embedding.py",
+  "command": "TRACEFOLD_TEST_POSTGRES_DSN=<dedicated test PostgreSQL> TRACEFOLD_TEST_RESOURCES_REQUIRED=1 uv run --locked pytest tests/integration/test_news_missing_embedding.py -q -s",
+  "result": "2 passed",
+  "database": "fresh migrated per-test clone; PostgreSQL native Workers pool",
+  "scope": "real offline ClaimEmbedder, PgClaimRecall, SemanticWorker.handle and persisted adoption; scripted extractor/analyzer and broker boundary, no external LLM or delivery",
+  "runs": [
+    {
+      "adopted_claims": 4,
+      "candidate_vectors_available": 1,
+      "claims": 4,
+      "downloads": 0,
+      "elapsed_seconds": 0.11977317099990614,
+      "model_missing": true,
+      "onnx_sessions": 0,
+      "query_vectors_available": 0,
+      "semantic_outcome": "adopted",
+      "transactions": [
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_pool",
+          "read_only": "on",
+          "seconds": 0.011237523000090732,
+          "statement_timeout": "3s",
+          "transaction_id": 4542,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.011273386000539176,
+          "statement_timeout": "3s",
+          "transaction_id": 4543,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.006396983999366057,
+          "statement_timeout": "3s",
+          "transaction_id": 4544,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.006667816000117455,
+          "statement_timeout": "3s",
+          "transaction_id": 4545,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.006342050000966992,
+          "statement_timeout": "3s",
+          "transaction_id": 4546,
+          "transaction_timeout": "8s"
+        }
+      ]
+    },
+    {
+      "adopted_claims": 11,
+      "candidate_vectors_available": 1,
+      "claims": 11,
+      "downloads": 0,
+      "elapsed_seconds": 0.21686108999892895,
+      "model_missing": true,
+      "onnx_sessions": 0,
+      "query_vectors_available": 0,
+      "semantic_outcome": "adopted",
+      "transactions": [
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_pool",
+          "read_only": "on",
+          "seconds": 0.008500171999912709,
+          "statement_timeout": "3s",
+          "transaction_id": 4562,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.01163437899958808,
+          "statement_timeout": "3s",
+          "transaction_id": 4563,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.007864560999223613,
+          "statement_timeout": "3s",
+          "transaction_id": 4564,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.006004570001095999,
+          "statement_timeout": "3s",
+          "transaction_id": 4565,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.006653606000327272,
+          "statement_timeout": "3s",
+          "transaction_id": 4566,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.007471586000974639,
+          "statement_timeout": "3s",
+          "transaction_id": 4567,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.007760770999084343,
+          "statement_timeout": "3s",
+          "transaction_id": 4568,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.005612062999716727,
+          "statement_timeout": "3s",
+          "transaction_id": 4569,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.005532826999115059,
+          "statement_timeout": "3s",
+          "transaction_id": 4570,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.00588964399867109,
+          "statement_timeout": "3s",
+          "transaction_id": 4571,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.006000425999445724,
+          "statement_timeout": "3s",
+          "transaction_id": 4572,
+          "transaction_timeout": "8s"
+        },
+        {
+          "isolation": "repeatable read",
+          "name": "news_claim_prior_recall",
+          "read_only": "on",
+          "seconds": 0.0052448730002652155,
+          "statement_timeout": "3s",
+          "transaction_id": 4573,
+          "transaction_timeout": "8s"
+        }
+      ]
+    }
+  ]
+}

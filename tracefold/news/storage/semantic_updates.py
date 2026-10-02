@@ -6,13 +6,16 @@ Commands use the caller's existing transaction; no external I/O or independent c
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..updates.contracts import EventUpdate, SemanticLease
 from .errors import EventUpdateConflict
 from .semantic_work import SemanticWorkStorage
 from .trade_projection import TradeProjectionStorage
 from .update_commit import SemanticSource, commit_update, lock_event
+
+if TYPE_CHECKING:
+    from ..claim_recall import Probe
 
 
 class SemanticUpdateStorage:
@@ -119,6 +122,7 @@ class SemanticUpdateStorage:
         observation_result_id: str,
         public_rows: Sequence[tuple[str, Mapping[str, Any]]],
         now_ms: int,
+        probes: Mapping[str, Probe] | None = None,
     ) -> bool:
         """CAS the head and write the update, its public outbox rows and the notification marker.
 
@@ -141,6 +145,7 @@ class SemanticUpdateStorage:
                 source=SemanticSource(observation_result_id),
                 public_rows=public_rows,
                 now_ms=now_ms,
+                probes=probes,
             )
         except ValueError as exc:
             raise EventUpdateConflict(str(exc)) from exc

@@ -108,7 +108,7 @@ def load_vectors(manifest_path: Path, *, source_manifest: Path, calibration: Cal
     manifest = read_json(manifest_path)
     require(manifest["version"] == "claim_vector_manifest_v1", "vector_manifest_version_invalid")
     identity = EmbedderIdentity(**manifest["embedder"])
-    require(identity == calibration.embedder, "vector_manifest_embedder_identity_mismatch")
+    require(identity == calibration.embedder, "vector_manifest_model_identity_mismatch")
     require(
         bool(re.fullmatch(r"[a-f0-9]{40}", identity.revision))
         and identity.template == TEXT_TEMPLATE
