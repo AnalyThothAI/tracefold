@@ -380,6 +380,7 @@ function ClaimItem({
               className="news-update-facts"
               facts={[
                 { label: "表达方式", value: claim.mode_zh || claim.mode },
+                { label: "角色", value: claim.actor_role_zh || claim.actor_role || "" },
                 { label: "阶段", value: claim.phase_zh || claim.phase || "" },
                 { label: "主体", value: claim.subject },
                 { label: "动作", value: claim.action },

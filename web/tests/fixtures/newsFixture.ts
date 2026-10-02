@@ -295,6 +295,8 @@ export function newsEventUpdateFixture(overrides: Partial<NewsEventUpdate> = {})
   };
   const claim = (ref: string, statement: string, rate: string, evidence: string) => ({
     action: "set tariff",
+    actor_role: "economic_policy_official",
+    actor_role_zh: "经济政策官员",
     antecedent_refs: [],
     assets: [{ market_type: "commodity" as const, role: "primary" as const, symbol: "CL" }],
     citations: [{ evidence_ref: evidence, quote: statement, source: wire }],

@@ -304,3 +304,14 @@ def test_an_unusable_answer_on_the_last_route_fails_once_and_names_the_field(
     # The formatted message names the location and error type; the generated text never reaches the log.
     assert "news_extraction_claim_schema_invalid index=0 errors=[('citations', 'too_short')]" in caplog.text
     assert HEADLINE not in caplog.text
+
+
+@pytest.mark.parametrize("role", ["president", "regulator_or_judiciary", 12, []])
+def test_invalid_actor_role_is_repaired_to_unknown_without_losing_the_claim(role: Any) -> None:
+    claim = _claim("role")
+    claim["fields"]["actor_role"] = role
+    extracted = _extract(HEADLINE, claim)
+    assert len(extracted.claims) == 1
+    assert extracted.claims[0].fields.actor_role == "unknown"
+    assert extracted.claims[0].statement == claim["statement"]
+    assert extracted.claims[0].citations[0].quote == HEADLINE

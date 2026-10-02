@@ -1563,6 +1563,22 @@
             "title": "Action",
             "type": "string"
           },
+          "actor_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor Role"
+          },
+          "actor_role_zh": {
+            "default": "",
+            "title": "Actor Role Zh",
+            "type": "string"
+          },
           "antecedent_refs": {
             "items": {
               "type": "string"
@@ -1636,12 +1652,14 @@
               "observation",
               "decision",
               "commitment",
-              "conditional_threat",
               "guidance",
               "forecast",
-              "commentary",
               "promotion",
-              "unknown"
+              "unknown",
+              "assertion",
+              "demand",
+              "threat",
+              "opinion"
             ],
             "title": "Mode",
             "type": "string"

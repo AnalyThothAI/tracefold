@@ -116,7 +116,8 @@ def test_clear_polarity_mode_and_phase_conflicts_remain_protected() -> None:
     current, previous = pair()
     previous = previous.model_copy(update={"fields": previous.fields.model_copy(update={"polarity": "affirmative"})})
     candidate = altered(current, polarity="negative", mode="observation", phase="completed")
-    assert proven_mismatches(candidate, previous) == ("mode", "phase", "polarity")
+    assert proven_mismatches(candidate, previous) == ("phase", "polarity")
+    assert proven_mismatches(altered(candidate, mode="threat"), previous) == ("mode", "phase", "polarity")
 
 
 def test_reader_input_does_not_depend_on_unreferenced_change_order() -> None:

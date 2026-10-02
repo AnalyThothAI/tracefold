@@ -14,20 +14,35 @@ from .identity import identity
 
 Task = Literal[
     "mode",
+    "actor_role",
     "phase",
     "content_kind",
     "relation",
     "support",
     "next_read",
 ]
-QUESTION_VERSION: Final = "news_questions_v4"
+QUESTION_VERSION: Final = "news_questions_v5"
 # The per-claim readings the native backend owns when it is configured.
-CLAIM_READING_TASKS: Final[tuple[Task, ...]] = ("mode", "phase", "content_kind")
+CLAIM_READING_TASKS: Final[tuple[Task, ...]] = ("mode", "actor_role", "phase", "content_kind")
 
 # The direct question each task asks about one item. Both backends receive it; the native backend puts it
 # in each slot's question, the generated backend in its criteria.
 TASK_QUESTIONS: Final[dict[Task, str]] = {
-    "mode": "Which speech act does the cited material establish for this claim?",
+    "mode": (
+        "Which speech act does the attributed party establish in the cited source? Judge the "
+        "source's primary speech function, rather than the extracted claim's factual wording or "
+        "previous field readings. Advertising, customer or investor solicitation, invitations to "
+        "attend or trade, product positioning, self-reported usage or performance, and recaps of "
+        "past milestones are promotion when they establish no new substantive act beyond the "
+        "solicitation or description. Announcing such material today does not make it a new "
+        "observation, assertion, demand, commitment or opinion. A named party's own new launch, "
+        "listing, integration, partnership or newly available product is a decision or observation "
+        "even in advertising: preserve that concrete act when the cited source establishes it."
+    ),
+    "actor_role": (
+        "What is the role of the party whose statement or act this claim reports: its speaker when "
+        "present, otherwise its person or organization subject?"
+    ),
     "phase": "Which realization phase does the cited material establish for this action?",
     "content_kind": "Which kind of new content does this claim state?",
     "relation": "How does the current claim relate to the previous claim?",
@@ -37,15 +52,113 @@ TASK_QUESTIONS: Final[dict[Task, str]] = {
 
 OPTIONS: Final[dict[Task, tuple[tuple[str, str], ...]]] = {
     "mode": (
-        ("observation", "The cited material reports an observation, measurement, or completed act."),
-        ("decision", "A named actor made a specific decision, even if not implemented yet."),
-        ("commitment", "A named actor commits to a specific future action; not evidence of execution."),
-        ("conditional_threat", "A named actor threatens a specific action if stated conditions hold."),
-        ("guidance", "A named institution or actor provides specific forward guidance."),
-        ("forecast", "A forecast or expectation, not the observed outcome."),
-        ("commentary", "Opinion or rhetoric without a specific action, measure, or new observation."),
-        ("promotion", "Solicitation or promotional copy rather than a concrete event."),
+        (
+            "observation",
+            (
+                "The cited material reports an observation, a measurement or a completed act as fact, "
+                "including a party reporting its own completed act. A party's claim about another party, a "
+                "cause or a responsibility is an assertion."
+            ),
+        ),
+        (
+            "assertion",
+            (
+                "A named party asserts, confirms, denies or attributes a fact, cause or responsibility, for "
+                "example that a state was behind an attack, or states its official position, without itself "
+                "deciding, demanding, threatening or committing to anything."
+            ),
+        ),
+        (
+            "decision",
+            "A named actor made a specific decision, including an order or instruction, even if not implemented yet.",
+        ),
+        (
+            "commitment",
+            (
+                "A named actor states that it will take a specific action of its own that is not directed "
+                "against another party, such as an investment, purchase, stock release, launch or policy step, "
+                "even when phrased as an expectation or possibility; not evidence of execution."
+            ),
+        ),
+        (
+            "demand",
+            (
+                "A named actor demands, requests, urges or calls on another party to act or to refrain from "
+                "acting, without stating a consequence of refusal."
+            ),
+        ),
+        (
+            "threat",
+            (
+                "A named actor states that it will or may take an adverse action against another party, such "
+                "as military action, sanctions, tariffs, export or supply restrictions or retaliation, "
+                "including an ultimatum, a warning, or an action framed as possible or conditional."
+            ),
+        ),
+        (
+            "guidance",
+            (
+                "A policymaker or institution states the intended or expected path of its own policy, rates, "
+                "output, prices or targets, with or without numbers, including the size of a rate move it "
+                "supports."
+            ),
+        ),
+        (
+            "forecast",
+            (
+                "A prediction, expectation or price target about an outcome the speaker does not control; not "
+                "the observed outcome. A statement about the speaker's own future action is a commitment, "
+                "threat or guidance, never a forecast."
+            ),
+        ),
+        (
+            "opinion",
+            (
+                "An evaluation, preference, praise, criticism or general view with no specific assertion, "
+                "demand, threat, commitment, decision, guidance or forecast."
+            ),
+        ),
+        (
+            "promotion",
+            (
+                "Advertising or solicitation that reports no new concrete event: an invitation to buy, "
+                "deposit, stake, join or attend; the terms of a giveaway, reward, airdrop, trading "
+                "competition, presale or yield campaign, even when the campaign itself is being announced; "
+                "slogans, superlatives and product descriptions. A named party's own launch, listing, "
+                "integration, partnership, or a product, market or token becoming available is a decision or "
+                "an observation, however promotional the wording."
+            ),
+        ),
         ("unknown", "The material does not establish the speech act."),
+    ),
+    "actor_role": (
+        ("head_of_state_or_government", "A head of state or government, or their office or official spokesperson."),
+        ("central_bank_policymaker", "A central bank, or a member of its rate-setting body or leadership."),
+        (
+            "economic_policy_official",
+            (
+                "A minister, department or agency in charge of finance, budget, trade, tariffs, sanctions, "
+                "energy or industry, or an intergovernmental body acting in these areas."
+            ),
+        ),
+        (
+            "foreign_or_defense_official",
+            "A foreign-affairs, defence, military or security official or body, or a diplomat.",
+        ),
+        ("other_government_official", "Any other legislator, government or intergovernmental official or body."),
+        ("regulator_or_court", "A financial or market regulator, an enforcement agency, a prosecutor or a court."),
+        (
+            "company_or_project",
+            "A company, crypto project, protocol, exchange or fund, or someone speaking for it about itself.",
+        ),
+        (
+            "analyst_or_media",
+            (
+                "An analyst, economist, bank research team, journalist, publication, influencer or other "
+                "commentator speaking about others."
+            ),
+        ),
+        ("unknown", "No person or organization speaks or acts in the claim, or the text does not establish its role."),
     ),
     "phase": (
         ("proposed", "An action is under consideration."),

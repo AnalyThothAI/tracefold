@@ -28,12 +28,25 @@ MODE_ZH: Final[dict[str, str]] = {
     "observation": "观测事实",
     "decision": "决定",
     "commitment": "承诺",
-    "conditional_threat": "条件性威胁",
+    "assertion": "断言",
+    "demand": "要求",
+    "threat": "威胁",
+    "opinion": "观点",
     "guidance": "前瞻指引",
     "forecast": "预测",
-    "commentary": "表态或观点",
     "promotion": "推广",
     "unknown": "表达方式未知",
+}
+ACTOR_ROLE_ZH: Final[dict[str, str]] = {
+    "head_of_state_or_government": "国家或政府首脑",
+    "central_bank_policymaker": "央行决策者",
+    "economic_policy_official": "经济政策官员",
+    "foreign_or_defense_official": "外交或防务官员",
+    "other_government_official": "其他政府官员",
+    "regulator_or_court": "监管或司法机构",
+    "company_or_project": "公司或项目",
+    "analyst_or_media": "分析师或媒体",
+    "unknown": "角色未知",
 }
 PHASE_ZH: Final[dict[str, str]] = {
     "proposed": "拟议",
@@ -273,6 +286,8 @@ def _claim(
         "polarity_zh": _zh(POLARITY_ZH, fields.polarity),
         "mode": fields.mode,
         "mode_zh": _zh(MODE_ZH, fields.mode),
+        "actor_role": fields.actor_role,
+        "actor_role_zh": _zh(ACTOR_ROLE_ZH, fields.actor_role) if fields.actor_role is not None else "",
         # `None` is a claim that is not an action; the contract never infers a phase from a date.
         "phase": fields.phase,
         "phase_zh": _zh(PHASE_ZH, fields.phase) if fields.phase is not None else "",
@@ -440,7 +455,10 @@ def _claim_reason_zh(row: ClaimDecision) -> str:
     judgment = None if row.reader is None else row.reader.judgment
     if judgment is not None and judgment.importance is not None and judgment.backend is not None:
         cuts = cuts_for(judgment)
-        text += f"（增量重要性 {judgment.importance.value:.2f}；推送 ≥ {cuts.push}，重点 ≥ {cuts.key}）"
+        text += (
+            f"（增量重要性 {judgment.importance.value:.2f}；推送 ≥ {cuts.push}，"
+            f"已知事实 ≥ {cuts.held}，重点 P(4) ≥ {cuts.key_tail}）"
+        )
     if row.reader is not None and row.reader.earlier is not None:
         text += f"；{_zh(RENDER_ZH, row.reader.render)}此前已推送的一条"
     return text
@@ -614,6 +632,7 @@ def sent_headline(intents: Sequence[Mapping[str, Any]]) -> str | None:
 
 
 __all__ = [
+    "ACTOR_ROLE_ZH",
     "CHANGE_KIND_ZH",
     "CLAIM_DECISION_ZH",
     "CLAIM_REASON_ZH",

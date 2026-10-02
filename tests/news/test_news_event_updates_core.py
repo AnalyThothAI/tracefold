@@ -366,3 +366,73 @@ def test_source_authority_is_code_owned_provenance_not_evidence_identity() -> No
     named = Evidence.issue(plain.text, plain.source.model_copy(update={"source_authority": "issuer_first_party"}))
     assert named.ref == plain.ref
     assert Asset(symbol="CL", market_type="commodity", role="primary") in draft(plain).fields.assets
+
+
+@pytest.mark.parametrize("mode", ["assertion", "demand", "threat", "opinion"])
+def test_current_speech_documents_are_readable(mode: str) -> None:
+    _, _, head = update_one()
+    document = head.model_dump(mode="json")
+    document["claims"][0]["fields"]["mode"] = mode
+    document["claims"][0]["fields"].pop("actor_role")
+    assert EventUpdate.model_validate(document).claims[0].fields.mode == mode
+    document["claims"][0]["fields"]["actor_role"] = "head_of_state_or_government"
+    assert EventUpdate.model_validate(document).claims[0].fields.actor_role == "head_of_state_or_government"
+
+
+@pytest.mark.parametrize("mode", ["commentary", "conditional_threat"])
+def test_retired_modes_require_data_conversion(mode: str) -> None:
+    _, _, head = update_one()
+    document = head.model_dump(mode="json")
+    document["claims"][0]["fields"]["mode"] = mode
+    with pytest.raises(ValidationError):
+        EventUpdate.model_validate(document)
+
+
+@pytest.mark.parametrize("role", [None, "unknown", "head_of_state_or_government", "company_or_project"])
+def test_actor_role_reading_does_not_change_claim_identity(role: str | None) -> None:
+    source, extraction, head = update_one()
+    original = extraction.claims[0]
+    reread = original.model_copy(update={"fields": original.fields.model_copy(update={"actor_role": role})})
+    changed = extraction.model_copy(update={"claims": (reread,)})
+    first = assemble_update(source, changed, None, adopted_at_ms=STAMP + 9999)
+    assert first is not None
+    assert first.claims[0].ref == head.claims[0].ref
+    assert assemble_update(source, changed, head, adopted_at_ms=STAMP + 9999) is None
+
+
+@pytest.mark.parametrize(
+    "left,right",
+    [
+        ("observation", "decision"),
+        ("threat", "commitment"),
+        ("demand", "opinion"),
+        ("assertion", "guidance"),
+        ("forecast", "threat"),
+        ("unknown", "decision"),
+    ],
+)
+def test_equivalence_veto_compares_realization_classes_not_speech_reading_variants(left, right) -> None:
+    _, extraction, head = update_one()
+    current = extraction.claims[0]
+    previous = head.claims[0].model_copy(update={"fields": head.claims[0].fields.model_copy(update={"mode": right})})
+    current = current.model_copy(update={"fields": current.fields.model_copy(update={"mode": left})})
+    assert "mode" not in proven_mismatches(current, previous)
+
+
+@pytest.mark.parametrize("left,right", [("threat", "decision"), ("observation", "guidance"), ("promotion", "opinion")])
+def test_statement_act_and_promotion_remain_proven_different_realizations(left, right) -> None:
+    _, extraction, head = update_one()
+    current = extraction.claims[0]
+    previous = head.claims[0].model_copy(update={"fields": head.claims[0].fields.model_copy(update={"mode": right})})
+    current = current.model_copy(update={"fields": current.fields.model_copy(update={"mode": left})})
+    assert "mode" in proven_mismatches(current, previous)
+
+
+def test_console_labels_cover_the_only_current_speech_and_actor_contract() -> None:
+    from typing import get_args
+
+    from tracefold.news.update_view import ACTOR_ROLE_ZH, MODE_ZH
+    from tracefold.news.updates.contracts import ActorRole, Mode
+
+    assert set(MODE_ZH) == set(get_args(Mode))
+    assert set(ACTOR_ROLE_ZH) == set(get_args(ActorRole))

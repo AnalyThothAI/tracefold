@@ -267,10 +267,10 @@ def test_planner_intent_card_and_send_record_the_exact_frozen_body_and_receipt()
 def test_a_no_notification_plan_composes_no_card_and_sends_nothing() -> None:
     clock = Clock()
 
-    def commentary(source: FrozenInput) -> Extraction:
-        return Extraction(claims=(_claim(source.evidence[0], "a", mode="commentary"),))
+    def opinion(source: FrozenInput) -> Extraction:
+        return Extraction(claims=(_claim(source.evidence[0], "a", mode="opinion"),))
 
-    _adopt(clock, StubAnalyzer(commentary))
+    _adopt(clock, StubAnalyzer(opinion))
     provider = Provider()
     rig = Rig(provider, clock=clock, assessor=FeedOnly())
 

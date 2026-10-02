@@ -804,6 +804,13 @@ export interface components {
         NewsClaimData: {
             /** Action */
             action: string;
+            /** Actor Role */
+            actor_role?: string | null;
+            /**
+             * Actor Role Zh
+             * @default
+             */
+            actor_role_zh: string;
             /** Antecedent Refs */
             antecedent_refs?: string[];
             /** Assets */
@@ -835,7 +842,7 @@ export interface components {
              * Mode
              * @enum {string}
              */
-            mode: "observation" | "decision" | "commitment" | "conditional_threat" | "guidance" | "forecast" | "commentary" | "promotion" | "unknown";
+            mode: "observation" | "decision" | "commitment" | "guidance" | "forecast" | "promotion" | "unknown" | "assertion" | "demand" | "threat" | "opinion";
             /**
              * Mode Zh
              * @default

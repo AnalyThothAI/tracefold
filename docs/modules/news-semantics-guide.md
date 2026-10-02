@@ -266,7 +266,7 @@ S 曲线的拐点约在 0.42，低于判定阈值 0.55：LSH 负责高召回，�
 | 接地 | 每条引文都必须是冻结原文的子串，并落在本轮可见的片段里；`locate_quote` 容忍大小写、空白和包裹的引号，保存的是原文片段（[extraction.py](../../tracefold/news/updates/extraction.py)） |
 | 资产 | 只按被引来源的标签恢复拼写和市场类型，跨来源冲突记 unknown；资产只指可交易标的，地点、国家、组织等不算（#766） |
 
-**命题契约**（`ClaimFields`）：`subject · action · object · speaker · conditions[] · quantities[{name, value（十进制原文）, unit, period}] · effective_at · occurred_at · statistical_period · polarity · mode（9 种）· phase（8 种）· content_kind（8 种）· assets[{symbol, market_type, role}]`，另有 `statement`、`topics`（IPTC 子集，至多 3 个）和 `citations[]`。各字段由模型还是代码负责，见 [News 手册 · 抽取、判断与采用各司其职](news.md#抽取判断与采用各司其职)。
+**命题契约**（`ClaimFields`）：`subject · action · object · speaker · conditions[] · quantities[{name, value（十进制原文）, unit, period}] · effective_at · occurred_at · statistical_period · polarity · mode（11 种）· actor_role（9 种，可空）· phase（8 种）· content_kind（8 种）· assets[{symbol, market_type, role}]`，另有 `statement`、`topics`（IPTC 子集，至多 3 个）和 `citations[]`。各字段由模型还是代码负责，见 [News 手册 · 抽取、判断与采用各司其职](news.md#抽取判断与采用各司其职)。
 
 **样本第一轮**：6 条命题，2,300 输出 token，27.7 s。
 
@@ -279,6 +279,8 @@ S 曲线的拐点约在 0.42，低于判定阈值 0.55：LSH 负责高召回，�
 | c5 | Lido maintains an ad hoc reserve fund of over 6,750 stETH | new_quantity / observation | stETH 主 | 常设事实被判为首次披露的数字；“over” 的下界丢失 |
 | c6 | A full investigation … is underway | other / observation / executing | 无 | 原文未说明由谁调查，subject 却写成 “MetaMask Staking / Lido” |
 | — | 漏抽：“No action is required from stETH holders.” 与 “MetaMask does not manage withdrawal keys.” | | | 对 stETH 持有者恰恰是关键的安抚信息 |
+
+**「现在」#791**：抽取非引文字段统一英文，引用保留原文；mode 为被归因方的言语行为，actor_role 为说话方或组织主体角色。角色不改命题身份，不直接控制 policy。言语行为、九类角色和具体定义见 [News 手册](news.md#当前英文言语行为与角色791)。存量旧读数通过停写前向迁移转换；实时读取端只接受当前枚举。
 
 当时约 383 输出 token / 条命题。**「现在」**：#766 改为紧凑 JSON 后，每条命题的输出 token 约减少 35%，长清单截断也减少了。抽取覆盖率没有度量，数量边界（over / up to）也不进入结构，状态见 [§11](#section-发现与当前状态)。
 
@@ -295,7 +297,7 @@ S 曲线的拐点约在 0.42，低于判定阈值 0.55：LSH 负责高召回，�
 
 **路由**：生成式判断默认与抽取共用 `llm.news_triage_model`。可选的 `llm.news_triage_judgment_model` 让判断在同一 endpoint、密钥与请求配置下改问另一个模型名（#778）。生产自 2026-10-01 07:36 UTC 起设为 llama-swap 的 `qwen3.8-27b:judge` 变体：温度 0，与默认模型共用进程。读者判断的生成式回退随之一起改；抽取和卡片仍用默认模型。见 [News 手册 · 抽取、判断与采用各司其职](news.md#抽取判断与采用各司其职)。
 
-**关系定义（`QUESTION_VERSION = news_questions_v4`，#772）** 以**同一核心事实**为界，说法与读者锚点题一致：同一行为者、同一动作或事件、同一对象。
+**关系定义（`QUESTION_VERSION = news_questions_v5`，#772）** 以**同一核心事实**为界，说法与读者锚点题一致：同一行为者、同一动作或事件、同一对象。
 
 | 关系 | 含义（摘要） | 新命题的变更类型 | 读者新颖度 |
 | --- | --- | --- | --- |
@@ -360,13 +362,13 @@ S 曲线的拐点约在 0.42，低于判定阈值 0.55：LSH 负责高召回，�
 
 ### 读者判断
 
-一次请求问两道题：增量重要性（5 档 `Score`）和锚点（`Choice`：m1…mN 或 none）。原生后端是 System One 上的 JEV `jev-1.13`（`llm.news_reader_judgment`），超时 3 s，失败时回退一次到生成式判断路由（**「现在」**生产上即 `:judge` 温度 0 变体）。分数取期望值 Σ i·pᵢ。切点按作答后端设定：native 为推送 2.3 / 重点 2.98，generated 为 2.4 / 3.05；锚点 P(none) < 0.2 时视为有锚点，推送门槛提高到重点切点。`confidence` 会被记录，但不参与决定。
+一次请求问两道题：增量重要性（5 档 `Score`）和锚点（`Choice`：m1…mN 或 none）。原生后端是 System One 上的 JEV `jev-1.13`（`llm.news_reader_judgment`），超时 3 s，失败时回退一次到生成式判断路由（**「现在」**生产上即 `:judge` 温度 0 变体）。分数取期望值 Σ i·pᵢ。当前输入 v3 的 as_of 固定为首次可见的 UTC 日期。统计量包括期望值、P(3)+P(4) 和 P(4)；普通推送用期望值，重点用 P(4)。有锚点或链接细节先过 held 线，才可以标重点。native / generated 各自需要真实重问校准；目前数值是 #791 初始网格，未通过门槛见 [B 报告](../reports/news-791-b.md)。`confidence` 会被记录，但不参与决定。
 
 **样本**（native，6 条并发，2.56 s）：
 
 | 命题 | 分布 [0, 1, 2, 3, 4] | 期望值 | conf | 结果 |
 | --- | --- | ---: | ---: | --- |
-| c1 采取预防措施 | .00 .01 .06 .92 .01 | 2.93 | .92 | 推送；差 0.05 未达重点 |
+| c1 采取预防措施 | .00 .01 .06 .92 .01 | 2.93 | .92 | 推送；P(4)=.01 未达重点尾部线 |
 | c2 退出 Lido 验证节点 | .01 .01 .11 .87 .00 | 2.84 | .87 | 推送 |
 | c3 已开始退出，10/7 完成 | .01 .11 .28 .60 .00 | 2.47 | .54 | 推送 |
 | c4 45 天内回流 | .20 .11 .62 .07 .00 | 1.56 | .52 | 信息流 |
@@ -375,7 +377,7 @@ S 曲线的拐点约在 0.42，低于判定阈值 0.55：LSH 负责高召回，�
 
 ### decide()
 
-[`decide()`](../../tracefold/news/notifications/policy.py) 按固定顺序逐命题应用 12 条规则（退休、发送未决、stale、known、更正、上币保护、大幅当日变动、读者判断……），完整表格见 [News 手册](news.md#notification)。样本的 6 条命题都走到读者判断这一条：c1–c3 推送，c4–c6 只进信息流；没有命题达到 2.98，所以不是重点。
+[`decide()`](../../tracefold/news/notifications/policy.py) 按固定顺序逐命题应用 12 条规则（退休、发送未决、stale、known、更正、上币保护、大幅当日变动、读者判断……），完整表格见 [News 手册](news.md#notification)。样本的 6 条命题都走到读者判断这一条：c1–c3 推送，c4–c6 只进信息流；这些是历史样本分数：没有命题的 P(4) 达到当前重点尾部线；历史分数不能证明 reader v3 rubric 的质量。
 
 <a id="section-卡片与发送"></a>
 ## 10 · 卡片与发送
@@ -411,7 +413,7 @@ CardComposer（生产为 qwen，样本 1,685 输入 / 231 输出 token，5.06 s�
 | 生成输出 token 偏重（缩进约占 39%） | 已改善 | #766 紧凑 JSON，每命题输出约 −35% |
 | 旧词法召回的跨语言漏召回与重复比较 | 由 #791 共享命题排序替换；验收以真实金标重放为准 | 见校准报告 |
 | 来源资产标签噪声（LINK、ETC、COIN、FI、EX 等误挂） | 接受误差（owner 决定） | #766 指令限定资产为可交易标的；能源语境 CL 另见 #769 |
-| 推送阈值作用在期望值上，置信度未使用 | 未处理（可选） | — |
+| 官方政策表态分级与重点统计量 | #791 英文 v5 / reader v3 已实现，E1/E2 尚需全部通过才能合并 | [B 报告](../reports/news-791-b.md)；重点改为 P(4)，confidence 仍仅记录 |
 | 抽取覆盖率未度量；数量边界（over / up to）丢失 | 未处理（可选） | — |
 | 卡片行序按命题哈希字典序 | 未处理（小缺陷） | `notifications/contracts.py` `selected_claim_refs` 排序 + `card.py` 拼接 |
 | “更强成员”规则过宽（origin 字符串不同即切换焦点） | 成本影响已由 #773 消除；规则本身未改 | `admission.py` `_member_result` |

@@ -104,7 +104,7 @@ docker compose exec -T workers tracefold news retry-work \
 
 独立模型服务使用 [News embedding runtime](../services/news_embedding/README.md) 的 `embedding-build`、`embedding-download`、`embedding-up` 和 `embedding-status` 命令；它们复用项目部署锁，只操作可选模型服务。默认 `make up` 不启动或下载模型。模型、校准身份和运行时固定探针验证完成后，配置 Workers 使用 `http://news-embedding:8080/v1`，默认批次为 2。模型缓存独立挂载，应用升级不把权重打入应用镜像。
 
-升级前备份并停止写者，迁移至 0426 后启动新镜像；新索引行随采用和有界历史投影写入。Janitor 内的命题索引循环独立排空有界批次，有进展时让出执行后继续，空闲或暂时故障时等待 30 秒；保留原维护清理周期。补算不因每分钟只执行一批而持续落后于新增命题，数据库事务结束后才调用模型。回滚先 downgrade 至 0425，恢复旧检索生成列、函数和三元组索引，再启动旧镜像。PR-A 的采用文档与冻结回执形状不变；应用只保留共享命题召回的单一路径。
+升级前备份并停止写者，迁移至当前 0427 head 后启动匹配新镜像；新索引行随采用和有界历史投影写入。Janitor 内的命题索引循环独立排空有界批次，有进展时让出执行后继续，空闲或暂时故障时等待 30 秒；保留原维护清理周期。补算不因每分钟只执行一批而持续落后于新增命题，数据库事务结束后才调用模型。0427 是前向 mode 转换，应用后回退须恢复已核验的迁移前完整备份和对应旧镜像，不得仅 downgrade 0426/0425 或直接启动旧镜像。PR-A 的采用文档与冻结回执形状不变；应用只保留共享命题召回的单一路径。
 
 每日只读回执运行 `uv run --locked python scripts/news_recall_receipts.py --as-of-ms <冻结时刻>`，连接由 `TRACEFOLD_READONLY_DSN` 提供，不放进命令参数。配套 SQL 统计关系对数、有效关系产出率及 prior / receipt 两端降级占比；历史没有诊断的调用保持未知。漏召回代理检查 48 小时内先后已送、超过校准稠密下限、但无两跳链接或实际读者锚点的命题对。缺失向量单列未知数，代理不能证明同一事实。`tracefold_news_reader_changed_total{stage="plan"|"send"}` 记录最终 CAS 冲突次数，不重复计算内部重读。
 
@@ -211,7 +211,7 @@ docker compose exec -T executor tracefold trading issue '/pause maintenance' \
 
 ### #764 P4 账本收敛
 
-P4 在 `20261001_0424` 完成账本收敛，当前 head 为 `20261002_0425`。P4 切换前保存应用状态和交易所持仓/挂单，停 Analysis 并在 300 秒内排空 pending，再停 Executor、Workers 和 Serve；完整备份和 14 张旧表导出应记录 sha256。迁移用 13 组校验确认事实与投影一致，启动后核对 pause/halt、订单身份与 70 秒内的账户对账。0425 仅增加语义任务部分索引，无退役表导出；仍按迁移前停写者、成功后启动匹配镜像的顺序执行。具体顺序及回滚见 [迁移手册](MIGRATIONS.md)。进程 UUID 与毫秒心跳属于平台，停止或过期的 executor 心跳不能证明可以发布 Signal；账户的签名对账证据仍属于 Trading。
+P4 在 `20261001_0424` 完成账本收敛，当前 head 为 `20261002_0427`。P4 切换前保存应用状态和交易所持仓/挂单，停 Analysis 并在 300 秒内排空 pending，再停 Executor、Workers 和 Serve；完整备份和 14 张旧表导出应记录 sha256。迁移用 13 组校验确认事实与投影一致，启动后核对 pause/halt、订单身份与 70 秒内的账户对账。0425 增加语义任务索引及 reader clock；0426 增加共享命题召回，0427 前向转换历史 mode 读数，无退役表导出。仍按迁移前停写者、核验完整 dump 与旧镜像身份、成功后启动匹配镜像的顺序执行；0427 后回退必须恢复配套备份与旧镜像。具体顺序及回滚见 [迁移手册](MIGRATIONS.md)。进程 UUID 与毫秒心跳属于平台，停止或过期的 executor 心跳不能证明可以发布 Signal；账户的签名对账证据仍属于 Trading。
 
 ### #746 Trading 硬切
 
