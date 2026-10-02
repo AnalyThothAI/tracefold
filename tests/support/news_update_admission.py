@@ -41,6 +41,7 @@ def raw(
     link: str | None = None,
     source: str = "Reuters",
     ingest_mode: str = "live",
+    source_age_ms: int = 0,
     strategy_id: str = "1018",
 ) -> BusMessage:
     params = {
@@ -49,7 +50,7 @@ def raw(
         "link": link or f"https://example.org/{record}",
         "source": source,
         "engineType": "news",
-        "ts": stamp,
+        "ts": stamp - source_age_ms,
         "coins": [{"symbol": "BTC", "grade": "A"}],
         "strategy": {"id": int(strategy_id), "name": "News Score > 70", "engine_type": "news", "source_type": "news"},
         "aiRating": {"score": 90},
@@ -129,6 +130,6 @@ def add_member_evidence(event_id: str, item_id: str, text: str, *, now_ms: int) 
             )
             material = repos.news.evidence_snapshot_material(event_id=event_id, focus_item_id=None)
             snapshot = prepare_evidence_snapshot(material, event_id=event_id, now_ms=now_ms, focus_fact=None)
-            assert append_admission_evidence(repos, snapshot, ingest_mode="live", now_ms=now_ms) is not None
+            assert append_admission_evidence(repos, snapshot, history_only=False, now_ms=now_ms) is not None
     finally:
         conn.close()

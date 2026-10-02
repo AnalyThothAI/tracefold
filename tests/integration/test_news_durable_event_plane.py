@@ -46,6 +46,7 @@ from tracefold.news.bus import (
     new_trace_id,
     now_ms,
 )
+from tracefold.news.events.gate import RECOVERY_LIVE_MAX_AGE_MS
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
@@ -92,7 +93,7 @@ def _module_connection(postgres_module_clone_dsn: str) -> Iterator[Any]:
 
 @pytest.fixture
 def conn(_module_connection: Any) -> Iterator[Any]:
-    _module_connection.execute("TRUNCATE news_items, news_market_observations RESTART IDENTITY CASCADE")
+    _module_connection.execute("TRUNCATE news_items, news_jobs, news_market_observations RESTART IDENTITY CASCADE")
     _module_connection.commit()
     yield _module_connection
     _module_connection.rollback()
@@ -166,11 +167,14 @@ def _open_incidents(connection: Any) -> list[dict[str, Any]]:
     ]
 
 
-def test_official_recovery_reaches_admission_through_the_real_broker(conn: Any) -> None:
-    hit = {**_one_hit(), "id": " 42 ", "ts": now_ms() - 500}
+@pytest.mark.parametrize("age_ms", [500, RECOVERY_LIVE_MAX_AGE_MS + 1_000])
+def test_official_recovery_reaches_admission_through_the_real_broker(conn: Any, age_ms: int) -> None:
+    stamp = now_ms()
+    hit = {**_one_hit(), "id": " 42 ", "ts": stamp - age_ms}
     strategy_id = str((hit.get("strategy") or {}).get("id") or "")
-    older = {**hit, "id": "older", "ts": now_ms() - 600_000}
+    older = {**hit, "id": "older", "ts": hit["ts"] - 600_000}
     database = _Database(conn)
+    timely = age_ms <= RECOVERY_LIVE_MAX_AGE_MS
 
     class History:
         async def get_strategy_list(self, **_kwargs: Any) -> dict[str, Any]:
@@ -180,9 +184,8 @@ def test_official_recovery_reaches_admission_through_the_real_broker(conn: Any) 
             return {"success": True, "data": [hit, older], "page": page, "limit": 100, "total": 2}
 
     repos = repositories_for_connection(conn)
-    stamp = now_ms()
     with repos.transaction():
-        incident_id = repos.news.open_incident(cause_class="broker_unavailable", now_ms=stamp - 1_000)
+        incident_id = repos.news.open_incident(cause_class="broker_unavailable", now_ms=hit["ts"] - 500)
         assert repos.news.close_open_incidents(cause_classes=["broker_unavailable"], now_ms=stamp) == 1
 
     async def scenario() -> None:
@@ -199,7 +202,19 @@ def test_official_recovery_reaches_admission_through_the_real_broker(conn: Any) 
                 stop.set()
 
             await asyncio.wait_for(bus.consume(Q_RAW, admit, prefetch=1, stop_event=stop), timeout=30)
-            assert (await bus.queue_depths())[bus.queue_name(Q_TRIAGE)]["messages"] == 0
+            assert (await bus.queue_depths())[bus.queue_name(Q_TRIAGE)]["messages"] == int(timely)
+            if timely:
+                wakes: list[BusMessage] = []
+                woke = asyncio.Event()
+
+                async def observe_wake(message: BusMessage) -> None:
+                    wakes.append(message)
+                    woke.set()
+
+                await asyncio.wait_for(bus.consume(Q_TRIAGE, observe_wake, prefetch=1, stop_event=woke), timeout=30)
+                assert [(message.kind, message.payload["event_id"]) for message in wakes] == [
+                    ("event", _events(conn)[0]["event_id"])
+                ]
 
     asyncio.run(scenario())
 
@@ -208,7 +223,14 @@ def test_official_recovery_reaches_admission_through_the_real_broker(conn: Any) 
         (incident_id,),
     ).fetchone()
     assert incident is not None and (incident["recovery_status"], incident["recovered_count"]) == ("recovered", 1)
-    assert [(event["ingest_mode"], event["admission"]) for event in _events(conn)] == [("recovery", "recovery")]
+    events = _events(conn)
+    assert [(event["ingest_mode"], event["admission"]) for event in events] == [
+        ("recovery", "candidate" if timely else "recovery")
+    ]
+    jobs = conn.execute("SELECT subject_id FROM news_jobs WHERE job_kind='semantic'").fetchall()
+    assert [row["subject_id"] for row in jobs] == ([events[0]["event_id"]] if timely else [])
+    item = conn.execute("SELECT first_ingest_mode,published_at_ms FROM news_items").fetchone()
+    assert (item["first_ingest_mode"], item["published_at_ms"]) == ("recovery", hit["ts"])
 
 
 def test_a_committed_event_whose_channel_dies_before_the_ack_converges_to_one_event(conn: Any) -> None:

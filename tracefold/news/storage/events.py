@@ -24,16 +24,15 @@ SELECT e.event_id,e.comparison_title,e.leader_title,e.opened_at_ms,e.grounded_as
 """
 
 
-def joinable_admissions(ingest_mode: str) -> list[str]:
+def joinable_admissions(admission: str) -> list[str]:
     """The admissions of Events a new frame may join by exact text or near match.
 
-    A live frame joins only an admitted Event: a recovery Event produces no semantic work, reader card or
-    catalyst, so absorbing a live report into it would silence that report. A recovered frame is history
-    and never wakes semantics, so it may join either.
+    Timely live or recovered evidence joins only admitted Events. History-only evidence may also join
+    a recovery Event, without requesting semantic work.
     """
 
     admitted = sorted(ADMITTED_ADMISSIONS)
-    return admitted if ingest_mode == "live" else [*admitted, "recovery"]
+    return [*admitted, "recovery"] if admission == "recovery" else admitted
 
 
 def prepare_evidence_snapshot(
@@ -473,7 +472,7 @@ class EventStorage:
         event_kind: EventKind,
         fingerprint: str,
         now_ms: int,
-        ingest_mode: str,
+        admission: str,
     ) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
@@ -484,7 +483,7 @@ class EventStorage:
                AND e.evidence_version IS NOT NULL
              ORDER BY opened_at_ms ASC LIMIT 1
             """,
-            (dedupe_family, event_kind, joinable_admissions(ingest_mode), fingerprint, int(now_ms)),
+            (dedupe_family, event_kind, joinable_admissions(admission), fingerprint, int(now_ms)),
         ).fetchone()
         return dict(row) if row else None
 
@@ -495,7 +494,7 @@ class EventStorage:
         event_kind: EventKind,
         band_keys: Sequence[str],
         now_ms: int,
-        ingest_mode: str,
+        admission: str,
     ) -> list[dict[str, Any]]:
         pairs = [(index, key) for index, key in enumerate(band_keys)]
         if not pairs:
@@ -507,7 +506,7 @@ class EventStorage:
                 dedupe_family,
                 int(now_ms),
                 event_kind,
-                joinable_admissions(ingest_mode),
+                joinable_admissions(admission),
             ),
         ).fetchall()
         return [dict(r) for r in rows]

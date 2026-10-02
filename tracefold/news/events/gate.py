@@ -33,6 +33,7 @@ _TICKER_TAG_STOP: Final = frozenset(
 )
 _GROUNDING_GRADES: Final = frozenset({"B+", "A", "A+"})
 _STRONG_GRADES: Final = frozenset({"A", "A+"})
+RECOVERY_LIVE_MAX_AGE_MS: Final = 30 * 60_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +81,7 @@ class GateInput:
     provider_score: float | None
     coins: tuple[Mapping[str, Any], ...]
     ingest_mode: str  # live | recovery
+    source_age_ms: int | None = None
     watchlist_symbols: frozenset[str] = frozenset()
     raw_first_line: str = ""
     # #89: symbol -> instrument_class from the venue snapshot (aliases included). None falls back to the `XYZ-`
@@ -211,9 +213,9 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
     reasons: list[str] = []
 
     listing = inp.engine_type == "listing"
-    if inp.ingest_mode == "recovery":
+    if inp.ingest_mode == "recovery" and (inp.source_age_ms is None or inp.source_age_ms > RECOVERY_LIVE_MAX_AGE_MS):
         admission: Admission = "recovery"
-        reasons.append("recovery_never_delivers")
+        reasons.append("recovered_after_live_window")
     elif listing:
         admission = "listing_deterministic"
     else:
@@ -236,6 +238,7 @@ def evaluate_gate(inp: GateInput) -> GateVerdict:
 
 
 __all__ = [
+    "RECOVERY_LIVE_MAX_AGE_MS",
     "GateFlags",
     "GateInput",
     "GateVerdict",

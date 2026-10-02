@@ -334,14 +334,20 @@ def test_analyzed_material_without_a_claim_is_not_reextracted_on_the_next_revisi
     assert asyncio.run(store.head(EVENT)) == first
 
 
-def test_recovery_evidence_joins_its_event_but_never_wakes_semantics() -> None:
+def test_history_only_recovery_evidence_joins_its_event_without_waking_semantics() -> None:
     bus = RecordingBus()
     deduper = DeduperConsumer(bus=bus, db=ThreadedDb(), watchlist_symbols=frozenset({"BTC"}))
     asyncio.run(deduper.handle(raw(7201, f"{TITLE} effective October 1", stamp=STAMP)))
     event_id = event_of(7201)
     asyncio.run(
         deduper.handle(
-            raw(7202, f"{TITLE} effective October 1, officials said", stamp=STAMP + 1_000, ingest_mode="recovery")
+            raw(
+                7202,
+                f"{TITLE} effective October 1, officials said",
+                stamp=STAMP + 1_000,
+                ingest_mode="recovery",
+                source_age_ms=30 * 60_000 + 1,
+            )
         )
     )
 
@@ -540,7 +546,7 @@ def test_a_live_report_is_not_absorbed_by_a_recovery_event() -> None:
     bus = RecordingBus()
     deduper = DeduperConsumer(bus=bus, db=ThreadedDb(), watchlist_symbols=frozenset({"BTC"}))
     text = f"{TITLE} effective October 1"
-    asyncio.run(deduper.handle(raw(7501, text, stamp=STAMP, ingest_mode="recovery")))
+    asyncio.run(deduper.handle(raw(7501, text, stamp=STAMP, ingest_mode="recovery", source_age_ms=30 * 60_000 + 1)))
     recovered = event_of(7501)
     assert bus.wakes() == []
     asyncio.run(deduper.handle(raw(7502, text, stamp=STAMP + 1_000)))
@@ -548,7 +554,9 @@ def test_a_live_report_is_not_absorbed_by_a_recovery_event() -> None:
     assert live != recovered
     assert work(live)["wanted_revision"] == 1 and bus.wakes() == [f"event:{live}:1"]
     # A later recovered copy may still join the recovery Event as history.
-    asyncio.run(deduper.handle(raw(7503, text, stamp=STAMP + 2_000, ingest_mode="recovery")))
+    asyncio.run(
+        deduper.handle(raw(7503, text, stamp=STAMP + 2_000, ingest_mode="recovery", source_age_ms=30 * 60_000 + 1))
+    )
     assert event_of(7503) in {recovered, live}
 
 

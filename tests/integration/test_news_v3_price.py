@@ -232,6 +232,20 @@ def test_quote_working_set_includes_recent_oi_ledger_symbols(conn) -> None:
     assert repos.price.quote_target_symbols(since_ms=NOW - HOUR, limit=1) == ["DOGE"]
 
 
+def test_quote_working_set_uses_admission_for_recovered_events(conn) -> None:
+    _event(conn, "fresh", symbols=("BTC",), opened_at_ms=NOW, ingest_mode="recovery")
+    _event(
+        conn,
+        "listing",
+        symbols=("ETH",),
+        opened_at_ms=NOW - 1,
+        ingest_mode="recovery",
+        admission="listing_deterministic",
+    )
+    _event(conn, "history", symbols=("DOGE",), opened_at_ms=NOW - 2, ingest_mode="recovery", admission="recovery")
+    assert repositories_for_connection(conn).price.quote_target_symbols(since_ms=NOW - HOUR) == ["BTC", "ETH"]
+
+
 def test_a_typed_question_never_resolves_to_a_same_name_contract_of_another_market(conn) -> None:
     """#651 §6.2, against the real catalogue: `V` is Visa and a crypto venue also lists a `V`.
 

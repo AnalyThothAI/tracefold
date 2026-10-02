@@ -45,7 +45,6 @@ from ..source_contracts import (
     classify_source_contract,
     classify_source_contracts,
     market_route,
-    source_contract_admission,
     source_identity,
 )
 from ..storage.events import prepare_evidence_snapshot
@@ -298,18 +297,15 @@ def _prepare_frame(
                     provider_score=provider_score,
                     coins=coins,
                     ingest_mode=ingest_mode,
+                    source_age_ms=(
+                        None
+                        if event.entry.published_at_ms is None
+                        else int(observed_at_ms) - int(event.entry.published_at_ms)
+                    ),
                     watchlist_symbols=watchlist_symbols,
                     raw_first_line=gate_context,
                     instrument_classes=instrument_classes,
                 )
-            )
-            gate = replace(
-                gate,
-                admission=source_contract_admission(
-                    source_contract,
-                    generic_admission=gate.admission,
-                    ingest_mode=ingest_mode,
-                ),
             )
             tokens = comparison_tokens(comparison)
             shareable = len(tokens) >= 3
@@ -695,9 +691,7 @@ def _compatible(a: tuple[set[str], set[str]], b: tuple[set[str], set[str]]) -> b
     return not (a[1] and b[1] and not (a[1] & b[1]))
 
 
-def _load_near_candidates(
-    repos: Any, prepared: _PreparedAdmission, *, ingest_mode: str, now_ms: int
-) -> tuple[dict[str, Any], ...]:
+def _load_near_candidates(repos: Any, prepared: _PreparedAdmission, *, now_ms: int) -> tuple[dict[str, Any], ...]:
     """Load bounded candidate rows without holding a write transaction."""
 
     if not prepared.shareable:
@@ -709,7 +703,7 @@ def _load_near_candidates(
             event_kind=prepared.source_contract.event_kind or "news",
             band_keys=prepared.band_keys,
             now_ms=now_ms,
-            ingest_mode=ingest_mode,
+            admission=prepared.gate.admission,
         )
     )
 
@@ -894,7 +888,7 @@ def admit_item(
             event_kind=source_contract.event_kind or "news",
             fingerprint=fingerprint,
             now_ms=now_ms,
-            ingest_mode=ingest_mode,
+            admission=gate.admission,
         )
         if shareable
         else None
@@ -943,7 +937,9 @@ def admit_item(
             evidence_revised=evidence_revised,
         )
         if append_evidence:
-            _append_inline(repos, result, item_id=item_id, fact=fact, ingest_mode=ingest_mode, now_ms=now_ms)
+            _append_inline(
+                repos, result, item_id=item_id, fact=fact, history_only=gate.admission == "recovery", now_ms=now_ms
+            )
         return result
 
     if shareable:
@@ -960,7 +956,7 @@ def admit_item(
             if _near_match_prepared
             else _select_near_match(
                 prepared,
-                _load_near_candidates(repos, prepared, ingest_mode=ingest_mode, now_ms=now_ms),
+                _load_near_candidates(repos, prepared, now_ms=now_ms),
             )
         )
         if near_match is not None:
@@ -993,7 +989,9 @@ def admit_item(
                 evidence_revised=evidence_revised,
             )
             if append_evidence:
-                _append_inline(repos, result, item_id=item_id, fact=fact, ingest_mode=ingest_mode, now_ms=now_ms)
+                _append_inline(
+                    repos, result, item_id=item_id, fact=fact, history_only=gate.admission == "recovery", now_ms=now_ms
+                )
             return result
     news.insert_event(
         event_id=event_id,
@@ -1044,12 +1042,14 @@ def admit_item(
         evidence_revised=evidence_revised,
     )
     if append_evidence:
-        _append_inline(repos, created, item_id=item_id, fact=fact, ingest_mode=ingest_mode, now_ms=now_ms)
+        _append_inline(
+            repos, created, item_id=item_id, fact=fact, history_only=gate.admission == "recovery", now_ms=now_ms
+        )
     return created
 
 
 def _append_inline(
-    repos: Any, result: AdmitResult, *, item_id: str, fact: FactUnit, ingest_mode: str, now_ms: int
+    repos: Any, result: AdmitResult, *, item_id: str, fact: FactUnit, history_only: bool, now_ms: int
 ) -> dict[str, Any] | None:
     """The synchronous admission path's evidence append, under the same rule as the consumer's."""
 
@@ -1060,16 +1060,16 @@ def _append_inline(
     snapshot = prepare_evidence_snapshot(
         material, event_id=result.event_id, now_ms=now_ms, focus_fact=fact if focused else None
     )
-    return append_admission_evidence(repos, snapshot, ingest_mode=ingest_mode, now_ms=now_ms)
+    return append_admission_evidence(repos, snapshot, history_only=history_only, now_ms=now_ms)
 
 
 def append_admission_evidence(
-    repos: Any, snapshot: Mapping[str, Any], *, ingest_mode: str, now_ms: int
+    repos: Any, snapshot: Mapping[str, Any], *, history_only: bool, now_ms: int
 ) -> dict[str, Any] | None:
-    """Append one evidence snapshot and, when it is new evidence of an admitted live Event, want its semantics.
+    """Append one evidence snapshot and, for timely evidence of an admitted Event, want its semantics.
 
     Runs inside the caller's single admission transaction, so evidence and the semantic work it asks
-    for commit together. Returns the wake route to publish after commit, or None. Recovery ingest and a
+    for commit together. Returns the wake route to publish after commit, or None. History-only evidence and a
     suppressed Event record evidence without waking semantics; an unchanged snapshot, or one whose change
     is metadata only (a strategy re-send, a score), wakes nothing.
     A near or exact match is evidence like any other member: it is recalled into the Event and the
@@ -1079,7 +1079,7 @@ def append_admission_evidence(
     news = repos.news
     appended = news.append_prepared_evidence_snapshot(snapshot)
     if (
-        ingest_mode == "recovery"
+        history_only
         or snapshot.get("previous_sha256") == snapshot["evidence_sha256"]
         or not snapshot["semantic_changed"]
     ):
@@ -1305,7 +1305,7 @@ class DeduperConsumer:
                 repos: Any,
                 admission: _PreparedAdmission = prepared,
             ) -> tuple[dict[str, Any], ...]:
-                return _load_near_candidates(repos, admission, ingest_mode=ingest_mode, now_ms=stamp)
+                return _load_near_candidates(repos, admission, now_ms=stamp)
 
             candidates = await self.db.read(
                 "news_deduper_candidates",
@@ -1363,6 +1363,7 @@ class DeduperConsumer:
             covered = {event_id for event_id, _, _ in targets}
             targets.extend((str(event_id), None, None) for event_id in revised if event_id not in covered)
         wakes: dict[str, dict[str, Any]] = {}
+        history_only = all(prepared.gate.admission == "recovery" for prepared in prepared_frame.admissions)
         for event_id, focus_item_id, focus_fact in targets:
 
             def _load_evidence(
@@ -1391,7 +1392,7 @@ class DeduperConsumer:
             )
 
             def _append_evidence(repos: Any, snapshot: dict[str, Any] = prepared_snapshot) -> dict[str, Any] | None:
-                return append_admission_evidence(repos, snapshot, ingest_mode=ingest_mode, now_ms=stamp)
+                return append_admission_evidence(repos, snapshot, history_only=history_only, now_ms=stamp)
 
             route = await self.db.tx(
                 "news_evidence_snapshot_append",
