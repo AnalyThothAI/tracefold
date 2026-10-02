@@ -1,6 +1,6 @@
 import { NewsPage } from "@features/news";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { appStatusFixture } from "@tests/fixtures/appRouteFixtures";
 import {
   NEWS_NOW_MS,
@@ -9,6 +9,7 @@ import {
   newsFeedEventFixture,
   newsFeedFixture,
   newsOutcomeFixture,
+  newsProcessingFixture,
   newsQuoteFixture,
   newsStatusFixture,
   newsTimelineFixture,
@@ -17,7 +18,7 @@ import {
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
 import type { ReactNode } from "react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 describe("NewsPage", () => {
@@ -974,12 +975,316 @@ describe("NewsPage", () => {
       "/news/events/evt-global-policy",
     );
 
-    expect(await screen.findByRole("region", { name: "当前行情" })).toBeInTheDocument();
+    await screen.findByRole("tab", { name: "当前行情" });
+    fireEvent.click(screen.getByRole("tab", { name: "当前行情" }));
+    expect(screen.getByRole("tabpanel", { name: "当前行情" })).toBeVisible();
     expect(await screen.findByText("BTRUSDT")).toBeInTheDocument();
     expect(screen.getAllByText("0.16059").length).toBeGreaterThan(0);
   });
 
   // ------------------------------------------------------------------ detail
+  it("uses one shared card with four accessible panels instead of an anchor directory", async () => {
+    const { container } = renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
+    );
+    const tablist = await screen.findByRole("tablist", { name: "事件详情" });
+    const names = ["事件内容", "来源证据", "当前行情", "处理记录"];
+    expect(within(tablist).getAllByRole("tab")).toHaveLength(4);
+    const panels = screen.getAllByRole("tabpanel", { hidden: true });
+    expect(panels).toHaveLength(4);
+    expect(screen.getAllByRole("tabpanel")).toHaveLength(1);
+    const panelParent = panels[0].parentElement;
+    for (const panel of panels) expect(panel.parentElement).toBe(panelParent);
+    for (const name of names) {
+      const tab = within(tablist).getByRole("tab", { name });
+      fireEvent.click(tab);
+      const panel = screen.getByRole("tabpanel", { name });
+      expect(screen.getAllByRole("tabpanel")).toEqual([panel]);
+      expect(tab).toHaveAttribute("aria-selected", "true");
+      expect(tab).toHaveAttribute("tabindex", "0");
+      expect(tab).toHaveAttribute("aria-controls", panel.id);
+      expect(panel).toHaveAttribute("aria-labelledby", tab.id);
+    }
+    expect(screen.queryByRole("navigation", { name: "事件详情目录" })).toBeNull();
+    expect(container.querySelector('a[href^="#"]')).toBeNull();
+    expect(screen.queryByRole("button", { name: "中文释义" })).toBeNull();
+  });
+
+  it("supports cold query selection, tab keyboard navigation and browser history", async () => {
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy?tab=source",
+    );
+    const source = await screen.findByRole("tab", { name: "来源证据" });
+    expect(source).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "来源证据" })).toBeVisible();
+    source.focus();
+    fireEvent.keyDown(source, { key: "ArrowRight" });
+    const market = screen.getByRole("tab", { name: "当前行情" });
+    expect(market).toHaveFocus();
+    expect(market).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("location")).toHaveTextContent("?tab=market");
+    fireEvent.keyDown(market, { key: "End" });
+    expect(screen.getByRole("tab", { name: "处理记录" })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "处理记录" }), { key: "Home" });
+    expect(screen.getByRole("tab", { name: "事件内容" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "测试后退" }));
+    await waitFor(() =>
+      expect(screen.getByRole("tab", { name: "处理记录" })).toHaveAttribute(
+        "aria-selected",
+        "true",
+      ),
+    );
+    expect(screen.getByTestId("location")).toHaveTextContent("?tab=processing");
+  });
+
+  it("ignores invalid reading locations and removes them on the next tab action", async () => {
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy?tab=unknown&focus=unowned#news-source",
+    );
+    const content = await screen.findByRole("tab", { name: "事件内容" });
+    expect(content).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("tab", { name: "来源证据" }));
+    expect(screen.getByTestId("location")).toHaveTextContent(
+      "/news/events/evt-global-policy?tab=source",
+    );
+    expect(screen.getByTestId("location")).not.toHaveTextContent("unknown");
+    expect(screen.getByTestId("location")).not.toHaveTextContent("focus=");
+    expect(screen.getByTestId("location")).not.toHaveTextContent("#");
+  });
+
+  it("keeps expanded claim details and switches citation and relation targets in place", async () => {
+    const { container } = renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
+    );
+    const content = await screen.findByRole("tabpanel", { name: "事件内容" });
+    const claim = content.querySelector<HTMLElement>("#news-claim-1")!;
+    const disclosure = within(claim).getByText("引用与命题详情").closest("details")!;
+    fireEvent.click(within(disclosure).getByText("引用与命题详情"));
+    expect(disclosure).toHaveAttribute("open");
+    fireEvent.click(within(claim).getByRole("button", { name: /来源 01/ }));
+    expect(screen.getByRole("tabpanel", { name: "来源证据" })).toBeVisible();
+    expect(screen.getByTestId("location")).toHaveTextContent("tab=source&focus=source-01");
+    const source = container.querySelector<HTMLElement>("#source-01")!;
+    await waitFor(() => expect(source).toHaveFocus());
+    fireEvent.click(within(source).getByRole("button", { name: "命题 01" }));
+    expect(screen.getByRole("tabpanel", { name: "事件内容" })).toBe(content);
+    expect(content.querySelector("#news-claim-1")).toBe(claim);
+    expect(disclosure).toHaveAttribute("open");
+    expect(screen.getByTestId("location")).toHaveTextContent("tab=content&focus=news-claim-1");
+    await waitFor(() => expect(claim).toHaveFocus());
+  });
+
+  it("opens and focuses a cold processing target without reconstructing its recorded body", async () => {
+    const { container } = renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy?tab=processing&focus=delivery-record",
+    );
+    await screen.findByRole("tabpanel", { name: "处理记录" });
+    const delivery = container.querySelector<HTMLElement>("#delivery-record")!;
+    await waitFor(() => expect(delivery).toHaveAttribute("open"));
+    expect(delivery).toHaveFocus();
+    fireEvent.click(within(delivery).getByText("实际发送正文"));
+    expect(within(delivery).getByText("【重点】钢铁进口关税上调至 50%")).toBeVisible();
+    expect(
+      within(delivery).queryByText("Agency announces 25% tariff on steel imports."),
+    ).toBeNull();
+  });
+
+  it("retains the adopted claims while reporting the latest semantic and delivery failures", async () => {
+    const detail = newsUpdateDetailFixture();
+    const processing = newsProcessingFixture();
+    server.use(
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: {
+            ...detail,
+            processing: {
+              ...processing,
+              semantic: {
+                ...processing.semantic!,
+                state: "failed",
+                state_zh: "处理失败",
+                last_outcome: "failed",
+                last_error_code: "citation_invalid",
+                wanted_revision: 3,
+              },
+              intents: [
+                {
+                  ...processing.intents![0],
+                  intent_id: "intent-latest-failed",
+                  content_revision: "a".repeat(64),
+                  state: "terminal",
+                  state_zh: "发送失败",
+                  error_code: "FeishuServerError",
+                  body: "未送达的新正文",
+                  attempted_at_ms: NEWS_NOW_MS - 5_000,
+                  settled_at_ms: NEWS_NOW_MS - 4_000,
+                  receipt: null,
+                },
+                ...processing.intents!,
+              ],
+            },
+          },
+        }),
+      ),
+    );
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy?tab=processing&focus=delivery-record",
+    );
+    const processingPanel = await screen.findByRole("tabpanel", { name: "处理记录" });
+    expect(processingPanel).toHaveTextContent("处理失败");
+    expect(processingPanel).toHaveTextContent(/原版本保留/);
+    expect(processingPanel).toHaveTextContent("发送失败");
+    const sent = within(processingPanel).getByText("实际发送正文");
+    const frozen = within(processingPanel).getByText("冻结意图正文");
+    fireEvent.click(sent);
+    fireEvent.click(frozen);
+    expect(within(processingPanel).getByText("【重点】钢铁进口关税上调至 50%")).toBeVisible();
+    expect(within(processingPanel).getByText("未送达的新正文")).toBeVisible();
+    fireEvent.click(screen.getByRole("tab", { name: "事件内容" }));
+    expect(
+      screen.getByRole("tabpanel", { name: "事件内容" }).querySelectorAll(".news-update-claim"),
+    ).toHaveLength(2);
+  });
+
+  it("retains the last successful detail on a failed refresh and retries the actual read", async () => {
+    let fail = false;
+    let requests = 0;
+    server.use(
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () => {
+        requests += 1;
+        return fail
+          ? HttpResponse.json({ ok: false, error: "detail_unavailable" }, { status: 503 })
+          : HttpResponse.json({ ok: true, data: newsUpdateDetailFixture() });
+      }),
+    );
+    const { queryClient } = renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy?tab=source",
+    );
+    const headline = await screen.findByRole("heading", {
+      level: 1,
+      name: "钢铁进口关税上调至 50%",
+    });
+    fail = true;
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["news-event", "evt-global-policy"] });
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(/刷新失败/);
+    expect(alert).toHaveTextContent(/缓存|上次|上一/);
+    expect(headline).toBeVisible();
+    expect(screen.getByRole("tabpanel", { name: "来源证据" })).toBeVisible();
+    fail = false;
+    const beforeRetry = requests;
+    fireEvent.click(within(alert).getByRole("button", { name: "重试" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(requests).toBeGreaterThan(beforeRetry);
+    expect(screen.getByRole("tabpanel", { name: "来源证据" })).toBeVisible();
+  });
+
+  it("does not call an ambiguous delivery body sent or awaiting another send", async () => {
+    const processing = newsProcessingFixture();
+    server.use(
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsUpdateDetailFixture({
+            deliveries: [],
+            outcome: newsOutcomeFixture({
+              group: "held",
+              kind: "delivery_ambiguous",
+              text_zh: "发送结果不明",
+            }),
+            reader_receipt: { state: "unknown", delivery_state: "ambiguous" },
+            processing: {
+              ...processing,
+              intents: [
+                {
+                  ...processing.intents![0],
+                  state: "ambiguous",
+                  state_zh: "发送结果不明",
+                  body: "已有发送尝试，结果待核对",
+                  receipt: null,
+                },
+              ],
+            },
+          }),
+        }),
+      ),
+    );
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy?tab=processing&focus=delivery-record",
+    );
+    const processingPanel = await screen.findByRole("tabpanel", { name: "处理记录" });
+    expect(processingPanel).toHaveTextContent("发送结果不明");
+    expect(processingPanel).toHaveTextContent(/不能确认.*送达/);
+    expect(within(processingPanel).queryByText("实际发送正文")).toBeNull();
+    expect(within(processingPanel).queryByText("冻结待发送正文")).toBeNull();
+    fireEvent.click(within(processingPanel).getByText("冻结意图正文"));
+    expect(within(processingPanel).getByText("已有发送尝试，结果待核对")).toBeVisible();
+    expect(screen.getByRole("region", { name: "通知与送达" })).toHaveTextContent(
+      "暂无成功送达记录",
+    );
+  });
+
+  it("keeps asset identity when the current quote read fails and recovers through its own retry", async () => {
+    let fail = true;
+    server.use(
+      http.get(/.*\/api\/news\/quotes$/, () =>
+        fail
+          ? HttpResponse.json({ ok: false, error: "quotes_unavailable" }, { status: 503 })
+          : HttpResponse.json({
+              ok: true,
+              data: { measured_at_ms: NEWS_NOW_MS, quotes: [newsQuoteFixture()] },
+            }),
+      ),
+    );
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy?tab=market",
+    );
+    const panel = await screen.findByRole("tabpanel", { name: "当前行情" });
+    const alert = await within(panel).findByRole("alert");
+    expect(alert).toHaveTextContent("行情读取失败");
+    expect(within(panel).getByLabelText("关联资产")).toHaveTextContent("BTC");
+    expect(panel.querySelector(".news-quote-table")).toBeNull();
+    fail = false;
+    fireEvent.click(within(alert).getByRole("button", { name: "重试" }));
+    await within(panel).findByText("BTCUSDT");
+    expect(within(panel).queryByRole("alert")).toBeNull();
+    expect(panel).toHaveTextContent("不是这次事件");
+  });
+
+  it("retries a failed cold detail read without displaying an invented event", async () => {
+    let fail = true;
+    server.use(
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        fail
+          ? HttpResponse.json({ ok: false, error: "detail_unavailable" }, { status: 503 })
+          : HttpResponse.json({ ok: true, data: newsUpdateDetailFixture() }),
+      ),
+    );
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy?tab=source",
+    );
+    const alert = await screen.findByRole("alert");
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+    expect(screen.queryByRole("tablist", { name: "事件详情" })).toBeNull();
+    fail = false;
+    fireEvent.click(within(alert).getByRole("button", { name: "重试" }));
+    expect(await screen.findByRole("tabpanel", { name: "来源证据" })).toBeVisible();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("loads all Events for a selected non-leader Item only on demand and pages them", async () => {
     const requests: string[] = [];
     server.use(
@@ -1020,7 +1325,9 @@ describe("NewsPage", () => {
       <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
       "/news/events/evt-global-policy",
     );
-    const related = await screen.findByRole("region", { name: "Item 关联事件" });
+    await screen.findByRole("heading", { level: 1, name: "钢铁进口关税上调至 50%" });
+    fireEvent.click(screen.getByText(/技术详情/));
+    const related = screen.getByRole("region", { name: "Item 关联事件" });
     expect(requests).toHaveLength(0);
     fireEvent.change(within(related).getByLabelText("选择报道"), {
       target: { value: "news-item-bloomberg" },
@@ -1046,20 +1353,28 @@ describe("NewsPage", () => {
       await screen.findByRole("heading", { level: 1, name: "钢铁进口关税上调至 50%" }),
     ).toBeInTheDocument();
     expect(region.querySelector(".news-outcome")).toHaveTextContent("已推送");
-    const timeline = screen.getByRole("region", { name: "处理时间线" });
+    fireEvent.click(screen.getByRole("tab", { name: "处理记录" }));
+    fireEvent.click(screen.getByText(/^处理时间线/));
+    const timeline = region.querySelector<HTMLElement>("#timeline-record")!;
     expect(
       within(timeline)
         .getAllByRole("listitem")
         .map((step) => step.getAttribute("data-stage")),
     ).toEqual(["received", "gate", "semantic", "delivery"]);
+    fireEvent.click(screen.getByRole("tab", { name: "来源证据" }));
+    fireEvent.click(screen.getByText(/^同类报道/));
     expect(
-      within(screen.getByRole("region", { name: "同类报道" })).getAllByRole("listitem"),
+      within(region.querySelector<HTMLElement>("#member-record")!).getAllByRole("listitem"),
     ).toHaveLength(2);
     expect(screen.queryByRole("heading", { name: "人工复盘" })).not.toBeInTheDocument();
     const technical = screen.getByText(/技术详情/).closest("details")!;
+    fireEvent.click(within(technical).getByText(/技术详情/));
     expect(within(technical).getByText("storyline_key")).toBeInTheDocument();
-    expect(within(technical).getByText("message_id", { exact: false })).toBeInTheDocument();
     expect(within(technical).queryByText("news_triage_policy_v17")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "处理记录" }));
+    const receipt = region.querySelector<HTMLElement>("#receipt-record")!;
+    fireEvent.click(within(receipt).getByText(/^投递回执/));
+    expect(within(receipt).getByText("message_id", { exact: false })).toBeVisible();
   });
 
   it("shows only source facts when an Event has no current semantic work", async () => {
@@ -1086,7 +1401,14 @@ describe("NewsPage", () => {
     });
     expect(screen.queryByRole("region", { name: "旧版判定" })).toBeNull();
     expect(screen.queryByRole("region", { name: "新增了什么" })).toBeNull();
-    expect(screen.getByRole("region", { name: "同类报道" })).toBeInTheDocument();
+    expect(screen.getByRole("tabpanel", { name: "事件内容" })).toHaveTextContent("暂无已采用内容");
+    expect(screen.getAllByRole("tab")).toHaveLength(4);
+    fireEvent.click(screen.getByRole("tab", { name: "来源证据" }));
+    expect(screen.getByRole("tabpanel", { name: "来源证据" })).toHaveTextContent("Reuters World");
+    fireEvent.click(screen.getByText(/^同类报道/));
+    expect(
+      screen.getByRole("tabpanel", { name: "来源证据" }).querySelectorAll(".news-member"),
+    ).toHaveLength(2);
   });
 
   it("renders a News Agent Event from its EventUpdate: changes, claims, sources, inference and processing", async () => {
@@ -1103,7 +1425,7 @@ describe("NewsPage", () => {
 
     // The headline a reader actually received, not a verdict's and not the wire title.
     await screen.findByRole("heading", { level: 1, name: "钢铁进口关税上调至 50%" });
-    expect(screen.getByText(/通知：通知 · 有命题值得通知/)).toBeVisible();
+    expect(screen.getByRole("region", { name: "通知与送达" })).toHaveTextContent("有命题值得通知");
     expect(screen.queryByRole("region", { name: "旧版判定" })).toBeNull();
     expect(screen.queryByRole("region", { name: "本次判断的证据" })).toBeNull();
     expect(screen.getByText("关税")).toBeInTheDocument();
@@ -1121,29 +1443,38 @@ describe("NewsPage", () => {
     fireEvent.click(within(items[1]).getByText("历史比较 1 项"));
     expect(within(items[1]).getByText(/此前：Agency announces 25% tariff/)).toBeVisible();
     expect(within(items[0]).getByText("来源分歧")).toBeInTheDocument();
-    expect(within(items[0]).getByText("决定")).toBeInTheDocument();
-    expect(within(items[0]).getByText("已宣布")).toBeInTheDocument();
-    fireEvent.click(within(items[0]).getByText("结构化字段"));
+    fireEvent.click(within(items[0]).getByText("引用与命题详情"));
+    expect(within(items[0]).getByText("决定")).toBeVisible();
+    expect(within(items[0]).getByText("已宣布")).toBeVisible();
     expect(within(items[0]).getByText("2026-10-01")).toBeInTheDocument();
     expect(within(items[0]).getByText("unless a deal is signed")).toBeInTheDocument();
     expect(within(items[0]).getByText("rate 25%")).toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole("tab", { name: "来源证据" }));
     const sources = screen.getByRole("region", { name: "来源与分歧" });
     expect(within(sources).getByText("反驳")).toBeInTheDocument();
     expect(within(sources).getByText("rival")).toBeInTheDocument();
     expect(sources).toHaveTextContent("1 条命题来源分歧");
 
+    fireEvent.click(screen.getByRole("tab", { name: "事件内容" }));
     const inference = screen.getByRole("region", { name: "推断与缺口" });
     expect(within(inference).getByText(/推断 · 来源所述因果（推断）/)).toBeInTheDocument();
     expect(within(inference).getByText("Has the order been signed?")).toBeInTheDocument();
 
+    fireEvent.click(screen.getByRole("tab", { name: "处理记录" }));
     const processing = screen.getByRole("region", { name: "处理状态" });
-    expect(within(processing).getByText("语义处理：已完成")).toBeVisible();
-    fireEvent.click(within(processing).getByText("查看逐条决定和处理详情"));
-    expect(within(processing).getByText("通知 · 有命题值得通知")).toBeInTheDocument();
+    expect(
+      within(processing.querySelector<HTMLElement>(".news-update-processing-summary")!).getByText(
+        "已完成",
+      ),
+    ).toBeVisible();
+    fireEvent.click(within(processing).getByText("逐条通知决定"));
+    expect(processing).toHaveTextContent("通知 · 有命题值得通知");
     expect(within(processing).getByText("读者已收到同一事实")).toBeInTheDocument();
     expect(within(processing).getByText("进展")).toBeInTheDocument();
-    expect(within(processing).getByText("【重点】钢铁进口关税上调至 50%")).toBeInTheDocument();
+    fireEvent.click(processing.querySelector("#delivery-record > summary")!);
+    fireEvent.click(within(processing).getByText("实际发送正文"));
+    expect(within(processing).getByText("【重点】钢铁进口关税上调至 50%")).toBeVisible();
   });
 
   it("shows one changed claim with all its prior comparisons", async () => {
@@ -1198,7 +1529,8 @@ describe("NewsPage", () => {
       "/news/events/evt-global-policy",
     );
     await screen.findByRole("heading", { level: 1, name: "钢铁进口关税上调至 50%" });
-    expect(screen.getByRole("region", { name: "当前行情" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "当前行情" }));
+    expect(screen.getByRole("tabpanel", { name: "当前行情" })).toBeVisible();
     expect(screen.queryByLabelText("事件后反应")).not.toBeInTheDocument();
   });
 
@@ -1256,19 +1588,17 @@ describe("NewsPage", () => {
     await screen.findByText("未送达");
     const badge = region.querySelector(".news-outcome")!;
     expect(badge).toHaveTextContent("未送达");
-    expect(badge.closest(".news-detail-hero-state")).toHaveTextContent(
-      "飞书发送失败（FeishuServerError）",
-    );
     expect(badge).toHaveAttribute("data-tone", "alert");
-    const timeline = screen.getByRole("region", { name: "处理时间线" });
+    fireEvent.click(screen.getByRole("tab", { name: "处理记录" }));
+    fireEvent.click(screen.getByText(/^处理时间线/));
+    const timeline = region.querySelector<HTMLElement>("#timeline-record")!;
     expect(within(timeline).getByText("语义处理失败：模型输出被截断")).toBeInTheDocument();
     expect(
       within(timeline).getByText("未送达：飞书发送失败（FeishuServerError）"),
     ).toBeInTheDocument();
-    const technical = screen.getByText(/技术详情/).closest("details")!;
-    expect(
-      within(technical).getByText("news_delivery_failed:FeishuServerError"),
-    ).toBeInTheDocument();
+    const receipt = region.querySelector<HTMLElement>("#receipt-record")!;
+    fireEvent.click(within(receipt).getByText(/^投递回执/));
+    expect(within(receipt).getByText("news_delivery_failed:FeishuServerError")).toBeInTheDocument();
   });
 });
 
@@ -1289,5 +1619,13 @@ function renderNews(node: ReactNode, path = "/news") {
 
 function LocationProbe() {
   const location = useLocation();
-  return <span data-testid="location">{`${location.pathname}${location.search}`}</span>;
+  const navigate = useNavigate();
+  return (
+    <>
+      <span data-testid="location">{`${location.pathname}${location.search}${location.hash}`}</span>
+      <button onClick={() => navigate(-1)} type="button">
+        测试后退
+      </button>
+    </>
+  );
 }

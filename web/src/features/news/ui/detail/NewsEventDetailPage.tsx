@@ -1,20 +1,20 @@
 import { newsEventPath, newsPath, newsSymbolPath } from "@shared/routing/paths";
 import { useRouteReferrer } from "@shared/routing/routeReferrer";
+import { ActionButton } from "@shared/ui/ActionButton";
 import { Card } from "@shared/ui/Card";
 import { EmptyNote } from "@shared/ui/EmptyNote";
 import { KeyValue, KeyValueRow } from "@shared/ui/KeyValue";
 import { PageReadingContent, PageShell } from "@shared/ui/PageShell";
 import * as PageState from "@shared/ui/PageState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
-import { ArrowRight, ExternalLink } from "lucide-react";
-import { useState } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { ArrowRight, Copy, ExternalLink, FileText } from "lucide-react";
+import { useLayoutEffect, useRef, useState, type KeyboardEvent } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import {
   type NewsDelivery,
   type NewsEventDetail,
   type NewsEventMember,
-  type NewsQuote,
   type NewsSymbolNormalization,
   newsAssetKey,
   useNewsEventWithToken,
@@ -37,6 +37,7 @@ import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 
 import { NewsEventPager } from "./NewsEventPager";
 import {
+  type NewsDetailNavigate,
   NewsProcessingState,
   NewsUpdateContent,
   NewsUpdateInference,
@@ -47,21 +48,25 @@ import { NewsTimeline } from "./NewsTimeline";
 
 import "./newsDetail.css";
 
+const DETAIL_TABS = [
+  { id: "content", label: "事件内容" },
+  { id: "source", label: "来源证据" },
+  { id: "market", label: "当前行情" },
+  { id: "processing", label: "处理记录" },
+] as const;
+
+const TIME_ZONE_FORMATTER = new Intl.DateTimeFormat("en", { timeZoneName: "shortOffset" });
+function zonedTime(value: number) {
+  const zone = TIME_ZONE_FORMATTER.formatToParts(new Date(value)).find(
+    (part) => part.type === "timeZoneName",
+  )?.value;
+  return `${absoluteTime(value)} ${zone ?? ""}`.trim();
+}
+
 export function NewsEventDetailPage({ eventId, token }: { eventId: string; token: string }) {
   const query = useNewsEventWithToken(token, eventId);
   const detail = query.data;
-  // The feed the reader came from, so 上一条/下一条 walk the list they were actually looking at. A cold URL
-  // has no such list; the pager hides itself rather than inventing one.
   const feedSearch = (useLocation().state as { feedSearch?: string } | null)?.feedSearch ?? null;
-  // The same batched quote query the feed uses (#88); on this route the batch is one Event's assets, and
-  // React Query serves both from one cache entry when the symbols happen to match.
-  const quotesQuery = useNewsQuotesWithToken(token, detail?.event.assets ?? []);
-  const quotes = Object.fromEntries(
-    (quotesQuery.data?.quotes ?? []).map((quote) => [
-      newsAssetKey(quote.market_type, quote.requested_symbol),
-      quote,
-    ]),
-  );
   return (
     <PageShell archetype="case" className="news-detail-shell" label="新闻事件详情">
       <header className="news-detail-toolbar">
@@ -80,198 +85,393 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
           <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
         ) : null}
         {detail ? (
-          <NewsQuoteReadState query={quotesQuery}>
-            <EventDocument detail={detail} quotes={quotes} token={token} />
-          </NewsQuoteReadState>
+          <PageState.Stale
+            failedRefresh={
+              query.isError
+                ? `事件详情刷新失败 · 显示上次成功读取的内容（${absoluteTime(query.dataUpdatedAt)}）`
+                : undefined
+            }
+            onRetry={() => void query.refetch()}
+            updating={query.isFetching && !query.isError}
+          >
+            <EventDocument detail={detail} key={eventId} token={token} />
+          </PageState.Stale>
         ) : null}
       </PageReadingContent>
     </PageShell>
   );
 }
 
-function EventDocument({
-  detail,
-  quotes,
-  token,
-}: {
-  detail: NewsEventDetail;
-  quotes: Record<string, NewsQuote>;
-  token: string;
-}) {
+function EventDocument({ detail, token }: { detail: NewsEventDetail; token: string }) {
   const { event, outcome } = detail;
-  const update = detail.event_update ?? null;
-  const headline = eventHeadline({
-    leader_title: event.leader_title,
-    update,
-  });
-  const url = validExternalUrl(event.leader_url);
+  const update = detail.event_update;
   const assets = event.assets ?? [];
+  const quotesQuery = useNewsQuotesWithToken(token, assets);
+  const quotes = Object.fromEntries(
+    (quotesQuery.data?.quotes ?? []).map((quote) => [
+      newsAssetKey(quote.market_type, quote.requested_symbol),
+      quote,
+    ]),
+  );
   const quoteList = assets
     .map((asset) => quotes[newsAssetKey(asset.market_type, asset.symbol)])
     .filter(Boolean);
-  const steps = detail.timeline ?? [];
-  const priorComparisonCount = update?.changes?.filter((change) => change.previous_ref).length ?? 0;
+  const location = useLocation();
+  const navigate = useNavigate();
+  const params = new URLSearchParams(location.search);
+  const requestedTab = params.get("tab");
+  const tab = DETAIL_TABS.find((item) => item.id === requestedTab)?.id ?? "content";
+  const focus = params.get("focus");
+  const contentSlot = useRef<HTMLDivElement>(null);
+  const tabs = useRef<HTMLDivElement>(null);
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
+
+  // Reserve the existing reading height before hiding a panel. A shorter panel must not make the
+  // browser clamp the reader's scroll position, including when returning through browser history.
+  function reserveHeight() {
+    const slot = contentSlot.current;
+    if (slot) slot.style.minHeight = `${slot.getBoundingClientRect().height}px`;
+  }
+  const onNavigate: NewsDetailNavigate = (nextTab, target) => {
+    reserveHeight();
+    const next = new URLSearchParams(location.search);
+    next.set("tab", nextTab);
+    if (target) next.set("focus", target);
+    else next.delete("focus");
+    navigate(
+      { pathname: location.pathname, search: `?${next.toString()}`, hash: "" },
+      { state: location.state, preventScrollReset: true },
+    );
+  };
+
+  useLayoutEffect(() => {
+    const slot = contentSlot.current;
+    if (!slot) return;
+    const panel = slot.querySelector<HTMLElement>(`#news-${tab}`);
+    const target = focus
+      ? Array.from(panel?.querySelectorAll<HTMLElement>("[id]") ?? []).find(
+          (node) => node.id === focus,
+        )
+      : undefined;
+    if (target) {
+      let node: HTMLElement | null = target;
+      while (node && node !== panel) {
+        if (node instanceof HTMLDetailsElement) node.open = true;
+        node = node.parentElement;
+      }
+      target.focus({ preventScroll: true });
+    } else if (document.activeElement?.closest('[role="tabpanel"][hidden]')) {
+      tabs.current?.querySelector<HTMLButtonElement>(`#tab-${tab}`)?.focus({ preventScroll: true });
+    }
+    reserveHeight();
+  }, [tab, focus, location.key]);
+
+  useLayoutEffect(() => {
+    const slot = contentSlot.current;
+    // Capture growth while the panel is still visible. A POP navigation bypasses onNavigate,
+    // and a layout-effect cleanup can run after React has hidden the old panel.
+    const observer =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(reserveHeight);
+    if (slot) {
+      observer?.observe(slot);
+      slot.addEventListener("toggle", reserveHeight, true);
+    }
+    const clearHeight = () => {
+      if (contentSlot.current) contentSlot.current.style.minHeight = "";
+    };
+    window.addEventListener("resize", clearHeight);
+    return () => {
+      window.removeEventListener("resize", clearHeight);
+      slot?.removeEventListener("toggle", reserveHeight, true);
+      observer?.disconnect();
+    };
+  }, []);
+
+  function onTabKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    const current = DETAIL_TABS.findIndex((item) => item.id === tab);
+    let index: number;
+    switch (event.key) {
+      case "ArrowRight":
+        index = (current + 1) % DETAIL_TABS.length;
+        break;
+      case "ArrowLeft":
+        index = (current + DETAIL_TABS.length - 1) % DETAIL_TABS.length;
+        break;
+      case "Home":
+        index = 0;
+        break;
+      case "End":
+        index = DETAIL_TABS.length - 1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    onNavigate(DETAIL_TABS[index].id);
+    tabs.current
+      ?.querySelector<HTMLButtonElement>(`#tab-${DETAIL_TABS[index].id}`)
+      ?.focus({ preventScroll: true });
+  }
+
+  async function copyEventLink() {
+    try {
+      await navigator.clipboard.writeText(
+        `${window.location.origin}${newsEventPath(event.event_id)}${location.search}`,
+      );
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+  }
+
+  const semantic = detail.processing?.semantic;
+  const latestFailed = semantic?.state === "failed";
+  const hasNewInput = !!update && !!semantic && semantic.wanted_revision > update.input_revision;
   return (
-    <>
-      <article className="news-detail-hero" data-update={update ? true : undefined}>
+    <div className="news-detail-document">
+      <article className="news-detail-hero">
         <div className="news-detail-hero-top">
-          {/* The conclusion and its one-line why, side by side: the chip is the verdict, the sentence is the
-              server's reason for it. The chip does not repeat the reason inside itself. */}
           <span className="news-detail-hero-state">
-            <NewsKindBadge kind={event.event_kind} />
             <NewsOutcomeBadge outcome={outcome} size="lg" variant="chip" />
-            {outcome.reason_zh ? <span>{outcome.reason_zh}</span> : null}
+            <NewsKindBadge kind={event.event_kind} />
+            {update?.topics?.map((topic) => (
+              <span key={topic.code}>{topic.label_zh}</span>
+            ))}
           </span>
           <time
             className="news-detail-hero-time"
-            dateTime={new Date(event.opened_at_ms).toISOString()}
-            title={absoluteTime(event.opened_at_ms)}
+            dateTime={new Date(event.published_at_ms ?? event.opened_at_ms).toISOString()}
           >
-            {absoluteTime(event.opened_at_ms).slice(11)} · {timelineEndToEnd(steps)}
+            {zonedTime(event.published_at_ms ?? event.opened_at_ms)}
           </time>
         </div>
-
-        <h1 className="news-detail-headline">{headline}</h1>
-        {update ? (
-          <p className="news-detail-update-summary">
-            本次提取 {update.claims.length} 条命题，来自 {update.sources?.length ?? 0} 个来源。
-            {detail.processing?.notification?.plan ? (
-              <span>
-                通知：{detail.processing.notification.plan.action_zh} ·{" "}
-                {detail.processing.notification.plan.reason_zh}
-              </span>
-            ) : null}
+        <h1 className="news-detail-headline">
+          {eventHeadline({ leader_title: event.leader_title, update })}
+        </h1>
+        <p className="news-detail-update-summary">
+          {update?.claims[0]?.statement || event.leader_description || event.leader_title}
+        </p>
+        {latestFailed || hasNewInput ? (
+          <p className="news-detail-work-notice" role={latestFailed ? "alert" : "status"}>
+            {latestFailed ? "最新材料处理失败" : "最新材料尚未采用"}
+            {update ? ` · 保留已采用的第 ${update.input_revision} 版内容` : " · 暂无已采用内容"}
+            {semantic?.last_error_code ? ` · ${semantic.last_error_code}` : ""}
           </p>
         ) : null}
-        {assets.length || update?.topics?.length ? (
-          <div aria-label="事件判定" className="news-detail-verdict">
-            {update?.topics?.length ? (
-              <span className="news-detail-asset-group">
-                <small>主题</small>
-                {update.topics.map((topic) => (
-                  <b key={topic.code}>{topic.label_zh}</b>
-                ))}
-              </span>
-            ) : null}
-            {assets.length && !update ? (
-              <>
-                <span aria-hidden className="news-detail-rule" />
-                <NewsAssetChips assets={assets} quotes={quotes} />
-              </>
-            ) : null}
-          </div>
-        ) : null}
-
-        {!update && quoteList.length ? <NewsQuoteTable quotes={quoteList} /> : null}
-
-        {update ? (
-          <div className="news-detail-update-foot">
-            <span>原文 · {event.reporting_origin || "未知来源"}</span>
-            <span>{update.claims.length} 条命题</span>
-            <span>{priorComparisonCount} 项历史比较</span>
-            <a href="#news-source">查看来源</a>
-            <details>
-              <summary>原始标题</summary>
-              <p>{event.leader_title}</p>
-              {url ? (
-                <a href={url} rel="noreferrer" target="_blank">
-                  打开原文 <ExternalLink aria-hidden />
-                </a>
-              ) : null}
-            </details>
-          </div>
-        ) : (
-          <p className="news-detail-original">
-            <span className="news-detail-original-label">
-              原文 · {event.reporting_origin || "未知来源"}
-              {event.member_count > 1 ? ` · ${event.member_count} 条报道` : ""}
+        <div className="news-detail-hero-footer">
+          <div className="news-detail-hero-facts">
+            {assets.length ? <NewsAssetChips assets={assets} /> : null}
+            <span>
+              {update
+                ? `${update.sources?.length ?? 0} 份来源材料 · ${update.claims.length} 条提取命题`
+                : `${detail.members.length} 条报道 · 暂无已采用命题`}
             </span>
-            <span>{event.leader_title}</span>
-            {url ? (
-              <a href={url} rel="noreferrer" target="_blank">
-                打开
-                <ExternalLink aria-hidden />
-              </a>
-            ) : null}
-          </p>
-        )}
+          </div>
+          <div className="news-detail-hero-actions">
+            <ActionButton onClick={() => onNavigate("source")} variant="primary">
+              <FileText aria-hidden /> 查看来源证据
+            </ActionButton>
+            <ActionButton onClick={() => void copyEventLink()}>
+              <Copy aria-hidden /> 复制事件链接
+            </ActionButton>
+          </div>
+          {copyState !== "idle" ? (
+            <span className="news-detail-copy-status" role="status">
+              {copyState === "copied" ? "事件链接已复制" : "复制失败，请复制浏览器地址"}
+            </span>
+          ) : null}
+        </div>
       </article>
 
-      {update ? (
-        <>
-          <nav aria-label="事件详情目录" className="news-detail-reading-nav">
-            <a href="#news-content">本次内容</a>
-            <a href="#news-source">来源证据</a>
-            {detail.processing ? <a href="#news-processing">处理记录</a> : null}
-            <a href="#news-market">行情观察</a>
-          </nav>
-          <div className="news-detail-reading-layout">
-            <NewsUpdateContent update={update} />
-            <NewsNotificationSummary detail={detail} />
-            <NewsUpdateSources update={update} />
-            <Card
-              aria-label="当前行情"
-              className="news-detail-current-market"
-              hint="滚动报价"
-              id="news-market"
-              title="当前行情"
-            >
-              {assets.length ? <NewsAssetChips assets={assets} quotes={quotes} /> : null}
-              <NewsQuoteTable compact quotes={quoteList} />
-            </Card>
-            <NewsUpdateInference update={update} />
-            {detail.processing ? <NewsProcessingState processing={detail.processing} /> : null}
-          </div>
-        </>
-      ) : null}
-      {!update && detail.processing ? <NewsProcessingState processing={detail.processing} /> : null}
-
-      <SymbolNormalization groups={detail.normalization ?? []} />
-
-      <div className="news-detail-grid">
-        <Card
-          aria-label="处理时间线"
-          className="news-detail-timeline-card"
-          hint={timelineEndToEnd(steps)}
-          title="这条新闻经历了什么"
-        >
-          <NewsTimeline steps={steps} />
-        </Card>
-
-        <div className="news-detail-side">
-          <Card
-            aria-label="同类报道"
-            hint={`${detail.members.length} 条，按到达时间`}
-            title="同类报道"
+      <div className="news-detail-reading-layout">
+        <section aria-label="事件阅读" className="news-detail-main">
+          <div
+            aria-label="事件详情"
+            className="news-detail-tabs"
+            onKeyDown={onTabKeyDown}
+            ref={tabs}
+            role="tablist"
+            tabIndex={-1}
           >
-            <MemberList members={detail.members} />
-          </Card>
-        </div>
+            {DETAIL_TABS.map((item) => (
+              <button
+                aria-controls={`news-${item.id}`}
+                aria-selected={tab === item.id}
+                id={`tab-${item.id}`}
+                key={item.id}
+                onClick={() => onNavigate(item.id)}
+                role="tab"
+                tabIndex={tab === item.id ? 0 : -1}
+                type="button"
+              >
+                {item.label}
+                {item.id === "content" ? (
+                  <small aria-hidden>{String(update?.claims.length ?? 0).padStart(2, "0")}</small>
+                ) : null}
+                {item.id === "source" ? (
+                  <small aria-hidden>
+                    {String(
+                      update ? (update.sources?.length ?? 0) : detail.members.length,
+                    ).padStart(2, "0")}
+                  </small>
+                ) : null}
+              </button>
+            ))}
+          </div>
+          <div className="news-detail-tab-content" ref={contentSlot}>
+            <div
+              aria-labelledby="tab-content"
+              hidden={tab !== "content"}
+              id="news-content"
+              role="tabpanel"
+              tabIndex={0}
+            >
+              {update ? (
+                <>
+                  <NewsUpdateContent onNavigate={onNavigate} update={update} />
+                  <NewsUpdateInference update={update} />
+                </>
+              ) : (
+                <section className="news-detail-unadopted">
+                  <h2>事件内容</h2>
+                  <p className="news-detail-panel-note">暂无已采用内容，以下为来源记录。</p>
+                  <h3>{event.leader_title}</h3>
+                  {event.leader_description ? <p>{event.leader_description}</p> : null}
+                  <ActionButton onClick={() => onNavigate("source")}>查看来源证据</ActionButton>
+                </section>
+              )}
+            </div>
+            <div
+              aria-labelledby="tab-source"
+              hidden={tab !== "source"}
+              id="news-source"
+              role="tabpanel"
+              tabIndex={0}
+            >
+              {update ? (
+                <NewsUpdateSources onNavigate={onNavigate} update={update} />
+              ) : (
+                <section>
+                  <h2>来源证据</h2>
+                  <p className="news-detail-panel-note">尚无采用后的来源关系。</p>
+                </section>
+              )}
+              <details className="news-detail-record" id="member-record" tabIndex={-1}>
+                <summary>同类报道 · {detail.members.length} 条</summary>
+                <MemberList members={detail.members} />
+              </details>
+              <details className="news-detail-record">
+                <summary>原始标题</summary>
+                <p>{event.leader_title}</p>
+                {validExternalUrl(event.leader_url) ? (
+                  <a href={validExternalUrl(event.leader_url)!} rel="noreferrer" target="_blank">
+                    打开原文 <ExternalLink aria-hidden />
+                  </a>
+                ) : null}
+              </details>
+            </div>
+            <div
+              aria-labelledby="tab-market"
+              hidden={tab !== "market"}
+              id="news-market"
+              role="tabpanel"
+              tabIndex={0}
+            >
+              <div className="news-detail-panel-heading">
+                <h2>当前行情</h2>
+                <small>滚动报价</small>
+              </div>
+              <p className="news-detail-panel-note">
+                当前报价与滚动 24H 变化，不是这次事件的回填收益。
+              </p>
+              {assets.length ? <NewsAssetChips assets={assets} /> : null}
+              <NewsQuoteReadState query={quotesQuery}>
+                {quotesQuery.isLoading || (quotesQuery.isError && !quotesQuery.data) ? null : (
+                  <NewsQuoteTable compact quotes={quoteList} />
+                )}
+              </NewsQuoteReadState>
+            </div>
+            <div
+              aria-labelledby="tab-processing"
+              hidden={tab !== "processing"}
+              id="news-processing"
+              role="tabpanel"
+              tabIndex={0}
+            >
+              <NewsProcessingState
+                onNavigate={onNavigate}
+                processing={detail.processing}
+                update={update}
+              />
+              <details className="news-detail-record" id="timeline-record" tabIndex={-1}>
+                <summary>处理时间线 · {timelineEndToEnd(detail.timeline ?? [])}</summary>
+                <p className="news-detail-panel-note">
+                  按已记录步骤展示；历史送达不代表最新材料已经处理或发送。
+                </p>
+                <NewsTimeline steps={detail.timeline ?? []} />
+              </details>
+              <details className="news-detail-record" id="receipt-record" tabIndex={-1}>
+                <summary>投递回执 · {detail.deliveries.length} 条</summary>
+                {detail.deliveries.length ? (
+                  detail.deliveries.map((delivery, index) => (
+                    <DeliveryRecord delivery={delivery} key={`${delivery.intent_id}-${index}`} />
+                  ))
+                ) : (
+                  <EmptyNote>暂无投递回执。</EmptyNote>
+                )}
+              </details>
+            </div>
+          </div>
+        </section>
+        <NewsNotificationSummary detail={detail} onNavigate={onNavigate} />
       </div>
-
-      <RelatedItemEvents members={detail.members} currentEventId={event.event_id} token={token} />
-
-      <TechnicalDetails detail={detail} />
-    </>
+      <TechnicalDetails detail={detail} token={token} />
+    </div>
   );
 }
 
-function NewsNotificationSummary({ detail }: { detail: NewsEventDetail }) {
-  const plan = detail.processing?.notification?.plan;
+function NewsNotificationSummary({
+  detail,
+  onNavigate,
+}: {
+  detail: NewsEventDetail;
+  onNavigate: NewsDetailNavigate;
+}) {
+  const notification = detail.processing?.notification;
+  const plan = notification?.plan;
   const decisions = plan?.claim_decisions ?? [];
   const positions = new Map(
     detail.event_update?.claims.map((claim, index) => [claim.ref, index + 1]),
   );
+  const sent = detail.processing?.intents?.filter((intent) => intent.state === "sent") ?? [];
+  const latestSent = sent.reduce<number | null>((latest, intent) => {
+    const stamp = intent.settled_at_ms;
+    return stamp != null && (latest == null || stamp > latest) ? stamp : latest;
+  }, null);
+  const receipt = detail.reader_receipt;
+  const unfinishedStates = Array.from(
+    new Set(
+      (detail.processing?.intents ?? [])
+        .filter((intent) => intent.state !== "sent")
+        .map(
+          (intent) =>
+            `${intent.state_zh || intent.state}${intent.error_code ? ` · ${intent.error_code}` : ""}`,
+        ),
+    ),
+  );
+  const currentRevision = detail.event_update?.content_revision;
+  const historicalSent =
+    currentRevision != null &&
+    sent.some(
+      (intent) => intent.content_revision != null && intent.content_revision !== currentRevision,
+    );
   return (
-    <Card
-      aria-label="通知判断"
-      className="news-detail-notification-summary"
-      title={detail.outcome.kind === "not_notified" ? "为什么未通知" : "通知判断"}
-    >
+    <Card aria-label="通知与送达" className="news-detail-notification-summary" title="通知与送达">
       <p className="news-detail-notification-lead">
-        {plan
-          ? `${plan.action_zh} · ${plan.reason_zh}`
-          : detail.outcome.reason_zh || detail.outcome.text_zh}
+        {plan ? plan.reason_zh || plan.reason : detail.outcome.reason_zh || detail.outcome.text_zh}
+      </p>
+      <p className="news-detail-panel-note">
+        {plan ? `通知决定：${plan.action_zh}` : `通知：${notification?.state_zh || "暂无决定"}`}
       </p>
       {decisions.length ? (
         <ol className="news-detail-notification-decisions">
@@ -280,27 +480,50 @@ function NewsNotificationSummary({ detail }: { detail: NewsEventDetail }) {
             return (
               <li key={row.claim_ref}>
                 {position ? (
-                  <a href={`#news-claim-${position}`}>命题 {String(position).padStart(2, "0")}</a>
+                  <button
+                    onClick={() => onNavigate("content", `news-claim-${position}`)}
+                    type="button"
+                  >
+                    命题 {String(position).padStart(2, "0")}
+                  </button>
                 ) : (
-                  <span>命题</span>
+                  <span>历史命题</span>
                 )}
-                <span>{row.reason_zh || row.reason}</span>
                 <b>{row.decision_zh || row.decision}</b>
               </li>
             );
           })}
         </ol>
       ) : null}
-      {decisions.length > 3 ? (
-        <a className="news-detail-notification-more" href="#news-processing">
-          查看全部 {decisions.length} 条逐条决定
-        </a>
-      ) : null}
-      {detail.processing ? (
-        <a className="news-detail-notification-more" href="#news-processing">
-          查看处理记录
-        </a>
-      ) : null}
+      <div className="news-detail-delivery-summary">
+        <span>实际送达</span>
+        <b>
+          {sent.length
+            ? `已送达 · ${sent.length} 条记录`
+            : receipt.state === "received"
+              ? "已有送达回执"
+              : "暂无成功送达记录"}
+        </b>
+        {latestSent != null ? (
+          <time dateTime={new Date(latestSent).toISOString()}>{zonedTime(latestSent)}</time>
+        ) : null}
+        {historicalSent ? <p>包含历史版本送达，当前内容是否发出请核对发送正文。</p> : null}
+        {unfinishedStates.length ? <p>其他发送工作：{unfinishedStates.join("；")}</p> : null}
+        <button
+          onClick={() =>
+            onNavigate(
+              "processing",
+              detail.processing?.intents?.length ? "delivery-record" : "receipt-record",
+            )
+          }
+          type="button"
+        >
+          查看发送正文与记录 →
+        </button>
+        <button onClick={() => onNavigate("processing", "decision-record")} type="button">
+          查看{decisions.length > 3 ? `全部 ${decisions.length} 条` : "逐条"}通知理由 →
+        </button>
+      </div>
     </Card>
   );
 }
@@ -317,13 +540,9 @@ function SymbolNormalization({ groups }: { groups: NewsSymbolNormalization[] }) 
   const referrer = useRouteReferrer();
   if (!groups.length) return null;
   return (
-    <Card
-      aria-label="符号归一"
-      className="news-detail-normalization"
-      flush
-      hint="节流键按 base_symbol 分桶，不按合约"
-      title="符号归一"
-    >
+    <section aria-label="符号归一" className="news-detail-normalization">
+      <h4>符号归一</h4>
+      <p className="news-detail-panel-note">节流键按 base_symbol 分桶，不按合约。</p>
       <ul>
         {groups.map((group) => (
           <li key={group.base_symbol}>
@@ -344,7 +563,7 @@ function SymbolNormalization({ groups }: { groups: NewsSymbolNormalization[] }) 
           </li>
         ))}
       </ul>
-    </Card>
+    </section>
   );
 }
 
@@ -396,11 +615,9 @@ function RelatedItemEvents({
   const query = useNewsItemRelatedEventsWithToken(token, itemId, opened);
   if (!members.length) return null;
   return (
-    <Card
-      aria-label="Item 关联事件"
-      title="同一报道的关联事件"
-      hint="按 Item 查询所有归属，包含非首条成员"
-    >
+    <section className="news-detail-related" aria-label="Item 关联事件">
+      <h4>同一报道的关联事件</h4>
+      <p className="news-detail-panel-note">按 Item 查询所有归属，包含非首条成员。</p>
       <label>
         选择报道
         <select
@@ -418,11 +635,13 @@ function RelatedItemEvents({
           ))}
         </select>
       </label>
-      <button disabled={!itemId} onClick={() => setOpened(true)} type="button">
+      <ActionButton disabled={!itemId} onClick={() => setOpened(true)}>
         查看关联事件
-      </button>
+      </ActionButton>
       {query.isPending && opened ? <p>正在读取关联事件…</p> : null}
-      {query.isError ? <p role="alert">读取失败。请重试。</p> : null}
+      {query.isError ? (
+        <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
+      ) : null}
       {query.data ? (
         <>
           <p>共 {query.data.pages[0].total_events} 个 Event</p>
@@ -459,14 +678,14 @@ function RelatedItemEvents({
           ) : null}
         </>
       ) : null}
-    </Card>
+    </section>
   );
 }
 
-function TechnicalDetails({ detail }: { detail: NewsEventDetail }) {
+function TechnicalDetails({ detail, token }: { detail: NewsEventDetail; token: string }) {
   const { event } = detail;
   return (
-    <NewsTechnical summary="技术详情（事件 id、话题线与投递记录）">
+    <NewsTechnical summary="技术详情">
       <section>
         <h4>事件</h4>
         <KeyValue>
@@ -482,11 +701,12 @@ function TechnicalDetails({ detail }: { detail: NewsEventDetail }) {
           <KeyValueRow k="provenance" v={(event.provenance ?? []).join(", ") || "—"} />
           <KeyValueRow k="published_at_ms" v={optionalTime(event.published_at_ms)} />
           <KeyValueRow k="context_line" v={event.context_line || "—"} />
+          <KeyValueRow k="content_revision" v={detail.event_update?.content_revision ?? "—"} />
+          <KeyValueRow k="input_revision" v={String(detail.event_update?.input_revision ?? "—")} />
         </KeyValue>
       </section>
-      {detail.deliveries.map((delivery, index) => (
-        <DeliveryRecord delivery={delivery} key={`${delivery.kind}-${index}`} />
-      ))}
+      <SymbolNormalization groups={detail.normalization ?? []} />
+      <RelatedItemEvents members={detail.members} currentEventId={event.event_id} token={token} />
       {detail.members.length ? (
         <section>
           <h4>成员</h4>
