@@ -11,7 +11,9 @@ from typing import Any, Final
 
 from ..entities import source_mentions_asset
 from ..events.gate import grounded_assets
+from ..events.grounding import commodity_context_present
 from ..evidence import query_for
+from ..market_review.instruments import normalize_symbol
 from ..models import MarketAsset, market_type_of
 from ..similarity import trigram_similarity
 from ..taxonomy import source_authority
@@ -24,6 +26,7 @@ from ..updates.contracts import (
     ReadTarget,
     Source,
     SourceAssetCandidate,
+    SourceAssetTag,
 )
 from ..updates.identity import identity
 from ..updates.projection import ReadingView, extraction_scopes, item_text, reading_view, reading_views
@@ -128,9 +131,9 @@ def _provider_metadata(material: Mapping[str, Any]) -> dict[str, Mapping[str, An
     return metadata
 
 
-def _source_asset_candidates(
+def _source_asset_tags(
     material: Mapping[str, Any], evidence: Sequence[Evidence]
-) -> dict[str, tuple[SourceAssetCandidate, ...]]:
+) -> dict[str, tuple[SourceAssetTag, ...]]:
     metadata = _provider_metadata(material)
     candidates = {}
     for item in evidence:
@@ -141,7 +144,7 @@ def _source_asset_candidates(
             # A grade is source context, never an admission rule. Preserve the provider spelling;
             # legacy forex is an explicit synonym, while fund alone establishes no market class.
             rows.append(
-                SourceAssetCandidate(
+                SourceAssetTag(
                     symbol=coin["symbol"],
                     market_type=market_type_of(coin.get("market_type")),
                     grade=None if coin.get("grade") is None else str(coin["grade"]),
@@ -150,6 +153,21 @@ def _source_asset_candidates(
         if rows:
             candidates[item.ref] = tuple(rows)
     return candidates
+
+
+def _source_asset_candidates(
+    material: Mapping[str, Any], evidence: Sequence[Evidence], tags: Mapping[str, tuple[SourceAssetTag, ...]]
+) -> dict[str, tuple[SourceAssetCandidate, ...]]:
+    listed = material.get("listed_markets") or {}
+    return {
+        item.ref: tuple(
+            SourceAssetCandidate(**tag.model_dump(), listed_markets=listed.get(normalize_symbol(tag.symbol), ()))
+            for tag in tags[item.ref]
+            if commodity_context_present(normalize_symbol(tag.symbol), item.text)
+        )
+        for item in evidence
+        if item.ref in tags
+    }
 
 
 def _related_prior(
@@ -272,14 +290,15 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
     if not evidence:
         raise LookupError("news_event_input_missing")
     complete = tuple({row.ref: row for row in evidence}.values())
-    all_candidates = _source_asset_candidates(material, complete)
+    all_tags = _source_asset_tags(material, complete)
+    all_candidates = _source_asset_candidates(material, complete, all_tags)
     all_scopes = () if attached else extraction_scopes(material, complete)
     # A source ref proves only which body was stored, not which task boundary
     # was read.  Construct the current view before comparing completed reads.
     # A read that failed is settled too: it is quarantined until an exact reanalysis names it.
     completed = set((work or {}).get("processed_read_refs") or ()) | set((work or {}).get("failed_read_refs") or ())
     requested_read = (work or {}).get("reanalysis_read_ref")
-    views = tuple(reading_view(event_id, row, all_scopes, all_candidates.get(row.ref, ())) for row in complete)
+    views = tuple(reading_view(event_id, row, all_scopes, all_tags.get(row.ref, ())) for row in complete)
     if requested_read is None:
         unique = _unread(complete, views, completed)
     else:
@@ -326,6 +345,7 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
         lineage_id=lineage,
         evidence=unique,
         asset_candidates={ref: rows for ref, rows in all_candidates.items() if ref in selected},
+        source_asset_tags={ref: rows for ref, rows in all_tags.items() if ref in selected},
         extraction_scopes=scopes,
         prior=prior,
         read_targets=read_targets,
@@ -440,6 +460,33 @@ class SemanticInputStorage:
             "head": self.head_document(event_id),
             "established_relations": self._established_relations(event_id),
         }
+        # One query bounded by this snapshot's provider symbols, before freezing model input.
+        # Aliases name a canonical base; the reference directory and unclassified rows are no
+        # evidence of the exchange-listed market that OpenNews's `cex` tag refers to.
+        symbols = sorted(
+            {
+                normalize_symbol(coin["symbol"])
+                for metadata in _provider_metadata(material).values()
+                for coin in metadata.get("coins") or ()
+                if isinstance(coin, Mapping) and isinstance(coin.get("symbol"), str) and coin["symbol"].strip()
+            }
+        )
+        rows = (
+            self.conn.execute(
+                """
+                SELECT requested.symbol, array_agg(DISTINCT i.instrument_class ORDER BY i.instrument_class) AS markets
+                  FROM unnest(%s::text[]) AS requested(symbol)
+                  LEFT JOIN news_symbol_aliases a ON a.alias = requested.symbol
+                  JOIN news_market_instruments i ON i.base_symbol = COALESCE(a.base_symbol, requested.symbol)
+                 WHERE i.status = 'trading' AND i.venue <> 'us.listed' AND i.instrument_class <> 'unknown'
+                 GROUP BY requested.symbol
+                """,
+                (symbols,),
+            ).fetchall()
+            if symbols
+            else ()
+        )
+        material["listed_markets"] = {str(row["symbol"]): tuple(row["markets"]) for row in rows}
         # Freeze pending reads before prior retrieval. An already processed leader or an unrelated
         # numbered sibling cannot supply the new task's text/source features.
         source = frozen_input(event_id, material)

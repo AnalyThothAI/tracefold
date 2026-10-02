@@ -42,6 +42,13 @@ test("workspaces share the feed frame and title origin; documents only narrow th
     expect(geometry.titleTop).toBe(mobile ? 12 : 16);
     expect(geometry.titleLeft - geometry.left).toBe(mobile ? 12 : 16);
     expect(geometry.width).toBeLessThanOrEqual(1340);
+    if (path === "/news/status") {
+      const markets = page.getByRole("region", { name: "主要资产市场分布" });
+      await expect(markets.getByText("12.5%", { exact: true })).toBeVisible();
+      await expect(markets.getByText("200", { exact: true })).toBeVisible();
+      await expect(markets.getByText("25", { exact: true })).toBeVisible();
+      await markets.screenshot({ path: testInfo.outputPath("primary-asset-markets.png") });
+    }
     await expectNoDocumentHorizontalOverflow(page);
     await page.screenshot({ path: testInfo.outputPath(`${path.replaceAll("/", "-")}.png`) });
   }

@@ -869,6 +869,11 @@ describe("NewsPage", () => {
     expect(cards[2]).toHaveTextContent("模型正常，24 小时降级 2/175");
 
     const funnel = screen.getByRole("region", { name: "过去 24 小时漏斗" });
+    const markets = screen.getByRole("region", { name: "主要资产市场分布" });
+    expect(within(markets).getByText("200")).toBeInTheDocument();
+    expect(within(markets).getByText("25")).toBeInTheDocument();
+    expect(within(markets).getByText("12.5%")).toBeInTheDocument();
+    expect(within(markets).getByText("加密资产")).toBeInTheDocument();
     expect(within(funnel).getByRole("link", { name: /收到/ })).toHaveAttribute("href", "/news");
     expect(within(funnel).getByRole("link", { name: /已送达/ })).toHaveAttribute(
       "href",
@@ -899,6 +904,23 @@ describe("NewsPage", () => {
     const technical = screen.getByText(/技术指标/).closest("details")!;
     expect(technical).not.toHaveAttribute("open");
     expect(within(technical).getByText("decisions_24h")).toBeInTheDocument();
+  });
+
+  it("shows an empty asset sample without reporting a zero unknown share", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsStatusFixture({
+            primary_asset_markets_24h: { total: 0, unknown: 0, unknown_share: null, by_market: {} },
+          }),
+        }),
+      ),
+    );
+    renderNews(<NewsPage token="test-token" view="status" />, "/news/status");
+    const markets = await screen.findByRole("region", { name: "主要资产市场分布" });
+    expect(within(markets).getByText("过去 24 小时暂无主要资产样本。")).toBeInTheDocument();
+    expect(within(markets).queryByText("0.0%")).not.toBeInTheDocument();
   });
 
   it("shows a deterministic ledger asset in the Event detail current-quote table", async () => {

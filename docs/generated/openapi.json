@@ -5267,6 +5267,46 @@
         "title": "NewsPriceStatusData",
         "type": "object"
       },
+      "NewsPrimaryAssetMarketsData": {
+        "additionalProperties": false,
+        "description": "Primary asset occurrences in adopted semantic understandings completed in the last 24 hours.",
+        "properties": {
+          "by_market": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "By Market",
+            "type": "object"
+          },
+          "total": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Total",
+            "type": "integer"
+          },
+          "unknown": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Unknown",
+            "type": "integer"
+          },
+          "unknown_share": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unknown Share"
+          }
+        },
+        "title": "NewsPrimaryAssetMarketsData",
+        "type": "object"
+      },
       "NewsProcessingData": {
         "additionalProperties": false,
         "description": "What the EventUpdate path did with this Event, from its durable work rows and receipts (#706).",
@@ -6079,6 +6119,9 @@
           },
           "price": {
             "$ref": "#/components/schemas/NewsPriceStatusData"
+          },
+          "primary_asset_markets_24h": {
+            "$ref": "#/components/schemas/NewsPrimaryAssetMarketsData"
           },
           "reasons_24h": {
             "items": {

@@ -51,15 +51,21 @@ Extract the underlying domain assertions, not the act of sharing an article, int
 just to attach an open question. Official decisions and substantive new report findings remain claims.
 A URL or its slug locates material; its words alone do not establish a partnership or executed action.
 Do not infer missing actors, assets or outcomes from a URL or prior context.
-asset_candidates is the existing provider's source-wide tag list keyed by evidence_ref. It supplies
+asset_candidates is the provider's source-wide candidate list keyed by evidence_ref. Commodity tags
+are retained only when that source text names their underlying. The list supplies
 possible assets, not claim assignments: for each claim choose only the tags relevant to that assertion
 in its cited task text, with role primary for its central asset and mentioned for a secondary reference.
 Do not copy every source tag into every claim. Grade is context, not a requirement or relevance proof.
 Prefer a relevant supplied candidate and preserve its exact symbol and known market_type; a source may
-name the company or product without spelling its ticker. If no supplied tag covers an explicitly named
+name the company or product without spelling its ticker. listed_markets contains the trading catalogue's
+known categories for that symbol, not proof of relevance. When supplied, choose the category the cited
+text refers to (for example TSLA, MU or CRCL can be crypto or equity). If the text names a different
+same-symbol instrument, its market takes precedence over listed_markets. Use unknown only when neither
+the text nor the catalogue can determine the market. An absent source market_type is no answer.
+If no supplied tag covers an explicitly named
 asset in the cited source text, you may add that asset using the source's ticker or unambiguous name;
-do not infer an unnamed ecosystem token, issuer asset or related instrument. Use unknown when the text
-does not establish its market type. Conflicting source markets cannot be resolved by guessing.
+do not infer an unnamed ecosystem token, issuer asset or related instrument. Conflicting source markets
+cannot be resolved by guessing.
 An asset is a tradable instrument (token, stock, fund, index, commodity or currency pair); places, waterways,
 countries, governments, weapons, programs and organizations without a named listed instrument are not assets.
 Claims without relevant assets remain valid with assets=[].

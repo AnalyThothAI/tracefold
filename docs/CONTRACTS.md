@@ -63,6 +63,8 @@
 
 `/api/news/status` 将可领取的 `semantic_pending`、等待调度的 `semantic_deferred`、租约中的 `semantic_in_progress` 与终结的 `semantic_failed_exhausted` 分开。`semantic_failed_exhausted` 计入当前仍失败的 revision，不论失败前实际用了几次尝试；失败 revision 不属于可运行 pending；计数不是推送次数或模型调用次数。
 
+`primary_asset_markets_24h` 是同一测量时钟下最近 24 小时完成并已采用的 semantic 解析中 primary 资产的市场分布，来源为 `news_analyses.understanding`。`total` / `unknown` 统计出现次数，`by_market` 按共享市场词表计数，`unknown_share` 为 unknown / total 的 0–1 比例（四位小数），无样本时为 null。同一符号跨命题、跨已采用修订分别计数；mentioned、未采用解析、scope repair 和窗口外解析不计入。该字段仅观测，不参与健康等级或业务门禁。
+
 Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed`；`failed` 是通知工作的持久终态，带 `last_error_code`，对应结果 `outcome.kind = notification_failed`（归入“被拦截”），只有 `news retry-work --kind notification` 按精确 content revision 重开。逐命题原因 `send_outcome_ambiguous` 表示此前发送结果不明、按可能已送达处理且不重发；`send_outcome_unresolved` 只表示本 Event 仍有发送进行中。`processing.notification.plan.origin` 为 `reader_v2` 时，逐命题行另带 `novelty`（known / increment / development / in_flight / unlinked）、`render`（full / increment / correction）、`importance` 与分布、`reader_backend`；`editorial_v1` 历史只给出旧原因。
 
 ### 认证与浏览器行为

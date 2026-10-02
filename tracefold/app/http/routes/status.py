@@ -140,6 +140,7 @@ def _measure_news_status(runtime: Any) -> dict[str, Any]:
         "watchlist": sorted(settings.news.watchlist_symbols),
         "instruments": instruments,
         "price": price,
+        "primary_asset_markets_24h": snapshot["primary_asset_markets_24h"],
         "measured_at_ms": now_ms,
     }
     return data
