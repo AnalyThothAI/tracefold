@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from ..bus import RK_RAW_LIVE, BrokerBackpressure, BrokerUnavailable, BusMessage, new_trace_id, now_ms
+from ..bus import (
+    RK_RAW_LIVE,
+    BrokerBackpressure,
+    BrokerUnavailable,
+    BusMessage,
+    DeferError,
+    TransientError,
+    new_trace_id,
+    now_ms,
+)
 from ..opennews import OpenNewsExpectedError, parse_opennews_message
 from ..telemetry import NewsWorkSemantics
 from .recovery import RecoveryRunner
 from .runtime import NewsDatabasePort, _receive_or_stop, _sleep_or_stop
 
 _WS_RECONNECT_SECONDS = 3.0
+log = logging.getLogger("tracefold.news")
 _WS_CAUSE = {
     "opennews_authentication_failed": "authentication",
     "opennews_connect_failed": "network_connect",
@@ -149,9 +160,13 @@ class OpenNewsReceiver:
             and stamp - self._last_recorded_frame_ms < 5_000
         ):
             return
-        closed = await self.db.tx(
-            "news_ingest_frame", lambda repos: repos.news.record_published_frame(now_ms=stamp), timeout_seconds=1.0
-        )
+        try:
+            closed = await self.db.tx(
+                "news_ingest_frame", lambda repos: repos.news.record_published_frame(now_ms=stamp), timeout_seconds=1.0
+            )
+        except (DeferError, TransientError) as exc:
+            log.warning("news_ingest_frame_deferred: %s", exc)
+            return
         self._last_recorded_frame_ms = stamp
         self._broker_incident_open = False
         if closed > 0 and self.recovery is not None:

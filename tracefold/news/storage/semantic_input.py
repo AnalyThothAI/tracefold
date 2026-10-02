@@ -68,7 +68,11 @@ def item_evidence(item: Mapping[str, Any]) -> Evidence | None:
             record_id=str(item["item_id"]),
             origin_id=origin,
             published_at_ms=None if item.get("published_at_ms") is None else int(item["published_at_ms"]),
-            first_available_at_ms=int(item["observed_at_ms"]),
+            first_available_at_ms=(
+                min(int(item["observed_at_ms"]), int(item["published_at_ms"]))
+                if item.get("first_ingest_mode") == "recovery" and item.get("published_at_ms") is not None
+                else int(item["observed_at_ms"])
+            ),
             url=url,
             source_authority=source_authority(tuple(value for value in (origin, url) if value)),
         ),

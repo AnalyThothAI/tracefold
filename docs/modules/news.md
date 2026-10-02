@@ -147,7 +147,11 @@ Claim ref 指向一个命题或真实世界中的一次发生。新增支持、�
 
 [Gate](../../tracefold/news/events/gate.py)与[准入](../../tracefold/news/pipeline/admission.py)负责确定性证据、grounded assets 与队列优先级。来源标签、显式 cashtag、交易标的目录与规则匹配各有作用；并非所有实体都由一次模型调用凭空产生。
 
-精确身份和有界近似匹配用于找到可能归到一起的输入。强事实如 ticker、数字及 token 兼容性可以阻止错误合并；MinHash、标题相似或同一个资产只能帮助召回，**不能证明两个命题相同**。真正的等价、补充、更正与阶段变化在 Claim 层判断。对引文明示的不同 crypto 上币 ticker 或同报价币的不同完整合约，代码阻止错误的等价、增量或阶段关系；ticker 与交易对、未引证标签、自由文字差异保留未知，同标的不同阶段仍交原关系判断。通知读取还用当前 head 与实际回执的原始命题检查最新链接断言：两端证据足够时忽略同类错链，缺任一端时保留，真实更正不受影响；它不改写历史图，也不重新打开已完成工作。实时稿只按文本并入已准入的 Event：断线补抄开出的 recovery Event 不产生语义、卡片或 catalyst，不能吞掉之后的实时稿；补抄稿仍可并入它作为历史。
+精确身份和有界近似匹配用于找到可能归到一起的输入。强事实如 ticker、数字及 token 兼容性可以阻止错误合并；MinHash、标题相似或同一个资产只能帮助召回，**不能证明两个命题相同**。真正的等价、补充、更正与阶段变化在 Claim 层判断。对引文明示的不同 crypto 上币 ticker 或同报价币的不同完整合约，代码阻止错误的等价、增量或阶段关系；ticker 与交易对、未引证标签、自由文字差异保留未知，同标的不同阶段仍交原关系判断。通知读取还用当前 head 与实际回执的原始命题检查最新链接断言：两端证据足够时忽略同类错链，缺任一端时保留，真实更正不受影响；它不改写历史图，也不重新打开已完成工作。
+
+补抄时效只由 Gate 判断：`source_age_ms = observed_at_ms - params.ts`，不超过 30 分钟（含边界、负时差）的新闻与实时稿同等准入，上币稿保持 `listing_deterministic`。超过窗口或缺少有效 `ts` 的稿件标为 `recovery`，reason 为 `recovered_after_live_window`。实时稿不受这个时效窗口限制。归组和证据唤醒按本稿的 admission 判断：新鲜补抄稿和实时稿都可并入已准入 Event；历史 recovery Event 不吸收它们。超时补抄可并入已有 Event 追加证据，但不请求语义工作。Event 的 `ingest_mode='recovery'` 保留来源标注，报价工作集按 admission 选择，端到端延迟百分位只统计 live Event。不回补已有的历史 recovery Event。
+
+补抄 Item 的来源首次可见时间为 `min(observed_at_ms, published_at_ms)`，缺有效发布时间时使用 observation；实时 Item 保持 `observed_at_ms`。这个时钟进入命题的首次可见时间，供 `stale_source`、更正判定和 Trading catalyst 使用，不改变身份。边界与持久工作验证见[纯测试](../../tests/news/test_news_recovery_admission.py)和[PostgreSQL 归组与唤醒测试](../../tests/integration/test_news_recovery_admission.py)。
 
 证据快照记录成员的来源、策略与 provenance，但只有语义材料变化（任务范围、成员记录与事实、正文修订、grounded assets）才请求语义工作；同一记录换策略重发只更新快照，不触发空转。
 
@@ -637,6 +641,8 @@ T2 的卡片生成失败不应回滚 T2 的知识；T3 更正不会改写 T0 冻
 [返回文档中心](../README.md) · [架构图谱](../ARCHITECTURE.md#atlas) · [返回顶部](#news增量新闻理解与独立通知)
 
 ## 市场事实与采集器持久状态
+
+接收端在 broker 确认逐帧发布后，用 1 秒有界事务记账（正常时每 5 秒至多一次，broker 事故关闭期间逐帧尝试）。这一步的 `DeferError` / `TransientError` 只记录 `news_ingest_frame_deferred` warning，保留未关闭事故和上次成功时钟，下一帧幂等重试。连接、断开和事故开启的持久状态迁移仍让写入失败向根监督传播。
 
 P1 将 OI、清算、大户报告、钱包触发和无法结构化的市场记录统一保存为 `news_market_observations`。观察身份沿用原 Item ID；业务字段在首次写入后保持不变，重放只合并实际新增的来源策略，完全相同的帧不改写行。首次 OI 写入在同一事务发布原有公开 outbox，页面分组键、时间字段和通知续接保持一致。`news_items`、修订、Event 成员和冻结证据只拥有编辑型新闻。
 
