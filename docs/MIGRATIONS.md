@@ -1,135 +1,110 @@
 # 数据库迁移与恢复边界
 
-[手册](README.md) · [运维](OPERATIONS.md#backup) · [结构参考](generated/db-schema.md)
+[手册](README.md) · [运维备份](OPERATIONS.md#backup) · [结构参考](generated/db-schema.md)
 
-当前 schema 使用 [Alembic 单链](../tracefold/platform/postgres/alembic/versions/)，基线为 `20260831_0340`。已应用的迁移文件属于升级与恢复证据，**不是可随过时文档一起删除的文件**。
+当前 schema 使用 [Alembic 单链](../tracefold/platform/postgres/alembic/versions/)，基线为 `20260831_0340`，本版本 head 为 `20261002_0428`。当前账本共 28 张表：19 张 News、7 张 Trading，以及 `runtime_processes`、`alembic_version`。已应用的迁移是升级与恢复证据，文档清理不删除或重写这些文件。
 
-`20261001_0420`（[#764 P0](https://github.com/AnalyThothAI/tracefold/issues/764)）从 `0419` 升级：压缩连续同成员钱包版本，保留每组最后一个版本 ID 与最早 `known_at_ms`，重映射成交和 tape 游标；冻结回执 `sent_claims`，收紧决策和 EventUpdate 的 NULL 检查；删除四张无读者表、两个执行消费游标、六个 delivery 删除字段、两列历史状态及六个孤儿函数。全部处于同一事务，成员、成交数、游标引用和 Claim 投影核对失败即回滚。
+本页只维护版本兼容、维护顺序、必要导出和回退边界。具体业务行为由模块手册维护，部署回执与历史性能结果从对应 Git / Issue 记录检索。
 
-此迁移先停全部进程，Analysis 先于 Executor；备份并导出 `news_market_wallet_archive`、`news_market_instrument_listing_events`、`news_market_wallet_roster`、`news_market_wallet_tape_state`、`news_market_wallet_fills`、`news_deliveries`、`news_notification_decisions`，记录 sha256 并核验归档可读。存在 Trading 写者会话、非空冲突/证据表、delivery 删除状态、无效文档/决策或版本内时间不一致时拒绝升级。停 Executor 会暂停 time exit 和 flatten，停前核对实际持仓、挂单及未处置输入；恢复后核对 pause/halt、待处置数和 `db audit`。仅支持已核验备份加旧镜像恢复；生产彩排、部署与 24 小时性能验收需要另行授权。
-
-本地行为证明由 [P0 迁移测试](../tests/integration/test_p0_migration.py)、[待处置消费测试](../tests/integration/test_p0_executor_pending.py) 和 [状态缓存测试](../tests/test_measured_once.py)维护。
-
-`20261001_0421`（#764 P1）从 `0420` 升级：市场 Item 与三类事实并入 `news_market_observations`，保留观测 ID、分组键、通知标记和 OI outbox 身份；钱包快照转换为 `news_market_wallets` 成员区间；四个采集器状态与事故归 `news_collectors`。编辑 `news_items` 删除七个市场列，反应与钱包 outcome 表和字段删除。迁移内冻结旧投影并双向 `EXCEPT ALL`，核对事实数、历史成员、当前监控值、链游标与未完成事故。
-
-P1 停 Serve、Workers、Analysis 后执行。备份外另导出 `news_oi_signals`、`news_market_liquidations`、`news_market_smart_money`、`news_market_wallet_roster`、`news_market_wallet_tape_state`、`news_market_instrument_snapshot_state`、`news_opennews_incidents`、`news_ingest_state`、`news_event_reactions`、`news_market_wallet_outcomes`，以及 `news_items` 和 `news_market_wallet_events`；记录 sha256 并验证 `pg_restore -l` 可读。市场行成为编辑证据、来源事实不匹配、语义常量或派生身份不一致时拒绝升级。backlog、未开始卡片、游标与待恢复事故保留；残留 `sending` 由启动扫描标记 `unknown`。恢复后核对 kind / notify_state 分布、当前名单与 `scanned_block`；回滚使用已验证备份和旧镜像。
-
-[P1 迁移测试](../tests/integration/test_p1_migration.py)用 P0 固定市场 JSON 证明分组、详情、时间线不变；[采集器与重放测试](../tests/integration/test_p1_market_collectors.py)覆盖 `xmin`、outbox、成员区间与并发事故。生产导出、恢复彩排、部署后性能与三天写入观测属于上线验收，尚未由这些本地测试证明。
-
-`20261001_0422`（#764 P2）从 `0421` 升级：通知判断、待发送意图、回执与市场卡片统一到 `news_notifications`；通知规划和市场组节奏统一到 `news_jobs`。编辑通知保留 decision / intent / update 身份，原行执行 pending → sending → settled；可重试 not_sent 保留冻结卡片，ambiguous 不自动重发。无 FK 的孤儿事件任务由 janitor 有界清理。
-
-P2 先停 Workers，再停 Serve，核实没有 News 写者会话。完整备份外导出 `news_notification_decisions`、`news_delivery_queue`、`news_deliveries`、`news_notification_work`、`news_market_tracks`、`news_market_deliveries`、`news_notification_feedback`、`news_notification_external_feedback`、`news_external_miss_snapshots`，记录 sha256 并验证归档可读。ReviewDesk 非空、单判断对应多个意图、queue / ledger 冻结字段不一致或 card 的正文与摘要不一致时拒绝升级；六组源投影逐列双向 EXCEPT ALL 与 md5 一致后才删除旧表、视图和函数。日志须包含 `p2_verify ok`。
-
-迁移保留 sending、编辑状态、租约期限与重试预算。恢复时编辑通知 sending 按现有恢复路径结算为 ambiguous，市场 sending 扫描为 unknown；编辑超时也按现有路径结算，禁止将这些记录批量改为 pending。核对详情（删除 feedback）、状态（删除四个复核字段）、市场分组与外部消息身份。回滚恢复已核验备份及旧镜像；备份之后已发生的外部发送仍须逐 intent 对账，不能从数据库恢复推断未发送。
-
-[P2 迁移测试](../tests/integration/test_p2_migration.py)覆盖空库、全部通知与市场状态、冻结载荷、终态不可变、投影不一致拒绝及并发孤儿清理；[发送恢复测试](../tests/integration/test_news_update_delivery.py)覆盖 lease、发送不确定性与崩溃窗口。生产备份、恢复演练和部署证据记录在 [#764 上线回执](https://github.com/AnalyThothAI/tracefold/issues/764)；持续性能观测单独验收。
-
-`20261001_0423`（#764 P3）从 `0422` 升级：观察与采纳、scope repair 统一到 `news_analyses`，Event 保存唯一 head 指针；证据保存 material 摘要、焦点来源、事实范围及版本摘要日志，来源修订归 `news_items.revisions`，band 归 Event 数组，语义任务归 `news_jobs`，checkpoint 归缓存。`news_event_assets` 保留，命题链接从不可变 changes 派生。
-
-命题链接按 `(update_ref,current_ref,previous_ref)` 保留文档中的第一条有效关系，与旧 writer 的 `ON CONFLICT DO NOTHING` 一致；不同关系不能展开成两行。生产备份演练发现两组重复关系，部署前修正须记录对尚未在生产执行的已合并 revision 的例外授权。迁移临时索引旧 band 的 Event，并将 Claim 引用展开到临时索引表，避免逐行重复解析 JSON；十组数量、md5 与双向行差异校验均保留。
-
-P3 先停 Workers，再停 Serve，核实无 News 写者会话。完整备份外导出 `news_claim_links`、`news_event_update_heads`、`news_event_updates`、`news_head_scope_repairs`、`news_semantic_observations`、`news_semantic_checkpoints`、`news_semantic_work`、`news_event_evidence_snapshots`、`news_event_bands`、`news_item_revisions`，记录 sha256 并验证 `pg_restore --list`。band 身份、采纳来源、repair、head 或 checkpoint 键不一致时拒绝升级；迁移逐列核对源投影、数量与 md5，日志须有 `p3_verify ok`。孤儿证据只记录 NOTICE，不作为存活 Event 事实回填。
-
-启动前在维护窗口执行 `VACUUM (FULL, ANALYZE) news_events; ANALYZE news_analyses, news_jobs, news_items;`，回收回填旧版本并刷新统计。租约和重试预算保留，未发送唤醒由现有 repair turn 恢复。核对详情版本、head 和待处理任务；回滚恢复已核验备份加旧镜像。生产迁移和维护 VACUUM 已执行，HOT 比率与 24 小时性能观测须按 [#764 上线回执](https://github.com/AnalyThothAI/tracefold/issues/764)中的真实窗口验收。
-
-[P3 迁移测试](../tests/integration/test_p3_migration.py)核对 20 个读取投影及预检回滚；[并发与 GIN 测试](../tests/integration/test_news_p3_semantic_chain.py)证明证据 CAS、Event 串行锁、成员 FK 兼容和 4 万 Event 的索引路径。P3 阶段库为 36 张表。
-
-`20261001_0424`（#764 P4）从 `0423` 升级为最终 26 张表：17 张 News 表、七张 Trading 表、`runtime_processes` 和 Alembic 版本表。Trading 的输入、case 文档、entry 与账户分别承接事实、持久决定和执行控制；订单和原生成交证据继续保留。
-
-先记录 `trading status` 以及交易所持仓、普通单和 Algo 单；避开接近 max_hold_s 的持仓或进行中的 flatten。先停 Analysis，等待 pending 清零（最长 300 秒），然后停 Executor、Workers 和 Serve，确认没有写者会话。保留完整备份，另以 custom-format `pg_dump` 导出以下 14 张源表：`trading_triggers`、`trading_source_amendments`、`trading_assessments`、`trading_policy_actions`、`trading_paper_legs`、`trading_signals`、`trading_dispositions`、`trading_plans`、`trading_fill_attributions`、`trading_trade_cursors`、`trading_control_state`、`trading_executor_state`、`trading_analysis_runtime`、`workers_runtime`。记录导出文件 sha256，并用 `pg_restore --list` 核验；部署记录包含备份身份、源 head、目标 head 和导出清单。
-
-P4 拒绝未执行 P0、同 case 多个 assessment、输入/动作/计划/处置/成交身份不一致、不完整 paper 对、claim 不一致，以及无法唯一确定游标账户的数据。若 #762 已先合并，应先适配独立 evaluations 账本并保留 replay；本迁移适用于尚未合并该评估账本的源结构。13 组数量、md5 与双向逐行校验全部成功后才删除旧表，日志须有 `p4_verify ok`。未归属历史成交的账户保持 NULL；Analysis 和 Executor 的旧心跳不回填为新进程存活证据。
-
-使用 `make up` 启动匹配镜像后，核对 26 表、pause/halt、pending、case 模型输入与订单身份，确认无重复下单，并在 70 秒内完成账户对账。回滚需要恢复已核验完整备份和旧镜像，数据库恢复不能撤销交易所已经发生的订单。[迁移测试](../tests/integration/test_p4_migration.py)验证带数据的 P0→P4、公开投影等价和预检回滚；[账本测试](../tests/integration/test_p4_trading_ledger.py)验证 pending CAS、同 symbol 拒绝、write-once 与进程存活边界。生产迁移、导出、停机时长与场所对账的实际证据见 [#764 上线回执](https://github.com/AnalyThothAI/tracefold/issues/764)。
-
-`20261002_0425` 从已部署的 `0424` 升级，增加两个语义任务部分索引与 News 专用的单行 reader clock 围栏：按 next_attempt / subject 排序读取 pending/failed 任务，按 updated_at 查近期失败。失败索引也包含已完成但保留失败 outcome 的任务；查询不以 state='failed' 替代原失败统计。迁移不改事实、detail、租约或重试预算，新增计数表与相关事实的 AFTER constraint 触发器（默认延迟到提交，防止 admission 的 Item/member → Event 路径先持有 clock；事实与版本原子可见），News 18 表、全库 27 表；计数是权限 CAS 证明，不替代事实。索引 SHARE 锁、触发器 SHARE ROW EXCLUSIVE 锁、5 秒锁超时和 120 秒语句超时，失败时事务回滚。按正常迁移顺序停写者，保留配套完整备份；新 head 成功后使用匹配镜像，失败时确认仍在 0424 才恢复前驱镜像。无需重复 P3 的表重写或 retired-table 导出。旧镜像不拥有 reader clock，成功后仅启动配套镜像。
-
-[索引迁移测试](../tests/integration/test_semantic_read_index_migration.py)验证 0424→0425 且任务事实完全不变；[有界读取测试](../tests/integration/test_news_semantic_read_costs.py)用两万条已完成历史任务验证查询预算与已完成失败计数。feed 页面沿 Event 的 analysis 指针读取 head，并按 Event 查找待发送意图；全量 counts 保留批量读取，输出契约不变。
-
-`20261002_0426`（#791 A）增加共享命题召回索引、精确版本向量身份与 canonical FTS 投影；`20261002_0427`（#791 B）把持久结构化读数 `commentary` 转为 `unknown`、`conditional_threat` 转为 `threat`，最终只接受当前 v5 mode 与 reader v3 契约。转换覆盖采用文档、冻结回执、检查点和待发公开 payload，保留来源引文、claim/update 引用、输入出处、已送正文与结果；公开 payload 的摘要随转换更新，不重新采用或发送。0427 在事务内暂时关闭两项不可变 guard，排空延迟约束后恢复，失败会整体回滚。
-
-0426→0427 与配套镜像须在同一个停写维护窗口完成：先按正常顺序停止所有写者，核实没有写者会话；保存完整 custom-format `pg_dump`、sha256、`pg_restore --list` 核验结果、源 head 和旧镜像身份。迁移成功后核对实际 head 为 0427，并只启动匹配镜像。0427 是前向转换，回退必须恢复已核验的迁移前完整备份和对应旧镜像；不得仅 downgrade 0426/0425 或让旧镜像读取已转换的事实。[带数据迁移测试](../tests/integration/test_news_speech_migration.py)验证来源、引用、回执及 guard 的保留；业务证据见 [B 报告](reports/news-791-b.md)。
-
-迁移连接统一将 NOTICE 写入 stderr，并在每个 revision 后恢复 NOTICE 级别，防止冻结 baseline 的 warning 设置屏蔽后续证明。P2/P3 的 `p2_verify ok` / `p3_verify ok` 与 P4 自带的 `p4_verify ok` 都可见。0420–0424 发布文件不修改。历史日志未包含 P2/P3 NOTICE 只能说明当时未采集，不能追认缺失日志；已有 head 证明事务内校验完成。今后部署还需比对迁移容器镜像 head 与实际数据库 head，并输出迁移日志后才启动角色。
-
-<details>
-<summary><strong>本页目录</strong></summary>
-
-1. [确认源、镜像与数据库版本](#section-确认源镜像与数据库版本)
-2. [正常升级顺序](#section-正常升级顺序)
-3. [EventUpdate 的 0404 / 0405 / 0407 切换](#section-eventupdate-的-0404--0405--0407-切换)
-4. [基线之前的备份与严格拒绝](#section-基线之前的备份与严格拒绝)
-5. [回退不是数据库降级](#section-回退不是数据库降级)
-6. [迁移验证与提交证据](#section-迁移验证与提交证据)
-
-</details>
-
-`20261002_0428`（[#799](https://github.com/AnalyThothAI/tracefold/issues/799)）从已上线的 0427 升级，将既有 `news_analyses_adopted`、`news_notifications_sent` 两条部分索引分别补齐为 `(adopted_at_ms,analysis_id)` 与 `(settled_at_ms,intent_id)`，保留索引名和计数查询使用的时间前缀，删除被替换的单列定义。历史回填先按稳定源文档游标取有界页面，再展开 claim，避免每个页面重复排序整个历史 JSON。已有事实、向量与 guard 不变；避免单列、复合索引并存导致分页重复排序同一时间组；模型缓存准备与向量回填由独立命令完成，不进入 migration。
-
-0428 采用正常停写维护窗口、5 秒锁超时与 600 秒语句超时，索引创建失败整笔回滚。升级后只启动匹配 0428 镜像。需要恢复已上线的 0427 镜像时，停止写者后用 0428 镜像运行 `alembic downgrade 20261002_0427`，核对 head，再恢复旧配置、匹配旧镜像及独立模型服务；该降级只恢复这两条索引的原单列定义。不得跨越 0427 的前向读数转换。验证见[游标迁移测试](../tests/integration/test_news_claim_backfill_migration.py)。
-
-<a id="section-确认源镜像与数据库版本"></a>
-## 01 · 确认源、镜像与数据库版本
+## 确认源、镜像与数据库版本
 
 读取检出源码的 head，不访问数据库：
 
 ```bash
-uv run python -c 'from tracefold.platform.postgres.migrations import latest_migration_version; print(latest_migration_version())'
+uv run --locked python -c 'from tracefold.platform.postgres.migrations import latest_migration_version; print(latest_migration_version())'
 ```
 
-读取实际数据库状态：
+在管理该部署的同一 Compose 上下文中读取实际数据库状态：
 
 ```bash
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20261002_0428`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+保存源 SHA、不可变镜像 ID、数据库 head、私密配置副本和完整 custom-format dump 的身份。记录 sha256 并核验 `pg_restore --list`；可读取不等于完整恢复成功，隔离恢复演练见[运维](OPERATIONS.md#backup)。不要手工修改 `alembic_version` 或 stamp 来越过不兼容结构。
 
-<a id="section-正常升级顺序"></a>
-## 02 · 正常升级顺序
+## 正常升级顺序
 
-```mermaid
----
-config:
-  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
-  flowchart:
-    curve: linear
-    nodeSpacing: 28
-    rankSpacing: 42
----
-flowchart TD
-    accTitle: 协调数据库升级
-    accDescr: 先确认版本、备份与账户，再协调写进程和校验配置。迁移成功后恢复匹配应用，核实 Executor 恢复；失败时保持写进程停止。
-    Inspect["核实源、镜像、数据库与账户"] --> Backup["保存配套身份和可验证备份"]
-    Backup --> Writers["协调受影响写进程<br/>含 Analysis 与 Executor"]
-    Writers --> Config["校验配置与确切删除字段"]
-    Config --> Migrate["通过受支持入口执行迁移"]
-    Migrate --> Success{"迁移成功退出"}
-    Success -->|"是"| Start["启动匹配应用并验证进度"]
-    Success -->|"否"| Diagnose["保持写进程停止<br/>诊断具体 revision"]
-    Start --> Runtime["核实 Executor 恢复"]
+1. 核实源 head 与目标镜像 head，阅读跨越的 revision 和本页对应特殊前置条件。
+2. 核对实际账户持仓、普通单、Algo 单和进行中的 flatten；停止 Executor 会暂停保护维护、time exit 和操作意图消费。
+3. 协调受影响写进程：先停 Analysis，再按源版本要求排空 pending，之后停 Executor、Workers 与 Serve。确认没有残留写者会话。
+4. 保存并核验配对备份和必要源表导出，校验新配置中 Settings 报出的确切退役字段；不用 `init --force` 重置配置。
+5. 通过 `make db-migrate` 执行显式维护迁移。它保持应用停止；`make up` 在迁移成功后启动四个匹配镜像的应用角色。
+6. 核对实际数据库 head、迁移日志、`db audit`、News head / 待处理工作 / 冻结通知，以及 Trading pause/halt、pending、订单身份和真实账户对账。
 
-    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
-    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
-    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
-    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
-    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
-class Inspect,Backup,Writers,Config,Migrate,Success,Start,Diagnose store;
-class Runtime execution;
-```
+部署器会拒绝仍有旧 Nautilus 容器的迁移，以及已启用 Executor 运行时跨 schema 更新。迁移失败时保持写进程停止，确认事务回滚后的真实 head 再恢复配对镜像。不要以容器 running 代替一次性迁移的退出码；部署器会比较迁移镜像 head 与实际数据库 head，并输出迁移日志后才启动角色。
 
-*操作视图 · “迁移成功”指实际退出结果；停止 Runtime 不是账户平仓回执。*
+## 当前召回与索引迁移：0425–0428
 
-使用管理该实例的检出目录及统一 Make 工作流，核对项目、配置目录与端口；隔离开发实例不共享生产写进程。`make up` 等迁移结束后启动 Serve、Workers 和 Analysis；同时管理匹配镜像的 Executor。运行中 Runtime 与待迁移 schema 不匹配时，不以环境标志绕过检查。
+`20261002_0425` 从 `0424` 升级，增加两个语义任务部分索引与 News 专用的单行 reader clock 围栏：按 next_attempt / subject 排序读取 pending/failed 任务，按 updated_at 查近期失败。失败索引也包含已完成但保留失败 outcome 的任务；查询不以 state='failed' 替代原失败统计。迁移不改事实、detail、租约或重试预算，新增计数表与相关事实的 AFTER constraint 触发器（默认延迟到提交，防止 admission 的 Item/member → Event 路径先持有 clock；事实与版本原子可见），News 18 表、全库 27 表；计数是权限 CAS 证明，不替代事实。索引 SHARE 锁、触发器 SHARE ROW EXCLUSIVE 锁、5 秒锁超时和 120 秒语句超时，失败时事务回滚。按正常迁移顺序停写者，保留配套完整备份；新 head 成功后使用匹配镜像，失败时确认仍在 0424 才恢复前驱镜像。无需重复 P3 的表重写或 retired-table 导出。旧镜像不拥有 reader clock，成功后仅启动配套镜像。
 
-停 Executor 不等于账户平仓。维护前先知道交易所实际持仓、保护与订单归属，必要操作按[执行 runbook](OPERATIONS.md#trading-operations)执行并核实结果，再协调写进程。
+[索引迁移测试](../tests/integration/test_semantic_read_index_migration.py)验证 0424→0425 且任务事实完全不变；[有界读取测试](../tests/integration/test_news_semantic_read_costs.py)用两万条已完成历史任务验证查询预算与已完成失败计数。feed 页面沿 Event 的 analysis 指针读取 head，并按 Event 查找待发送意图；全量 counts 保留批量读取，输出契约不变。
 
-普通 `init` 保留配置；`init --force` 不是迁移工具。0418 切换前的配置需移除已退役的 `llm.trading_semantics`、`trading.analysis.max_model_input_bytes`、`trading.analysis.model_input_price_ceiling_usd_per_million` 和 `trading.analysis.model_output_price_ceiling_usd_per_million`，并显式配置 `trading.analysis.program.path` / `sha256` 与 `trading.analysis.model_name`。保留当前 News 的 `llm.news_judgment` 与 `llm.news_reader_judgment` 路由。严格设置若仍报其他旧字段，仅处理报出的确切 YAML 路径，保留其他 operator 选择。
+`20261002_0426`增加共享命题召回索引、精确版本向量身份与 canonical FTS 投影；`20261002_0427`把持久结构化读数 `commentary` 转为 `unknown`、`conditional_threat` 转为 `threat`，最终只接受当前 v5 mode 与 reader v3 契约。转换覆盖采用文档、冻结回执、检查点和待发公开 payload，保留来源引文、claim/update 引用、输入出处、已送正文与结果；公开 payload 的摘要随转换更新，不重新采用或发送。0427 在事务内暂时关闭两项不可变 guard，排空延迟约束后恢复，失败会整体回滚。
 
-<a id="section-eventupdate-的-0404--0405--0407-切换"></a>
-## 03 · EventUpdate 的 0404 / 0405 / 0407 切换
+0426→0427 与配套镜像须在同一个停写维护窗口完成：先按正常顺序停止所有写者，核实没有写者会话；保存完整 custom-format `pg_dump`、sha256、`pg_restore --list` 核验结果、源 head 和旧镜像身份。迁移成功后核对实际 head 为 0427，并只启动匹配镜像。0427 是前向转换，回退必须恢复已核验的迁移前完整备份和对应旧镜像；不得仅 downgrade 0426/0425 或让旧镜像读取已转换的事实。[带数据迁移测试](../tests/integration/test_news_speech_migration.py)验证来源、引用、回执及 guard 的保留；业务证据见 [B 报告](reports/news-791-b.md)。
 
-| Revision | 建立的当前契约 | 源码 |
+`20261002_0428` 从 0427 升级，将既有 `news_analyses_adopted`、`news_notifications_sent` 两条部分索引分别补齐为 `(adopted_at_ms,analysis_id)` 与 `(settled_at_ms,intent_id)`，保留索引名和计数查询使用的时间前缀，删除被替换的单列定义。历史回填先按稳定源文档游标取有界页面，再展开 claim，避免每个页面重复排序整个历史 JSON。已有事实、向量与 guard 不变；避免单列、复合索引并存导致分页重复排序同一时间组；模型缓存准备与向量回填由独立命令完成，不进入 migration。
+
+0428 采用正常停写维护窗口、5 秒锁超时与 600 秒语句超时，索引创建失败整笔回滚。升级后只启动匹配 0428 镜像。需要恢复配对的 0427 镜像时，停止写者后用 0428 镜像运行 `alembic downgrade 20261002_0427`，核对 head，再恢复旧配置、匹配旧镜像及独立模型服务；该降级只恢复这两条索引的原单列定义。不得跨越 0427 的前向读数转换。验证见[游标迁移测试](../tests/integration/test_news_claim_backfill_migration.py)。
+
+
+<a id="local-embedding-upgrade"></a>
+### 旧独立嵌入服务切换为本地 ONNX
+
+**从 0427 的独立嵌入服务升级：** 0428，仅将现有两条时间索引补齐稳定 ID，作为历史回填游标索引，不重写事实或已有向量。先保存完整备份、配对的旧镜像 ID、私密配置和原模型文件。另备新格式私密配置副本，先删除 embedding 的旧端点和密钥字段并设置本地缓存，再为准备命令指定该新 operator 目录（`TRACEFOLD_HOME`），用新镜像准备并检查缓存；新命令会拒绝旧配置字段，不能先用旧配置运行 prepare。旧应用继续使用原配置。在停写维护窗口切换新配置并按[迁移手册](MIGRATIONS.md)升级至 0428；启动匹配的新应用后核对 dense 状态、pending 和真实通知处理。删除 Compose 定义不会自动停掉旧容器：使用 `docker ps -a --filter label=com.docker.compose.project=YOUR_PROJECT --filter label=com.docker.compose.service=news-embedding` 核对所属项目和容器 ID，再执行 `docker stop VERIFIED_CONTAINER_ID`。回滚窗口内保留旧镜像、权重、密钥和旧配置；不删除卷。
+
+回滚到配对的 0427 版本时，先按正常顺序停止所有写者，用当前镜像执行 Alembic 的 0428→0427 降级并核实数据库 head；这一步只将两条索引恢复为原单列定义，不改变采用文档、回执或向量。恢复配对旧配置，再用旧 checkout 启动其匹配镜像及独立模型服务。`make deploy-image` 要求 image/database head 相同，不能直接把 0427 镜像接到 0428。若回滚到 0427 之前，仍须恢复核验过的迁移前备份及匹配镜像。
+
+
+<details>
+<summary><strong>0420–0424 账本收敛：旧库升级前置条件</strong></summary>
+
+`20261001_0420` 从 `0419` 升级：压缩连续同成员钱包版本，保留每组最后一个版本 ID 与最早 `known_at_ms`，重映射成交和 tape 游标；冻结回执 `sent_claims`，收紧决策和 EventUpdate 的 NULL 检查；删除四张无读者表、两个执行消费游标、六个 delivery 删除字段、两列历史状态及六个孤儿函数。全部处于同一事务，成员、成交数、游标引用和 Claim 投影核对失败即回滚。
+
+此迁移先停全部进程，Analysis 先于 Executor；备份并导出 `news_market_wallet_archive`、`news_market_instrument_listing_events`、`news_market_wallet_roster`、`news_market_wallet_tape_state`、`news_market_wallet_fills`、`news_deliveries`、`news_notification_decisions`，记录 sha256 并核验归档可读。存在 Trading 写者会话、非空冲突/证据表、delivery 删除状态、无效文档/决策或版本内时间不一致时拒绝升级。停 Executor 会暂停 time exit 和 flatten，停前核对实际持仓、挂单及未处置输入；恢复后核对 pause/halt、待处置数和 `db audit`。仅支持已核验备份加旧镜像恢复。
+
+本地行为证明由 [P0 迁移测试](../tests/integration/test_p0_migration.py)、[待处置消费测试](../tests/integration/test_p0_executor_pending.py) 和 [状态缓存测试](../tests/test_measured_once.py)维护。
+
+`20261001_0421` 从 `0420` 升级：市场 Item 与三类事实并入 `news_market_observations`，保留观测 ID、分组键、通知标记和 OI outbox 身份；钱包快照转换为 `news_market_wallets` 成员区间；四个采集器状态与事故归 `news_collectors`。编辑 `news_items` 删除七个市场列，反应与钱包 outcome 表和字段删除。迁移内冻结旧投影并双向 `EXCEPT ALL`，核对事实数、历史成员、当前监控值、链游标与未完成事故。
+
+P1 停 Serve、Workers、Analysis 后执行。备份外另导出 `news_oi_signals`、`news_market_liquidations`、`news_market_smart_money`、`news_market_wallet_roster`、`news_market_wallet_tape_state`、`news_market_instrument_snapshot_state`、`news_opennews_incidents`、`news_ingest_state`、`news_event_reactions`、`news_market_wallet_outcomes`，以及 `news_items` 和 `news_market_wallet_events`；记录 sha256 并验证 `pg_restore -l` 可读。市场行成为编辑证据、来源事实不匹配、语义常量或派生身份不一致时拒绝升级。backlog、未开始卡片、游标与待恢复事故保留；残留 `sending` 由启动扫描标记 `unknown`。恢复后核对 kind / notify_state 分布、当前名单与 `scanned_block`；回滚使用已验证备份和旧镜像。
+
+[P1 迁移测试](../tests/integration/test_p1_migration.py)用 P0 固定市场 JSON 证明分组、详情、时间线不变；[采集器与重放测试](../tests/integration/test_p1_market_collectors.py)覆盖 `xmin`、outbox、成员区间与并发事故。生产导出、恢复彩排、部署后性能与三天写入观测属于上线验收，尚未由这些本地测试证明。
+
+`20261001_0422` 从 `0421` 升级：通知判断、待发送意图、回执与市场卡片统一到 `news_notifications`；通知规划和市场组节奏统一到 `news_jobs`。编辑通知保留 decision / intent / update 身份，原行执行 pending → sending → settled；可重试 not_sent 保留冻结卡片，ambiguous 不自动重发。无 FK 的孤儿事件任务由 janitor 有界清理。
+
+P2 先停 Workers，再停 Serve，核实没有 News 写者会话。完整备份外导出 `news_notification_decisions`、`news_delivery_queue`、`news_deliveries`、`news_notification_work`、`news_market_tracks`、`news_market_deliveries`、`news_notification_feedback`、`news_notification_external_feedback`、`news_external_miss_snapshots`，记录 sha256 并验证归档可读。ReviewDesk 非空、单判断对应多个意图、queue / ledger 冻结字段不一致或 card 的正文与摘要不一致时拒绝升级；六组源投影逐列双向 EXCEPT ALL 与 md5 一致后才删除旧表、视图和函数。日志须包含 `p2_verify ok`。
+
+迁移保留 sending、编辑状态、租约期限与重试预算。恢复时编辑通知 sending 按现有恢复路径结算为 ambiguous，市场 sending 扫描为 unknown；编辑超时也按现有路径结算，禁止将这些记录批量改为 pending。核对详情（删除 feedback）、状态（删除四个复核字段）、市场分组与外部消息身份。回滚恢复已核验备份及旧镜像；备份之后已发生的外部发送仍须逐 intent 对账，不能从数据库恢复推断未发送。
+
+[P2 迁移测试](../tests/integration/test_p2_migration.py)覆盖空库、全部通知与市场状态、冻结载荷、终态不可变、投影不一致拒绝及并发孤儿清理；[发送恢复测试](../tests/integration/test_news_update_delivery.py)覆盖 lease、发送不确定性与崩溃窗口。
+
+`20261001_0423` 从 `0422` 升级：观察与采纳、scope repair 统一到 `news_analyses`，Event 保存唯一 head 指针；证据保存 material 摘要、焦点来源、事实范围及版本摘要日志，来源修订归 `news_items.revisions`，band 归 Event 数组，语义任务归 `news_jobs`，checkpoint 归缓存。`news_event_assets` 保留，命题链接从不可变 changes 派生。
+
+命题链接按 `(update_ref,current_ref,previous_ref)` 保留文档中的第一条有效关系，与旧 writer 的 `ON CONFLICT DO NOTHING` 一致；不同关系不能展开成两行。迁移临时索引旧 band 的 Event，并将 Claim 引用展开到临时索引表，避免逐行重复解析 JSON；十组数量、md5 与双向行差异校验均保留。
+
+P3 先停 Workers，再停 Serve，核实无 News 写者会话。完整备份外导出 `news_claim_links`、`news_event_update_heads`、`news_event_updates`、`news_head_scope_repairs`、`news_semantic_observations`、`news_semantic_checkpoints`、`news_semantic_work`、`news_event_evidence_snapshots`、`news_event_bands`、`news_item_revisions`，记录 sha256 并验证 `pg_restore --list`。band 身份、采纳来源、repair、head 或 checkpoint 键不一致时拒绝升级；迁移逐列核对源投影、数量与 md5，日志须有 `p3_verify ok`。孤儿证据只记录 NOTICE，不作为存活 Event 事实回填。
+
+启动前在维护窗口执行 `VACUUM (FULL, ANALYZE) news_events; ANALYZE news_analyses, news_jobs, news_items;`，回收回填旧版本并刷新统计。租约和重试预算保留，未发送唤醒由现有 repair turn 恢复。核对详情版本、head 和待处理任务；回滚恢复已核验备份加旧镜像。
+
+[P3 迁移测试](../tests/integration/test_p3_migration.py)核对 20 个读取投影及预检回滚；[并发与 GIN 测试](../tests/integration/test_news_p3_semantic_chain.py)证明证据 CAS、Event 串行锁、成员 FK 兼容和 4 万 Event 的索引路径。P3 阶段库为 36 张表。
+
+`20261001_0424` 从 `0423` 升级为该阶段的 26 张表：17 张 News 表、七张 Trading 表、`runtime_processes` 和 Alembic 版本表。Trading 的输入、case 文档、entry 与账户分别承接事实、持久决定和执行控制；订单和原生成交证据继续保留。
+
+先记录 `trading status` 以及交易所持仓、普通单和 Algo 单；避开接近 max_hold_s 的持仓或进行中的 flatten。先停 Analysis，等待 pending 清零（最长 300 秒），然后停 Executor、Workers 和 Serve，确认没有写者会话。保留完整备份，另以 custom-format `pg_dump` 导出以下 14 张源表：`trading_triggers`、`trading_source_amendments`、`trading_assessments`、`trading_policy_actions`、`trading_paper_legs`、`trading_signals`、`trading_dispositions`、`trading_plans`、`trading_fill_attributions`、`trading_trade_cursors`、`trading_control_state`、`trading_executor_state`、`trading_analysis_runtime`、`workers_runtime`。记录导出文件 sha256，并用 `pg_restore --list` 核验；部署记录包含备份身份、源 head、目标 head 和导出清单。
+
+P4 拒绝未执行 P0、同 case 多个 assessment、输入/动作/计划/处置/成交身份不一致、不完整 paper 对、claim 不一致，以及无法唯一确定游标账户的数据。13 组数量、md5 与双向逐行校验全部成功后才删除旧表，日志须有 `p4_verify ok`。未归属历史成交的账户保持 NULL；Analysis 和 Executor 的旧心跳不回填为新进程存活证据。
+
+使用 `make up` 启动匹配镜像后，核对 26 表、pause/halt、pending、case 模型输入与订单身份，确认无重复下单，并在 70 秒内完成账户对账。回滚需要恢复已核验完整备份和旧镜像，数据库恢复不能撤销交易所已经发生的订单。[迁移测试](../tests/integration/test_p4_migration.py)验证带数据的 P0→P4、公开投影等价和预检回滚；[账本测试](../tests/integration/test_p4_trading_ledger.py)验证 pending CAS、同 symbol 拒绝、write-once 与进程存活边界。
+
+
+</details>
+
+## 更早源版本的必要边界
+
+以下是升级旧库时仍需遵守的转换记录，不表示这些旧表、接口或进程仍在线。精确 SQL、锁顺序和预检以对应冻结 revision 为准。
+
+| Revision | 当时执行的转换 | 源码 |
 | --- | --- | --- |
 | `20260926_0404` | Item 修订、语义工作 / 检查点 / 观察、EventUpdate 与 head、通知工作、intent 发送、公开更新与 Trading amendment | [0404](../tracefold/platform/postgres/alembic/versions/20260926_0404_news_event_updates.py) |
 | `20260927_0405` | 来源修订顺序 / 前驱、保留不可变 v1 与新 v2、跨 Event claim 定位索引 | [0405](../tracefold/platform/postgres/alembic/versions/20260927_0405_news_revision_ownership.py) |
@@ -144,72 +119,27 @@ class Runtime execution;
 | `20260929_0416` | 新增只追加的 `news_claim_links` 并从历史 EventUpdate 回填；通知决定支持 `reader_v2` | [0416](../tracefold/platform/postgres/alembic/versions/20260929_0416_news_reader_decisions.py) |
 | `20260929_0417` | DEMO 执行账本硬切：Signal v4、disposition、Plan、订单与原生成交；删除 Nautilus 执行表 | [0417](../tracefold/platform/postgres/alembic/versions/20260929_0417_trading_execution_hard_cut.py) |
 | `20260929_0418` | LIVE Analysis 硬切：仅选中 Trigger 建 Case，冻结预测、六策略和双腿纸面账本；删除旧 Gate、WATCH 与逐调用表 | [0418](../tracefold/platform/postgres/alembic/versions/20260929_0418_trading_analysis_hard_cut.py) |
-| `20261001_0419` | News 关联召回改为索引驱动：`news_event_assets` 增加数据库生成的 `retrieval_symbol` / `retrieval_pair_base`（重写约 3.4 万行）与索引，`news_items.canonical_url`、`news_events.leader_item_id` 和成员事实 GIN 三元组索引；删除只被旧召回使用的标题 GiST 索引。不改事实行；生产副本上整次约 4 s，可降级 | [0419](../tracefold/platform/postgres/alembic/versions/20261001_0419_news_recall_indexes.py) |
+| `20261001_0419` | News 关联召回改为索引驱动：`news_event_assets` 增加数据库生成的 `retrieval_symbol` / `retrieval_pair_base`（重写约 3.4 万行）与索引，`news_items.canonical_url`、`news_events.leader_item_id` 和成员事实 GIN 三元组索引；删除只被旧召回使用的标题 GiST 索引。不改事实行；支持降级 | [0419](../tracefold/platform/postgres/alembic/versions/20261001_0419_news_recall_indexes.py) |
 
-这些切换是前向迁移，不通过旧卡片 / verdict 伪造新 Claim。0407 曾将旧 pending `first` / `followup` 意图结算；0411 将它们连同旧发送行删除。当前 intent 只接受 `update`，发送账本保留决策引用。EventUpdate 的不可变版本与已发送的当前通知保留。
+0404/0405/0407 采用前向契约切换，不从旧卡片或 verdict 伪造新命题。0409 的任务级 `processed_read_refs` 从实际完成的阅读建立；0410 仅建立归属修复证明，运行时定向修复见[运维](OPERATIONS.md#历史编号事实的-head-归属清理)。0411 删除退役 verdict / Review / 学习、root tape、旧市场 Event、v1 head 和旧发送行，但保留原始 Item、类型化市场事实和当前版本的知识、回执与执行证据。
 
-`20260927_0406` 为 [执行硬切 Signal 退休原因](../tracefold/platform/postgres/alembic/versions/20260927_0406_execution_hard_cut_retirement.py) 增加约束取值；它自身不清理账户数据。数据切换步骤见 [Trading 运维](OPERATIONS.md#trading-operations)。
+0412 前保存精确 intent 的状态、版本、attempts、lease、工作和回执清单；旧 attempts 混合领取与失败次数，不能批量归零或当成真实失败次数。只有确证未进入可能发送边界的当前 intent 才能按运维命令定向恢复。`sending`、`ambiguous` 与已有回执不能批量改为 pending。
 
-### 配套检查
+0417/0418 为不可降级的 Trading 硬切：先停旧执行进程，用签名场所读确认 DEMO 仓位、普通单和 Algo 单均为零，再备份所有 `trading_*` 表与归档目录。0417 建立 Signal v4 与订单/成交账本；0418 要求 Signal 表为空，删除旧 Analysis Case、Gate、WATCH 和逐调用记录。迁移与新镜像在同一维护窗口完成，不回填旧 DEMO 数据，回退使用已验证备份和旧镜像。
 
-| 边界 | 要确认的内容 |
+## 回退与验证
+
+| 情况 | 支持的处理 |
 | --- | --- |
-| 配置 | 删除已退役 `news.policy`、`llm.news_compiler_reflection` 的确切路径 |
-| 原始证据 | 来源正文修订与前驱不丢失，不把相同正文的再次出现当旧版本重投 |
-| 语义工作 | wanted / done、owner / lease、耗尽结算与新版本预算隔离 |
-| 知识 | EventUpdate 不可变，head 不倒退，未变的命题 / 问题保留 |
-| 通知 | 当前 `update` 回执和冻结卡片保留；旧 `first` / `followup` 数据按 0411 删除。新决策与工作 / intent 引用一致，不因 schema 迁移重复推送 |
-| Trading | 旧公开 payload 与新契约明确区分；来源更正不制造新 TTL |
+| 当前 schema 与服务命令兼容的本地镜像替换 | `make deploy-image IMAGE_ID=sha256:<完整 ID>`；目标 image head 必须等于实际 database head |
+| 0428 回到 0427 | 停写后执行对应可逆索引降级、核对 head，再恢复配对配置与 0427 镜像 |
+| 0427 读数转换、0417/0418 硬切或其他不可降级转换 | 恢复已验证的迁移前完整备份与对应旧镜像，或经验证的前向修复 |
+| 基线之前或来源未知的备份 | 使用备份记录的源码 / 镜像和恢复流程，在隔离库核实；当前单链不保证无条件接续 |
 
-迁移不是整库重新分析。0411 丢弃退役 verdict / Review / 学习数据；旧静态 Program 资产不接回运行时。
+恢复数据库不会撤销交易所已有订单或成交，也不会证明通知未发送。恢复后分别核实原始来源、采用版本、冻结正文与外部结果、Case 预测与原生成交，不让缓存或 UI 成为真值来源。
 
-0409 不把旧 `processed_evidence_refs` 推断成所有任务范围已完成：新 `processed_read_refs` 从空开始，由实际完成的阅读写入。切换前排空旧 News writers 和发送 owner，记录 pending、failed、sending、ambiguous 及受影响范围，保存可恢复备份。迁移后 API、Workers 与前端使用同一新契约，不让旧镜像写新 schema。对确证漏范围且仍需修复的 Event 逐项预览并执行 `news reanalyze`；不批量唤醒历史 Event。回退依赖匹配旧镜像的已验证备份或前向修复，不能重新启动旧 writer 对新 schema 写入。
-
-0412 切换前还要导出旧 update intent 的未决/耗尽清单，至少包含 `intent_id`、Event、目标版本、queue state、旧 attempts、lease/下次到期、通知 work 状态及对应 delivery 状态。旧 attempts 混合领取与失败次数，迁移保留原值，不批量归零，也不把它改名为真实失败次数。只有确证仍有通知责任且未进入可能发送边界的精确 intent，才使用当前版本校验做定向恢复；`sending`、`ambiguous`、已有回执和缺少发送证据的记录保持其真实或未知状态。部署时停止旧发送 owner，完成迁移后只启动新 owner，避免两版进程并行消费。
-
-```sql
-SELECT q.intent_id, q.event_id, q.content_revision, q.state AS queue_state,
-       q.attempts AS legacy_attempts, q.lease_token, q.next_attempt_at_ms,
-       w.state AS work_state, w.content_revision AS work_revision,
-       d.state AS delivery_state, d.payload_sha256
-  FROM news_delivery_queue q
-  LEFT JOIN news_notification_work w ON w.event_id=q.event_id AND w.channel='news'
-  LEFT JOIN news_deliveries d ON d.intent_id=q.intent_id
- WHERE q.kind='update' AND (q.state='pending' OR q.state='dead')
- ORDER BY q.event_id, q.intent_id;
-```
-
-0410 先新增插入式修复证明表，再允许新 EventUpdate 以 `scope_repair_id` 代替 `observation_result_id`；恰好一个来源必须存在。既有 EventUpdate 和发送账本不回填。历史 head 的实质清理通过[运维命令](OPERATIONS.md#历史编号事实的-head-归属清理)另行执行，采用精确 head CAS 和整批事务；迁移自身不退休 Claim。
-
-0411 是一次性破坏性清理。停用 News 与 Trading 写进程并核实备份后再升级；迁移使用 `lock_timeout=5s`、`statement_timeout=1800s`，无法取得锁时整笔回滚，可待写进程停稳后重试。旧市场 Event、非当前准入 Event、含 v1 EventUpdate 的 Event 及旧投递行被删除；旧 verdict、Review、学习、root tape 与 Case evaluation 表及其专用 SQL 函数 / 视图被删除。原始 Item、类型化市场事实、v2 EventUpdate / head、当前通知回执、Trading Case 与执行证据保留。旧 Wallet JSON 中三个退役成员字段在迁移事务内改写，运行时只读取严格当前形状。此 revision 不支持数据库降级；需要旧数据时从已验证的迁移前备份恢复，不把旧镜像接到新 schema。
-
-<a id="section-基线之前的备份与严格拒绝"></a>
-## 04 · 基线之前的备份与严格拒绝
-
-基线之前的备份需要其记录的源码 / 镜像和对应恢复流程。当前 main 的单链不能无条件接续一个未知历史库；不要手工 stamp、猜字段或先启动新 Writers 再补 schema。
-
-个别已记录的严格切换会拒绝不兼容行，例如 [0355](../tracefold/platform/postgres/alembic/versions/20260903_0355_trading_case_dead_columns.py)。应先阅读该 revision 的拒绝原因并归档确切受影响记录；只有明确授权的数据处理才可按外键顺序操作。不能为了通过迁移执行全表清空或任意 `CASCADE`。
-
-文档清理保留这类仍可能影响恢复的边界，但不把所有一次性事故 SQL 复制成通用日常步骤。
-
-<a id="section-回退不是数据库降级"></a>
-## 05 · 回退不是数据库降级
-
-`make deploy-image` 只用于源码 / 镜像 / 数据库 schema 兼容的本地精确镜像替换，不能反转 0404 / 0405 / 0406。需要恢复旧 schema 时，使用匹配备份与镜像，在隔离环境验证后再安排切换。
-
-数据库恢复可能改变本地已记录事实，但不会撤销交易所已发生的订单或成交。账户侧必须独立对账；不能通过恢复旧数据库让系统“忘记”已有风险。
-
-[备份命令与恢复演练](OPERATIONS.md#backup)由运维页维护。归档可列目录仅证明 dump 可读，真正恢复与升级演练需要隔离数据库和相应验证。
-
-<a id="section-迁移验证与提交证据"></a>
-## 06 · 迁移验证与提交证据
-
-新增 revision 时至少确认：迁移链单头、从受支持前驱可升级、已有数据处理明确、约束与查询符合新语义、应用启动顺序正确。不要修改已发布 revision 来逃避新增迁移。
-
-生成的 [db-schema.md](generated/db-schema.md)来自隔离且已迁移到目标 head 的数据库，不通过生产库 introspection 更新。相关真实资源测试由[测试指南](TESTING.md)的 migration / postgres lane 承担。
-
-运维记录保存备份身份、源 / 镜像、迁移前后 head、执行结果、实际恢复角色，以及 News / Analysis / Runtime 各自的后续进展。一个绿色 HTTP 探针不证明迁移后全部业务已经闭环。
+迁移验证使用独立空库或 scratch clone，覆盖历史升级、带数据投影等价、预检失败回滚及当前 head。本文链接的是这些行为测试，不表示本轮文档修改重新执行了真实数据库迁移。具体资源与报告见[测试指南](TESTING.md)。
 
 ---
 
-[返回文档中心](README.md) · [架构图谱](ARCHITECTURE.md#atlas) · [返回顶部](#数据库迁移与恢复边界)
+[返回文档中心](README.md) · [运维恢复](OPERATIONS.md#backup)

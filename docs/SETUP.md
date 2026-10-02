@@ -61,7 +61,7 @@ config:
 ---
 flowchart TD
     accTitle: 镜像内初始化与应用启动
-    accDescr: 项目锁保护构建与初始化，先验证配置和运行时 schema 兼容，再启动基础设施，等待迁移成功后启动应用。Executor 在同一应用镜像内随配置启动。
+    accDescr: 项目锁保护构建与初始化，先验证配置和运行时 schema 兼容，再启动基础设施，等待迁移成功后启动四个应用角色。Executor 在同一应用镜像内运行，账户执行由配置控制。
     Lock["项目级 OS 锁"] --> Build["构建镜像并读取不可变 ID"]
     Build --> Init["镜像内初始化、配置与运行时清单验证"]
     Init --> Window["活动执行进程的 schema 兼容检查"]
@@ -69,7 +69,7 @@ flowchart TD
     Infra --> Policy["应用 RabbitMQ 策略"]
     Policy --> Migrate["执行一次性迁移并等待结束"]
     Migrate --> Result{"退出码为 0"}
-    Result -->|"是"| App["启动 Serve / Workers / Analysis"]
+    Result -->|"是"| App["启动 Serve / Workers / Analysis / Executor"]
     Result -->|"否"| Stop["保留应用停止状态并报告失败"]
     App --> Ready["验证应用、探针与静态工作台"]
 
@@ -77,7 +77,7 @@ flowchart TD
 class Lock,Build,Init,Window,Infra,Policy,Migrate,Result,App,Stop,Ready store;
 ```
 
-*操作视图 · 配置由选定镜像校验；迁移成功指实际退出码。此图不包含独立账户执行的启动授权。*
+*操作视图 · 配置由选定镜像校验；迁移成功指实际退出码。启用执行前须另行确认 DEMO 账户配置与权限。*
 
 [Makefile](../Makefile)是薄命令入口；[scripts/deploy.py](../scripts/deploy.py)等待迁移进程真正退出，再以 `--no-deps` 启动应用。不能仅因为 `depends_on` 或部分容器 running 就宣布启动成功。再次 `make up` 会构建并更新应用角色，不应该无故重建已有数据库容器。
 
@@ -87,7 +87,7 @@ make status-app
 make logs
 ```
 
-**`make status-app` 检查应用栈；`make status` 还会检查可选执行 Runtime。** 未启用 Runtime 时报告 `disabled`；应用检查失败也会继续报告 Runtime。默认禁用的 Analysis 正常等待关闭信号，健康检查不会再将它误判为启动故障。
+**`make status-app` 与 `make status` 当前调用相同检查。** 它们核对基础服务、一次性作业、四个应用容器、Serve / Workers readiness 和工作台 HTML。Executor 仅检查容器 running，没有独立 HTTP 探针；执行可用性另读 `tracefold trading status`。默认禁用的 Analysis 正常等待关闭信号，其健康检查接受 `disabled`。
 
 命题稠密召回使用 Workers 内的离线 ONNX 编码器。配置固定 `llm.news_embedding.model` 后，先显式准备并检查挂载缓存，参见[命题向量运维](OPERATIONS.md#命题向量缺失与降级)。应用启动不会下载权重，缺模型只降级稠密路线。
 
@@ -149,7 +149,7 @@ make help
 | News 通知决策原生判断 | `llm.news_reader_judgment` | 可选完整 `api_key_file / base_url / model`：`api_key_file: news_reader_judgment_api_key`（初始化建好的空 `0600` 文件，Compose 只读挂载给 Workers；换别的文件名不会被挂载），key 写进该文件，不接受内联 `api_key`。只回答锚点与增量重要性两题，不从 `news_judgment` 或 Trading 路由推断；未配置或 key 文件为空时由生成式 News 路由按其自己的切点回答（Workers 日志 `news_reader_judgment_key_empty`），文件不可读则 editorial 能力以 `news_reader_judgment_key_*` 故障 |
 | 新闻 / 市场推送 | `news.push` | 默认关闭；Feishu / Telegram 各需自身有效目的地与凭据 |
 | News 通知准备上限 | `news.push.notification_prepare_limit` | 默认 2，可设 1–8；限制实际在途准备，不改变同进程唯一发送时隙 |
-| 钱包净买入 | `news.chain_tape` | 默认关闭；名单、RPC、规则与后续价格能力分开诊断 |
+| 钱包净买入 | `news.chain_tape` | 默认关闭；名单、RPC、完整回执前缀、规则与通知分开诊断 |
 | Trading Analysis | `trading.enabled`、`trading.analysis` | 默认关闭；需显式模型路由、版本化 Program SHA 与 LIVE 行情 |
 | Signal 发布 | `trading.analysis.publish_signals` | 默认 false；有研究决策也可以不发布 |
 | 账户执行 | `trading.execution` | 默认关闭；仅允许 Binance USD-M DEMO，另配凭据与风险 |
@@ -173,11 +173,13 @@ trading:
     model_name: "<显式模型名称>"
     program:
       path: forecast_v1.json
-      sha256: 39ceec608f2b3ea94f2c85a072d92bd2b12d038d3017da1f5d6b79f9e90b6a56
+      sha256: 088cb5ac0726e72e1563f7b4996b8207eb5b7cfb209963f7ee3d0e1630dae8da
     publish_signals: false
 ```
 
 启用的来源 Strategy 在提供商账户管理，不是本地维护一个过时的 ID 白名单。模型 endpoint 组只填一部分会被拒绝；当前 News fallback 与 ReaderCard fallback 也有明确配置依赖，按 Settings 错误路径修正，不复制旧 YAML。
+
+Program SHA 必须匹配所选版本的实际文件；上例对应本次检出的 [forecast_v1.json](../tracefold/trading/programs/forecast_v1.json)。启用 Analysis 前按目标版本重新核对，已有配置或初始化模板中的旧摘要不会证明文件仍一致。
 
 推送无效可能只使 delivery capability unavailable；模型缺失、行情不可用和钱包尚未形成完整监控窗口分别展示，不能用一条“服务未启动”概括。空数据不是自动注入模拟内容的理由。
 
@@ -191,9 +193,8 @@ trading:
 | RabbitMQ 管理 | `127.0.0.1:15672` | 管理接口，不是应用 HTTP |
 | Serve / 工作台 | `127.0.0.1:8765` | 只读 API 与生产静态资源 |
 | Workers 探针 | `127.0.0.1:8766` | Workers 存活、就绪与指标 |
-| Executor 探针 | `127.0.0.1:8767` | DEMO Executor 运行时可用 |
 
-[compose.yaml](../compose.yaml)是全部绑定默认值的唯一来源；Make 不再复制一套默认值。Analysis 也有自己的容器健康检查，不应凭空假设还有一个公开端口。
+[compose.yaml](../compose.yaml)是全部绑定默认值的唯一来源；Make 不复制一套默认值。Analysis 使用基于 CLI 状态的容器健康检查；Executor 没有公开探针端口。
 
 生成的 PostgreSQL DSN 和 broker URL 使用容器网络地址，系统不会为宿主机 CLI 自动改写。因此数据库与 broker 诊断应在具备这些地址和挂载的容器内执行：
 
@@ -225,11 +226,7 @@ Compose 读取 `.env`；业务 Settings 不读取它。显式 Make 参数 / shel
 <a id="section-升级已有安装"></a>
 ## 06 · 升级已有安装
 
-先确认源版本、镜像和数据库 head，保存配置与适用备份，再处理确切的已删除字段。EventUpdate 切换删除了 `news.policy` 与 `llm.news_compiler_reflection`；钱包双窗口的 `news.chain_tape.rules.net_buy_fast_n` 也不再支持。
-
-只删除对应 YAML 路径，不批量清除所有同名 key。普通 `init` 保留旧配置，`init --force` 不是迁移工具。0404 / 0405 的前向切换与协调写进程要求见[迁移指南](MIGRATIONS.md)。
-
-升级 #746 时先停止 Analysis 与旧执行进程，按场所签名读确认 DEMO 仓位、普通单和 Algo 单均为零，备份 Trading 表；0417/0418 迁移与新镜像在同一维护窗口完成。运行中 Executor 不可连接不匹配的 schema。
+先确认源版本、镜像和数据库 head，保存配置与适用备份，再按 Settings 报出的确切 YAML 路径处理退役字段。普通 `init` 保留旧配置，`init --force` 不是迁移工具。源版本需要额外导出、停写或账户排空时，按[迁移指南](MIGRATIONS.md)对应 revision 执行；运行中 Executor 不可连接不匹配的 schema。
 
 `make deploy-image IMAGE_ID=sha256:<完整 ID>` 仅恢复当前命令契约兼容、且 image / database head 相同的本地镜像，不要求旧镜像与当前 Git HEAD 相同，不构建、不降级数据库。`make db-migrate` 是显式维护操作，会停止应用角色并在迁移后保持停止；日常更新直接使用 `make up`。
 
@@ -238,7 +235,7 @@ Compose 读取 `.env`；业务 Settings 不读取它。显式 Make 参数 / shel
 <a id="section-可选执行生命周期"></a>
 ## 07 · 可选 DEMO Executor
 
-`trading.execution.enabled` 默认 false。启用后由 `make up` 在应用镜像中启动 Executor；账户环境必须为 `DEMO`，签名凭据仅挂到 Executor。Analysis 行情恒为 LIVE，纸面双腿不依赖 Executor。进程停止不会自动平仓，操作见[运维](OPERATIONS.md#trading-operations)。
+`make up` 会启动 Executor 容器；`trading.execution.enabled` 默认 false，关闭时进程等待停止信号。启用时账户环境必须为 `DEMO`，签名凭据仅挂到 Executor。Analysis 行情恒为 LIVE，纸面双腿不依赖 Executor。进程停止不会自动平仓，操作见[运维](OPERATIONS.md#trading-operations)。
 
 <a id="section-本地开发"></a>
 ## 08 · 本地开发
@@ -257,7 +254,7 @@ npm ci
 npm run dev
 ```
 
-需要进程级调试时，先配置**隔离的**数据库 / broker，再在分别管理的终端运行 `make dev-serve`、`make dev-workers`、`make dev-analysis`。不要在生产 Workers 正占有相同数据库时再启动另一个所有者。
+需要进程级调试时，先配置**隔离的**数据库 / broker，再在分别管理的终端运行 `make dev-serve`、`make dev-workers`、`make dev-analysis`；执行调试使用 `make dev-executor` 与隔离 DEMO 配置。不要在生产 Workers 正占有相同数据库时再启动另一个所有者。
 
 开发服务器与生产镜像路径不是同一验证证据。提交前按[开发指南](DEVELOPMENT.md)与[测试指南](TESTING.md)选择检查，不让每个文档改动都启动完整部署。
 

@@ -37,10 +37,9 @@ Make 命令统一使用选定的 Compose 文件、项目和 `.env`，并从实�
 
 | 检查 | 说明 |
 | --- | --- |
-| `make status-app` | 应用容器、基础依赖、迁移退出、Serve / Workers 就绪与工作台 |
-| `make status` | 报告应用、Analysis 与 executor；账户状态仍须读取签名场所事实 |
+| `make status-app` / `make status` | 相同检查：四个应用容器、基础依赖、迁移退出、Serve / Workers 就绪与工作台 |
 | `make logs` | 所有服务日志，包含 Analysis、RabbitMQ policy 与 migrate |
-| `make status` / `make logs` | 查看共享镜像中的 executor 进程；不等于账户已平仓或收益已齐全 |
+| `tracefold trading status` | 读取 Analysis / Executor 进程与执行投影；账户状态仍须读取签名场所事实 |
 | `make config` | 脱敏配置，不自动测试全部外部服务 |
 | `tracefold db audit` | schema / role / catalog 有界审计，不是全表精确计数 |
 
@@ -96,7 +95,7 @@ docker compose exec -T workers tracefold news retry-work \
 
 以失败结束的修订（含 Janitor 结算的崩溃最终尝试）会把该次尝试实际送入的任务范围记为隔离（`failed_read_refs`，尝试所读范围在领取时记入 `attempt_read_refs`）：之后该 Event 的新成员只读新材料，不再被同一份坏材料拖累。`retry-work --kind semantic` 清空隔离、重新送入全部隔离材料；只想重读其中一段时，用下节的 `news reanalyze` 按精确修订指定该 `read_ref`。构建冻结输入本身失败（来源缺失、重读范围已变、head 无法解码）只让该 Event 的工作失败，错误码可见，不再让语义消费者故障。
 
-领取读取本 Event 输入遇到 statement timeout 或取消时，记 `news_semantic_input_timeout`，照常计尝试、释放租约并退避；三次耗尽进入可见失败。#791 已将跨 Event 召回移出领取读取，排查这个错误应先查来源、head 与数据库语句，而不是提高召回预算。召回和嵌入失败分别记录 `news_claim_recall` 的 `recall_degraded` 与 `news_embedding_*`。
+领取读取本 Event 输入遇到 statement timeout 或取消时，记 `news_semantic_input_timeout`，照常计尝试、释放租约并退避；三次耗尽进入可见失败。跨 Event 召回位于领取读取之后，排查这个错误应先查来源、head 与数据库语句，而不是提高召回预算。召回和嵌入失败分别记录 `news_claim_recall` 的 `recall_degraded` 与 `news_embedding_*`。
 
 ### 命题向量缺失与降级
 
@@ -117,9 +116,7 @@ docker compose run --rm --no-deps workers tracefold news embedding backfill \
 
 回填按冻结起点和持久游标读取已送精确版本及最近 30 天已采用命题，批次幂等提交后才推进本地 checkpoint，完成后 `ANALYZE news_claim_index`。模型调用和文件 checkpoint 在数据库事务外。一次回填命令会另载一份模型，应计入宿主机总内存；避免并发运行多个全量任务。Janitor 只补索引中直接记录的偶发 pending，不再循环扫描历史分析 JSON。正常采用时复用抽取向量，仅当最终采用文本与模型身份完全匹配时保存；通知优先读取相同精确版本的向量，缺失时才事务外编码。
 
-**从已上线的 #791 A/B 升级：** 本改动增加 0428，仅将现有两条时间索引补齐稳定 ID，作为历史回填游标索引，不重写事实或已有向量。先保存完整备份、配对的旧镜像 ID、私密配置和原模型文件。另备新格式私密配置副本，先删除 embedding 的旧端点和密钥字段并设置本地缓存，再为准备命令指定该新 operator 目录（`TRACEFOLD_HOME`），用新镜像准备并检查缓存；新命令会拒绝旧配置字段，不能先用旧配置运行 prepare。旧应用继续使用原配置。在停写维护窗口切换新配置并按[迁移手册](MIGRATIONS.md)升级至 0428；启动匹配的新应用后核对 dense 状态、pending 和真实通知处理。删除 Compose 定义不会自动停掉旧容器：使用 `docker ps -a --filter label=com.docker.compose.project=YOUR_PROJECT --filter label=com.docker.compose.service=news-embedding` 核对所属项目和容器 ID，再执行 `docker stop VERIFIED_CONTAINER_ID`。回滚窗口内保留旧镜像、权重、密钥和旧配置；不删除卷。
-
-回滚到已上线的 0427 版本时，先按正常顺序停止所有写者，用当前镜像执行 Alembic 的 0428→0427 降级并核实数据库 head；这一步只将两条索引恢复为原单列定义，不改变采用文档、回执或向量。恢复配对旧配置，再用旧 checkout 启动其匹配镜像及独立模型服务。`make deploy-image` 要求 image/database head 相同，不能直接把 0427 镜像接到 0428。若回滚到 0427 之前，仍须恢复核验过的迁移前备份及匹配镜像。
+旧独立嵌入服务的配置切换、容器退休与配对回退见[迁移指南](MIGRATIONS.md#local-embedding-upgrade)。
 
 每日只读回执运行 `uv run --locked python scripts/news_recall_receipts.py --as-of-ms <冻结时刻>`，连接由 `TRACEFOLD_READONLY_DSN` 提供，不放进命令参数。配套 SQL 统计关系对数、有效关系产出率及 prior / receipt 两端降级占比；历史没有诊断的调用保持未知。漏召回代理检查 48 小时内先后已送、超过校准稠密下限、但无两跳链接或实际读者锚点的命题对。缺失向量单列未知数，代理不能证明同一事实。`tracefold_news_reader_changed_total{stage="plan"|"send"}` 记录最终 CAS 冲突次数，不重复计算内部重读。
 
@@ -224,13 +221,9 @@ docker compose exec -T executor tracefold trading issue '/pause maintenance' \
 
 重试必须保留相同 request ID 和时间。`/pause` 不平仓；`/flatten account` 先暂停入场，再撤普通单、平仓、撤 Algo 单，并以签名场所读回验证。命令受理不等于场所动作完成。
 
-### #764 P4 账本收敛
+### 研究与执行状态
 
-P4 在 `20261001_0424` 完成账本收敛，当前 head 为 `20261002_0428`。P4 切换前保存应用状态和交易所持仓/挂单，停 Analysis 并在 300 秒内排空 pending，再停 Executor、Workers 和 Serve；完整备份和 14 张旧表导出应记录 sha256。迁移用 13 组校验确认事实与投影一致，启动后核对 pause/halt、订单身份与 70 秒内的账户对账。0425 增加语义任务索引及 reader clock；0426 增加共享命题召回，0427 前向转换历史 mode 读数，无退役表导出。仍按迁移前停写者、核验完整 dump 与旧镜像身份、成功后启动匹配镜像的顺序执行；0428 仅替换两条历史回填游标索引，可在停写窗口降级到 0427；0427 的读数转换仍只能通过配套备份与旧镜像回退。具体顺序及回滚见 [迁移手册](MIGRATIONS.md)。进程 UUID 与毫秒心跳属于平台，停止或过期的 executor 心跳不能证明可以发布 Signal；账户的签名对账证据仍属于 Trading。
-
-### #746 Trading 硬切
-
-先停旧执行进程，确认 DEMO 仓位、普通单和 Algo 单均为零，再备份所有 `trading_*` 表及归档目录。迁移 `20260929_0417` 删除旧执行表、建立 Signal v4 与订单/成交账本；`20260929_0418` 删除旧 Analysis Case、Gate、WATCH、逐调用账本并建立冻结预测、六策略和纸面双腿账本。两者不可降级，也不回填旧 DEMO 数据。0418 要求 Signal 表为空；恢复只能使用已验证备份。迁移和新镜像须在同一维护窗口完成。不要把本地 Plan 的 terminal 当作场所平仓回执。保留签名账户检查与备份，直至 DEMO 生命周期回执通过。
+Analysis 的冻结预测、六策略与双腿标签写入 Trading 账本；发布与执行各有资格检查。通过 `trading status` 区分 decision 和 execution，结合 Signal / entry 的处置原因确认阻塞位置。平台进程 UUID 与心跳只能证明进程新鲜度，不能替代账户签名对账；过期 Executor 心跳不允许发布 Signal。版本切换统一见[迁移指南](MIGRATIONS.md)，不在本页复制历史升级流水。
 
 <a id="deployment"></a>
 <a id="section-部署与-executor"></a>
@@ -277,6 +270,3 @@ docker compose exec -T postgres pg_restore --list < "$backup"
 ---
 
 [返回文档中心](README.md) · [架构图谱](ARCHITECTURE.md#atlas) · [返回顶部](#运维与故障定位)
-
-
-#764 性能验收使用同一 24 小时窗口的前后增量，按表分别记录 `pg_stat_user_tables.n_tup_upd`、`n_tup_hot_upd`、`n_dead_tup` 和大小，以及 `pg_stat_statements` 的调用数、平均耗时与 p95 采样。重点分类 news_events、news_jobs、news_collectors、news_analyses、news_notifications、trading_accounts。有索引字段变化的状态转换不能 HOT；append-only 表不以零更新计算 HOT 比例。两万条历史任务的本地查询预算证明不能代替生产 24 小时观测，早期约 35% 的全库 HOT 比例也不能当作达标结论。

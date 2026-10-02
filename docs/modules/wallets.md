@@ -1,47 +1,18 @@
 # Wallets：链上集中净买入警报
 
-[手册](../README.md) · [市场观察](oi.md) · [平台任务](platform.md) · [运维诊断](../OPERATIONS.md)
+[手册](../README.md) · [市场观察](oi.md) · [平台任务](platform.md) · [运维](../OPERATIONS.md)
 
-当前钱包产品只聚焦一件事：**在完整可归属的链上证据中，发现多个关注地址在同一窗口净买入同一代币。** 名单质量统计、代币价格和历史参与次数是上下文，不是又一套大模型评分入口。
+钱包产品从完整可归属的链上事实中，识别多个关注地址在同一窗口净买入同一代币。当前在线路径没有钱包模型评分，也没有把 wallet episode 自动转换为 Trading 策略；名单质量、历史参与和代币年龄是上下文。
 
-| 模块速览 | 说明 |
-| :--- | :--- |
-| **定位** | 信息产品 / 链上证据 |
-| **运行位置** | Workers · 名单、采集、Detector 三类任务 |
-| **输入 → 产物** | 已发布名单、完整交易回执与连续完成前缀 → 净买入 episode、first / current / send 快照 |
+## 三个 Workers 任务
 
-> [!IMPORTANT]
-> 名单不是成交，最大区块不是完整前缀。首报不要求先完成价格、余额或模型研究。
-
-[市场通知](oi.md) · [钱包诊断](../OPERATIONS.md)
-
-<details>
-<summary><strong>本页目录</strong></summary>
-
-1. [三个独立任务](#section-三个独立任务)
-2. [名单不是成交](#section-名单不是成交)
-3. [完整前缀：不能跳过失败回执](#section-完整前缀不能跳过失败回执)
-4. [当前只有一条净买入规则](#section-当前只有一条净买入规则)
-5. [Episode、首次快照与当前快照](#section-episode首次快照与当前快照)
-6. [首报为什么还要做发送时检查](#section-首报为什么还要做发送时检查)
-7. [市场数据边界](#section-价格观察是独立后续)
-8. [页面与诊断](#section-页面与诊断)
-9. [验证入口](#section-验证入口)
-10. [源码责任地图](#section-源码责任地图)
-11. [常见误解](#section-常见误解)
-
-</details>
-
-<a id="section-三个独立任务"></a>
-## 01 · 三个独立任务
-
-| Workers 任务 | 职责 | 来源 / 产物 |
+| 任务 | 职责 | 输入和产物 |
 | --- | --- | --- |
-| `news-wallet-roster` | 刷新并发布完整有效地址名单 | 名单提供商 → 版本化成员集 |
-| `news-chain-tape` | 扫描、获取完整回执、解释现金与代币变动 | RPC → receipt / fill 与连续已完成前缀 |
-| `news-wallet-net-buy` | 消费完整回执，评估单一净买入规则 | 成交事实 → episode 首报 / 当前快照 |
+| `news-wallet-roster` | 刷新并发布完整有效名单 | Robinhood Trenches → 成员区间和版本 |
+| `news-chain-tape` | 扫描日志、获取完整回执并解释现金/代币变动 | Robinhood Chain RPC → 成交事实与连续完成前缀 |
+| `news-wallet-net-buy` | 处理完整回执并评估净买入规则 | 已提交事实 → episode 初始/最新快照 |
 
-任务由 [chain_tape wiring](../../tracefold/app/workers/wiring/chain_tape.py)与 [task_contract.py](../../tracefold/app/workers/task_contract.py)装配。名单服务变慢不应占住回执采集；价格失败不应延迟首次买入证据。
+`news.chain_tape.enabled` 控制三类任务的装配；poll、roster 刷新间隔和规则来自同一配置。任务拥有独立 Adapter 与有界 `advance()`，通过 PostgreSQL 事实和工作标记连接；名单网站变慢不占住回执采集，某阶段故障仅关闭自己的客户端。停止或取消时 App 等待在途工作并关闭资源，下次运行重新读取持久标记。
 
 ```mermaid
 ---
@@ -49,178 +20,89 @@ config:
   fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
   flowchart:
     curve: linear
-    nodeSpacing: 28
-    rankSpacing: 42
 ---
 flowchart TB
-    accTitle: 钱包证据到净买入警报
-    accDescr: 名单发布独立于回执采集；完整事实进入 detector 和 episode，再做发送时复查。页面读取首次、当前与发送快照。
-    RosterProvider["地址名单提供商"] --> Roster["完整有效名单发布"]
-    Roster --> RosterDB[("名单版本与开始监控时间")]
-    RPC["链上日志、区块、交易回执"] --> Tape["采集与成交解释"]
-    RosterDB --> Tape
-    Tape --> Prefix[("完整交易事实<br/>与连续完成前缀")]
-    Prefix --> Detector["单一净买入 Detector"]
-    Detector --> Episode[("代币 episode<br/>first / current snapshot")]
-    Episode --> Check["发送时证据复查"]
-    Check --> Notify["市场通知意图与回执"]
-    Episode --> UI
-    Notify --> UI
-
-    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
-    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
-    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
-    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
-    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
-class RosterProvider,RPC external;
-class Roster,Tape,Detector,Check,Notify news;
-class RosterDB,Prefix,Episode,UI store;
+  accTitle: 完整链上证据到净买入首报
+  accDescr: 已发布名单驱动独立链上采集，完整成交前缀进入 Detector 和 episode，发送时再次核查完整证据并冻结快照和回执，页面只读持久投影。
+  R[名单提供商] --> M[(成员区间 / 名单版本)]
+  M --> T[链上日志与完整回执采集]
+  RPC[RPC] --> T
+  T --> F[(成交事实 / 连续完成前缀)]
+  F --> D[净买入 Detector]
+  D --> E[(Episode / 初始与最新快照)]
+  E --> C[发送时完整证据复查]
+  C --> N[(冻结发送快照 / 通知回执)]
+  E --> UI[只读页面]
+  N --> UI
 ```
 
-*数据流 · 名单不是成交；first、current 和实际发送证据不同。发送依据完整成交证据。*
+*数据视图 · 名单不是成交，连续完成前缀才支持窗口判断；episode 与通知回执分别保存。*
 
-<a id="section-名单不是成交"></a>
-## 02 · 名单不是成交
+## 名单与证据覆盖
 
-名单任务取回完整有效地址集后一次发布。成员版本表达**关注哪些地址**，不是每次 provider 的利润或排名变化都重置监控身份。采集器读取最近一次已发布名单，不在每次链扫描里同步请求名单网站。
+名单任务完成有效地址集校验后一次发布。成员集不变只刷新 handle 与状态，不因 provider 排名或利润变化重置版本。名单表达关注哪些地址，不能证明地址在当前窗口买入；排名不再是成员资格的二次门槛。
 
-地址在名单中不代表它在当前窗口买入。`monitoring_from_ms`、名单已知时间和覆盖范围决定该地址是否具备完整可解释观察。排名、昵称和历史参与次数可展示，但不替代完整回执，更不能把 AI 猜测的钱包身份当作事实。
+`news_market_wallets` 保存成员区间及 `monitoring_from_ms`。成员变化关闭离开区间并为新成员开区间，历史版本按区间边界重建。地址在离开后的 30 分钟采集覆盖内重新加入可继承原监控起点，否则重新建立覆盖。名单刷新和链进度分别归 `news_collectors.wallet_roster` / `chain_tape`，行锁防止并发覆盖；采集器读取已发布名单，不在每次扫描时请求名单网站。
 
-名单持久化为 `news_market_wallets` 成员区间；成员集不变时只更新 handle 与刷新状态，不产生版本。变化时关闭离开成员、为新成员开区间，历史版本由区间边界还原。已离开的地址在采集器仍覆盖其离开后的 30 分钟窗口内重新加入时继承 `monitoring_from_ms`；否则从新覆盖重新建立监控。链进度与名单刷新状态分别归 `news_collectors.chain_tape` / `wallet_roster`，并以行锁防止并发覆盖。
+安全进度是已完整处理的 `(block, log)` 连续前缀，而不是见过的最大区块。同一交易的相关日志、回执、现金和代币变动一起解释，事实与完成位置在同一事务提交。回执缺失或核心解释失败保留具名失败和重试位置，不越过缺口推进。重叠扫描按链、交易哈希和日志身份去重，不能重复增加买家。
 
-<a id="section-完整前缀不能跳过失败回执"></a>
-## 03 · 完整前缀：不能跳过失败回执
+普通转账不直接算买入，无法归属现金或无法定价的交易不填零美元。区块哈希保存用于证据核对，不代表实现了任意深度重组的自动回滚。Detector 先按完整回执处理 backlog，清空后才使用链上 cutoff 滑动窗口，不用主机时钟先过期未处理事实。
 
-一个安全的采集进度不是“见过的最大区块号”，而是**已完整处理的 `(block, log)` 连续前缀**。同一交易的相关日志和现金变动要一起解释，事实与推进位置一起提交。
+## 单一净买入规则
 
-```mermaid
----
-config:
-  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
-  sequence:
-    mirrorActors: false
-    messageMargin: 28
-    actorMargin: 40
-    wrap: true
----
-sequenceDiagram
-    accTitle: 完整回执前缀的推进
-    accDescr: 回执缺失保留重试位置且不越过缺口。完整回执分类后，事实与完成位置在同一事务提交，Detector 按完整顺序消费。
-    autonumber
-    participant C as 采集器
-    participant R as RPC
-    participant D as PostgreSQL
-    participant N as Detector
-    C->>R: 获取当前扫描范围及完整交易回执
-    alt 回执缺失或核心解释失败
-        C->>D: 保留失败与待重试位置
-        Note over C,D: 不越过缺口推进完成前缀
-    else 完整回执可解释
-        C->>C: 分类交易内现金与代币变动
-        C->>D: 同事务提交事实和完成位置
-        N->>D: 按完整顺序消费已提交回执
-        N->>D: 保存窗口结果与 episode 更新
-    end
-```
+默认规则是 **30 分钟内，至少 5 个不同关注地址，每个地址净买入不少于 1,000 美元，且窗口净买入代币数量为正**。
 
-*时序 · 前缀是连续完成的位置，不是曾经看见的最大区块号。*
-
-成交按链、交易哈希和日志身份去重；重叠扫描或进程恢复不能重复增加买家。普通转账不直接算买入；缺失现金归属或未定价的交易不能用零美元填充。保存区块哈希也不等于已经实现任意深度链重组自动回滚。
-
-Detector 先处理待消费回执，队列清空后才按链上时间滑动 episode；不能用主机墙钟先过期一批仍有待处理交易的信号。
-
-<a id="section-当前只有一条净买入规则"></a>
-## 04 · 当前只有一条净买入规则
-
-默认规则是：**30 分钟内，至少 5 个不同的关注地址，每个地址净买入至少 1,000 美元，并持有正的窗口净买入代币数量。**
-
-| 参数 | 当前默认 | 配置含义 |
+| 参数 | 默认值 | 语义 |
 | --- | --- | --- |
-| 窗口 | 30 分钟 | `NET_BUY_WINDOW_MS` 固定产品定义，不是名单 provider 的 `30d` 查询范围 |
-| `net_buy_slow_n` | 5 | 最低合格地址数，可配置；历史命名不代表仍有 fast 分支 |
-| `min_net_buy_usd` | 1,000 美元 | 每个地址在窗口内买入美元减去卖出美元的最低金额 |
-| `trigger_max_age_s` | 60 秒 | 首报触发的时效边界；不是允许采集器跳过历史事实 |
+| `NET_BUY_WINDOW_MS` | 30 分钟 | 固定产品窗口，与 provider 名单的查询周期无关 |
+| `news.chain_tape.rules.net_buy_slow_n` | 5 | 最低合格地址数，历史命名仍是当前唯一 quorum |
+| `news.chain_tape.rules.min_net_buy_usd` | 1,000 美元 | 每个地址窗口内买入美元减去卖出美元的下限 |
+| `news.chain_tape.rules.trigger_max_age_s` | 60 秒 | 首报触发时效，不允许跳过历史事实 |
 
-每个地址计算：`net_usd = buy_usd - sell_usd`，`net_token_raw = buy_token_raw - sell_token_raw`。先逐地址判断资格，再统计合格地址数和金额，不能把一个地址的五笔交易算成五个人。
+每地址分别计算 `net_usd = buy_usd - sell_usd` 与 `net_token_raw = buy_token_raw - sell_token_raw`，再统计合格地址。一个地址的五笔买入仍是一个买家。
 
-具名排除原因包括：不在名单、监控覆盖不足、交易无法定价、转出导致归属不完整、净买入金额不足、净代币数量非正。只要存在未定价买卖或不完整转出，净美元值可以是未知，而不是看起来精确的零。
+资格要求名单成员、完整监控覆盖、无采集缺口、买卖可定价、无无法归属的转出、净金额达标且净数量为正。对应原因包括 `not_on_roster`、`incomplete_monitoring_window`、`collection_gap`、`unpriced_trade`、`transfer_out_incomplete`、`below_min_net_buy`、`nonpositive_net_quantity`。未定价或转出不完整时净美元是未知，不是精确的零。
 
-已删除的 `net_buy_fast_n` 是不支持的配置，不应在文档或默认 YAML 中重新出现为可用参数。名单排名不是成员资格的二次门槛；不要把历史回测中的某个排名过滤器描述成现在线上规则。
+新 episode 还要求本笔回执产生有效新增净买入、在 cutover 后且触发时效合格。未来链时间、过期触发和 cutover 前记录仍保留诊断原因，不发首报。`notifications_enabled=false` 不关闭名单/采集/检测，episode 可保存但不能发送。
 
-<a id="section-episode首次快照与当前快照"></a>
-## 05 · Episode、首次快照与当前快照
+## Episode 与发送证据
 
-| 数据 | 语义 |
+| 持久字段 | 语义 |
 | --- | --- |
-| `first_snapshot` | 达标时的事实和成员证据，保留首报时点 |
-| `current_snapshot` | 后续完整回执或滑动窗口更新后的当前观察 |
-| `send_snapshot` | 实际开始发送时冻结的证据；不能随未来状态改变 |
-| 历史参与次数 | 该地址在此前 episode 中的已记录参与，不是未来持续买入概率 |
-| 新代币标签 | 基于首次观察年龄的上下文，不是一道“老币不报警”的过滤器 |
+| `initial_snapshot` | 首次达标时的窗口和成员证据，不随未来改变 |
+| `latest_snapshot` | 后续完整回执或链上滑动窗口的当前观察 |
+| `send_snapshot` | 实际开始发送时冻结的重新评估结果 |
+| `last_effective_buy_at_ms` | 最近合格成员有效新增净买入的链上时点 |
+| `ended_at_ms` / `change_reason` | episode 是否结束及原因 |
 
-已经开启的 episode 根据新的有效买入和窗口状态更新，不为同一轮不停新建卡片。episode 结束与重新出现新的达标窗口是产品状态，不能用“通知已发送”代替。
+同一代币活跃 episode 根据完整买卖和窗口更新，连续一个窗口没有有效新增净买入后结束；新的达标窗口可再开启 episode。单 episode 只准备首报，不随每次买入重复建卡。初始、最新和发送快照承担不同证明，不能用通知已发送替代 episode 状态。历史参与次数来自此前 episode，代币年龄来自首次观察，不预测未来收益。
 
-<a id="section-首报为什么还要做发送时检查"></a>
-## 06 · 首报为什么还要做发送时检查
+发送可能排队，所以首报领取时在 collector 的**已提交 cutoff**上复查：episode 已结束或触发过期则具名抑制；cutoff 未知、早于触发或其内证据尚未派生则暂缓；证据完整时用 Detector 的同一纯规则重新评估。截止之后的不断增长尾部不阻止发送，不能要求永久追赶最高区块。
 
-Detector 达标后，发送可能排队。期间成员可能已卖出，或 collector 已推进而 detector 尚未处理完。发送前必须在**已提交的完整前缀**上复查实际窗口，而不是仍用过时达标结果。
+复查不修改 `latest_snapshot`，通过后仅冻结 `send_snapshot` 和正文；卖出后不再达标则 `invalidated_before_send`。外部结果未知沿用市场通知恢复语义，不盲目重发。可选报价、余额、社交或模型研究不阻塞首报，但必要回执和现金归属必须完整。
 
-这个检查只围绕 collector / detector 的完整证据边界：不能要求永远追上一个不断移动的未来最高区块，也不能为了首报再等价格、余额、模型解释或社交研究。缺少必要证据时具名暂缓；通过后冻结 payload，外部结果不明时不盲目重发。
+## 存储、接口与诊断
 
-<a id="section-价格观察是独立后续"></a>
-## 07 · 市场数据边界
+成交归 `news_market_wallet_fills`，episode 与三类快照归 `news_market_wallet_events`；对应市场观察存入 `news_market_observations`，通知意图和回执使用 `news_jobs` / `news_notifications`。这些是 News 事实，Trading 不查询其内部表。当前钱包不持久保存参考价、期限采样或交易 outcome；即时行情通过独立报价接口读取。
 
-#764 P1 删除钱包参考价、期限价格采样与 outcome 字段。钱包警报以完整回执和净买入证据为准；当前行情仍由独立报价接口提供。
-
-<a id="section-页面与诊断"></a>
-## 08 · 页面与诊断
-
-`/api/news/wallets` 回答名单和采集状态；`/api/news/wallets/events` 与详情接口回答 episode、成员、first / current / send 与成交历史。页面是只读投影，既不是另一份成交账本，也没有自动下单权限。
+`GET /api/news/wallets` 返回名单、覆盖、规则、采集滞后与通知漏斗；`/api/news/wallets/events` 提供固定历史窗口和 cursor 分页；`/api/news/wallets/events/{episode_id}` 读取初始/最新快照、成员与成交分页。发送快照保存在账本，当前 HTTP 投影公开通知状态、原因和发送时钟。状态、列表和详情从数据库快照构造，只读页面不拥有下单权限。
 
 ```bash
 docker compose exec -T workers tracefold news wallets --hours 24 --queue-limit 10
 ```
 
-排障顺序：**名单发布 → 完整前缀 → 成交解释 → 每地址排除原因 → 达标 episode → 发送时复查 → 真实回执**。不要看到“没有警报”就先增加模型调用。
+排障顺序：名单发布 → 连续完成前缀 → 成交解释 → 每地址资格原因 → episode → 发送复查 → 实际回执。无警报时先区分没有达标与证据不足，诊断配置和参数见 [契约](../CONTRACTS.md)及 [运维](../OPERATIONS.md)。
 
-<a id="section-验证入口"></a>
-## 09 · 验证入口
+## 实现与验证
 
-[纯规则](../../tests/news/test_news_chain_tape_rules.py)、[成交解释](../../tests/news/test_news_chain_tape_classify.py)、[完整前缀](../../tests/integration/test_wallet_complete_prefix.py)、[名单刷新](../../tests/integration/test_wallet_roster_refresh.py)、[净买入集成](../../tests/integration/test_wallet_net_buy.py)、[发送活性](../../tests/integration/test_wallet_send_liveness.py)分别覆盖不同接缝。
-
-这些能力不等于“钱包天然聪明”或收益保证；目前也不能由一个 wallet episode 推断已经存在自动 Trading 策略。当前产品不再以旧版钱包摘要、多模型画像或单钱包解读作为核心入口。
-
-<a id="section-源码责任地图"></a>
-## 10 · 源码责任地图
-
-| 源码 | 核心职责 |
+| 实现 | 职责 |
 | --- | --- |
-| [roster_refresh.py](../../tracefold/news/chain_tape/roster_refresh.py) | 有界名单抓取、完整性校验、成员集发布 |
-| [loop.py](../../tracefold/news/chain_tape/loop.py)、[tape_io.py](../../tracefold/news/chain_tape/tape_io.py) | 扫描编排、完整回执与已完成进度，失败结果不跳过 |
-| [evm.py](../../tracefold/news/chain_tape/evm.py)、[classify.py](../../tracefold/news/chain_tape/classify.py) | 日志解释、交易内资产流与 buy / sell / transfer 归属 |
-| [rules.py](../../tracefold/news/chain_tape/rules.py) | 无 I/O 的净买入窗口、成员排除原因与有效新增买入 |
-| [detect.py](../../tracefold/news/chain_tape/detect.py) | 回执推进、episode 创建 / 更新及滑动到期 |
-| [wallet_contracts.py](../../tracefold/news/wallet_contracts.py)、[chain_tape/contracts.py](../../tracefold/news/chain_tape/contracts.py) | 窗口、成员、快照与回执的类型契约 |
-| [storage/chain_tape.py](../../tracefold/news/storage/chain_tape.py)、[wallet_events.py](../../tracefold/news/storage/wallet_events.py)、[wallet_snapshots.py](../../tracefold/news/storage/wallet_snapshots.py) | 持久事实、episode 与快照读取 |
-| [market_notifications.py](../../tracefold/news/market_notifications.py) | 首报发送前复查、冻结正文、实际投递结果 |
-| [wallet_diagnostics.py](../../tracefold/news/storage/wallet_diagnostics.py) | 状态、覆盖、规则和队列的可解释诊断 |
+| [chain_tape wiring](../../tracefold/app/workers/wiring/chain_tape.py)、[task_contract.py](../../tracefold/app/workers/task_contract.py) | 独立任务装配、轮询与资源生命周期 |
+| [roster_refresh.py](../../tracefold/news/chain_tape/roster_refresh.py) | 有界名单请求、完整性校验与成员集发布 |
+| [loop.py](../../tracefold/news/chain_tape/loop.py)、[tape_io.py](../../tracefold/news/chain_tape/tape_io.py) | 完整回执扫描与持久进度 |
+| [evm.py](../../tracefold/news/chain_tape/evm.py)、[classify.py](../../tracefold/news/chain_tape/classify.py) | 交易内资产流与 buy / sell / transfer 归属 |
+| [rules.py](../../tracefold/news/chain_tape/rules.py)、[detect.py](../../tracefold/news/chain_tape/detect.py) | 单一窗口纯规则、回执派生和 episode 更新 |
+| [storage/chain_tape.py](../../tracefold/news/storage/chain_tape.py)、[wallet_events.py](../../tracefold/news/storage/wallet_events.py)、[wallet_snapshots.py](../../tracefold/news/storage/wallet_snapshots.py) | 名单、成交、episode 和快照 |
+| [market_notifications.py](../../tracefold/news/market_notifications.py)、[wallet_diagnostics.py](../../tracefold/news/storage/wallet_diagnostics.py) | 首报复查、冻结发送与可解释诊断 |
 
-<a id="section-常见误解"></a>
-## 11 · 常见误解
-
-<details>
-<summary><strong>展开常见问题</strong></summary>
-
-**五笔买入等于五个买家吗？**
-
-不等于。先按地址汇总同窗口买卖，再统计不同合格地址数。
-
-**缺少外部价格是否应阻止首报？**
-
-可选价格观察不阻止首报；必要回执与现金归属仍必须完整，不能将无法定价的交易填成零。
-
-</details>
-
----
-
-[返回文档中心](../README.md) · [架构图谱](../ARCHITECTURE.md#atlas) · [返回顶部](#wallets链上集中净买入警报)
+[纯规则](../../tests/news/test_news_chain_tape_rules.py)、[成交解释](../../tests/news/test_news_chain_tape_classify.py)、[完整前缀](../../tests/integration/test_wallet_complete_prefix.py)、[名单刷新](../../tests/integration/test_wallet_roster_refresh.py)、[净买入](../../tests/integration/test_wallet_net_buy.py)和 [发送活性](../../tests/integration/test_wallet_send_liveness.py)分别覆盖规则、事实和发送接缝。

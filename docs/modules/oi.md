@@ -1,36 +1,16 @@
 # OI 与类型化市场观察
 
-[手册](../README.md) · [News](news.md) · [行情复盘](market-review.md) · [Trading](trading.md)
+[手册](../README.md) · [News](news.md) · [行情复盘](market-review.md) · [Trading](trading.md) · [Wallets](wallets.md)
 
-OI（未平仓量）是 **News 保存的类型化市场观察，Trading 可以独立消费它**。它不是第三个业务包，不等于多头方向，也不等于执行进程。解析、读者通知与交易准入是三个不同决定。
+OI、清算和大户报告是 News 的类型化市场事实，通过确定性解析和分组通知处理，不进入编辑新闻的 Event / Claim 语义流程。OI 可经公开 outbox 交给 Trading 独立分析；是否发通知不决定是否建立 Trading Case，OI 增长也不等于多头信号。
 
-| 模块速览 | 说明 |
-| :--- | :--- |
-| **定位** | 信息产品 / 类型化市场观察 |
-| **运行位置** | Workers · 确定性解析与市场通知循环 |
-| **输入 → 产物** | 已识别来源的 OI、清算、大户报告 → 类型化观察、通知组与回执；合格 OI 公开来源 |
+## 来源、解析与存储
 
-> [!IMPORTANT]
-> OI 增长不等于做多信号；是否发送跟进通知，不决定 Trading 是否研究该来源。
+来源分类以提供商 strategy ID 识别契约族，显示名改变不改变测量身份。OI 的 `oi_v1` 契约绑定 strategy `1019`，清算和大户报告使用各自解析器。未知市场来源或模板无法匹配时保留原始观察与具名解析原因，不补零、不送入模型猜测数值。
 
-[交易研究](trading.md) · [行情与复盘](market-review.md)
+市场准入由 `pipeline/admission.py` 构建 `MarketObservation`，`storage/observations.py` 是 `news_market_observations` 的统一写入入口。`news_items` 只保存编辑新闻。相同 observation 身份的重放不改首次业务字段和解析状态；新增 provenance 只合并提供商策略元数据，相同帧不重复发布或更新数据库行。
 
-<details>
-<summary><strong>本页目录</strong></summary>
-
-1. [从来源到两个独立消费者](#section-从来源到两个独立消费者)
-2. [OI 解析器知道什么](#section-oi-解析器知道什么)
-3. [分组通知的确定性规则](#section-分组通知的确定性规则)
-4. [发送生命周期与恢复](#section-发送生命周期与恢复)
-5. [OI 如何进入 Trading](#section-oi-如何进入-trading)
-6. [排障与验证](#section-排障与验证)
-7. [源码责任地图](#section-源码责任地图)
-8. [常见误解](#section-常见误解)
-
-</details>
-
-<a id="section-从来源到两个独立消费者"></a>
-## 01 · 从来源到两个独立消费者
+Live 观察进入通知待处理状态；recovery 观察以历史状态可读，不因补采而重新报警。类型化 OI 首插同时写公开 Trading outbox，payload 保存解析值、来源身份、原生名称、测量定义、提供商时间、接收/落库时间和 ingest mode。市场保留以独立有界删除批次执行，不借编辑新闻保留机制删除事实。
 
 ```mermaid
 ---
@@ -38,186 +18,74 @@ config:
   fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
   flowchart:
     curve: linear
-    nodeSpacing: 28
-    rankSpacing: 42
 ---
 flowchart TB
-    accTitle: 市场观察的两个消费者
-    accDescr: 确定性解析保存不可变市场观测及其解析状态。页面和分组通知读取市场事实；仅对应的公开 OI 来源进入交易研究。
-    Frame["已识别来源的原始记录"] --> Parse["确定性格式解析"]
-    Parse --> Fact[("news_market_observations<br/>业务事实与解析状态")]
-    Fact --> API["市场列表与详情"]
-    Fact --> Group["分组与通知节奏"]
-    Group --> Intent["通知意图与精确发送结果"]
-    Fact -->|"OI 公开来源"| Outbox["公开交易来源 outbox"]
-    Outbox --> Analysis["目标选择与 Trading Case"]
-
-    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
-    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
-    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
-    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
-    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
-class Frame external;
-class Parse,Fact,API,Group,Intent,Outbox news;
-class Analysis research;
+  accTitle: 市场观察的两个独立消费者
+  accDescr: 确定性解析保存市场观察，页面和分组通知读取同一事实；OI 公开事实另经应用转交给 Trading，通知是否发送不决定分析是否建立。
+  F[已识别来源的原始帧] --> P[确定性解析]
+  P --> O[(news_market_observations)]
+  O --> UI[市场列表与详情]
+  O --> G[分组与到期意图]
+  G --> D[冻结卡片与实际发送回执]
+  O -->|OI 公开事实| B[News Trading outbox]
+  B --> A[App relay / Trading Case]
 ```
 
-*数据流 · 解析失败仍保留原始市场观测；通知和 Trading 是独立消费者，不是前后审批步骤。*
+*数据视图 · 原始观察先保存；通知与 Trading 分别消费事实，箭头不代表通知审批交易。*
 
-此路径没有编辑型 Event、语义模型、四轴 taxonomy 或模型新闻价值判断。未知来源契约与解析失败保留原始记录和具名原因，不能转成 OI 为零的假测量。
+## OI 测量契约
 
-<a id="section-oi-解析器知道什么"></a>
-## 02 · OI 解析器知道什么
-
-下面仅为格式说明，不是实时行情：
+以下是格式示例，不是实时行情：
 
 ```text
 TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%
 ```
 
-| 字段 | 含义与边界 |
+| 字段 | 当前解释 |
 | --- | --- |
-| `symbol` / `raw_instrument` | 归组符号与提供商原始名称；不证明某交易所存在可执行合约 |
-| `direction` / `oi_change_bps` | 提供商报告的增减方向与基点变化；4.55% 对应 455 bps |
-| `oi_value_usd` | 解析 K / M / B 单位后的提供商名义金额，不是已验证合约张数 |
-| `whale_long_profit_bps` | 提供商命名的百分比；不是美元收益、盈利账户数量或全体大户的盈亏 |
-| `whale_oi_ratio_bps` | 保留来源定义的占比；不能由此补造持仓快照 |
-| measurement / source 版本 | 绑定当时采用的解析与计量含义，语义改变必须版本化 |
+| `symbol` / `raw_instrument` | 标题主体的归一化符号与提供商原生拼写，不能证明有可执行合约 |
+| `direction` / `oi_change_bps` | 提供商报告的增减与基点变化；4.55% 对应 455 bps |
+| `oi_value_usd` | K / M / B 单位解析后的名义美元 OI，不是已验证合约张数 |
+| `whale_long_profit_bps` | 来源命名的百分比，不是美元收益、盈利账户数量或全体大户盈亏 |
+| `whale_oi_ratio_bps` | 来源定义的占比，不能补造账户持仓快照 |
+| `measurement_definition` | metric / source 版本和窗口共同定义哪些观察可比较 |
 
-来源被识别为 `oi_v1` 契约族时，测量窗口绑定为 **300,000 毫秒（5 分钟）**。这是来源契约给出的解释，不是根据两条消息的到达间隔猜测。任意新闻提到 OI，并不自动拥有这个窗口。
+只有已识别的 OI 来源契约证明 **300,000 毫秒（5 分钟）**窗口。标题本身没有区间；未知来源保持 `unproven`，不从到达间隔推断。解析器接受可选 `N times in 24h` 后缀，但重复次数从本地账本推导。百分比用十进制半入舍入转换基点，超出 BIGINT 范围的输入拒绝解析。
 
-可选的 `N times in 24h` 后缀能被接受，但不替代本地记录推导的重复观察。百分比使用十进制舍入后转基点。美元 OI 的变化可能涉及价格与数量变化，单凭这段文本无法拆分，更不能推出应该做多。
+美元 OI 变化混合价格与数量影响，仅凭标题不能拆分。类型化测量、读者通知和执行准入分别有自己的事实和规则。
 
-<a id="section-分组通知的确定性规则"></a>
-## 03 · 分组通知的确定性规则
+## 分组与通知生命周期
 
-`group_identity` 决定哪些测量可比较，`decide_group` 决定本轮是否需要通知，`MarketNotificationLoop` 领取、发送并结算。**每条观察均先保存，不发卡不等于丢数据。**
+`group_identity` 使用提供商、venue、原生 instrument 和测量定义建立 OI 组；已证明窗口与未证明窗口不会混合。清算另含被清算持仓方向；大户按已提供地址，或明确未验证的 provider / strategy / label 身份归组。解析失败的原始观察各自可读，不创建兜底通知组。
 
-| 家族 | 当前通知逻辑 | 不应套用的逻辑 |
-| --- | --- | --- |
-| OI | 每轮首报；方向改变或绝对变化达到前一通知锚点的两倍时跟进；观察间隔达到 4 小时重开一轮 | 不把通知阈值当交易入场过滤器 |
-| 清算 | 首报立即；后续以发送尝试开始时间锚定 60 秒窗口，有新记录才跟进 | 不让持续到达的记录无限延后窗口 |
-| 大户报告 | 按账户、标的和日级主题组织首报 / 收尾 | 不再每次成交都用一个新的短窗口发送 |
-| 钱包 | 使用净买入 detector 已达标的 episode，再进行发送时证据检查 | 不复制 OI 倍数阈值 |
-| 原始未结构化记录 | 保存并可读，不自动建立第四套“兜底评分” | 不用零值伪装成功解析 |
-
-```mermaid
----
-config:
-  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
-  flowchart:
-    curve: linear
-    nodeSpacing: 28
-    rankSpacing: 42
----
-flowchart TD
-    accTitle: OI 分组与跟进
-    accDescr: 同组有未开始意图时合并。否则首次或静默重开产生首报，变向或达到两倍？才产生跟进，其余保留原因。
-    O["新 OI 观察已保存"] --> Pending{"已有未开始意图？"}
-    Pending -->|"有"| Merge["合并覆盖，不新增第二张卡"]
-    Pending -->|"没有"| First{"首报或静默重开？"}
-    First -->|"是"| New["首报意图"]
-    First -->|"否"| Change{"变向或达到两倍？"}
-    Change -->|"是"| Follow["跟进意图"]
-    Change -->|"否"| Hold["保留观察与暂不通知原因"]
-
-    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
-    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
-    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
-    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
-    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
-class O,Pending,Merge,First,New,Change,Follow,Hold news;
-```
-
-*决策视图 · 菱形为代码分支，阈值是通知节奏，不是交易入场规则。*
-
-锚点是上一通知覆盖的观察，不是不断上移的最大值。例如 6% 的卡已经发送，9% 仍不足两倍，13% 可以触发跟进。如果 6%、9%、13% 在第一张卡开始发送前一起到达，则可合并为一张，不应为了凑例子强造两张卡。
-
-<a id="section-发送生命周期与恢复"></a>
-## 04 · 发送生命周期与恢复
-
-市场通知保留自己的状态：`pending`、`sending`、`sent`、`failed`、`unknown`、`unavailable`。不要强行把它和编辑型 News 的 adapter outcome 枚举合成同一个字段。
-
-```mermaid
----
-config:
-  fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
-  sequence:
-    mirrorActors: false
-    messageMargin: 28
-    actorMargin: 40
-    wrap: true
----
-sequenceDiagram
-    accTitle: 市场通知的发送时序
-    accDescr: 先持久化意图和到期时间，再领取并冻结内容，事务外发送，最终记录提供商结果与下次到期。
-    autonumber
-    participant L as MarketNotificationLoop
-    participant D as PostgreSQL
-    participant P as 通知提供商
-    L->>D: 归组观察，保存到期意图
-    L->>D: 领取意图，验证证据并冻结正文
-    L->>P: 在事务外发送
-    P-->>L: 成功、可证明未发出、或未知
-    L->>D: 保存实际结果与下一次到期时间
-```
-
-*时序 · intent 和实际发送分别保存；未知结果不能变成已证明未发送。*
-
-同一组至多保留一个尚未开始的意图；重试沿用稳定 `delivery_key`，不是每次生成一个新身份。当前可证明未发送的可重试错误最多三次实际尝试，间隔由代码返回 5 秒、30 秒并写入 due time，不在事务里 sleep。
-
-上个进程留下的 `sending` 不能被当作已发送或确定失败，必须保留未知结果。行情、相关新闻上下文属于可选卡片补充，不成为原始测量的真实性依据。
-
-<a id="section-oi-如何进入-trading"></a>
-## 05 · OI 如何进入 Trading
-
-News 保存公开来源；`AnalysisRunner.relay_once` 解析单一合格目标、原生单位与映射来源，幂等保存 Trigger / Case 后确认相同 outbox payload。是否再发一张市场卡，与是否进行这次研究相互独立。
-
-Trading 读取自己的有界市场证据并选择当前计划菜单。旧 OI 专用确定性 signal lane 不再由 Workers 调度；`oi_runtime` 这个历史目录名不能用来推断仍有另一套 OI 交易策略。
-
-<a id="section-排障与验证"></a>
-## 06 · 排障与验证
-
-| 现象 | 顺序检查 |
+| 家族 | 通知规则 |
 | --- | --- |
-| 源消息在增加，类型化 OI 不增加 | 来源身份、原始标题、解析版本和 `oi_template_unmatched` 等原因 |
-| 看似重复消息消失 | 原始身份是重投还是新测量；是否错误走编辑型近似去重 |
-| 事实存在但没卡 | 分组锚点、待发送意图、暂不通知原因、配置与实际发送结果 |
-| 有卡没有 Case | outbox、relay 接收 / 排除结果、经济身份映射 |
-| 有 Case 没 Signal | 决策、发布设置、截止时间和来源修订，而非 OI 通知倍数 |
+| OI | 首报；方向变化或绝对变化达到上次通知锚点两倍时跟进；观察间隔达到 4 小时重开一轮 |
+| 清算 | 首报立即；后续以发送尝试开始时间锚定 60 秒窗口，有新记录才跟进 |
+| 大户报告 | 每账户、标的的 24 小时一轮；首报与首次 open → close 变化各可发一次 |
+| 钱包 | 达标 episode 首报，经发送时完整证据复查；细节见 [Wallets](wallets.md) |
 
-验证入口：[市场路径边界](../../tests/architecture/test_news_market_path_boundaries.py)、[通知集成](../../tests/integration/test_news_market_notifications.py)、[市场读模型](../../tests/integration/test_news_market_read_model.py)、[Analysis 闭环](../../tests/integration/test_trading_analysis_closure.py)。历史研究见 [notebooks](../../notebooks/README.md)，不是当前在线收益承诺。
+同组最多有一个尚未开始的 intent，新观察合入其覆盖范围。OI 锚点为零时，新的非零变化可跟进。每条观察先入账，不发卡仍保留事实和暂不通知原因。
 
-<a id="section-源码责任地图"></a>
-## 07 · 源码责任地图
+`MarketNotificationLoop` 先保存 intent 和 due time，领取时冻结正文，在事务外调用通知端，再保存结果。稳定 `delivery_key` 跨重试和重启保持一致。可证明未发送的暂态失败最多三次实际尝试，等待 5 秒、30 秒写入 PG due time；外部结果未知不盲目重发。
+
+上个进程留下的 `sending` 在恢复时转为 `unknown`，保留防重锚点，不能展示为已投递。可选报价和相关新闻只补充卡片上下文，不证明来源测量，也不决定核心发送。
+
+## Trading 消费与接口
+
+`AnalysisRunner.relay_once()` 接收公开 OI payload，使用 LIVE 合约目录选择单个合格经济资产，幂等保存 Trading 输入和 Case 后确认 outbox。Trading 冻结自己的 LIVE 行情并运行预测/策略，不以 OI 通知倍数作为交易准入；执行只允许 DEMO，详见 [Trading](trading.md)和 [Execution](execution.md)。
+
+`/api/news/market` 列表和详情从市场观察、通知组和回执构造只读投影。排障顺序是来源身份 → 原始模板与 parse status → 分组锚点和 pending intent → 配置与真实发送结果；没有 Case 时再查 outbox、relay 和目标排除原因，没有 Signal 时查策略及发布资格。
+
+## 实现与验证
 
 | 实现 | 职责 |
 | --- | --- |
-| [source_contracts.py](../../tracefold/news/source_contracts.py) | 识别提供商来源契约，不凭任意标题猜测 measurement 含义 |
-| [admission.py](../../tracefold/news/pipeline/admission.py) | 市场分支保存 Item 与类型化事实，不创建编辑型 Event |
-| [oi_signals.py](../../tracefold/news/oi_signals.py)、[oi_contracts.py](../../tracefold/news/oi_contracts.py) | OI 格式解析、单位、窗口与来源语义 |
-| [liquidations.py](../../tracefold/news/liquidations.py)、[smart_money.py](../../tracefold/news/smart_money.py) | 清算、大户报告各自的结构化解释 |
-| [market_contracts.py](../../tracefold/news/market_contracts.py)、[storage/market.py](../../tracefold/news/storage/market.py) | 市场读模型、持久记录与通知组 |
-| [market_notifications.py](../../tracefold/news/market_notifications.py) | 分组身份、确定性决策、到期工作、冻结发送与结果 |
+| [source_contracts.py](../../tracefold/news/source_contracts.py) | 提供商来源契约分类 |
+| [admission.py](../../tracefold/news/pipeline/admission.py)、[market_observations.py](../../tracefold/news/market_observations.py) | 市场准入和不可变事实契约 |
+| [oi_signals.py](../../tracefold/news/oi_signals.py)、[oi_contracts.py](../../tracefold/news/oi_contracts.py) | OI 格式、单位、窗口与版本 |
+| [liquidations.py](../../tracefold/news/liquidations.py)、[smart_money.py](../../tracefold/news/smart_money.py) | 清算、大户各自的结构化解释 |
+| [observations.py](../../tracefold/news/storage/observations.py)、[storage/market.py](../../tracefold/news/storage/market.py) | 观察写入、市场读取与通知组存储 |
+| [market_notifications.py](../../tracefold/news/market_notifications.py) | 分组纯规则、到期工作、冻结发送与结果 |
 
-<a id="section-常见误解"></a>
-## 08 · 常见误解
-
-<details>
-<summary><strong>展开常见问题</strong></summary>
-
-**没有跟进通知，是不是 OI 数据被丢弃？**
-
-不是。类型化事实仍保留，通知节奏与交易研究分别处理。
-
-**OI Rise 是否意味着看多？**
-
-不是。它表达来源报告的 OI 变化；名义金额还可能受价格变化影响。
-
-</details>
-
----
-
-[返回文档中心](../README.md) · [架构图谱](../ARCHITECTURE.md#atlas) · [返回顶部](#oi-与类型化市场观察)
-
-市场存储由 [observations.py](../../tracefold/news/storage/observations.py)统一写入：相同帧重放不改 `xmin`，业务字段和解析状态保持首次记录，新增策略只合并元数据。首插 OI 才写公开 outbox，观测 ID 与旧市场 Item ID 相同。`news_items` 只保存编辑新闻；市场保留由独立有界删除批次执行。
+[解析与单位](../../tests/news/test_news_oi_signals.py)、[来源窗口](../../tests/news/test_oi_source_contract.py)、[市场路径边界](../../tests/architecture/test_news_market_path_boundaries.py)、[通知集成](../../tests/integration/test_news_market_notifications.py)和 [市场读模型](../../tests/integration/test_news_market_read_model.py)覆盖事实与通知；[Analysis 闭环](../../tests/integration/test_trading_analysis_closure.py)验证公开消费接缝。离线研究见 [notebooks](../../notebooks/README.md)。
