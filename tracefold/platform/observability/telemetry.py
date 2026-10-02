@@ -99,6 +99,12 @@ class TelemetryRegistry:
             ("mode", "result"),
             registry=self.registry,
         )
+        self.news_reader_changed_total = Counter(
+            "tracefold_news_reader_changed_total",
+            "Notification plans rejected after the sent-set or claim-link generation changed.",
+            ("stage",),
+            registry=self.registry,
+        )
         self.news_search_duration_seconds = Histogram(
             "tracefold_news_search_duration_seconds",
             "Successful first-page News feed search request duration in seconds.",

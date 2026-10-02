@@ -19,7 +19,7 @@ from typing import Any
 import numpy as np
 import psycopg
 
-from tracefold.news.claim_recall import CALIBRATION, Candidate, Cuts, Probe, rank, vector_bytes
+from tracefold.news.claim_recall import CALIBRATION, Candidate, Cuts, Probe, prepare_rank, rank, vector_bytes
 
 
 def read_rows(path: Path) -> list[dict[str, Any]]:
@@ -175,24 +175,8 @@ def metrics(
     strata: dict[str, list[int]] = defaultdict(lambda: [0, 0])
     for q in queries:
         probe = Probe(q["probe"].text) if degraded else q["probe"]
-        pool_key = f"{consumer}_{'degraded' if degraded else 'dense'}_pool"
-        if pool_key not in q:
-            rows = q[consumer]
-            dense = {}
-            if not degraded:
-                usable = [r for r in rows if r.vector is not None]
-                matrix = np.stack([np.frombuffer(r.vector, dtype="<f2") for r in usable]).astype(np.float32)
-                query = np.frombuffer(probe.vector, dtype="<f2").astype(np.float32)
-                values = matrix @ query / (np.linalg.norm(matrix, axis=1) * np.linalg.norm(query))
-                dense = {r.key: float(v) for r, v in zip(usable, values, strict=True)}
-            keys = set(sorted(dense, key=lambda k: (-dense[k], k))[: calibration.route_n])
-            for floor in (0, 0.4, 0.45, 0.5, 0.55):
-                lexical = sorted(
-                    (r for r in rows if r.key not in dense or dense[r.key] >= floor), key=lambda r: (-r.lexical, r.key)
-                )[: calibration.route_n]
-                keys.update(r.key for r in lexical)
-            q[pool_key] = tuple(r for r in rows if r.key in keys or r.same_source)
-        result = rank(probe, q[pool_key], consumer, calibration=calibration)
+        rows = q[consumer]
+        result = rank(prepare_rank(probe, rows, consumer, calibration=calibration), rows)
         keys = [h.key for h in result.hits]
         got = {q["by_ref"].get(k) for k in keys} if consumer == "prior" else set(keys)
         gold = q[f"{consumer}_gold"]
@@ -244,7 +228,7 @@ def main() -> None:
     for k in (4, 5, 6, 8):
         for floor in (0.4, 0.45, 0.5, 0.55):
             for lexical in (0.05, 0.1, 0.2):
-                candidate = replace(fitted, prior=Cuts(k, floor, lexical, 2))
+                candidate = replace(fitted, prior=Cuts(k, floor, lexical, lexical, sent_reserved=2))
                 score = metrics(queries, candidate, "prior")
                 grid.append({"k": k, "dense_floor": floor, "lexical_floor": lexical, **score})
     report["prior_grid"] = grid
@@ -263,14 +247,19 @@ def main() -> None:
         if not eligible:
             raise ValueError("recall_prior_acceptance_failed")
         best = min(eligible, key=lambda r: (r["selected"], -r["sf_success_rate"], r["k"], r["dense_floor"]))
-        fitted = replace(fitted, prior=Cuts(best["k"], best["dense_floor"], best["lexical_floor"], 2))
+        fitted = replace(
+            fitted,
+            prior=Cuts(best["k"], best["dense_floor"], best["lexical_floor"], best["lexical_floor"], sent_reserved=2),
+        )
         report["prior"] = metrics(queries, fitted, "prior")
         report["degraded_prior"] = metrics(queries, fitted, "prior", degraded=True)
         report["selected_cuts"] = {"prior": asdict(fitted.prior), "receipt": asdict(fitted.receipt)}
         config = {
             "version": "claim_recall_v1",
             "embedder": asdict(fitted.embedder),
-            "prior": asdict(Cuts(best["k"], best["dense_floor"], best["lexical_floor"], 2)),
+            "prior": asdict(
+                Cuts(best["k"], best["dense_floor"], best["lexical_floor"], best["lexical_floor"], sent_reserved=2)
+            ),
             "receipt": asdict(fitted.receipt),
             "route_n": fitted.route_n,
             "rrf_k": fitted.rrf_k,

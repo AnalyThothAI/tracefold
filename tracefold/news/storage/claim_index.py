@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import json
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any
 
 from ..claim_recall import (
@@ -13,11 +15,17 @@ from ..claim_recall import (
     Probe,
     embed_text,
     numbers,
+    prepare_rank,
     rank,
     structure_keys,
     text_sha,
 )
 from ..updates.contracts import Claim, EventUpdate, PriorClaim
+from ..updates.identity import digest
+
+
+def _requested(claims: Mapping[str, Claim]) -> list[dict[str, str]]:
+    return [{"ref": c.ref, "sha": key.rsplit(":", 1)[1], "text": embed_text(c)} for key, c in claims.items()]
 
 
 class ClaimIndexStorage:
@@ -60,123 +68,210 @@ class ClaimIndexStorage:
             (text,),
         ).fetchone()["query"]
 
-    def claim_candidates(
-        self, claims: Sequence[Claim], probe: Probe, *, sources: Sequence[str] = ()
-    ) -> tuple[Candidate, ...]:
+    def claim_candidates(self, claims: Mapping[str, Claim], *, sources: Sequence[str] = ()) -> tuple[Candidate, ...]:
         """Frozen receipt claims stay frozen even if a later head changes their ref's text."""
         if not claims:
             return ()
         rows = self.conn.execute(
             """SELECT requested.ref,requested.sha,ci.vector,ci.embedder,
-                      COALESCE(ci.structure_keys && %s::text[],false) AS same_source,
-                      ts_rank_cd(to_tsvector('english',requested.text),%s::tsquery,32) AS lexical
-                 FROM unnest(%s::text[],%s::text[],%s::text[]) AS requested(ref,sha,text)
+                      COALESCE(ci.structure_keys && %s::text[],false) AS same_source
+                 FROM jsonb_to_recordset(%s::jsonb) AS requested(ref text,sha text,text text)
                  LEFT JOIN news_claim_index ci ON ci.claim_ref=requested.ref AND ci.text_sha256=requested.sha""",
             (
                 list(sources),
-                self._query(probe.text),
-                [c.ref for c in claims],
-                [text_sha(c) for c in claims],
-                [embed_text(c) for c in claims],
+                json.dumps(_requested(claims)),
             ),
+            binary=True,
         ).fetchall()
         return tuple(
             Candidate(
                 key=f"{r['ref']}:{r['sha']}",
                 vector=None if r["vector"] is None else bytes(r["vector"]),
                 embedder=r["embedder"],
-                lexical=float(r["lexical"]),
                 same_source=bool(r["same_source"]),
             )
             for r in rows
         )
 
-    def prior(self, event_id: str, probe: Probe, *, now_ms: int, sources: Sequence[str]) -> tuple[PriorClaim, ...]:
-        # Fetch one bounded vector window. Only current adopted propositions are
-        # comparisons; historical versions remain available for frozen receipts.
+    def lexical_scores(self, probe: Probe, claims: Sequence[tuple[str, Claim]]) -> dict[str, float]:
+        """Score only keys the shared dense guard allows onto the FTS route."""
+        if not claims:
+            return {}
+        requested = [
+            {"key": key, "ref": claim.ref, "sha": text_sha(claim), "text": embed_text(claim)} for key, claim in claims
+        ]
         rows = self.conn.execute(
-            """SELECT ci.claim_ref,ci.text_sha256,ci.event_id,ci.vector,ci.embedder,
+            """SELECT requested.key,
+                      ts_rank_cd(COALESCE(ci.lexical,to_tsvector('english',requested.text)),%s::tsquery,32)
+                        AS lexical
+                 FROM jsonb_to_recordset(%s::jsonb) AS requested(key text,ref text,sha text,text text)
+                 LEFT JOIN news_claim_index ci ON ci.claim_ref=requested.ref AND ci.text_sha256=requested.sha""",
+            (self._query(probe.text), json.dumps(requested)),
+            binary=True,
+        ).fetchall()
+        return {str(row["key"]): float(row["lexical"]) for row in rows}
+
+    def prior(
+        self,
+        event_id: str,
+        probe: Probe,
+        *,
+        now_ms: int,
+        sources: Sequence[str],
+        diagnostics: dict[str, Any] | None = None,
+    ) -> tuple[PriorClaim, ...]:
+        # The ordinary dense window owns current claims. The sent reserve owns
+        # the exact frozen proposition the reader saw, even beyond that window
+        # or after its Event adopted a different version. Both use this ranker.
+        # The set-returning frozen projection overestimates row counts and can
+        # otherwise spend more time compiling a JIT plan than reading the pool.
+        self.conn.execute("SET LOCAL jit = off")
+        rows = self.conn.execute(
+            """WITH sent AS MATERIALIZED (
+                 SELECT DISTINCT ON (n.event_id,c->>'ref',c->>'statement')
+                        n.event_id,n.content_revision,n.intent_id,c->>'ref' AS claim_ref,
+                        c->>'statement' AS statement
+                   FROM news_notifications n
+                   CROSS JOIN LATERAL jsonb_array_elements(COALESCE(n.sent_claims,'[]'::jsonb)) c
+                  WHERE n.kind='update' AND n.state='sent' AND n.content_revision IS NOT NULL
+                    AND n.settled_at_ms >= %s AND n.settled_at_ms < %s AND n.event_id<>%s
+                    AND (c->>'first_available_at_ms')::bigint < %s
+                  ORDER BY n.event_id,c->>'ref',c->>'statement',n.settled_at_ms DESC,n.intent_id
+               )
+               SELECT ci.claim_ref,ci.text_sha256,ci.event_id,ci.vector,ci.embedder,
                       ci.structure_keys && %s::text[] AS same_source,
-                      ts_rank_cd(ci.lexical,%s::tsquery,32) AS lexical,
-                      EXISTS (SELECT 1 FROM news_notifications n
-                               WHERE n.state='sent' AND n.kind='update'
-                                 AND n.settled_at_ms >= %s AND n.settled_at_ms < %s
-                                 AND n.claim_refs ? ci.claim_ref) AS sent
+                      u.analysis_id,u.content_revision,ci.embed_text,NULL::text AS frozen_intent
                  FROM news_claim_index ci JOIN news_events e ON e.event_id=ci.event_id
                  JOIN news_analyses u ON u.analysis_id=e.current_analysis_id
                 WHERE ci.event_id<>%s AND ci.first_available_at_ms >= %s
                   AND ci.first_available_at_ms < %s AND u.adopted_at_ms < %s
-                  AND EXISTS (SELECT 1 FROM jsonb_array_elements(u.document->'claims') c
-                               WHERE c->>'ref'=ci.claim_ref AND c->>'statement'=ci.embed_text
-                                 AND NOT COALESCE(u.document->'retired_claim_refs','[]'::jsonb) ? ci.claim_ref
-                                 AND NOT COALESCE(u.document->'superseded_claim_refs','[]'::jsonb) ? ci.claim_ref)""",
+               UNION ALL
+               SELECT s.claim_ref,ci.text_sha256,s.event_id,ci.vector,ci.embedder,
+                      COALESCE(ci.structure_keys && %s::text[],false),
+                      NULL::text,s.content_revision,s.statement,s.intent_id
+                 FROM sent s LEFT JOIN LATERAL (
+                   SELECT ci.text_sha256,ci.vector,ci.embedder,ci.structure_keys
+                     FROM news_claim_index ci
+                    WHERE ci.claim_ref=s.claim_ref AND ci.embed_text=s.statement OFFSET 0
+                 ) ci ON true""",
             (
-                list(sources),
-                self._query(probe.text),
                 now_ms - RECEIPT_WINDOW_MS,
                 now_ms,
+                event_id,
+                now_ms,
+                list(sources),
                 event_id,
                 now_ms - PRIOR_WINDOW_MS,
                 now_ms,
                 now_ms,
+                list(sources),
             ),
+            binary=True,
         ).fetchall()
-        candidates = []
         by_key = {}
         for row in rows:
-            key = f"{row['claim_ref']}:{row['text_sha256']}"
-            by_key[key] = row
-            candidates.append(
-                Candidate(
-                    key=key,
-                    vector=None if row["vector"] is None else bytes(row["vector"]),
-                    embedder=row["embedder"],
-                    lexical=float(row["lexical"]),
-                    sent=bool(row["sent"]),
-                    same_source=bool(row["same_source"]),
-                )
+            sha = row["text_sha256"] or digest(row["embed_text"])
+            key = f"{row['claim_ref']}:{sha}"
+            # Frozen receipt evidence wins when both windows contain the exact
+            # same version. Claim groups prevent wording variants using two slots.
+            if key not in by_key or row["frozen_intent"] is not None:
+                by_key[key] = {**row, "text_sha256": sha}
+        candidates = tuple(
+            Candidate(
+                key,
+                None if row["vector"] is None else bytes(row["vector"]),
+                row["embedder"],
+                same_source=bool(row["same_source"]),
+                sent=row["frozen_intent"] is not None,
+                group=str(row["claim_ref"]),
             )
-        ranked = rank(probe, candidates, "prior").hits
-        selected_events = list({str(by_key[h.key]["event_id"]) for h in ranked})
+            for key, row in by_key.items()
+        )
+        prepared = prepare_rank(probe, candidates, "prior")
+        # Every key that could enter any route is validated before route_n/k.
+        # Stale wording can neither consume a slot nor hide a current version.
+        eligible_rows = [by_key[key] for key in prepared.eligible_keys]
+        selected_analyses = list({str(row["analysis_id"]) for row in eligible_rows if row["analysis_id"] is not None})
         documents = (
             self.conn.execute(
-                """SELECT e.event_id,u.document FROM news_events e JOIN news_analyses u
-                 ON u.analysis_id=e.current_analysis_id WHERE e.event_id=ANY(%s::text[])""",
-                (selected_events,),
+                "SELECT analysis_id,document FROM news_analyses WHERE analysis_id=ANY(%s::text[])",
+                (selected_analyses,),
             ).fetchall()
-            if selected_events
+            if selected_analyses
             else ()
         )
-        heads = {str(r["event_id"]): EventUpdate.model_validate(r["document"]) for r in documents}
-        models = []
-        for hit in ranked:
-            row = by_key[hit.key]
-            head = heads[str(row["event_id"])]
-            claim = next(
-                (c for c in head.current_claims if c.ref == row["claim_ref"] and text_sha(c) == row["text_sha256"]),
-                None,
+        heads = {str(row["analysis_id"]): EventUpdate.model_validate(row["document"]) for row in documents}
+        intents = sorted({str(row["frozen_intent"]) for row in eligible_rows if row["frozen_intent"] is not None})
+        frozen_rows = (
+            self.conn.execute(
+                """SELECT n.intent_id,c AS claim FROM news_notifications n
+                   CROSS JOIN LATERAL jsonb_array_elements(n.sent_claims) c
+                   WHERE n.intent_id=ANY(%s::text[])""",
+                (intents,),
+                binary=True,
+            ).fetchall()
+            if intents
+            else ()
+        )
+        frozen = {
+            (str(row["intent_id"]), claim.ref, embed_text(claim)): claim
+            for row in frozen_rows
+            for claim in (Claim.model_validate(row["claim"]),)
+        }
+        current = {
+            (analysis, claim.ref, embed_text(claim)): claim
+            for analysis, head in heads.items()
+            for claim in head.current_claims
+        }
+        claims = {}
+        for key in prepared.eligible_keys:
+            row = by_key[key]
+            occurrence = (
+                str(row["frozen_intent"] or row["analysis_id"]),
+                str(row["claim_ref"]),
+                str(row["embed_text"]),
             )
+            claim = (frozen if row["frozen_intent"] is not None else current).get(occurrence)
             if claim is not None:
-                models.append(PriorClaim(event_id=head.event_id, content_revision=head.content_revision, claim=claim))
-        return tuple(models)
+                claims[key] = claim
+        lexical = self.lexical_scores(
+            probe, [(key, claim) for key, claim in claims.items() if key in prepared.fts_eligible_keys]
+        )
+        ranking = rank(
+            prepared,
+            tuple(replace(c, lexical=lexical.get(c.key, 0.0)) for c in candidates if c.key in claims),
+        )
+        if diagnostics is not None:
+            diagnostics.update(ranking.diagnostics())
+        return tuple(
+            PriorClaim(
+                event_id=str(by_key[key]["event_id"]),
+                content_revision=str(by_key[key]["content_revision"]),
+                claim=claims[key],
+            )
+            for hit in ranking.hits
+            for key in (hit.member_key or hit.key,)
+        )
 
     def pending(self, limit: int, *, now_ms: int) -> list[dict[str, Any]]:
         """Sent 48 h first, then 7 d, then 30 d; no volatile queue replaces these rows."""
+        sent_keys = [f"{c.ref}:{text_sha(c)}" for _, c in self._sent_versions(now_ms=now_ms)]
         return [
             dict(r)
             for r in self.conn.execute(
                 """SELECT ci.claim_ref,ci.text_sha256,ci.embed_text FROM news_claim_index ci
                 WHERE (ci.vector IS NULL OR ci.embedder IS DISTINCT FROM %s)
-                  AND ci.first_available_at_ms >= %s
-                ORDER BY CASE WHEN EXISTS (
-                    SELECT 1 FROM news_notifications n WHERE n.kind='update' AND n.state='sent'
-                    AND n.settled_at_ms >= %s AND n.claim_refs ? ci.claim_ref) THEN 0
+                  AND ci.first_available_at_ms < %s
+                  AND (ci.first_available_at_ms >= %s OR ci.claim_ref||':'||ci.text_sha256=ANY(%s::text[]))
+                ORDER BY CASE WHEN ci.claim_ref||':'||ci.text_sha256=ANY(%s::text[]) THEN 0
                   WHEN ci.first_available_at_ms >= %s THEN 1 ELSE 2 END,
                   ci.first_available_at_ms DESC,ci.claim_ref,ci.text_sha256 LIMIT %s""",
                 (
                     CALIBRATION.embedder.key,
+                    now_ms,
                     now_ms - 30 * 86400_000,
-                    now_ms - RECEIPT_WINDOW_MS,
+                    sent_keys,
+                    sent_keys,
                     now_ms - PRIOR_WINDOW_MS,
                     limit,
                 ),
@@ -190,12 +285,15 @@ class ClaimIndexStorage:
                 (vector, embedder, ref, sha),
             )
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, now_ms: int) -> dict[str, Any]:
+        sent_keys = [f"{c.ref}:{text_sha(c)}" for _, c in self._sent_versions(now_ms=now_ms)]
         row = self.conn.execute(
             """SELECT count(*) FILTER (WHERE vector IS NULL OR embedder IS DISTINCT FROM %s) AS pending,
                       count(*) FILTER (WHERE vector IS NOT NULL AND embedder=%s) AS ready
-                 FROM news_claim_index""",
-            (CALIBRATION.embedder.key, CALIBRATION.embedder.key),
+                 FROM news_claim_index
+                WHERE first_available_at_ms < %s
+                  AND (first_available_at_ms >= %s OR claim_ref||':'||text_sha256=ANY(%s::text[]))""",
+            (CALIBRATION.embedder.key, CALIBRATION.embedder.key, now_ms, now_ms - 30 * 86400_000, sent_keys),
         ).fetchone()
         return {
             "recall_dense": "on" if row["ready"] and not row["pending"] else "degraded",
@@ -204,6 +302,25 @@ class ClaimIndexStorage:
 
     def backfill(self, *, limit: int, now_ms: int) -> int:
         """Bounded idempotent projection of adopted facts; never re-extract historical sources."""
+        sent = self._sent_versions(now_ms=now_ms)
+        sent_keys = [f"{c.ref}:{text_sha(c)}" for _, c in sent]
+        present = {
+            str(r["key"])
+            for r in self.conn.execute(
+                "SELECT claim_ref||':'||text_sha256 AS key FROM news_claim_index "
+                "WHERE claim_ref||':'||text_sha256=ANY(%s::text[])",
+                (sent_keys,),
+            ).fetchall()
+        }
+        filled = 0
+        for event_id, claim in sent:
+            key = f"{claim.ref}:{text_sha(claim)}"
+            if key not in present:
+                self.index_claim(event_id, claim)
+                present.add(key)
+                filled += 1
+                if filled >= limit:
+                    return filled
         rows = self.conn.execute(
             """SELECT u.event_id,u.document FROM news_analyses u
                 WHERE u.adopted_at_ms >= %s AND u.document IS NOT NULL
@@ -211,12 +328,27 @@ class ClaimIndexStorage:
                        WHERE NOT EXISTS (SELECT 1 FROM news_claim_index ci
                                           WHERE ci.claim_ref=c->>'ref'
                                             AND ci.embed_text=c->>'statement'))
-                ORDER BY u.adopted_at_ms DESC LIMIT %s""",
-            (now_ms - 30 * 86400_000, limit),
+                ORDER BY CASE WHEN u.adopted_at_ms >= %s THEN 0 ELSE 1 END,
+                         u.adopted_at_ms DESC,u.analysis_id LIMIT %s""",
+            (now_ms - 30 * 86400_000, now_ms - PRIOR_WINDOW_MS, limit - filled),
         ).fetchall()
         for row in rows:
             self.index_update(EventUpdate.model_validate(row["document"]))
-        return len(rows)
+        return filled + len(rows)
+
+    def _sent_versions(self, *, now_ms: int) -> list[tuple[str, Claim]]:
+        """Exact frozen versions in the receipt window, regardless of their original age."""
+        rows = self.conn.execute(
+            """SELECT DISTINCT ON (n.event_id,c->>'ref',c->>'statement') n.event_id,c AS claim
+                 FROM news_notifications n
+                 CROSS JOIN LATERAL jsonb_array_elements(COALESCE(n.sent_claims,'[]'::jsonb)) c
+                WHERE n.kind='update' AND n.state='sent' AND n.content_revision IS NOT NULL
+                  AND n.settled_at_ms >= %s AND n.settled_at_ms < %s
+                  AND (c->>'first_available_at_ms')::bigint < %s
+                ORDER BY n.event_id,c->>'ref',c->>'statement',n.settled_at_ms DESC,n.intent_id""",
+            (now_ms - RECEIPT_WINDOW_MS, now_ms, now_ms),
+        ).fetchall()
+        return [(str(r["event_id"]), Claim.model_validate(r["claim"])) for r in rows]
 
 
 def source_keys(source: Any) -> tuple[str, ...]:

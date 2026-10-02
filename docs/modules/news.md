@@ -191,7 +191,7 @@ flowchart TB
 
 每个采用命题版本写入 `news_claim_index`，主键 `(claim_ref,text_sha256)`，向量以带嵌入器身份的 fp16 `bytea` 保存。缺失向量是持久待办；Janitor 按已送 48 小时、7 天、30 天优先级有界回填，网络调用在事务外。无需 pgvector、超级用户或应用镜像内模型权重。
 
-嵌入器由独立模型路由提供；启动的固定多语言探针失败时关闭稠密路线，FTS 与同源继续工作，采用和发送继续。状态提供 `recall_dense` 和 `claim_index_pending`，每次召回记录路线命中、最高分、降级与耗时。更换模型、维度、归一化或 `claim_embed_text_v1` 必须重新校准。
+嵌入器由独立模型路由提供；启动的固定多语言探针失败时关闭稠密路线，FTS 与同源继续工作，采用和发送继续。状态提供 `recall_dense` 和 `claim_index_pending`；`on` 同时要求当前 Workers 心跳、路由可用与活动回填窗口内无缺失。运行中批次失败会降级，下次成功后恢复。每次召回记录路线命中、最高分、降级与耗时；采用观察的 `input_manifest` 与通知决定的 `input_snapshot` 记录稳定的召回诊断。更换模型、维度、归一化或文本模板必须重新校准。
 
 <a id="agent"></a>
 <a id="section-newsagent-到底做了什么"></a>
@@ -535,7 +535,7 @@ CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精�
 
 “选中了某条 Claim”不证明卡片正文完整表达了它。后续读者判断读的是 `update` 回执的**实际发送正文**，不是来源全文、计划选择集合或某个抽象“已推送 Event”标记；发送正文与摘要必须来自可核验的冻结卡片。
 
-计划提交和发送前分别在 Event 锁下核对 head 与 reader revision。同一 `NotificationContextStorage.reader_state` 构造普通召回、语义链接状态、每命题有序正文选择与上下文 revision；两处 CAS 复用它。revision 包含实际选择的 intent/body hash、新颖度及其相关送达状态、本 Event 发送中/结果不明、跨 Event 失效和上币保护，连同召回策略版本；无消费的 watchlist 不参与摘要。无关历史不会使卡片无故失效，实际影响选择或保护状态的变化必须被发现。
+计划快照只运行一次 `NotificationContextStorage.reader_state`，构造回执、两跳链接、新颖度与每命题有序正文。计划提交和发送前在 Event 锁下核对 head 与持久世代，并锁住 `news_reader_clock` 复核；这两处只检查发送权限，不重新运行召回。任何新的已送回执或链接变化使旧计划失效，下一轮按新的上下文规划；向量补算不推进世代。冲突按 plan / send 两个阶段写入 `tracefold_news_reader_changed_total`。
 
 判断先于 reader 检查写入不可变决策与判断缓存，输家计划下一轮复用 exact-input 回答；相同计划就是同一决策行。新的 policy 身份影响计划输入摘要，不改判断器身份；同一选中集合的 intent 保持稳定。重新领取意图时改绑当前持久决定，发送之后不能重新解释或改写已送正文。
 
@@ -638,4 +638,4 @@ P1 将 OI、清算、大户报告、钱包触发和无法结构化的市场记�
 编辑发送清扫以实际 `lease_until_ms` 到期为所有权丢失，并按候选 lease token 与 attempted time CAS；在途 owned intent 排除。市场发送结算按当前 attempts CAS，失败不推进组 anchor。collector 的无变化 mutation 不写行；正常成功帧五秒最多记录一次，broker 事故后的首个成功帧在同一 mutation 中关闭事故并刷新时钟。
 
 
-`news_reader_clock` 只保存一个可 HOT 更新的版本数，作为 RR 输入的 CAS 围栏；它不存知识或发送事实。短写事务在 Event 和 job/intent 后锁住此行；有界 sending sweep 在结算前先按顺序锁住全部候选 Event，避免跨 Event 的锁环。相关事实的 AFTER constraint 触发器默认延迟至提交时推进版本，事实与版本对其他事务原子可见；admission 先写 Item/member 再锁 Event 时不会提前持有 clock，避免反向锁序。Trading、collector 时钟与其他数据库的写入不改变该版本。新增这一张元数据表后 News 为 18 表、全库 27 表；这是为并发证明增加的唯一表，而非恢复旧投影或双写路径。
+`news_reader_clock` 只保存一个可 HOT 更新的版本数，作为 RR 输入的 CAS 围栏；它不存知识或发送事实。短写事务在 Event 和 job/intent 后锁住此行；有界 sending sweep 在结算前先按顺序锁住全部候选 Event，避免跨 Event 的锁环。链接图与已送集合的 AFTER constraint 触发器默认延迟至提交时推进版本，事实与版本对其他事务原子可见。Trading、collector 时钟与向量补算不改变该版本。加上命题索引后 News 为 19 表、全库 28 表；索引向量保存带模型与模板身份的检索事实，缺失向量行承担持久回填工作。

@@ -14,6 +14,7 @@
 | Hooks | `install_hooks.py`、`run_web_hook.py` | 显式安装 hook，以及暂存前端文件的检查 |
 | 生成契约 | `regen_cli_help.py`、`regen_db_schema.py`、`regen_openapi.py`、`regen_rabbitmq_definitions.py` | 文档约定的生成目标；不是启动迁移 |
 | 离线评测 | `eval_news_reader.py`、`eval_news_recall.py` | 显式运行；前者评分已记录的读者判断，后者在仓库外的 #791 盲标语料上校准共享召回，只写隔离连接的临时表；均不调用模型或发送通知 |
+| 每日召回回执 | `news_recall_receipts.py`、`news_recall_receipts.sql` | 读取最近 24 小时的关系对数、产出率与逐调用降级占比，以及 48 小时已送精确版本的高相似、无链接且无锚点代理；短只读快照后在事务外用共享核心算余弦，不调用模型或写库 |
 
 旧交易分析归档迁移、cohort 导出与评估、价格确认、shadow 评估及价格路径重标注共七个脚本已退役。需要查阅其历史实现时，使用基线提交 `364e0d9abdc5c1f2dcc27aa19c2bb0736b7fffaf`；当前部署和研究路径不调用这些脚本。普通部署不会执行批量改写或研究实验。
 当前可复用的 OI 离线工具位于 [`notebooks/research/`](../notebooks/research/)；运行方式见 [研究说明](../notebooks/README.md)。

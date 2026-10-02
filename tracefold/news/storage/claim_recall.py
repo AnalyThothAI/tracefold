@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..claim_recall import EmbeddingPort, Probe, embed_text
 from ..clock import clock_ms
-from ..updates.contracts import Extraction, FrozenInput, PriorClaim
+from ..updates.contracts import Extraction, FrozenInput
+from ..updates.ports import PriorBatch
 from .claim_index import source_keys
 
 if TYPE_CHECKING:
@@ -19,18 +19,22 @@ class PgClaimRecall:
         self.db = db
         self.embedder = embedder
 
-    async def priors(self, source: FrozenInput, extracted: Extraction) -> Mapping[str, tuple[PriorClaim, ...]]:
+    async def priors(self, source: FrozenInput, extracted: Extraction) -> PriorBatch:
         texts = [embed_text(c) for c in extracted.claims]
         probes = tuple(Probe(t) for t in texts) if self.embedder is None else await self.embedder.probes(texts)
         sources = tuple(key for e in source.evidence for key in source_keys(e.source))
         now_ms = clock_ms()
-        return await self.db.read(
+        diagnostics: dict[str, dict[str, Any]] = {c.slot: {} for c in extracted.claims}
+        selected = await self.db.read(
             "news_claim_prior_recall",
             lambda repos: {
-                c.slot: repos.news.claim_index.prior(source.event_id, p, now_ms=now_ms, sources=sources)
+                c.slot: repos.news.claim_index.prior(
+                    source.event_id, p, now_ms=now_ms, sources=sources, diagnostics=diagnostics[c.slot]
+                )
                 for c, p in zip(extracted.claims, probes, strict=True)
             },
         )
+        return PriorBatch(selected, diagnostics)
 
     async def advance(self, *, limit: int = 64) -> None:
         now_ms = clock_ms()

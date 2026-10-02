@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from tracefold.app.claim_embedding import ClaimEmbedder
-from tracefold.news.claim_recall import CALIBRATION, Candidate, Probe, rank, vector_bytes
+from tracefold.news.claim_recall import CALIBRATION, Candidate, Probe, prepare_rank, rank, vector_bytes
 from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
 from tracefold.news.notifications.recall import select_for_claim
 from tracefold.news.updates.contracts import Claim
@@ -30,11 +30,11 @@ def test_one_rank_fuses_routes_deterministically_and_groups_receipts_by_best_cla
         Candidate("b1", vector(0.8, 0.2), probe.embedder, lexical=0.6, group="b"),
         Candidate("c1", vector(-1), probe.embedder, group="c"),
     )
-    result = rank(probe, rows, "receipt")
+    result = rank(prepare_rank(probe, rows, "receipt"), rows)
     assert [h.key for h in result.hits] == ["a", "b"]
-    assert result == rank(probe, tuple(reversed(rows)), "receipt")
+    assert result == rank(prepare_rank(probe, tuple(reversed(rows)), "receipt"), tuple(reversed(rows)))
     assert result.hits[0].routes == ("dense", "fts")
-    one = rank(probe, (rows[0], rows[2]), "receipt")
+    one = rank(prepare_rank(probe, (rows[0], rows[2]), "receipt"), (rows[0], rows[2]))
     assert result.hits[0].score == one.hits[0].score
 
 
@@ -45,15 +45,17 @@ def test_missing_mismatched_and_malformed_vectors_degrade_without_blocking_fts_o
         Candidate("wrong", vector(1), "old", same_source=True),
         Candidate("broken", b"x", probe.embedder),
     )
-    result = rank(probe, rows, "prior")
+    result = rank(prepare_rank(probe, rows, "prior"), rows)
     assert result.degraded and {h.key for h in result.hits} == {"missing", "wrong"}
     assert all(h.dense is None for h in result.hits)
-    assert rank(Probe(probe.text), (), "receipt").hits == ()
+    assert rank(prepare_rank(Probe(probe.text), (), "receipt"), ()).hits == ()
 
 
 def test_linked_receipts_precede_ranked_candidates_but_require_a_valid_receipt() -> None:
     novelty = ReaderNovelty(novelty="known", linked_intents=("linked", "missing"))
-    ranking = rank(Probe("policy"), (Candidate("other", lexical=0.9),), "receipt")
+    ranking = rank(
+        prepare_rank(Probe("policy"), (Candidate("other", lexical=0.9),), "receipt"), (Candidate("other", lexical=0.9),)
+    )
     selected = select_for_claim(novelty, ranking, available=frozenset({"linked", "other"}))
     assert selected.intent_ids == ("linked", "other")
 
@@ -66,7 +68,22 @@ def test_sent_prior_slots_do_not_manufacture_matches_below_all_floors() -> None:
         Candidate("noise", vector(-1), probe.embedder, sent=True),
     )
     calibrated = replace(CALIBRATION, prior=replace(CALIBRATION.prior, k=2, sent_reserved=1))
-    assert [h.key for h in rank(probe, rows, "prior", calibration=calibrated).hits] == ["sent", "strong"]
+    assert [h.key for h in rank(prepare_rank(probe, rows, "prior", calibration=calibrated), rows).hits] == [
+        "sent",
+        "strong",
+    ]
+
+
+def test_missing_vectors_use_the_calibrated_degraded_lexical_floor_per_candidate() -> None:
+    probe = Probe("policy", vector(1), CALIBRATION.embedder.key)
+    rows = (
+        Candidate("ready", vector(1), probe.embedder, lexical=0.8),
+        Candidate("pending", lexical=0.8),
+    )
+    calibrated = replace(CALIBRATION, prior=replace(CALIBRATION.prior, lexical_floor=0.9, degraded_lexical_floor=0.2))
+    ranking = rank(prepare_rank(probe, rows, "prior", calibration=calibrated), rows)
+    assert ranking.degraded
+    assert {hit.key: hit.routes for hit in ranking.hits} == {"ready": ("dense",), "pending": ("fts",)}
 
 
 def golden_vectors() -> dict[str, bytes]:
@@ -100,7 +117,10 @@ def test_issue_750_four_gold_receipts_reach_the_reader_through_shared_rank_and_l
 
     def select(current: Claim):
         ranking = rank(
-            Probe(current.statement, vectors[current.statement], CALIBRATION.embedder.key), candidates, "receipt"
+            prepare_rank(
+                Probe(current.statement, vectors[current.statement], CALIBRATION.embedder.key), candidates, "receipt"
+            ),
+            candidates,
         )
         return select_for_claim(reader_novelty(current.ref, links, receipts), ranking, available=available)
 
@@ -127,7 +147,9 @@ def test_issue_755_shared_words_do_not_admit_unrelated_market_stories_above_the_
     candidates = tuple(
         Candidate(text, vectors[text], CALIBRATION.embedder.key, lexical=0.9) for text in (related, *noise)
     )
-    ranking = rank(Probe(probe, vectors[probe], CALIBRATION.embedder.key), candidates, "receipt")
+    ranking = rank(
+        prepare_rank(Probe(probe, vectors[probe], CALIBRATION.embedder.key), candidates, "receipt"), candidates
+    )
     assert related in {hit.key for hit in ranking.hits}
     assert len({hit.key for hit in ranking.hits} & set(noise)) <= 1
 
@@ -162,3 +184,42 @@ def test_route_self_test_and_batch_failures_return_lexical_probes_without_retryi
     assert "test-key" not in repr(route)
     with pytest.raises(ValueError, match="calibration_identity_mismatch"):
         ClaimEmbedder(model="wrong", base_url="https://example.test/v1", api_key="test-key")
+
+
+def test_embedding_health_reports_an_outage_and_the_next_successful_batch_recovers() -> None:
+    statuses = []
+    calls = 0
+
+    def respond(request):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return httpx.Response(503)
+        texts = json.loads(request.content)["input"]
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"index": i, "embedding": [1.0 if i != 2 else 0.0, 1.0 if i == 2 else 0.0, *([0.0] * 382)]}
+                    for i in range(len(texts))
+                ]
+            },
+        )
+
+    route = ClaimEmbedder(
+        model=CALIBRATION.embedder.model,
+        base_url="https://example.test/v1",
+        api_key="test-key",
+        transport=httpx.MockTransport(respond),
+        on_status=statuses.append,
+    )
+
+    async def run():
+        assert await route.probes(["policy"]) == (Probe("policy"),)
+        assert statuses == [True, False]
+        (probe,) = await route.probes(["policy"])
+        assert probe.vector is not None and probe.embedder == CALIBRATION.embedder.key
+        await route.aclose()
+
+    asyncio.run(run())
+    assert calls == 3 and statuses == [True, False, True]

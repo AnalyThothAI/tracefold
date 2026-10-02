@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Final
+from typing import Any, Final
 
 from ..clock import clock_ms
 from .assembly import assemble_update
@@ -97,9 +97,16 @@ class NewsAgent:
             extracted = await self.analyzer.extract(source, budget)
             extracted = await self.store.save_extraction(work_id, extracted)
         relation_pairs: frozenset[tuple[str, str]] | None = None
+        recall_manifest = None
         if self.recall is not None:
-            selected = await self.recall.priors(source, extracted)
+            async with asyncio.timeout(budget.remaining()):
+                batch = await self.recall.priors(source, extracted)
+            selected = batch.by_slot
             relation_pairs = frozenset((slot, p.claim.ref) for slot, rows in selected.items() for p in rows)
+            recall_manifest = {
+                "queries": dict(batch.diagnostics),
+                "pair_count": len(relation_pairs),
+            }
             priors = {p.claim.ref: p for p in source.prior}
             priors.update((p.claim.ref, p) for rows in selected.values() for p in rows)
             source = FrozenInput.model_validate({**dict(source), "prior": tuple(priors.values())})
@@ -115,7 +122,7 @@ class NewsAgent:
             budget.remaining()
             head = await self.store.head(event_id)
             if head is not None and head.input_revision > source.revision:
-                observation = self._observation(work_id, source, understood, completed_at_ms)
+                observation = self._observation(work_id, source, understood, completed_at_ms, recall=recall_manifest)
                 await self.store.save_observation(observation)
                 await self.store.finish_semantic_work(work_id, lease=lease, reason="newer_head_already_adopted")
                 return "newer_head"
@@ -136,7 +143,7 @@ class NewsAgent:
                     final_attempt=final_attempt,
                     relation_pairs=relation_pairs,
                 )
-            observation = self._observation(work_id, source, understood, completed_at_ms)
+            observation = self._observation(work_id, source, understood, completed_at_ms, recall=recall_manifest)
             observation = await self.store.save_observation(observation)
             update = assemble_update(source, understood, head, adopted_at_ms=self.clock())
             if update is None:
@@ -165,9 +172,11 @@ class NewsAgent:
         source: FrozenInput,
         understood: Extraction,
         completed_at_ms: int,
+        *,
+        recall: dict[str, Any] | None = None,
     ) -> SemanticObservation:
         return SemanticObservation(
-            result_id=identity("semantic_result", self.program_identity, work_id, source.prior, understood),
+            result_id=identity("semantic_result", self.program_identity, work_id, source.prior, understood, recall),
             work_id=work_id,
             event_id=source.event_id,
             input_revision=source.revision,
@@ -180,6 +189,17 @@ class NewsAgent:
                 "evidence": [{"ref": e.ref, "source": e.source.model_dump(mode="json")} for e in source.evidence],
                 "read_refs": [view.read_ref for view in reading_views(source)],
                 "prior_claim_refs": [row.claim.ref for row in source.prior],
+                **(
+                    {}
+                    if recall is None
+                    else {
+                        "recall": {
+                            **recall,
+                            "pair_count": recall["pair_count"]
+                            + len(understood.claims) * sum(p.event_id == source.event_id for p in source.prior),
+                        }
+                    }
+                ),
             },
             read_refs=tuple(view.read_ref for view in reading_views(source)),
             reanalysis_reason=source.reanalysis_reason,

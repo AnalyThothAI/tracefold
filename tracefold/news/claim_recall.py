@@ -10,7 +10,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from importlib.resources import files
 from typing import Literal, Protocol
@@ -61,6 +61,7 @@ class Cuts:
     k: int
     dense_floor: float
     lexical_floor: float
+    degraded_lexical_floor: float
     sent_reserved: int = 0
 
 
@@ -123,12 +124,25 @@ class Hit:
     dense: float | None
     routes: tuple[str, ...]
     sent: bool = False
+    member_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class Ranking:
     hits: tuple[Hit, ...]
     degraded: bool
+    route_hits: tuple[tuple[str, int], ...] = ()
+    candidate_count: int = 0
+
+    def diagnostics(self) -> dict[str, object]:
+        return {
+            "policy": RECALL_POLICY,
+            "degraded": self.degraded,
+            "route_hits": dict(self.route_hits),
+            "candidate_count": self.candidate_count,
+            "selected_count": len(self.hits),
+            "highest_dense": max((h.dense for h in self.hits if h.dense is not None), default=None),
+        }
 
 
 def vector_bytes(values: Sequence[float], identity: EmbedderIdentity) -> bytes:
@@ -141,41 +155,91 @@ def vector_bytes(values: Sequence[float], identity: EmbedderIdentity) -> bytes:
     return bytes((vector / norm).astype("<f2").tobytes())
 
 
-def rank(
+def dense_scores(
+    probe: Probe, candidates: Sequence[Candidate], *, identity: EmbedderIdentity = CALIBRATION.embedder
+) -> dict[str, float]:
+    """Exact cosine scores for identity-matching facts, shared by rank and the daily receipt proxy."""
+    size = identity.dimensions * 2
+    expected = identity.key
+    if probe.vector is None or probe.embedder != expected or len(probe.vector) != size:
+        return {}
+    usable = [r for r in candidates if r.vector is not None and r.embedder == expected and len(r.vector) == size]
+    if not usable:
+        return {}
+    matrix = (
+        np.frombuffer(b"".join(r.vector or b"" for r in usable), dtype="<f2")
+        .reshape(len(usable), identity.dimensions)
+        .astype(np.float32)
+    )
+    query = np.frombuffer(probe.vector, dtype="<f2").astype(np.float32)
+    # A short exact scan is a row reduction, not a large threaded GEMM. Avoid
+    # BLAS thread fanout competing with concurrent Workers on the same host.
+    norms = np.sqrt(np.einsum("ij,ij->i", matrix, matrix, optimize=False)) * np.linalg.norm(query)
+    numerators = np.einsum("ij,j->i", matrix, query, optimize=False)
+    values = np.divide(numerators, norms, out=np.zeros(len(usable)), where=norms > 0)
+    return {r.key: float(v) for r, v in zip(usable, values, strict=True) if np.isfinite(v)}
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedRecall:
+    consumer: Literal["prior", "receipt"]
+    calibration: Calibration
+    dense: Mapping[str, float]
+    ready: bool
+    fts_eligible_keys: frozenset[str]
+    eligible_keys: frozenset[str]
+    candidate_count: int
+    started_at: float
+
+
+def prepare_rank(
     probe: Probe,
     candidates: Sequence[Candidate],
     consumer: Literal["prior", "receipt"],
     *,
     calibration: Calibration = CALIBRATION,
-) -> Ranking:
+) -> PreparedRecall:
+    """Score the full bounded window once, before deferred FTS and exact-head reads.
+
+    No top-n truncation happens here. Stale high-scoring versions can be excluded
+    by the adapter without consuming a current fact's rank slot.
+    """
+    started = time.perf_counter()
+    cuts = calibration.prior if consumer == "prior" else calibration.receipt
+    dense = dense_scores(probe, candidates, identity=calibration.embedder)
+    fts = frozenset(r.key for r in candidates if r.key not in dense or dense[r.key] >= cuts.dense_floor)
+    return PreparedRecall(
+        consumer,
+        calibration,
+        dense,
+        probe.vector is not None and probe.embedder == calibration.embedder.key,
+        fts,
+        fts | frozenset(r.key for r in candidates if r.same_source),
+        len(candidates),
+        started,
+    )
+
+
+def rank(prepared: PreparedRecall, candidates: Sequence[Candidate]) -> Ranking:
     """Union of dense top-n, PostgreSQL FTS top-n and same-source, fused once by RRF.
 
     Every tie uses a stable fact key. Missing or incompatible vectors degrade only
     this route. Foreign priors reserve slots for already sent propositions.
     """
-    started = time.perf_counter()
+    calibration = prepared.calibration
+    consumer = prepared.consumer
     cuts = calibration.prior if consumer == "prior" else calibration.receipt
     by_key = {row.key: row for row in candidates}
-    expected = calibration.embedder.key
-    dense: dict[str, float] = {}
-    ready = probe.vector is not None and probe.embedder == expected
-    usable = [r for r in by_key.values() if r.vector is not None and r.embedder == expected]
-    size = calibration.embedder.dimensions * 2
-    usable = [r for r in usable if len(r.vector or b"") == size]
-    if ready and len(probe.vector or b"") == size and usable:
-        matrix = np.stack([np.frombuffer(r.vector or b"", dtype="<f2") for r in usable]).astype(np.float32)
-        query = np.frombuffer(probe.vector or b"", dtype="<f2").astype(np.float32)
-        norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(query)
-        values = np.divide(matrix @ query, norms, out=np.zeros(len(usable)), where=norms > 0)
-        dense = {r.key: float(v) for r, v in zip(usable, values, strict=True) if np.isfinite(v)}
-    degraded = not ready or len(dense) < len(by_key)
+    dense = {k: v for k, v in prepared.dense.items() if k in by_key}
+    degraded = not prepared.ready or len(dense) < len(by_key)
     routes = {
         "dense": sorted((k for k, v in dense.items() if v >= cuts.dense_floor), key=lambda k: (-dense[k], k)),
         "fts": sorted(
             (
                 k
                 for k, r in by_key.items()
-                if r.lexical > cuts.lexical_floor and (k not in dense or dense[k] >= cuts.dense_floor)
+                if r.lexical > (cuts.lexical_floor if k in dense else cuts.degraded_lexical_floor)
+                and k in prepared.fts_eligible_keys
             ),
             key=lambda k: (-by_key[k].lexical, k),
         ),
@@ -198,6 +262,8 @@ def rank(
         dense = {group: dense[key] for group, key in winners.items() if key in dense}
         evidence = {group: evidence[key] for group, key in winners.items()}
         by_key = grouped
+    else:
+        winners = {}
     ordered = sorted(scores, key=lambda k: (-scores[k], -(dense.get(k, -1)), k))
     reserved = [k for k in ordered if by_key[k].sent][: cuts.sent_reserved]
     selected = list(dict.fromkeys((*reserved, *ordered)))[: cuts.k]
@@ -209,8 +275,11 @@ def rank(
         len(routes["source"]),
         max(dense.values(), default=None),
         degraded,
-        (time.perf_counter() - started) * 1000,
+        (time.perf_counter() - prepared.started_at) * 1000,
     )
     return Ranking(
-        tuple(Hit(k, scores[k], dense.get(k), tuple(evidence[k]), by_key[k].sent) for k in selected), degraded
+        tuple(Hit(k, scores[k], dense.get(k), tuple(evidence[k]), by_key[k].sent, winners.get(k)) for k in selected),
+        degraded,
+        tuple((route, len(keys)) for route, keys in routes.items()),
+        prepared.candidate_count,
     )

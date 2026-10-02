@@ -7,7 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
 from tracefold.app.learning_runtime import compose_news_models
-from tracefold.app.workers.runtime import NEWS_DELIVERY, workers_runtime_status
+from tracefold.app.workers.runtime import NEWS_CLAIM_RECALL, NEWS_DELIVERY, workers_runtime_status
 from tracefold.news.health import status_health
 from tracefold.news.market_review.instruments import grounding_rollup
 from tracefold.news.market_review.pricing import QuoteRequest
@@ -43,7 +43,7 @@ def _measure_news_status(runtime: Any) -> dict[str, Any]:
     with runtime.repositories() as repos:
         snapshot = repos.news.status_snapshot(now_ms=now_ms)
         semantic = repos.news.semantic_work.semantic_status(now_ms=now_ms)
-        recall = repos.news.claim_index.status()
+        recall = repos.news.claim_index.status(now_ms=now_ms)
         workers_runtime_row = repos.workers_runtime_row()
         workers_state, _ = _news_workers_observation(workers_runtime_row, now_ms=now_ms)
         instruments = repos.instruments.universe_summary()
@@ -65,6 +65,16 @@ def _measure_news_status(runtime: Any) -> dict[str, Any]:
     # absent or failed, so the public status must not present that state as delivery-ready.
     push = news_push_availability(settings, inspect_secret_file=False)
     models = news_model_availability(settings)
+    recall_capability = workers_runtime_status(workers_runtime_row, now_ms=now_ms)["capabilities"].get(
+        NEWS_CLAIM_RECALL
+    )
+    if (
+        settings.llm.news_embedding_model is None
+        or workers_state != "running"
+        or recall_capability is None
+        or recall_capability["state"] != "running"
+    ):
+        recall["recall_dense"] = "degraded"
     observed = dict(snapshot.get("broker") or {})
     broker_data = {
         "configured": bool(settings.news.broker.url),

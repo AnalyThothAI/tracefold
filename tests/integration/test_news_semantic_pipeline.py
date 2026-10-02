@@ -25,6 +25,7 @@ from tests.support.news_update_pg import (
     StubAnalyzer,
     ThreadedDb,
     draft,
+    extraction_for,
     run_agent,
     seed_event,
     set_semantic_job,
@@ -39,6 +40,7 @@ from tracefold.news.bus import BusMessage
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.semantic import SemanticWorker
+from tracefold.news.storage.claim_recall import PgClaimRecall
 from tracefold.news.storage.judgment_cache import JUDGMENT_CACHE_RETENTION_MS
 from tracefold.news.storage.judgment_store import PgJudgmentCache
 from tracefold.news.storage.semantic_store import PgSemanticStore, PgSourceReader
@@ -470,14 +472,26 @@ def test_a_reclaimed_slow_turn_cannot_regress_the_head_or_settle_the_new_owner()
 # ------------------------------------------------------------------ input and repair
 
 
-def test_input_recalls_related_heads_and_prepares_read_targets_from_stored_material() -> None:
+@pytest.mark.parametrize("same_source", ["artifact", "url"])
+def test_input_prepares_same_source_targets_and_recalls_claims_after_extraction(monkeypatch, same_source: str) -> None:
     clock = Clock(STAMP + 60_000)
     db = ThreadedDb()
     store = PgSemanticStore(db, clock=clock)
+    monkeypatch.setattr("tracefold.news.storage.claim_recall.clock_ms", clock)
     seed_event("ev-related", text="Agency previously proposed a 10% tariff on $BTC miners.", fingerprint="fp-a")
-    assert asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock), "ev-related"))
     seed_event(EVENT, text="Agency orders a 25% tariff on $BTC miners.", fingerprint="fp-b")
-    # Both leaders came from the same source URL: the existing explicit-origin recall channel links them.
+    if same_source == "artifact":
+        sql("UPDATE news_items SET source_artifact_id='shared-source',canonical_url=canonical_url || item_id")
+    # A matching artifact under another publisher and a different URL supplies no read target.
+    seed_event("ev-other-publisher", fingerprint="fp-c")
+    sql(
+        "UPDATE news_items SET source_id='another-wire',"
+        "source_artifact_id=(SELECT source_artifact_id FROM news_items WHERE item_id=%s),"
+        "canonical_url='https://example.org/unrelated' WHERE item_id='it-ev-other-publisher'",
+        (f"it-{EVENT}",),
+    )
+    assert asyncio.run(run_agent(NewsAgent(store, StubAnalyzer(), program_identity="p", clock=clock), "ev-related"))
+    clock.now_ms += 1
     sql("UPDATE news_items SET provider_params_available_at_ms = %s", (STAMP,))
     conn = connect_postgres_test(read_only=False)
     try:
@@ -492,8 +506,10 @@ def test_input_recalls_related_heads_and_prepares_read_targets_from_stored_mater
 
     related = asyncio.run(store.head("ev-related"))
     assert related is not None
-    assert {row.event_id for row in source.prior} == {"ev-related"}
-    assert {row.claim.ref for row in source.prior} == {claim.ref for claim in related.claims}
+    assert source.prior == ()
+    selected = asyncio.run(PgClaimRecall(db).priors(source, extraction_for(source)))
+    assert {row.event_id for row in selected.by_slot["a"]} == {"ev-related"}
+    assert {row.claim.ref for row in selected.by_slot["a"]} == {claim.ref for claim in related.current_claims}
     assert [target.ref for target in source.read_targets] == ["news_item:it-ev-related"]
     assert source.read_targets[0].action == "load_prior_statement"
     # A cashtag supplies a retrieval feature, not proof that the referenced asset is this claim's actor.

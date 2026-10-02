@@ -10,6 +10,7 @@ import pytest
 from psycopg_pool import PoolTimeout
 
 from tracefold.app.workers.runtime import (
+    NEWS_CLAIM_RECALL,
     NEWS_DELIVERY,
     NEWS_EDITORIAL,
     NEWS_INGESTION,
@@ -451,6 +452,22 @@ def test_configured_models_compose_the_semantic_worker_as_a_confined_editorial_t
     tasks = {task.name: task for task in worker_business_tasks(news_pipeline=wiring.pipeline)}
     assert tasks["news-semantic"].capability == NEWS_EDITORIAL
     assert tasks["news-semantic"].foundational is False
+
+
+def test_wrong_embedding_identity_disables_dense_recall_and_preserves_semantic_processing(tmp_path: Path) -> None:
+    capabilities = CapabilityStates()
+    runtime = news_wiring._news_updates_or_fault(
+        _with_models(tmp_path, news_embedding_model="uncalibrated-model"),
+        news_db=object(),
+        capabilities=capabilities,
+    )
+    assert runtime is not None and runtime.embedder is None
+    assert runtime.claim_recall is not None and runtime.claim_recall.embedder is None
+    assert capabilities.payload()[NEWS_EDITORIAL] == {"state": "running", "reason": None}
+    assert capabilities.payload()[NEWS_CLAIM_RECALL] == {
+        "state": "faulted",
+        "reason": "news_embedding_configuration_invalid",
+    }
 
 
 def test_a_configured_news_judgment_route_opens_its_own_connection_and_changes_the_program(tmp_path: Path) -> None:

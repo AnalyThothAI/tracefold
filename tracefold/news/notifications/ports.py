@@ -6,6 +6,7 @@ bounded by the caller outside the transaction.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Literal, Protocol
 
@@ -21,6 +22,7 @@ class NotificationSnapshot(Exact):
     work_updated_at_ms: int | None = None
     # When the work became due: the start of the wait a planning turn's timings are measured from.
     work_due_at_ms: int | None = None
+    recall_diagnostics: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class IntentLease(Exact):
@@ -93,12 +95,14 @@ class NotificationStore(Protocol):
         blocked_claim_refs comes from this Event's sends still in flight and
         ambiguous_claim_refs from its sends with no provable outcome. Neither is
         counted as received; the first makes the plan wait, the second is never
-        sent again. The reader revision is the digest of the receipts related to
-        this Event and those claim sets, so only a related change races a plan.
+        sent again. The reader revision is the persisted sent-set and link-graph
+        generation. CAS checks that generation without repeating candidate selection.
         """
         ...
 
-    async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
+    async def atomic_record_plan(
+        self, plan: NotificationPlan, *, recall_diagnostics: Mapping[str, Mapping[str, Any]] | None = None
+    ) -> PlanCommit:
         """Persist or reuse an immutable decision, check head/reader versions, reserve an intent.
 
         The decision is written before the reader check, so a plan that loses the

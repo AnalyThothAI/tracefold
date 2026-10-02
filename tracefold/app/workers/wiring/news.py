@@ -21,6 +21,7 @@ from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.runtime import (
     MARKET_NOTIFICATIONS,
+    NEWS_CLAIM_RECALL,
     NEWS_DELIVERY,
     NEWS_EDITORIAL,
     NEWS_INGESTION,
@@ -185,7 +186,7 @@ async def _wire_news_pipeline(
         else None
     )
 
-    news_updates = _news_updates_or_fault(settings, news_db=news_db, capabilities=capabilities)
+    news_updates = _news_updates_or_fault(settings, news_db=news_db, capabilities=capabilities, telemetry=telemetry)
     if news_updates is not None and news_updates.embedder is not None:
         await news_updates.embedder.self_test()
     pipeline = _compose_news_pipeline(
@@ -295,6 +296,7 @@ def _news_updates_or_fault(
     *,
     news_db: NewsDatabasePort,
     capabilities: CapabilityStates,
+    telemetry: TelemetryRegistry | None = None,
 ) -> NewsUpdateRuntime | None:
     """Compose the EventUpdate runtime, or confine the failure to the editorial capability.
 
@@ -307,18 +309,33 @@ def _news_updates_or_fault(
         models = compose_news_models(settings)
         if models is None:
             capabilities.disabled(NEWS_EDITORIAL, "news_models_not_configured")
+            capabilities.disabled(NEWS_CLAIM_RECALL, "news_models_not_configured")
             return None
         embedder = None
         if settings.llm.news_embedding_model is not None:
-            embedder = ClaimEmbedder(
-                model=settings.llm.news_embedding_model,
-                base_url=str(settings.llm.base_url),
-                api_key=str(settings.llm.api_key),
-            )
+            capabilities.unavailable(NEWS_CLAIM_RECALL, "news_embedding_self_test_pending")
+
+            def embedding_status(available: bool) -> None:
+                if available:
+                    capabilities.running(NEWS_CLAIM_RECALL)
+                else:
+                    capabilities.unavailable(NEWS_CLAIM_RECALL, "news_embedding_unavailable")
+
+            try:
+                embedder = ClaimEmbedder(
+                    model=settings.llm.news_embedding_model,
+                    base_url=str(settings.llm.base_url),
+                    api_key=str(settings.llm.api_key),
+                    on_status=embedding_status,
+                )
+            except ValueError:
+                capabilities.faulted(NEWS_CLAIM_RECALL, "news_embedding_configuration_invalid")
+        else:
+            capabilities.disabled(NEWS_CLAIM_RECALL, "news_embedding_not_configured")
         recall = PgClaimRecall(news_db, embedder=embedder)
         runtime = compose_news_updates(
             semantic_store=PgSemanticStore(news_db),
-            notification_store=PgNotificationStore(news_db, embedder=embedder),
+            notification_store=PgNotificationStore(news_db, embedder=embedder, telemetry=telemetry),
             relation_cache=PgJudgmentCache(news_db),
             extraction_lm_factory=_route_factory(models.extraction),
             card_lm_factory=_route_factory(models.card),
@@ -339,10 +356,12 @@ def _news_updates_or_fault(
         # A configured notification route whose key file cannot be read is a configuration fact: named,
         # never a silent fall back to the generative route.
         capabilities.faulted(NEWS_EDITORIAL, f"news_reader_judgment_key_{exc.code}")
+        capabilities.unavailable(NEWS_CLAIM_RECALL, "news_editorial_unavailable")
         return None
     except Exception as exc:
         logger.opt(exception=exc).error("News semantic runtime assembly failed; editorial capability faulted")
         capabilities.faulted(NEWS_EDITORIAL, f"{NEWS_EDITORIAL}_assembly_failed:{type(exc).__name__}")
+        capabilities.unavailable(NEWS_CLAIM_RECALL, "news_editorial_unavailable")
         return None
     capabilities.running(NEWS_EDITORIAL)
     return runtime

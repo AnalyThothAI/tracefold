@@ -100,9 +100,11 @@ docker compose exec -T workers tracefold news retry-work \
 
 ### 命题向量缺失与降级
 
-`/api/news/status` 的 `claim_index_pending` 是持久缺向量或旧身份行数；`recall_dense` 为 `on` / `degraded`。配置 `llm.news_embedding_model` 与校准文件相同的模型，模型在外部路由部署，不改 PostgreSQL 镜像。启动固定探针失败时禁用稠密；先检查模型路由日志和维度，修复后重启。Janitor 每次有界补算，顺序为已送 48 小时、7 天、30 天；无须重新抽取、开启历史通知或写模型缓存。
+`/api/news/status` 的 `claim_index_pending` 是最近 30 天及 48 小时内已送精确版本的缺向量或旧身份行数；已送命题原始年龄不限制回填。`recall_dense=on` 要求无活动缺失、配置路由且 Workers 的新鲜心跳报告路由可用。运行中批次失败显示降级，下一次成功恢复。配置 `llm.news_embedding_model` 与校准文件相同的模型，模型在外部路由部署，不改 PostgreSQL 镜像。启动固定探针失败时禁用稠密；检查模型路由日志和维度，修复后重启。Janitor 每次有界补算，顺序为已送 48 小时、7 天、30 天；无须重新抽取、开启历史通知或写模型缓存。
 
-升级前备份并停止写者，迁移至 0426 后启动新镜像；新索引行随采用和有界历史投影写入。回滚先 downgrade 至 0425，恢复旧检索生成列、函数和三元组索引，再启动旧镜像。采用文档与冻结回执形状保持兼容。
+升级前备份并停止写者，迁移至 0426 后启动新镜像；新索引行随采用和有界历史投影写入。回滚先 downgrade 至 0425，恢复旧检索生成列、函数和三元组索引，再启动旧镜像。PR-A 的采用文档与冻结回执形状不变；应用只保留共享命题召回的单一路径。
+
+每日只读回执运行 `uv run --locked python scripts/news_recall_receipts.py --as-of-ms <冻结时刻>`，连接由 `TRACEFOLD_READONLY_DSN` 提供，不放进命令参数。配套 SQL 统计关系对数、有效关系产出率及 prior / receipt 两端降级占比；历史没有诊断的调用保持未知。漏召回代理检查 48 小时内先后已送、超过校准稠密下限、但无两跳链接或实际读者锚点的命题对。缺失向量单列未知数，代理不能证明同一事实。`tracefold_news_reader_changed_total{stage="plan"|"send"}` 记录最终 CAS 冲突次数，不重复计算内部重读。
 
 ### 已完成或已失败工作的定向重读
 

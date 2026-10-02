@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import httpx
@@ -19,7 +19,13 @@ log = logging.getLogger("tracefold.news")
 
 class ClaimEmbedder:
     def __init__(
-        self, *, model: str, base_url: str, api_key: str, transport: httpx.AsyncBaseTransport | None = None
+        self,
+        *,
+        model: str,
+        base_url: str,
+        api_key: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+        on_status: Callable[[bool], None] | None = None,
     ) -> None:
         self.identity: EmbedderIdentity = CALIBRATION.embedder
         if model != self.identity.model:
@@ -34,6 +40,11 @@ class ClaimEmbedder:
         self.ready = False
         self._tested = False
         self._test_lock = asyncio.Lock()
+        self.on_status = on_status
+
+    def _report(self, available: bool) -> None:
+        if self.on_status is not None:
+            self.on_status(available)
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -60,6 +71,7 @@ class ClaimEmbedder:
             except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError):
                 self.ready = False
             self._tested = True
+            self._report(self.ready)
             if not self.ready:
                 log.warning("news_embedding_self_test_failed recall_degraded=true")
             return self.ready
@@ -70,7 +82,9 @@ class ClaimEmbedder:
         if await self.self_test():
             try:
                 vectors = await self._encode(texts)
+                self._report(True)
                 return tuple(Probe(t, v, self.identity.key) for t, v in zip(texts, vectors, strict=True))
             except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError):
                 log.warning("news_embedding_unavailable recall_degraded=true")
+                self._report(False)
         return tuple(Probe(t) for t in texts)

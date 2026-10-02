@@ -111,7 +111,7 @@ class Notifications:
                     )
                 }
             )
-            committed = await self.store.atomic_record_plan(plan)
+            committed = await self.store.atomic_record_plan(plan, recall_diagnostics=snapshot.recall_diagnostics)
         except asyncio.CancelledError:
             raise
         except _UNANSWERED:

@@ -259,6 +259,7 @@ async def run_workers(settings: Settings) -> None:
                     lock_conn=lock_conn,
                     runtime_id=runtime_id,
                     stop_event=shutdown_requested,
+                    capabilities=probe_state.capabilities,
                 ),
                 on_fatal=enter_fatal,
             )
@@ -468,6 +469,7 @@ async def _run_control(
                 lock_conn=lock_conn,
                 runtime_id=runtime_id,
                 stop_event=stop_event,
+                capabilities=probe_state.capabilities,
             )
             if heartbeat_at_ms is None:
                 return
@@ -491,6 +493,7 @@ async def _control_heartbeat_with_retry(
     lock_conn: Any,
     runtime_id: str,
     stop_event: asyncio.Event,
+    capabilities: CapabilityStates,
 ) -> int | None:
     """Retry only the idempotent heartbeat's precise transient DB failures."""
 
@@ -500,6 +503,7 @@ async def _control_heartbeat_with_retry(
                 db=db,
                 lock_conn=lock_conn,
                 runtime_id=runtime_id,
+                capabilities=capabilities,
             )
         except (
             ResourceAdmissionTimeout,
@@ -521,6 +525,7 @@ async def _control_liveness_and_heartbeat(
     db: WorkerDatabase,
     lock_conn: Any,
     runtime_id: str,
+    capabilities: CapabilityStates,
 ) -> int:
     try:
         await db.run_control(
@@ -540,6 +545,7 @@ async def _control_liveness_and_heartbeat(
         db,
         runtime_id,
         heartbeat_at_ms,
+        capabilities.payload(),
         operation_timeout_seconds=_CONTROL_TIMEOUT_SECONDS,
     )
     return heartbeat_at_ms
@@ -741,11 +747,14 @@ def _runtime_capabilities(db: WorkerDatabase, runtime_id: str, capabilities: Any
         )
 
 
-def _runtime_heartbeat(db: WorkerDatabase, runtime_id: str, heartbeat_at_ms: int) -> None:
+def _runtime_heartbeat(
+    db: WorkerDatabase, runtime_id: str, heartbeat_at_ms: int, capabilities: dict[str, dict[str, Any]]
+) -> None:
     with db.worker_session("workers_runtime_heartbeat", 1.0) as repos:
         RuntimeProcesses(repos.conn).heartbeat(
             instance_id=runtime_id,
             now_ms=heartbeat_at_ms,
+            detail={"capabilities": capabilities},
         )
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from ..bus import DeferError, TransientError
@@ -28,6 +28,8 @@ from .notification_work import INTENT_LEASE_MS
 from .reader_check import ReaderCheck
 
 if TYPE_CHECKING:
+    from tracefold.platform.observability import TelemetryRegistry
+
     from ..pipeline.runtime import NewsDatabasePort
 
 
@@ -44,12 +46,19 @@ class PgNotificationStore:
         intent_lease_ms: int = INTENT_LEASE_MS,
         lease_token: Callable[[], str] = _lease_token,
         embedder: EmbeddingPort | None = None,
+        telemetry: TelemetryRegistry | None = None,
     ) -> None:
         self.db = db
         self.embedder = embedder
         self.clock = clock
         self.intent_lease_ms = int(intent_lease_ms)
         self.lease_token = lease_token
+        self.telemetry = telemetry
+
+    def _reader_changed(self, stage: str) -> None:
+        logging.getLogger("tracefold.news").info("news_reader_changed stage=%s count=1", stage)
+        if self.telemetry is not None:
+            self.telemetry.news_reader_changed_total.labels(stage=stage).inc()
 
     async def notification_snapshot(self, event_id: str, channel: str) -> NotificationSnapshot | None:
         if channel != NEWS_CHANNEL:
@@ -110,18 +119,23 @@ class PgNotificationStore:
             reader=reader,
             work_updated_at_ms=material["work_updated_at_ms"],
             work_due_at_ms=material["work_due_at_ms"],
+            recall_diagnostics=material["recall_diagnostics"],
         )
 
-    async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
+    async def atomic_record_plan(
+        self, plan: NotificationPlan, *, recall_diagnostics: Mapping[str, Mapping[str, Any]] | None = None
+    ) -> PlanCommit:
         token = self.lease_token()
         plan_json = plan.model_dump_json()
         for _ in range(3):
-            reserved, check = await self._record_plan_once(plan, token, plan_json)
+            reserved, check = await self._record_plan_once(
+                plan, token, plan_json, recall_diagnostics=recall_diagnostics
+            )
             if reserved["status"] != "reader_changed" or check is None or check.revision != plan.reader_revision:
                 break
         status = str(reserved["status"])
         if status == "reader_changed":
-            logging.getLogger("tracefold.news").info("news_reader_changed stage=plan count=1")
+            self._reader_changed("plan")
         if status != "committed":
             return PlanCommit(status=status)
         effective = NotificationPlan.model_validate(reserved["plan"])
@@ -140,7 +154,12 @@ class PgNotificationStore:
         )
 
     async def _record_plan_once(
-        self, plan: NotificationPlan, token: str, plan_json: str
+        self,
+        plan: NotificationPlan,
+        token: str,
+        plan_json: str,
+        *,
+        recall_diagnostics: Mapping[str, Mapping[str, Any]] | None,
     ) -> tuple[dict[str, Any], ReaderCheck | None]:
         now_ms = self.clock()
         check = await self.db.read(
@@ -159,6 +178,7 @@ class PgNotificationStore:
                 now_ms=now_ms,
                 lease_ms=self.intent_lease_ms,
                 check=check,
+                recall_diagnostics=recall_diagnostics,
             ),
         )
         return reserved, check
@@ -211,8 +231,10 @@ class PgNotificationStore:
         for _ in range(3):
             status, check = await self._begin_send_once(lease, card, timings_json)
             if status != "reader_changed" or check is None or check.revision != lease.plan.reader_revision:
-                return status
-        return "reader_changed"
+                break
+        if status == "reader_changed":
+            self._reader_changed("send")
+        return status
 
     async def _begin_send_once(
         self, lease: IntentLease, card: FrozenCard, timings_json: str | None

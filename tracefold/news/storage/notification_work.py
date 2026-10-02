@@ -40,7 +40,13 @@ class NotificationWorkStorage:
         self.context = context
 
     def _record_decision(
-        self, event_id: str, plan: NotificationPlan, plan_json: str, *, now_ms: int
+        self,
+        event_id: str,
+        plan: NotificationPlan,
+        plan_json: str,
+        *,
+        now_ms: int,
+        recall_diagnostics: Mapping[str, Mapping[str, Any]] | None,
     ) -> NotificationPlan:
         # Validate the same immutable judgment that is persisted.
         if NotificationPlan.model_validate_json(plan_json) != plan:
@@ -60,6 +66,7 @@ class NotificationWorkStorage:
                     {
                         "reader_identity": plan.reader_identity,
                         "compared_receipts": [r.model_dump(mode="json") for r in plan.compared_receipts],
+                        "recall": {} if recall_diagnostics is None else dict(recall_diagnostics),
                     }
                 ),
                 plan_json,
@@ -87,6 +94,7 @@ class NotificationWorkStorage:
         now_ms: int,
         check: ReaderCheck,
         lease_ms: int = INTENT_LEASE_MS,
+        recall_diagnostics: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
         head = self.conn.execute(
             "SELECT event_id,content_revision FROM news_analyses WHERE update_ref=%s AND adopted_at_ms IS NOT NULL",
@@ -110,7 +118,7 @@ class NotificationWorkStorage:
             return {"status": "head_changed"}
         if work["state"] != "pending":
             return {"status": "already_settled"}
-        plan = self._record_decision(event_id, plan, plan_json, now_ms=now_ms)
+        plan = self._record_decision(event_id, plan, plan_json, now_ms=now_ms, recall_diagnostics=recall_diagnostics)
         if (
             check.event_id != event_id
             or check.revision != plan.reader_revision

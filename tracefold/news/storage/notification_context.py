@@ -10,7 +10,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import Any, Final
 
-from ..claim_recall import RECEIPT_WINDOW_MS, Probe, embed_text, rank, text_sha
+from pydantic import TypeAdapter
+
+from ..claim_recall import RECEIPT_WINDOW_MS, Probe, embed_text, prepare_rank, rank, text_sha
 from ..notifications.contracts import NEWS_CHANNEL, DeliveredText
 from ..notifications.novelty import ClaimLink, LinkedReceipt, current_links, reader_novelty
 from ..notifications.recall import select_for_claim
@@ -81,6 +83,7 @@ def listing_compatible_links(links: Iterable[ClaimLink], claims: Mapping[str, Cl
 
 
 log = logging.getLogger("tracefold.news")
+_FROZEN_CLAIMS = TypeAdapter(tuple[Claim, ...])
 
 
 class NotificationContextStorage:
@@ -123,16 +126,18 @@ class NotificationContextStorage:
 
     def _recall_receipt_rows(self, *, now_ms: int) -> list[dict[str, Any]]:
         return [
-            dict(r)
+            {**dict(r), "historical_claims": _FROZEN_CLAIMS.validate_json(r["historical_claims_json"])}
             for r in self.conn.execute(
-                f"""SELECT {_RECEIPT_COLUMNS},d.state,
-                       COALESCE(d.sent_claims,'[]'::jsonb) AS historical_claims,
+                """SELECT d.intent_id,d.event_id,d.kind,d.card->>'body' AS body,
+                       d.card->>'payload_sha256' AS payload_sha256,d.settled_at_ms,d.state,d.claim_refs,
+                       COALESCE(d.sent_claims,'[]'::jsonb)::text AS historical_claims_json,
                        d.sent_claims IS NULL AS missing_projection
                   FROM news_notifications d
                  WHERE d.kind='update' AND d.state='sent'
                    AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
-                 ORDER BY d.intent_id""",  # noqa: S608 - module-owned columns only
+                 ORDER BY d.intent_id""",
                 (now_ms - RECEIPT_WINDOW_MS, now_ms),
+                binary=True,
             ).fetchall()
         ]
 
@@ -246,12 +251,12 @@ class NotificationContextStorage:
         links = self._claim_links(sorted(active), as_of_ms=now_ms)
         reached = active | {str(row[key]) for row in links for key in ("current_ref", "previous_ref")}
         linked = self._link_receipt_rows(sorted(reached), now_ms=now_ms, until_ms=now_ms)
-        original_claims = {
-            claim.ref: claim
-            for row in (*ordinary, *linked)
-            for value in row.get("historical_claims") or ()
-            for claim in (Claim.model_validate(value),)
+        rows = {str(row["intent_id"]): row for row in (*linked, *ordinary)}
+        frozen_by_intent = {
+            intent: tuple(Claim.model_validate(value) for value in row.get("historical_claims") or ())
+            for intent, row in rows.items()
         }
+        original_claims = {claim.ref: claim for claims in frozen_by_intent.values() for claim in claims}
         original_claims.update((claim.ref, claim) for claim in head.claims)
         link_models = listing_compatible_links(
             (
@@ -282,7 +287,6 @@ class NotificationContextStorage:
             )
             for row in linked
         )
-        rows = {str(row["intent_id"]): row for row in (*linked, *ordinary)}
         available = frozenset(
             intent
             for intent, row in rows.items()
@@ -300,6 +304,13 @@ class NotificationContextStorage:
         }
         index = ClaimIndexStorage(self.conn)
         selections = {}
+        recall_diagnostics = {}
+        keyed_claims = {
+            intent: tuple((f"{claim.ref}:{text_sha(claim)}", claim) for claim in claims)
+            for intent, claims in frozen_by_intent.items()
+            if intent in available
+        }
+        frozen = {key: claim for row in ordinary for key, claim in keyed_claims.get(str(row["intent_id"]), ())}
         for ref, claim in queries.items():
             probe = (probes or {}).get(ref, Probe(embed_text(claim)))
             if probe.text != embed_text(claim):
@@ -310,26 +321,42 @@ class NotificationContextStorage:
                 if citation.evidence_ref in evidence_items
                 for key in source_keys(evidence_items[citation.evidence_ref].source)
             )
-            frozen = {
-                f"{c.ref}:{text_sha(c)}": c
-                for r in ordinary
-                if str(r["intent_id"]) in available
-                for value in r.get("historical_claims") or ()
-                for c in (Claim.model_validate(value),)
-            }
-            indexed = {r.key: r for r in index.claim_candidates(tuple(frozen.values()), probe, sources=sources)}
-            candidates = tuple(
-                replace(indexed[key], key=f"{intent}:{key}", group=intent)
+            indexed = {r.key: r for r in index.claim_candidates(frozen, sources=sources)}
+            candidates_and_claims = tuple(
+                (replace(indexed[key], key=f"{intent}:{key}", group=intent), frozen[key])
                 for r in ordinary
                 for intent in (str(r["intent_id"]),)
                 if intent in available
-                for value in r.get("historical_claims") or ()
-                for c in (Claim.model_validate(value),)
-                for key in (f"{c.ref}:{text_sha(c)}",)
+                for key, _ in keyed_claims[intent]
                 if key in indexed
             )
-            selections[ref] = select_for_claim(novelties[ref], rank(probe, candidates, "receipt"), available=available)
+            candidates = tuple(candidate for candidate, _ in candidates_and_claims)
+            prepared = prepare_rank(probe, candidates, "receipt")
+            lexical = index.lexical_scores(
+                probe,
+                [
+                    (candidate.key, claim)
+                    for candidate, claim in candidates_and_claims
+                    if candidate.key in prepared.fts_eligible_keys
+                ],
+            )
+            ranking = rank(prepared, tuple(replace(c, lexical=lexical.get(c.key, 0.0)) for c in candidates))
+            selections[ref] = select_for_claim(novelties[ref], ranking, available=available)
+            recall_diagnostics[ref] = ranking.diagnostics()
         selected_ids = {intent for selection in selections.values() for intent in selection.intent_ids}
+        # Ranking needs frozen propositions and exact body hashes. Fetch card,
+        # provider receipt and history only for the selected comparisons.
+        selected_rows = (
+            self.conn.execute(
+                f"""SELECT {_RECEIPT_COLUMNS},d.state,
+                           COALESCE(d.sent_claims,'[]'::jsonb) AS historical_claims
+                      FROM news_notifications d WHERE d.intent_id=ANY(%s::text[])""",  # noqa: S608
+                (sorted(selected_ids),),
+                binary=True,
+            ).fetchall()
+            if selected_ids
+            else ()
+        )
         return {
             "event": None if event is None else dict(event),
             "sending": sending,
@@ -337,14 +364,11 @@ class NotificationContextStorage:
             "invalidated": invalidated,
             "protected_listing": protected_listing,
             "receipt_intents_by_claim": {ref: selection.intent_ids for ref, selection in selections.items()},
-            "receipts": list(
-                {
-                    str(row["intent_id"]): row for row in (*[rows[intent] for intent in sorted(selected_ids)], *linked)
-                }.values()
-            ),
+            "receipts": list({str(row["intent_id"]): row for row in (*selected_rows, *linked)}.values()),
             "links": links,
             "linked": linked,
             "revision": self._generation_revision(),
+            "recall_diagnostics": recall_diagnostics,
         }
 
     def _generation_revision(self) -> str:
@@ -369,7 +393,7 @@ class NotificationContextStorage:
     def notification_snapshot_material(
         self, *, event_id: str, channel: str, now_ms: int, probes: Mapping[str, Probe] | None = None
     ) -> dict[str, Any] | None:
-        """The pending head, the receipts the planner may compare, and the related-receipt reader revision."""
+        """The pending head, one selected reader context, and the sent-set/link generation."""
 
         # The port starts a repeatable-read transaction before session configuration or any query.
         # Several reads below must see one MVCC view for the model input and revision.
@@ -400,4 +424,5 @@ class NotificationContextStorage:
             "links": reader["links"],
             "link_receipts": reader["linked"],
             "protected_listing": reader["protected_listing"],
+            "recall_diagnostics": reader["recall_diagnostics"],
         }
