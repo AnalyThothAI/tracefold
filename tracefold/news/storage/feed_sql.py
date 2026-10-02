@@ -8,6 +8,17 @@ from typing import Final
 from ..models import ADMITTED_ADMISSIONS
 from ..source_contracts import EVENT_KINDS
 
+STATUS_PRIMARY_ASSET_MARKETS_SQL: Final = """
+    SELECT COALESCE(asset->>'market_type', 'unknown') AS market_type, count(*) AS n
+      FROM news_analyses a
+      CROSS JOIN LATERAL jsonb_array_elements(a.understanding->'claims') claim
+      CROSS JOIN LATERAL jsonb_array_elements(claim->'fields'->'assets') asset
+     WHERE a.origin = 'semantic' AND a.adopted_at_ms IS NOT NULL
+       AND a.completed_at_ms >= %s AND a.completed_at_ms <= %s
+       AND asset->>'role' = 'primary'
+     GROUP BY 1
+"""
+
 ITEM_RELATED_COUNT_SQL: Final = "SELECT count(DISTINCT event_id) AS n FROM news_event_members WHERE item_id=%s"
 ITEM_RELATED_KEYS_SQL: Final = (
     "SELECT DISTINCT event_id FROM news_event_members "

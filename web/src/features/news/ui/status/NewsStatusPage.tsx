@@ -105,6 +105,14 @@ export function NewsStatusPage({ token }: { token: string }) {
               </Card>
             </div>
 
+            <Card
+              aria-label="主要资产市场分布"
+              hint="过去 24 小时采用的解析，按主要资产出现次数统计；仅作观测"
+              title="主要资产市场分布"
+            >
+              <PrimaryAssetMarkets status={status} />
+            </Card>
+
             <div className="news-status-grid">
               <Card aria-label="关注列表" title="关注列表">
                 <WatchPanel status={status} />
@@ -125,6 +133,35 @@ export function NewsStatusPage({ token }: { token: string }) {
         </PageState.Stale>
       ) : null}
     </PageShell>
+  );
+}
+
+function PrimaryAssetMarkets({ status }: { status: NewsStatus }) {
+  const markets = status.primary_asset_markets_24h;
+  if (!markets || markets.total === 0) return <EmptyNote>过去 24 小时暂无主要资产样本。</EmptyNote>;
+  const names: Record<string, string> = {
+    crypto: "加密资产",
+    equity: "股票",
+    commodity: "商品",
+    index: "指数",
+    fx: "外汇",
+    pre_ipo: "未上市股权",
+    unknown: "市场未定",
+  };
+  return (
+    <KeyValue>
+      <KeyValueRow k="主要资产总数" v={formatCount(markets.total)} />
+      <KeyValueRow k="市场未定数量" v={formatCount(markets.unknown)} />
+      <KeyValueRow
+        k="市场未定占比"
+        v={markets.unknown_share == null ? "—" : `${(markets.unknown_share * 100).toFixed(1)}%`}
+      />
+      {Object.entries(markets.by_market ?? {})
+        .filter(([market, count]) => market !== "unknown" && count > 0)
+        .map(([market, count]) => (
+          <KeyValueRow key={market} k={names[market] ?? market} v={formatCount(count)} />
+        ))}
+    </KeyValue>
   );
 }
 

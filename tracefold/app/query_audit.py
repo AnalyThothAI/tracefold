@@ -117,6 +117,7 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_status_incidents_open",
         "news_status_recovery_backlog",
         "news_status_pipeline",
+        "news_status_primary_asset_markets",
         "news_status_source_contracts",
         "news_status_delivery",
         "news_status_funnel_decisions",

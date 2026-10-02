@@ -221,6 +221,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "workers_state",
         "health",
         "funnel_24h",
+        "primary_asset_markets_24h",
         "reasons_24h",
         "ingest",
         "broker",

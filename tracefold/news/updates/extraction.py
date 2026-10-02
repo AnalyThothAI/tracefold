@@ -129,7 +129,7 @@ def _asset_key(symbol: str) -> str:
 def _ground_assets(
     source: FrozenInput, assets: tuple[Asset, ...], citations: tuple[Citation, ...]
 ) -> tuple[Asset, ...]:
-    """Restore only selected cited-source tags, retaining source spelling and established markets.
+    """Restore selected cited-source tags and fill abandoned markets from unambiguous listings.
 
     Tags never add assets to a claim. Supplements still use the extractor's source-text reading;
     matching does not infer aliases, pair bases or issuer relationships.
@@ -146,6 +146,10 @@ def _ground_assets(
         # Multiple cited sources may disagree. Do not arbitrarily choose one source's market;
         # the untouched input candidates retain the disagreement for the source-text reader.
         market = next(iter(markets)) if len(markets) == 1 else "unknown" if markets else asset.market_type
+        if not markets and market == "unknown":
+            listed = {value for row in matched for value in row.listed_markets if value != "unknown"}
+            if len(listed) == 1:
+                market = next(iter(listed))
         spellings = {row.symbol for row in matched}
         symbol = next(iter(spellings)) if len(spellings) == 1 else asset.symbol
         result.append(asset.model_copy(update={"symbol": symbol, "market_type": market}))

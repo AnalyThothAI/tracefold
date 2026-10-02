@@ -172,8 +172,8 @@ class Citation(Exact):
     quote: str = Field(min_length=1)
 
 
-class SourceAssetCandidate(Exact):
-    """One existing provider tag for a specific evidence source, not a claim assignment."""
+class SourceAssetTag(Exact):
+    """An original provider tag; only these source facts participate in a read ref."""
 
     symbol: str = Field(min_length=1)
     market_type: MarketType = "unknown"
@@ -183,6 +183,12 @@ class SourceAssetCandidate(Exact):
     @classmethod
     def read_legacy_market(cls, value: object) -> object:
         return market_type_of(value) if isinstance(value, str) and value in {"forex", "fund"} else value
+
+
+class SourceAssetCandidate(SourceAssetTag):
+    """A text-filtered tag with frozen trading catalogue facts, not a claim assignment."""
+
+    listed_markets: tuple[MarketType, ...] = ()
 
 
 class Asset(Exact):
@@ -541,6 +547,7 @@ class FrozenInput(Exact):
     # no-op observation and settles that revision without calling the extractor.
     evidence: tuple[Evidence, ...]
     asset_candidates: dict[str, tuple[SourceAssetCandidate, ...]] = Field(default_factory=dict)
+    source_asset_tags: dict[str, tuple[SourceAssetTag, ...]] = Field(default_factory=dict)
     extraction_scopes: tuple[ExtractionScope, ...] = ()
     # This Event's current claims, then related Events' current claims recalled for comparison.
     prior: tuple[PriorClaim, ...] = ()
@@ -560,6 +567,8 @@ class FrozenInput(Exact):
         """What extraction reads. Related Events' claims are comparison candidates, not extraction context."""
 
         document: dict[str, object] = self.model_dump(mode="json")
+        # Raw tags identify a completed source read; extraction sees only the derived candidates.
+        document.pop("source_asset_tags")
         document["prior"] = [row.model_dump(mode="json") for row in self.own_prior]
         return document
 
@@ -577,7 +586,7 @@ class FrozenInput(Exact):
             if len(refs) != len(set(refs)):
                 raise ValueError("news_input_duplicate_reference")
         evidence = {item.ref: item for item in self.evidence}
-        if not self.asset_candidates.keys() <= evidence.keys():
+        if not (self.asset_candidates.keys() | self.source_asset_tags.keys()) <= evidence.keys():
             raise ValueError("news_asset_candidate_evidence_missing")
         for scope in self.extraction_scopes:
             if scope.evidence_ref not in evidence:

@@ -173,6 +173,12 @@ class _FakeNewsRepository:
                 "open_incidents": [],
             },
             "pipeline": {"events_1h": 0, "events_24h": 0},
+            "primary_asset_markets_24h": {
+                "total": 10,
+                "unknown": 1,
+                "unknown_share": 0.1,
+                "by_market": {"crypto": 9, "unknown": 1},
+            },
             "delivery": {
                 "sent_24h": 0,
                 "sent_1h": 0,
@@ -1427,3 +1433,9 @@ def test_news_status_reuses_measurement_and_etag_within_ttl(client) -> None:
     assert first.headers["etag"] == second.headers["etag"]
     assert sum(name == "status_snapshot" for name, _ in news.calls) == 1
     assert sum(name == "semantic_status" for name, _ in news.calls) == 1
+    assert first.json()["data"]["primary_asset_markets_24h"] == {
+        "total": 10,
+        "unknown": 1,
+        "unknown_share": 0.1,
+        "by_market": {"crypto": 9, "unknown": 1},
+    }

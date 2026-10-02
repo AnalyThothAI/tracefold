@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..events.facts import FactUnit, extract_fact_units, source_blocks
-from .contracts import Evidence, ExtractionScope, FrozenInput, SourceAssetCandidate
+from .contracts import Evidence, ExtractionScope, FrozenInput, SourceAssetTag
 from .identity import digest, identity
 
 log = logging.getLogger("tracefold.news")
@@ -119,7 +119,7 @@ def reading_view(
     event_id: str,
     evidence: Evidence,
     scopes: tuple[ExtractionScope, ...],
-    asset_candidates: tuple[SourceAssetCandidate, ...] = (),
+    asset_candidates: tuple[SourceAssetTag, ...] = (),
 ) -> ReadingView:
     """Locate complete task blocks in this exact source version or show it whole."""
 
@@ -183,10 +183,13 @@ def reading_view(
         "reason": reason,
         "segments": [span.as_dict() for span in spans],
     }
-    # Preserve existing read refs for sources with no tags. A changed nonempty candidate list is
-    # new model-visible source material even when the immutable body and task spans are unchanged.
+    # Preserve pre-filter read identities, including sources whose tags are all filtered out.
+    # Catalogue facts and derived filtering rules cannot invalidate a completed source read.
     if asset_candidates:
-        material["asset_candidates"] = [candidate.model_dump(mode="json") for candidate in asset_candidates]
+        material["asset_candidates"] = [
+            candidate.model_dump(mode="json", include={"symbol", "market_type", "grade"})
+            for candidate in asset_candidates
+        ]
     material_sha = digest(material)
     return ReadingView(
         evidence_ref=evidence.ref,
@@ -201,7 +204,12 @@ def reading_view(
 
 def reading_views(source: FrozenInput) -> tuple[ReadingView, ...]:
     return tuple(
-        reading_view(source.event_id, item, source.extraction_scopes, source.asset_candidates.get(item.ref, ()))
+        reading_view(
+            source.event_id,
+            item,
+            source.extraction_scopes,
+            source.source_asset_tags.get(item.ref, source.asset_candidates.get(item.ref, ())),
+        )
         for item in source.evidence
     )
 
@@ -210,6 +218,13 @@ def extraction_input(source: FrozenInput) -> dict[str, object]:
     """Serialize the only model input shape; never transmit full sibling bodies."""
 
     document = source.extraction_document()
+    document["asset_candidates"] = {
+        ref: [
+            candidate.model_dump(mode="json", exclude={"market_type"} if candidate.market_type == "unknown" else set())
+            for candidate in candidates
+        ]
+        for ref, candidates in source.asset_candidates.items()
+    }
     for key in ("reanalysis_reason", "reanalysis_head_ref", "established_relations"):
         document.pop(key, None)
     document["evidence"] = [
