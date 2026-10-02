@@ -153,7 +153,13 @@ Claim ref 指向一个命题或真实世界中的一次发生。新增支持、�
 
 ### 实体依据与相关召回
 
-来源资产采用来源优先的简单链路：Item 的 provider_metadata.coins 保留原始标签；[semantic_input.py](../../tracefold/news/storage/semantic_input.py) 按 evidence_ref 投影为 FrozenInput.asset_candidates（symbol、market_type、grade），随同一次抽取输入冻结。现有抽取器针对每条命题选择相关候选及 primary/mentioned，不把整篇标签复制给所有命题；接地时只恢复被选中、被引用来源候选的拼写与已知市场，跨来源冲突保留未知。正文明确 ticker、公司或产品名称时允许有限补充，不要求 ticker 字面出现；不从 URL、related prior 或泛主题补资产。资产只指可交易标的（token、股票、基金、指数、商品或货币对）；地点、航道、国家、政府、武器、项目和组织在没有明确上市标的时不是资产。空资产、目录未收录或缺行情都不阻止事实采用与通知判断，不新增资产表、实体服务或模型轮次。
+Item 的 `provider_metadata.coins` 保留原始来源标签。[semantic_input.py](../../tracefold/news/storage/semantic_input.py) 按 `evidence_ref` 冻结两种视图：`FrozenInput.source_asset_tags` 只含原始 `symbol`、`market_type`、`grade`，供阅读身份计算；`asset_candidates` 供现有抽取器逐命题选择，另带 `listed_markets`。商品底层标签先用 `commodity_context_present` 检查各自来源正文：CL / XYZ-CL 必须出现 oil、crude、Brent、WTI、OPEC、barrel、tanker、原油、石油、油价、布油、美油或油轮等原油词，黄金、白银、天然气等使用同一表中的各自名称。候选不使用 Gate 的评级门槛或英文停用表，Gate 对 CL 的 storyline / 能源语境准入保持原行为。
+
+在 `semantic_input_material` 的同一次数据库读取中，按本快照的标签符号做一次有界查询，经 `news_symbol_aliases` 归到基础符号，冻结 `news_market_instruments` 中 `status='trading'` 的类别，排除 `us.listed` 参考目录和 `unknown`。OpenNews 的 `cex` 只说明交易所上市，仍归一为来源市场 `unknown`；该字段保留在契约中，但不展示给模型。模型看到候选拼写、评级和 `listed_markets`，真实已知来源市场照常展示并优先。目录事实和商品过滤结果参与 `input_sha`，不参与 `read_ref`，不因目录刷新或规则变化重读旧来源。
+
+抽取器只选择与被引用任务正文相关的候选及 primary / mentioned，不把整篇标签复制给所有命题。`listed_markets` 提供正文所指市场的候选；正文所指是同名其他标的时以正文为准，两者均无法确定才用 unknown。接地只恢复被选中、被引用来源候选的拼写和已知来源市场，跨来源已知市场冲突保留未知；没有已知来源市场时，只有模型返回 unknown 且交易类别恰好一个，才补全该类别。模型已给市场不被目录覆盖，同名冲突仍由正文判断。
+
+正文明确 ticker、公司或产品名称时允许有限补充，不要求 ticker 字面出现；不从 URL、related prior 或泛主题补资产。ACT、BRIDGE、GPU 等普通英文词与 ticker 的冲突继续逐命题判断，不加通用确定性停用规则。资产只指可交易标的（token、股票、基金、指数、商品或货币对）；地点、航道、国家、政府、武器、项目和组织在没有明确上市标的时不是资产。空资产、目录未收录或缺行情不阻止事实采用与通知判断；不回填已采用内容、不在读取报价侧猜市场，也不增加模型轮次。
 
 资产市场词表复用现有 MarketType。历史读取显式把 forex 解释为 fx；旧 fund 没有证明其市场类别，保留为 unknown，不猜 equity。原始来源、已存 Claim/ref、内容版本与真实回执不重写。
 
@@ -172,7 +178,7 @@ flowchart TB
     Source --> Evidence["原始标签保留供证据阅读"]
 ```
 
-*数据流 · 候选是原始来源的冻结投影；报价仍使用既有目录，不构造另一套资产身份账本。*
+*数据流 · 候选是原始来源经商品正文过滤、附交易目录类别的冻结投影；原始标签独立保留阅读身份，报价仍使用既有目录。*
 
 [entities.py](../../tracefold/news/entities.py)提供有依据的候选检索特征。`EntityKey(namespace, identifier)` 与 `EntityFeature(key, kind, basis_ref, surface)` 分开：出处和原始写法不会改变 key 的比较结果，但 key 的相同也不会替代命题关系判断。
 
@@ -242,7 +248,7 @@ sequenceDiagram
 
 ### 冻结输入与增量范围
 
-`FrozenInput` 绑定 Event、输入修订、证据范围、prior claims、候选关系和来源时钟；工作身份另外绑定 analyzer 身份，观察身份另外绑定语义 program 身份。prior claims 只取**当前有效**命题（未被更正退休、未被真实变化替代），先本 Event，后召回的相关 Event；“当前有效”只由 `EventUpdate.current_claims` 一处推导。输入身份 `input_sha` 只含本 Event 的命题：相关 Event 再次采用不改变身份，重试复用已保存的抽取，只重问比较（答案按内容缓存）；相关 Event 的命题也不进入抽取输入。每个来源的当前 Event 阅读范围产生 `read_ref`，由任务边界、实际片段、非空来源资产候选和投影版本决定。先构造阅读视图再比较已处理的 `processed_read_refs` 与已隔离的 `failed_read_refs`；同一来源新增范围或条件仍需处理，重投相同任务不重算。正文与本 Event 阅读范围都相同即为同一可见材料：另一条供应商记录或只改来源 / 链接的修订，若与已读、已隔离或排在前面的待读材料相同，就不再送入抽取，只有快照成员保留它；逐字转载不是独立证实，来源资产候选也不区分拷贝。同一记录自身的正文变化（包括回到较早的正文）仍会读取；精确 `news reanalyze` 仍按指名的 `read_ref` 重读，其清单对同一可见材料只列第一份。旧命题用于比较与延续，不是每次把全部历史成员重新抽取。
+`FrozenInput` 绑定 Event、输入修订、证据范围、prior claims、候选关系和来源时钟；工作身份另外绑定 analyzer 身份，观察身份另外绑定语义 program 身份。prior claims 只取**当前有效**命题（未被更正退休、未被真实变化替代），先本 Event，后召回的相关 Event；“当前有效”只由 `EventUpdate.current_claims` 一处推导。输入身份 `input_sha` 只含本 Event 的命题：相关 Event 再次采用不改变身份，重试复用已保存的抽取，只重问比较（答案按内容缓存）；相关 Event 的命题也不进入抽取输入。每个来源的当前 Event 阅读范围产生 `read_ref`，由任务边界、实际片段、过滤前的非空原始标签（symbol、market_type、grade）和投影版本决定；派生商品过滤与 listed_markets 不改变阅读身份。先构造阅读视图再比较已处理的 `processed_read_refs` 与已隔离的 `failed_read_refs`；同一来源新增范围或条件仍需处理，重投相同任务不重算。正文与本 Event 阅读范围都相同即为同一可见材料：另一条供应商记录或只改来源 / 链接的修订，若与已读、已隔离或排在前面的待读材料相同，就不再送入抽取，只有快照成员保留它；逐字转载不是独立证实，来源资产候选也不区分拷贝。同一记录自身的正文变化（包括回到较早的正文）仍会读取；精确 `news reanalyze` 仍按指名的 `read_ref` 重读，其清单对同一可见材料只列第一份。旧命题用于比较与延续，不是每次把全部历史成员重新抽取。
 
 “读过但没有命题”的材料也必须记入任务级处理身份。否则同一段空内容会不断进入下一轮。没有新证据或没有实质变化，可以推进 done，而不制造新的内容版本；首个版本没有命题时不采纳 EventUpdate。以失败结束的修订把它读过的范围隔离，之后的新成员只读新材料。对已完成或已失败、确认需要重读的 Event，使用精确 wanted/head/read 身份的 `news reanalyze`；它不伪造来源修订或自动重发历史通知。
 
@@ -375,6 +381,10 @@ stateDiagram-v2
 *概念状态 · 标签帮助理解工作结果，不是新增 Event.status，也不把“采用”当成“已发送”。*
 
 `/api/news/status` 分别报告可领取的 `semantic_pending`、等待调度的 `semantic_deferred`、持有有效租约的 `semantic_in_progress` 和终结的 `semantic_failed_exhausted`。失败工作不再计为可运行 pending，并保留真实尝试次数（一次性的契约错误不伪装成用尽三次）；这些是有界工作集的状态计数，不是模型调用数。控制台把失败显示为“解析失败”并附中文原因与错误码；仍有失败待处理时模型健康至少为 warn。
+
+`primary_asset_markets_24h` 从 `news_analyses.understanding` 统计最近 24 小时完成且已采用的 semantic 解析中的 primary 资产出现次数，包含同一 Event 的不同已采用修订，不限于当前 head 或已推送新闻，也不按符号去重。字段包含 `total`、`unknown`、`unknown_share` 与 `by_market`；空样本占比为 null。状态页“主要资产市场分布”展示数量、市场未定占比和各已知类别；这些指标只观测，不影响健康等级、准入、采用或推送。新 program 上线后的 unknown 比例与 #788 的生产样本验收，需要等待真实窗口形成；代码和隔离测试不冒充部署结果。
+
+候选和阅读身份的回归见[来源候选单测](../../tests/news/test_news_source_asset_candidates.py)、[市场接地单测](../../tests/news/test_news_update_source_assets.py)、[来源输入集成测试](../../tests/integration/test_news_source_asset_input.py)；状态指标的存储及 HTTP 验证见[市场分布集成测试](../../tests/integration/test_news_primary_asset_markets.py)。
 
 以失败结束的修订（含 Janitor 结算的崩溃最终尝试）只隔离该次尝试实际送入的任务范围，之后的修订不再重复送入；尝试开始后才加入的新成员不受影响，照常抽取与采用。构建冻结输入本身失败时只让该 Event 的工作失败，不让语义消费者故障。
 

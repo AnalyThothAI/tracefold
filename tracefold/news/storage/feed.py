@@ -7,7 +7,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..models import ReaderReceipt
+from ..models import MARKET_TYPES, ReaderReceipt, market_type_of
 from ..outcome import event_outcome
 from ..search import NewsSearchPlan
 from ..source_contracts import (
@@ -41,6 +41,7 @@ from .feed_sql import (
     STATUS_FUNNEL_DECISIONS_SQL,
     STATUS_FUNNEL_TOTALS_SQL,
     STATUS_PIPELINE_SQL,
+    STATUS_PRIMARY_ASSET_MARKETS_SQL,
     STATUS_SOURCE_CONTRACTS_SQL,
     SUBJECT_CODE_PREDICATE,
     TEXT_SEARCH_PREDICATE,
@@ -389,6 +390,7 @@ class FeedStorage:
                 **funnel,
             },
             "broker": dict(ingest["broker_snapshot"] or {}) if ingest else {},
+            "primary_asset_markets_24h": self.primary_asset_markets_24h(now_ms=now_ms),
             "delivery": {
                 "sent_24h": int(delivery["sent_24h"] or 0) if delivery else 0,
                 "sent_1h": int(delivery["sent_1h"] or 0) if delivery else 0,
@@ -401,6 +403,27 @@ class FeedStorage:
                 if delivery and delivery["e2e_p95_ms"] is not None
                 else None,
             },
+        }
+
+    def primary_asset_markets_24h(self, *, now_ms: int) -> dict[str, Any]:
+        """Primary asset occurrences in adopted semantic understandings completed in the last day.
+
+        Count every adopted extraction, including earlier revisions, rather than current heads or
+        notification receipts. Empty samples have no unknown share; this observation sets no gate.
+        """
+        rows = self.conn.execute(
+            STATUS_PRIMARY_ASSET_MARKETS_SQL, (int(now_ms) - 24 * 3600_000, int(now_ms))
+        ).fetchall()
+        by_market = dict.fromkeys(MARKET_TYPES, 0)
+        for row in rows:
+            by_market[market_type_of(row["market_type"])] += int(row["n"])
+        total = sum(by_market.values())
+        unknown = by_market["unknown"]
+        return {
+            "total": total,
+            "unknown": unknown,
+            "unknown_share": round(unknown / total, 4) if total else None,
+            "by_market": by_market,
         }
 
     def event_asset_symbols(self, event_ids: Sequence[str]) -> dict[str, list[str]]:

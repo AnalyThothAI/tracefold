@@ -11,7 +11,8 @@ answer decided what this module does and — more importantly — what it refuse
   it removed 40 tags a day — ``XAU``/``XYZ-GOLD`` on 央行票据, on an IMF debt line, on SoftBank's bond sale,
   on seven Hong Kong filings, ``COPPER`` on soybean planting and on diesel exports — and removed no tag
   from an Event whose text mentioned that commodity at all. `CL` keeps its own branch in the Gate: oil's
-  context is a storyline-registry flag, not a word list, and widening it is not this change.
+  context is a storyline-registry flag. Extraction candidates use the oil word list below; the Gate's
+  separate ``CL`` branch retains its registry behavior.
 * :func:`asset_grounding` — the support class and catalogue reading for one asset the model named, so a
   verdict trace can say *why* an instrument is on a card. It decides nothing by itself.
 
@@ -51,9 +52,12 @@ GroundingSupport = Literal["cashtag", "text", "alias", "provider_tag", "unsuppor
 #
 # Every key must be a commodity the instrument catalogue also calls one (`COMMODITY_SYMBOLS`, asserted in
 # `tests/news/test_news_grounding.py`) — this table narrows an existing class, it does not invent one. `CL`
-# and its `WTI`/`OIL`/`BRENTOIL` spellings are deliberately absent: the Gate already requires the registry's
-# energy context for them.
+# uses its separate registry energy branch in the Gate; this entry filters extraction candidates only.
 COMMODITY_CONTEXT: Final[Mapping[str, re.Pattern[str]]] = {
+    "CL": re.compile(
+        r"\b(?:oil|crude|brent|wti|opec|barrels?|tankers?)\b|原油|石油|油价|油價|布油|美油|油轮|油輪",
+        re.IGNORECASE,
+    ),
     "GOLD": re.compile(r"gold|黄金|黃金|金价|金價|au\s*\d|\bxau", re.IGNORECASE),
     "XAU": re.compile(r"gold|黄金|黃金|金价|金價|au\s*\d|\bxau", re.IGNORECASE),
     "XAUT": re.compile(r"gold|黄金|黃金|金价|金價|\bxaut", re.IGNORECASE),

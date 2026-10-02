@@ -2252,6 +2252,28 @@ export interface components {
             sources?: components["schemas"]["NewsQuoteVenueData"][];
         };
         /**
+         * NewsPrimaryAssetMarketsData
+         * @description Primary asset occurrences in adopted semantic understandings completed in the last 24 hours.
+         */
+        NewsPrimaryAssetMarketsData: {
+            /** By Market */
+            by_market?: {
+                [key: string]: number;
+            };
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Unknown
+             * @default 0
+             */
+            unknown: number;
+            /** Unknown Share */
+            unknown_share?: number | null;
+        };
+        /**
          * NewsProcessingData
          * @description What the EventUpdate path did with this Event, from its durable work rows and receipts (#706).
          */
@@ -2536,6 +2558,7 @@ export interface components {
             measured_at_ms: number;
             pipeline: components["schemas"]["NewsPipelineStatusData"];
             price?: components["schemas"]["NewsPriceStatusData"];
+            primary_asset_markets_24h?: components["schemas"]["NewsPrimaryAssetMarketsData"];
             /** Reasons 24H */
             reasons_24h?: components["schemas"]["NewsReasonCountData"][];
             /**

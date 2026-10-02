@@ -500,6 +500,12 @@ export function newsUpdateDetailFixture(overrides: Partial<NewsEventDetail> = {}
 
 export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStatus {
   return {
+    primary_asset_markets_24h: {
+      total: 200,
+      unknown: 25,
+      unknown_share: 0.125,
+      by_market: { crypto: 150, equity: 20, commodity: 5, unknown: 25 },
+    },
     // #75 universe as the status route reports it. Without this the 标的表快照 card renders its
     // "no snapshot yet" note and no test exercises the figures at all.
     instruments: {

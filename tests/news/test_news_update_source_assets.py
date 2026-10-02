@@ -10,6 +10,67 @@ from tracefold.news.updates.contracts import Asset, Citation, EventUpdate, Extra
 from tracefold.news.updates.extraction import ground_extraction
 
 
+@pytest.mark.parametrize(
+    ("listed", "model_market", "source_market", "expected"),
+    [
+        (("crypto",), "unknown", "unknown", "crypto"),
+        (("commodity",), "unknown", "unknown", "commodity"),
+        (("crypto", "equity"), "unknown", "unknown", "unknown"),
+        ((), "unknown", "unknown", "unknown"),
+        (("index",), "crypto", "unknown", "crypto"),
+        (("crypto", "equity"), "equity", "unknown", "equity"),
+        (("crypto",), "crypto", "equity", "equity"),
+    ],
+)
+def test_listing_fills_only_abandoned_unambiguous_markets(listed, model_market, source_market, expected) -> None:
+    evidence = material("The named instrument changes price.")
+    source = FrozenInput(
+        event_id="event",
+        revision=1,
+        lineage_id="lineage",
+        evidence=(evidence,),
+        asset_candidates={
+            evidence.ref: (SourceAssetCandidate(symbol="ASSET", market_type=source_market, listed_markets=listed),)
+        },
+    )
+    claim = draft(evidence)
+    claim = claim.model_copy(
+        update={
+            "fields": claim.fields.model_copy(
+                update={"assets": (Asset(symbol="ASSET", market_type=model_market, role="primary"),)}
+            )
+        }
+    )
+    assert ground_extraction(source, Extraction(claims=(claim,))).claims[0].fields.assets[0].market_type == expected
+
+
+def test_listing_disagreement_between_cited_sources_is_not_collapsed() -> None:
+    first, second = material("ACME reports earnings."), material("ACME announces a token.", revision=2)
+    source = FrozenInput(
+        event_id="event",
+        revision=1,
+        lineage_id="lineage",
+        evidence=(first, second),
+        asset_candidates={
+            first.ref: (SourceAssetCandidate(symbol="ACME", listed_markets=("equity",)),),
+            second.ref: (SourceAssetCandidate(symbol="ACME", listed_markets=("crypto",)),),
+        },
+    )
+    claim = draft(first)
+    fields = claim.fields.model_copy(update={"assets": (Asset(symbol="ACME", market_type="unknown", role="primary"),)})
+    own = claim.model_copy(update={"fields": fields})
+    assert ground_extraction(source, Extraction(claims=(own,))).claims[0].fields.assets[0].market_type == "equity"
+    both = own.model_copy(
+        update={
+            "citations": (
+                Citation(evidence_ref=first.ref, quote=first.text),
+                Citation(evidence_ref=second.ref, quote=second.text),
+            )
+        }
+    )
+    assert ground_extraction(source, Extraction(claims=(both,))).claims[0].fields.assets[0].market_type == "unknown"
+
+
 def test_selected_source_spelling_and_known_market_are_preserved_without_copying_other_tags() -> None:
     evidence = material("Oracle reports quarterly earnings and mentions Microsoft.")
     source = FrozenInput(

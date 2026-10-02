@@ -78,17 +78,19 @@ def test_the_recording_is_the_delivered_day_and_carries_its_audit_labels(rows: l
 
 
 def test_the_commodity_table_only_narrows_the_catalogue_vocabulary() -> None:
-    """Every gated key is a commodity the catalogue already calls one, and oil is deliberately not here."""
+    """Every key is an existing commodity; CL's Gate retains its separate registry branch."""
 
     for symbol in COMMODITY_CONTEXT:
         resolved = ALIAS_SEEDS.get(symbol, symbol)
         assert resolved in COMMODITY_SYMBOLS, symbol
-    assert not {"CL", "WTI", "OIL", "USOIL", "BRENTOIL"} & set(COMMODITY_CONTEXT)
     # A symbol the table says nothing about is grounded exactly as before.
     assert commodity_context_present("BTC", "anything at all")
     assert commodity_context_present("COPPER", "Copper surges toward record on LME")
     assert commodity_context_present("COPPER", "韦丹塔旗下的孔科拉铜业已完成检修")
     assert not commodity_context_present("XAU", "央行：9月23日将在香港发行600亿元中央银行票据。")
+    assert not commodity_context_present("CL", "Iran faces new sanctions.")
+    assert grounded_assets("Iran faces new sanctions.", [{"symbol": "CL"}], energy=True) == ("CL",)
+    assert grounded_assets("Brent crude rises.", [{"symbol": "CL"}], energy=False) == ()
 
 
 def test_a_commodity_tag_without_its_commodity_stops_grounding(
@@ -132,7 +134,7 @@ def test_a_commodity_tag_still_grounds_wherever_the_text_names_the_commodity(row
         (row, symbol)
         for row in rows
         for symbol in grounded_assets(row["title"], row["coins"], raw_first_line=row["raw_first_line"])
-        if symbol.removeprefix("XYZ-") in COMMODITY_CONTEXT
+        if symbol.removeprefix("XYZ-") in COMMODITY_CONTEXT and symbol.removeprefix("XYZ-") != "CL"
     ]
     assert kept, "the day had commodity tags; a rule that removed all of them would pass every other check"
     for row, symbol in kept:

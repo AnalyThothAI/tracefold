@@ -2,8 +2,9 @@
 
 #770 bound `adds_information` to the same core fact and moved the questions to `news_questions_v4`, so the
 generated and native judgment identities and the native relation signature schema changed together. The
-extractor, card copy and reader programs carry no relation option and keep their identities; the generated
-judgment signature schema is unchanged.
+card copy and reader programs carry no relation option and keep their identities; the generated judgment
+signature schema is unchanged. #788 changes the extractor instruction to read listed markets and omit
+uninformative source markets, intentionally changing its program identity without changing read refs.
 """
 
 from __future__ import annotations
@@ -58,7 +59,7 @@ def test_program_and_signature_schema_identities_are_pinned() -> None:
         ).identity,
     }
     assert actual == {
-        "extractor": "extractor:c51e23b3dcc6717a901346797fa0a53c7485d4db16570d8995ecb71b72137ee6",
+        "extractor": "extractor:5d475c2f70b1c9bd4d7dfab192067d634c8b3110819c4e609de043c2700b5e36",
         "copy": "news_card_copy:410f061c5d2ead4ecb1011ed64d4895d831266aceb836a446cf5225fc8125876",
         "generated": "generated_judgment:a28f6ab99c87f0a20a5e7572179bc7226ac2f16399628e52b6babf710f01c27c",
         "native": "native_judgment:84fe75cb1b310f683dae0d73a5bda7e670ce5ecd787959ac5acc356e40cf75de",

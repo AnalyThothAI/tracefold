@@ -53,6 +53,7 @@ _NEWS_QUERY_NAMES = (
     "news_status_recovery_backlog",
     # #570 A2: the statements a status request executes, not the two counts that stood for them.
     "news_status_pipeline",
+    "news_status_primary_asset_markets",
     "news_status_source_contracts",
     "news_status_delivery",
     "news_status_funnel_decisions",
@@ -183,6 +184,7 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_incidents_open",
         "news_status_recovery_backlog",
         "news_status_pipeline",
+        "news_status_primary_asset_markets",
         "news_status_source_contracts",
         "news_status_delivery",
         "news_status_funnel_decisions",
@@ -418,7 +420,7 @@ def test_status_audit_reads_its_sql_from_the_production_module_only():
         node
         for node in storage.body
         if isinstance(node, ast.FunctionDef)
-        and node.name in {"status_snapshot", "_funnel_24h", "_source_contracts_24h"}
+        and node.name in {"status_snapshot", "_funnel_24h", "_source_contracts_24h", "primary_asset_markets_24h"}
     ]
     referenced = {
         call.args[0].id if isinstance(call.args[0], ast.Name) else None
@@ -427,11 +429,12 @@ def test_status_audit_reads_its_sql_from_the_production_module_only():
         if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "execute"
     }
 
-    assert len(status_methods) == 3
+    assert len(status_methods) == 4
     assert None not in referenced, "a status statement is written inline instead of imported"
     assert referenced == {
         "STATUS_INGEST_SQL",
         "STATUS_PIPELINE_SQL",
+        "STATUS_PRIMARY_ASSET_MARKETS_SQL",
         "STATUS_SOURCE_CONTRACTS_SQL",
         "STATUS_DELIVERY_SQL",
         "STATUS_FUNNEL_DECISIONS_SQL",

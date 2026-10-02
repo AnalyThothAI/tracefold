@@ -220,6 +220,15 @@ class NewsInstrumentUniverse(ExactApiSchema):
     reference_symbols: int = 0
 
 
+class NewsPrimaryAssetMarketsData(ExactApiSchema):
+    """Primary asset occurrences in adopted semantic understandings completed in the last 24 hours."""
+
+    total: int = Field(default=0, ge=0)
+    unknown: int = Field(default=0, ge=0)
+    unknown_share: float | None = Field(default=None, ge=0, le=1)
+    by_market: dict[str, int] = Field(default_factory=dict)
+
+
 class NewsStatusData(ExactApiSchema):
     state: Literal["ready", "degraded", "warming", "unavailable"]
     workers_state: str | None = None
@@ -233,6 +242,7 @@ class NewsStatusData(ExactApiSchema):
     watchlist: list[str] = Field(default_factory=list)
     instruments: NewsInstrumentUniverse = Field(default_factory=NewsInstrumentUniverse)
     price: NewsPriceStatusData = Field(default_factory=NewsPriceStatusData)
+    primary_asset_markets_24h: NewsPrimaryAssetMarketsData = Field(default_factory=NewsPrimaryAssetMarketsData)
     measured_at_ms: int = Field(description="本进程状态计算的时间；成功结果缓存 30 秒，缓存期间 ETag 稳定。")
 
 
@@ -249,6 +259,7 @@ __all__ = [
     "NewsInstrumentUniverse",
     "NewsPipelineStatusData",
     "NewsPriceStatusData",
+    "NewsPrimaryAssetMarketsData",
     "NewsQuoteVenueData",
     "NewsReasonCountData",
     "NewsRecoveryStatusData",

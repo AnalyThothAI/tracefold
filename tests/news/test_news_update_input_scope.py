@@ -70,7 +70,12 @@ def test_provider_candidates_reach_model_by_source_without_grade_or_literal_tick
     asyncio.run(DspyExtractor(lambda: None, model_identity="test", topics={}).extract(source))
     sent = json.loads(calls[0]["evidence_json"])
     assert list(sent["asset_candidates"]) == ["e1", "e2"]
-    assert sent["asset_candidates"]["e1"][0] == {"symbol": "xyz-NEARUSDT", "market_type": "crypto", "grade": "1"}
+    assert sent["asset_candidates"]["e1"][0] == {
+        "symbol": "xyz-NEARUSDT",
+        "market_type": "crypto",
+        "grade": "1",
+        "listed_markets": [],
+    }
     assert "Beta announces" not in json.dumps(sent["evidence"][0]["segments"])
 
 
@@ -426,6 +431,8 @@ def test_semantic_prior_query_uses_actual_pending_task_scope(case: str, monkeypa
             if "FROM news_items" in sql:
                 return Rows(rows=data["items"])
             if "FROM news_analyses" in sql:
+                return Rows()
+            if "JOIN news_market_instruments" in sql:
                 return Rows()
             raise AssertionError(sql)
 
