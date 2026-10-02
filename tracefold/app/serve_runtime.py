@@ -18,37 +18,77 @@ from tracefold.platform.runtime_identity import runtime_identity
 
 
 class MeasuredOnce:
-    """Process-local single-flight measurement; failed measurements are never cached."""
+    """Single-flight measurement with bounded followers and shared failed rounds."""
 
-    def __init__(self, *, ttl_s: float = 30, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        *,
+        ttl_s: float = 30,
+        stale_s: float = 60,
+        wait_s: float = 2,
+        failure_s: float = 1,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self._ttl_s = ttl_s
+        self._stale_s = stale_s
+        self._wait_s = wait_s
+        self._failure_s = failure_s
         self._clock = clock
         self._condition = Condition()
-        self._running = False
+        self._flight: _Measurement | None = None
         self._value: dict[str, Any] | None = None
         self._expires_at = 0.0
+        self._measured_at = 0.0
+        self._failed_until = 0.0
 
     def get(self, measure: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         with self._condition:
-            while self._running:
-                self._condition.wait()
-            if self._value is not None and self._clock() < self._expires_at:
+            now = self._clock()
+            if self._value is not None and now < self._expires_at:
                 return self._value
-            self._running = True
-            expires_at = self._clock() + self._ttl_s
+            if self._flight is not None:
+                if self._value is not None and now - self._measured_at <= self._stale_s:
+                    return self._value
+                flight = self._flight
+                if (
+                    not self._condition.wait_for(lambda: flight.done, timeout=self._wait_s)
+                    or flight.value is None
+                    or self._clock() - flight.started_at > self._stale_s
+                ):
+                    raise ApiUnavailable("service_busy")
+                return flight.value
+            if now < self._failed_until:
+                raise ApiUnavailable("service_busy")
+            flight = self._flight = _Measurement(started_at=now)
         try:
             value = measure()
-        except BaseException:
+            if self._clock() - now > self._stale_s:
+                raise ApiUnavailable("service_busy")
+        except BaseException as exc:
             with self._condition:
-                self._running = False
+                flight.done = True
+                self._failed_until = self._clock() + self._failure_s
+                self._flight = None
                 self._condition.notify_all()
+            if isinstance(exc, Exception):
+                raise ApiUnavailable("service_busy") from exc
             raise
         with self._condition:
             self._value = value
-            self._expires_at = expires_at
-            self._running = False
+            self._measured_at = now
+            self._expires_at = now + self._ttl_s
+            flight.value = value
+            flight.done = True
+            self._flight = None
             self._condition.notify_all()
             return value
+
+
+@dataclass(slots=True)
+class _Measurement:
+    started_at: float
+    done: bool = False
+    value: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)

@@ -121,7 +121,7 @@ def oi_source_contract(provider_metadata: Any) -> OiSourceContract | None:
 
 @dataclass(frozen=True, slots=True)
 class OiSignal:
-    """One parsed telemetry frame. Percentages are integer basis points, like `news_event_reactions`."""
+    """One parsed telemetry frame. Percentages use integer basis points."""
 
     symbol: str
     # The provider's own token before normalization, `XYZ-` prefix and all. Two spellings of one

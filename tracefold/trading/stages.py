@@ -28,11 +28,11 @@ def execution_stage(
     plan_status: str | None = None,
     exit_reason: str | None = None,
 ) -> ExecutionStage:
-    """Plans own lifecycle. Entries without a plan use their recorded observations.
+    """Durable entry lifecycle takes precedence over ancillary order observations.
 
-    A missing audit row cannot erase an active plan or turn it into an expired Signal. The Signal TTL
-    applies only before an entry plan exists. A plan that ended because its entry was refused is a
-    rejection, not a closed trade.
+    A missing observation cannot erase an active entry. Request expiry applies before admission;
+    an entry that ended because the venue refused it is a rejection. The public monitor retains
+    the `plan_status` vocabulary at this boundary.
     """
 
     if plan_status == "closed":

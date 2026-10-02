@@ -10,7 +10,6 @@ from typing import Any
 
 from ..updates.contracts import EventUpdate, SemanticLease
 from .errors import EventUpdateConflict
-from .semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL, SEMANTIC_RESULTS_SQL
 from .semantic_work import SemanticWorkStorage
 from .trade_projection import TradeProjectionStorage
 from .update_commit import SemanticSource, commit_update, lock_event
@@ -24,12 +23,11 @@ class SemanticUpdateStorage:
 
     def event_update_head_document(self, event_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
-            f"""
+            """
             SELECT u.document
-              FROM ({ANALYSIS_HEADS_SQL}) h
-              JOIN ({ANALYSES_SQL}) u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
-             WHERE h.event_id = %s
-            """,  # noqa: S608 -- fixed SQL; bound values.
+              FROM news_events e JOIN news_analyses u ON u.analysis_id=e.current_analysis_id
+             WHERE e.event_id = %s
+            """,
             (event_id,),
         ).fetchone()
         return None if row is None else dict(row["document"])
@@ -102,7 +100,13 @@ class SemanticUpdateStorage:
                 input_manifest_json,
             ),
         )
-        row = self.conn.execute(f"SELECT * FROM ({SEMANTIC_RESULTS_SQL}) WHERE result_id = %s", (result_id,)).fetchone()  # noqa: S608 -- fixed SQL; bound values.
+        row = self.conn.execute(
+            "SELECT analysis_id AS "
+            "result_id,work_id,event_id,input_revision,input_sha256,program_identity,completed_at_ms,u"
+            "nderstanding,read_refs,reanalysis_reason,reanalysis_head_ref,input_manifest FROM news_analyses "
+            "WHERE origin='semantic' AND analysis_id=%s",
+            (result_id,),
+        ).fetchone()
         return dict(row)
 
     def adopt_event_update(

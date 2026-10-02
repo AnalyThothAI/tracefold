@@ -22,7 +22,7 @@ P2 先停 Workers，再停 Serve，核实没有 News 写者会话。完整备份
 
 迁移保留 sending、编辑状态、租约期限与重试预算。恢复时编辑通知 sending 按现有恢复路径结算为 ambiguous，市场 sending 扫描为 unknown；编辑超时也按现有路径结算，禁止将这些记录批量改为 pending。核对详情（删除 feedback）、状态（删除四个复核字段）、市场分组与外部消息身份。回滚恢复已核验备份及旧镜像；备份之后已发生的外部发送仍须逐 intent 对账，不能从数据库恢复推断未发送。
 
-[P2 迁移测试](../tests/integration/test_p2_migration.py)覆盖空库、全部通知与市场状态、冻结载荷、终态不可变、投影不一致拒绝及并发孤儿清理；[发送恢复测试](../tests/integration/test_news_update_delivery.py)覆盖 lease、发送不确定性与崩溃窗口。生产备份恢复彩排、部署和上线观测尚未执行。
+[P2 迁移测试](../tests/integration/test_p2_migration.py)覆盖空库、全部通知与市场状态、冻结载荷、终态不可变、投影不一致拒绝及并发孤儿清理；[发送恢复测试](../tests/integration/test_news_update_delivery.py)覆盖 lease、发送不确定性与崩溃窗口。生产备份、恢复演练和部署证据记录在 [#764 上线回执](https://github.com/AnalyThothAI/tracefold/issues/764)；持续性能观测单独验收。
 
 `20261001_0423`（#764 P3）从 `0422` 升级：观察与采纳、scope repair 统一到 `news_analyses`，Event 保存唯一 head 指针；证据保存 material 摘要、焦点来源、事实范围及版本摘要日志，来源修订归 `news_items.revisions`，band 归 Event 数组，语义任务归 `news_jobs`，checkpoint 归缓存。`news_event_assets` 保留，命题链接从不可变 changes 派生。
 
@@ -30,7 +30,7 @@ P2 先停 Workers，再停 Serve，核实没有 News 写者会话。完整备份
 
 P3 先停 Workers，再停 Serve，核实无 News 写者会话。完整备份外导出 `news_claim_links`、`news_event_update_heads`、`news_event_updates`、`news_head_scope_repairs`、`news_semantic_observations`、`news_semantic_checkpoints`、`news_semantic_work`、`news_event_evidence_snapshots`、`news_event_bands`、`news_item_revisions`，记录 sha256 并验证 `pg_restore --list`。band 身份、采纳来源、repair、head 或 checkpoint 键不一致时拒绝升级；迁移逐列核对源投影、数量与 md5，日志须有 `p3_verify ok`。孤儿证据只记录 NOTICE，不作为存活 Event 事实回填。
 
-启动前在维护窗口执行 `VACUUM (FULL, ANALYZE) news_events; ANALYZE news_analyses, news_jobs, news_items;`，回收回填旧版本并刷新统计。租约和重试预算保留，未发送唤醒由现有 repair turn 恢复。核对详情版本、head 和待处理任务；回滚恢复已核验备份加旧镜像。生产迁移、维护 VACUUM、HOT 比率与 24 小时性能观测尚未执行。
+启动前在维护窗口执行 `VACUUM (FULL, ANALYZE) news_events; ANALYZE news_analyses, news_jobs, news_items;`，回收回填旧版本并刷新统计。租约和重试预算保留，未发送唤醒由现有 repair turn 恢复。核对详情版本、head 和待处理任务；回滚恢复已核验备份加旧镜像。生产迁移和维护 VACUUM 已执行，HOT 比率与 24 小时性能观测须按 [#764 上线回执](https://github.com/AnalyThothAI/tracefold/issues/764)中的真实窗口验收。
 
 [P3 迁移测试](../tests/integration/test_p3_migration.py)核对 20 个读取投影及预检回滚；[并发与 GIN 测试](../tests/integration/test_news_p3_semantic_chain.py)证明证据 CAS、Event 串行锁、成员 FK 兼容和 4 万 Event 的索引路径。P3 阶段库为 36 张表。
 
@@ -40,7 +40,13 @@ P3 先停 Workers，再停 Serve，核实无 News 写者会话。完整备份外
 
 P4 拒绝未执行 P0、同 case 多个 assessment、输入/动作/计划/处置/成交身份不一致、不完整 paper 对、claim 不一致，以及无法唯一确定游标账户的数据。若 #762 已先合并，应先适配独立 evaluations 账本并保留 replay；本迁移适用于尚未合并该评估账本的源结构。13 组数量、md5 与双向逐行校验全部成功后才删除旧表，日志须有 `p4_verify ok`。未归属历史成交的账户保持 NULL；Analysis 和 Executor 的旧心跳不回填为新进程存活证据。
 
-使用 `make up` 启动匹配镜像后，核对 26 表、pause/halt、pending、case 模型输入与订单身份，确认无重复下单，并在 70 秒内完成账户对账。回滚需要恢复已核验完整备份和旧镜像，数据库恢复不能撤销交易所已经发生的订单。[迁移测试](../tests/integration/test_p4_migration.py)验证带数据的 P0→P4、公开投影等价和预检回滚；[账本测试](../tests/integration/test_p4_trading_ledger.py)验证 pending CAS、同 symbol 拒绝、write-once 与进程存活边界。生产迁移、导出、停机时长与场所对账尚未执行。
+使用 `make up` 启动匹配镜像后，核对 26 表、pause/halt、pending、case 模型输入与订单身份，确认无重复下单，并在 70 秒内完成账户对账。回滚需要恢复已核验完整备份和旧镜像，数据库恢复不能撤销交易所已经发生的订单。[迁移测试](../tests/integration/test_p4_migration.py)验证带数据的 P0→P4、公开投影等价和预检回滚；[账本测试](../tests/integration/test_p4_trading_ledger.py)验证 pending CAS、同 symbol 拒绝、write-once 与进程存活边界。生产迁移、导出、停机时长与场所对账的实际证据见 [#764 上线回执](https://github.com/AnalyThothAI/tracefold/issues/764)。
+
+`20261002_0425` 从已部署的 `0424` 升级，增加两个语义任务部分索引与 News 专用的单行 reader clock 围栏：按 next_attempt / subject 排序读取 pending/failed 任务，按 updated_at 查近期失败。失败索引也包含已完成但保留失败 outcome 的任务；查询不以 state='failed' 替代原失败统计。迁移不改事实、detail、租约或重试预算，新增计数表与相关事实的 AFTER constraint 触发器（默认延迟到提交，防止 admission 的 Item/member → Event 路径先持有 clock；事实与版本原子可见），News 18 表、全库 27 表；计数是权限 CAS 证明，不替代事实。索引 SHARE 锁、触发器 SHARE ROW EXCLUSIVE 锁、5 秒锁超时和 120 秒语句超时，失败时事务回滚。按正常迁移顺序停写者，保留配套完整备份；新 head 成功后使用匹配镜像，失败时确认仍在 0424 才恢复前驱镜像。无需重复 P3 的表重写或 retired-table 导出。旧镜像不拥有 reader clock，成功后仅启动配套镜像。
+
+[索引迁移测试](../tests/integration/test_semantic_read_index_migration.py)验证 0424→0425 且任务事实完全不变；[有界读取测试](../tests/integration/test_news_semantic_read_costs.py)用两万条已完成历史任务验证查询预算与已完成失败计数。feed 页面沿 Event 的 analysis 指针读取 head，并按 Event 查找待发送意图；全量 counts 保留批量读取，输出契约不变。
+
+迁移连接统一将 NOTICE 写入 stderr，并在每个 revision 后恢复 NOTICE 级别，防止冻结 baseline 的 warning 设置屏蔽后续证明。P2/P3 的 `p2_verify ok` / `p3_verify ok` 与 P4 自带的 `p4_verify ok` 都可见。0420–0424 发布文件不修改。历史日志未包含 P2/P3 NOTICE 只能说明当时未采集，不能追认缺失日志；已有 head 证明事务内校验完成。今后部署还需比对迁移容器镜像 head 与实际数据库 head，并输出迁移日志后才启动角色。
 
 <details>
 <summary><strong>本页目录</strong></summary>
@@ -69,7 +75,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20261001_0424`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20261002_0425`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序

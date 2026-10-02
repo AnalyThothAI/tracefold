@@ -78,6 +78,7 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
         with conn.transaction():
             repos.news.seed_restore_drill_facts(current_event_id=_CURRENT_EVENT_ID)
             repos.trading.seed_restore_drill_case(case_id=_CASE_ID)
+            repos.trading.ensure_account(_ACCOUNT_SLOT)
             repos.trading.append_signal(signal)
             repos.trading.append_operator_intent(command)
             repos.trading.record_disposition(

@@ -17,6 +17,15 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_0424_sql import (
+    ANALYSES_SQL,
+    NOTIFICATION_DECISIONS_SQL,
+    NOTIFY_JOBS_SQL,
+    SEMANTIC_JOBS_SQL,
+    SEMANTIC_RESULTS_SQL,
+    UPDATE_PENDING_SQL,
+    UPDATE_RECEIPTS_SQL,
+)
 from tests.support.news_reader import FeedOnly, FixedReader, PushAll
 from tests.support.news_update_pg import (
     EVENT,
@@ -48,14 +57,7 @@ from tracefold.news.pipeline.notification_sender import NotificationSender
 from tracefold.news.pipeline.send_entry import InitialSendEntry
 from tracefold.news.reader_card import ReaderCard
 from tracefold.news.storage.judgment_store import PgJudgmentCache
-from tracefold.news.storage.notification_rows import (
-    NOTIFICATION_DECISIONS_SQL,
-    NOTIFY_JOBS_SQL,
-    UPDATE_PENDING_SQL,
-    UPDATE_RECEIPTS_SQL,
-)
 from tracefold.news.storage.notification_store import PgNotificationStore
-from tracefold.news.storage.semantic_rows import ANALYSES_SQL, SEMANTIC_JOBS_SQL, SEMANTIC_RESULTS_SQL
 from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.updates.contracts import (
     Asset,

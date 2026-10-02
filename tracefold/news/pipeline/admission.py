@@ -154,23 +154,14 @@ class _PreparedMarket:
     parse_error: str | None
     provider_metadata_json: str
     provider_params_json: str
-    strategy_ids_json: str
-    raw_text: str
     parent: ExtractedTitle
     title: str
     description: str
-    canonical_url: str | None
-    reporting_origin: str
-    source_artifact_id: str
     # Three clocks, each recorded, never compared (#553 §3.1). `event_at_ms` is the provider's stamp
     # for what happened, `received_at_ms` is when this host read the frame, and the first-available
     # instant is the admission transaction's own `now_ms`.
     event_at_ms: int
     received_at_ms: int
-    # Absent for the one market kind that is not extracted from provider text at all: a `wallet`
-    # observation is derived by this process from chain logs, so there is no line to have pulled a
-    # FactUnit out of and inventing one would claim an extraction that never happened (#572 PR-2).
-    fact: FactUnit | None = None
     # Which source this Item belongs to. Every provider frame is OpenNews's; a wallet observation is
     # the chain's, and the two must not share an identity space -- `item_id` is
     # `sha256(source_id, source_item_key)`.
@@ -279,7 +270,6 @@ def _prepare_frame(
                 raw_text=raw_text,
                 observed_at_ms=int(observed_at_ms),
                 provider_metadata_json=provider_metadata_json,
-                strategy_ids_json=strategy_ids_json,
             ),
         )
     contracts: list[SourceContract] = []
@@ -384,14 +374,11 @@ def _prepare_market(
     raw_text: str,
     observed_at_ms: int,
     provider_metadata_json: str,
-    strategy_ids_json: str,
 ) -> _PreparedMarket:
     """Parse one market frame once, outside any transaction.
 
-    One FactUnit, deliberately. A market frame is one measurement on one line; splitting it the way
-    an editorial Item is split would key the same observation to two rows and let the same numbers be
-    counted twice. The unit is still the shared extractor's, so the liquidation source key and the OI
-    source identity every existing row carries are byte-identical to what they were.
+    One FactUnit keys the OI source identity; market observation identity belongs to admission.
+    The editorial extraction grammar still supplies the title used by these pure parsers.
 
     A template this module cannot prove is not an error the reader should be denied: `parse_status`
     becomes `raw`, the reason is recorded, and the Item is stored exactly as it arrived. `Withdraw
@@ -411,17 +398,11 @@ def _prepare_market(
         parse_error=conflict_reason or UNKNOWN_MARKET_SOURCE,
         provider_metadata_json=provider_metadata_json,
         provider_params_json=canonical_json(event.provider_params),
-        strategy_ids_json=strategy_ids_json,
-        raw_text=raw_text,
         parent=parent,
         title=title,
         description=description_after_title(raw_text) or event.entry.description or "",
-        canonical_url=event.entry.link,
-        reporting_origin=event.entry.reporting_origin or "opennews",
-        source_artifact_id=event.source_artifact_id,
         event_at_ms=event_at_ms,
         received_at_ms=observed_at_ms,
-        fact=fact,
         source_venue=provider_source.strip().lower()[:32] or None,
     )
     if conflict_reason is not None or market_kind == "unknown_market":
@@ -441,13 +422,9 @@ def _prepare_market(
     if market_kind == "liquidation":
         liquidation = liquidations.parse_liquidation(
             title,
-            item_id=item_id,
-            fact_id=fact.fact_id,
-            source_strategy_id=strategy_id,
             provider_source=provider_source,
             event_at_ms=event_at_ms,
             received_at_ms=observed_at_ms,
-            provider_record_identity=event.provider_record_id,
         )
         if liquidation is None:
             return replace(prepared, parse_error=liquidations.RAW_REASON_TEMPLATE_UNMATCHED)
@@ -618,14 +595,9 @@ def prepare_wallet_observation(event: WalletEvent) -> _PreparedMarket:
         parse_error=None,
         provider_metadata_json=canonical_json({"source": WALLET_PROVIDER, "strategies": []}),
         provider_params_json=event.initial_snapshot.model_dump_json(),
-        strategy_ids_json="[]",
-        raw_text=title,
         parent=ExtractedTitle(title=title, comparison="", first_line=title, token_count=0, url_slug=False),
         title=title,
         description="",
-        canonical_url=None,
-        reporting_origin=WALLET_PROVIDER,
-        source_artifact_id="",
         event_at_ms=int(event.event_at_ms),
         received_at_ms=int(event.received_at_ms),
         source_id=WALLET_SOURCE_ID,

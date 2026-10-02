@@ -8,90 +8,63 @@ from __future__ import annotations
 
 from typing import Any, Final
 
-from .notification_rows import NOTIFICATION_DECISIONS_SQL, NOTIFY_JOBS_SQL, UPDATE_PENDING_SQL, UPDATE_RECEIPTS_SQL
-from .semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL, SEMANTIC_JOBS_SQL, SEMANTIC_RESULTS_SQL
+from .notification_view import pending_notification, receipt_notification
+from .semantic_jobs import semantic_job
 
-# The adopted head with its insert-only document. One row or none: the head is the Event's CAS target.
-EVENT_UPDATE_HEAD_SQL: Final = f"""
-    SELECT h.event_id, h.content_revision, h.input_revision, h.update_ref, h.adopted_at_ms,
-           u.previous_content_revision, u.observation_result_id, u.scope_repair_id, u.document
-      FROM ({ANALYSIS_HEADS_SQL}) h
-      JOIN ({ANALYSES_SQL}) u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
-     WHERE h.event_id = %s
-"""  # noqa: S608 -- fixed SQL; bound values.
-# Every adopted revision of one Event, without the documents: the timeline needs the clock, the input
-# revision and which change kinds each adoption introduced.
-EVENT_UPDATE_REVISIONS_SQL: Final = f"""
-    SELECT u.content_revision, u.input_revision, u.previous_content_revision, u.adopted_at_ms,
-           u.observation_result_id, u.scope_repair_id,
-           jsonb_path_query_array(u.document, '$.changes[*].kind') AS change_kinds,
-           jsonb_array_length(u.document -> 'claims') AS claim_n
-      FROM ({ANALYSES_SQL}) u
-     WHERE u.event_id = %s
-     ORDER BY u.adopted_at_ms, u.content_revision
-     LIMIT 50
-"""  # noqa: S608 -- fixed SQL; bound values.
-# The prior claims a head's changes point at. A change names its previous content by update ref, which
-# is either an earlier revision of this Event or the current head of a related Event. A related Event
-# whose head has since moved on is not searched: its old statement reads as unknown.
-EVENT_UPDATE_PREVIOUS_CLAIMS_SQL: Final = f"""
-    SELECT prior.update_ref, prior.event_id, claim ->> 'ref' AS claim_ref, claim ->> 'statement' AS statement
-      FROM (
-        SELECT u.update_ref AS update_ref,
-               u.event_id, u.document
-          FROM ({ANALYSES_SQL}) u
-         WHERE u.event_id = %s
-           AND u.update_ref = ANY(%s)
-        UNION ALL
-        SELECT h.update_ref, u.event_id, u.document
-          FROM ({ANALYSIS_HEADS_SQL}) h
-          JOIN ({ANALYSES_SQL}) u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
-         WHERE h.update_ref = ANY(%s) AND h.event_id <> %s
-      ) prior
-      CROSS JOIN LATERAL jsonb_array_elements(prior.document -> 'claims') AS claim
-"""  # noqa: S608 -- fixed SQL; bound values.
-EVENT_SEMANTIC_WORK_SQL: Final = f"""
-    SELECT event_id, wanted_revision, done_revision, attempts, next_attempt_at_ms, published_at_ms,
-           last_outcome, last_error_code, extra_read_state, updated_at_ms
-      FROM ({SEMANTIC_JOBS_SQL})
-     WHERE event_id = %s
-"""  # noqa: S608 -- fixed SQL; bound values.
-# The most recent observations of one Event and the revision each was adopted as, if any.
-EVENT_SEMANTIC_OBSERVATIONS_SQL: Final = f"""
-    SELECT o.result_id, o.input_revision, o.program_identity, o.completed_at_ms,
-           adopted.content_revision AS adopted_content_revision
-      FROM ({SEMANTIC_RESULTS_SQL}) o
-      LEFT JOIN ({ANALYSES_SQL}) adopted ON adopted.observation_result_id = o.result_id
-     WHERE o.event_id = %s
-     ORDER BY o.completed_at_ms DESC, o.result_id DESC
-     LIMIT 20
-"""  # noqa: S608 -- fixed SQL; bound values.
-EVENT_NOTIFICATION_WORK_SQL: Final = f"""
-    SELECT w.event_id, w.channel, w.content_revision, w.state, d.plan, d.origin, w.decision_ref,
-           w.reader_revision, w.attempts, w.last_error_code, w.next_attempt_at_ms, w.updated_at_ms
-      FROM ({NOTIFY_JOBS_SQL}) w
-      LEFT JOIN ({NOTIFICATION_DECISIONS_SQL}) d ON d.decision_ref = w.decision_ref
-     WHERE w.event_id = %s AND w.channel = 'news'
-"""  # noqa: S608 -- fixed SQL; bound values.
-# Every EventUpdate delivery receipt for one Event.
-EVENT_DELIVERIES_SQL: Final = f"""
-    SELECT intent_id, kind, state, card, receipt, error_code, attempted_at_ms, settled_at_ms,
-           created_at_ms, edit_state, pending_card, edit_error_code, edit_attempted_at_ms,
-           edit_settled_at_ms, content_revision, claim_refs, body, payload_sha256, plan_key
-      FROM ({UPDATE_RECEIPTS_SQL})
-     WHERE event_id = %s
-     ORDER BY created_at_ms, intent_id
-"""  # noqa: S608 -- fixed SQL; bound values.
-# Work still owed for one Event. A row leaves this table when its ledger row settles, so what remains
-# is either pending or dead.
-EVENT_DELIVERY_QUEUE_SQL: Final = f"""
-    SELECT intent_id, kind, state, attempts, error_code, enqueued_at_ms, next_attempt_at_ms,
-           frozen_card IS NOT NULL AS frozen_card,
-           settled_at_ms, content_revision, claim_refs, plan_key
-      FROM ({UPDATE_PENDING_SQL})
-     WHERE event_id = %s
-     ORDER BY enqueued_at_ms, intent_id
-"""  # noqa: S608 -- fixed SQL; bound values.
+EVENT_UPDATE_HEAD_SQL: Final = """
+ SELECT a.event_id,a.content_revision,a.input_revision,a.update_ref,a.adopted_at_ms,
+        a.previous_content_revision,
+        CASE WHEN a.origin='semantic' THEN a.analysis_id END AS observation_result_id,
+        CASE WHEN a.origin='scope_repair' THEN a.analysis_id END AS scope_repair_id,a.document
+ FROM news_events e JOIN news_analyses a ON a.analysis_id=e.current_analysis_id WHERE e.event_id=%s
+"""
+EVENT_UPDATE_REVISIONS_SQL: Final = """
+ SELECT a.content_revision,a.input_revision,a.previous_content_revision,a.adopted_at_ms,
+        CASE WHEN a.origin='semantic' THEN a.analysis_id END AS observation_result_id,
+        CASE WHEN a.origin='scope_repair' THEN a.analysis_id END AS scope_repair_id,
+        jsonb_path_query_array(a.document,'$.changes[*].kind') AS change_kinds,
+        jsonb_array_length(a.document->'claims') AS claim_n
+ FROM news_analyses a WHERE a.event_id=%s AND a.adopted_at_ms IS NOT NULL
+ ORDER BY a.adopted_at_ms,a.content_revision LIMIT 50
+"""
+EVENT_UPDATE_PREVIOUS_CLAIMS_SQL: Final = """
+ SELECT prior.update_ref,prior.event_id,claim->>'ref' AS claim_ref,claim->>'statement' AS statement
+ FROM (
+   SELECT update_ref,event_id,document FROM news_analyses
+    WHERE event_id=%s AND update_ref=ANY(%s) AND adopted_at_ms IS NOT NULL
+   UNION ALL
+   SELECT a.update_ref,a.event_id,a.document FROM news_events e
+    JOIN news_analyses a ON a.analysis_id=e.current_analysis_id
+    WHERE a.update_ref=ANY(%s) AND e.event_id<>%s
+ ) prior CROSS JOIN LATERAL jsonb_array_elements(prior.document->'claims') claim
+"""
+EVENT_SEMANTIC_WORK_SQL: Final = """
+ SELECT subject_id,state,attempts,next_attempt_at_ms,lease_until_ms,last_error_code,detail,updated_at_ms
+ FROM news_jobs WHERE job_kind='semantic' AND subject_id=%s
+"""
+EVENT_SEMANTIC_OBSERVATIONS_SQL: Final = """
+ SELECT analysis_id AS result_id,input_revision,program_identity,completed_at_ms,
+        content_revision AS adopted_content_revision FROM news_analyses
+ WHERE origin='semantic' AND event_id=%s ORDER BY completed_at_ms DESC,analysis_id DESC LIMIT 20
+"""
+EVENT_NOTIFICATION_WORK_SQL: Final = """
+ SELECT j.subject_id,j.state,j.attempts,j.last_error_code,j.next_attempt_at_ms,
+ j.updated_at_ms,j.detail,n.plan,n.origin FROM news_jobs j
+ LEFT JOIN news_notifications n ON n.notification_id=j.detail->>'decision_ref'
+ WHERE j.job_kind='notify' AND j.subject_id=%s
+"""
+EVENT_DELIVERIES_SQL: Final = """
+ SELECT intent_id,kind,state,card,receipt,error_code,attempted_at_ms,settled_at_ms,created_at_ms,edit_state,
+ pending_card,edit_error_code,edit_attempted_at_ms,edit_settled_at_ms,content_revision,claim_refs,plan_key
+ FROM news_notifications WHERE kind='update' AND event_id=%s
+  AND state IN ('sending','sent','ambiguous','terminal') ORDER BY created_at_ms,intent_id
+"""
+EVENT_DELIVERY_QUEUE_SQL: Final = """
+ SELECT intent_id,kind,state,attempts,error_code,next_attempt_at_ms,content_revision,claim_refs,plan_key,
+ reserved_at_ms,card,settled_at_ms FROM news_notifications WHERE kind='update' AND event_id=%s
+  AND (state IN ('pending','dead','sending') OR (state='terminal' AND reserved_at_ms IS NOT NULL))
+ ORDER BY reserved_at_ms,intent_id
+"""
 
 
 def event_update_head(conn: Any, event_id: str) -> dict[str, Any] | None:
@@ -122,7 +95,24 @@ def previous_claims(conn: Any, event_id: str, update_refs: list[str]) -> dict[tu
 
 def semantic_work(conn: Any, event_id: str) -> dict[str, Any] | None:
     row = conn.execute(EVENT_SEMANTIC_WORK_SQL, (event_id,)).fetchone()
-    return dict(row) if row else None
+    native = semantic_job(row)
+    if native is None:
+        return None
+    return {
+        key: native[key]
+        for key in (
+            "event_id",
+            "wanted_revision",
+            "done_revision",
+            "attempts",
+            "next_attempt_at_ms",
+            "published_at_ms",
+            "last_outcome",
+            "last_error_code",
+            "extra_read_state",
+            "updated_at_ms",
+        )
+    }
 
 
 def semantic_observations(conn: Any, event_id: str) -> list[dict[str, Any]]:
@@ -131,15 +121,25 @@ def semantic_observations(conn: Any, event_id: str) -> list[dict[str, Any]]:
 
 def notification_work(conn: Any, event_id: str) -> dict[str, Any] | None:
     row = conn.execute(EVENT_NOTIFICATION_WORK_SQL, (event_id,)).fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    return {
+        "event_id": row["subject_id"],
+        "channel": "news",
+        **row["detail"],
+        **{
+            key: row[key]
+            for key in ("state", "plan", "origin", "attempts", "last_error_code", "next_attempt_at_ms", "updated_at_ms")
+        },
+    }
 
 
 def event_deliveries(conn: Any, event_id: str) -> list[dict[str, Any]]:
-    return [dict(row) for row in conn.execute(EVENT_DELIVERIES_SQL, (event_id,)).fetchall()]
+    return [receipt_notification(row) for row in conn.execute(EVENT_DELIVERIES_SQL, (event_id,)).fetchall()]
 
 
 def event_delivery_queue(conn: Any, event_id: str) -> list[dict[str, Any]]:
-    return [dict(row) for row in conn.execute(EVENT_DELIVERY_QUEUE_SQL, (event_id,)).fetchall()]
+    return [pending_notification(row) for row in conn.execute(EVENT_DELIVERY_QUEUE_SQL, (event_id,)).fetchall()]
 
 
 __all__ = [

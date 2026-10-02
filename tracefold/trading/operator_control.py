@@ -13,9 +13,39 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+@dataclass(frozen=True, slots=True)
+class ControlEffect:
+    paused: bool | None = None
+    halted: bool | None = None
+    flatten: bool = False
+
+
+CONTROL_EFFECTS = {
+    "pause_entries": ControlEffect(paused=True),
+    "emergency_halt": ControlEffect(paused=True, halted=True),
+    "flatten": ControlEffect(paused=True, flatten=True),
+    "resume_entries": ControlEffect(paused=False, halted=False),
+    "manual_entry": ControlEffect(),
+}
+ENTRY_STOP_ACTIONS = tuple(action for action, effect in CONTROL_EFFECTS.items() if effect.paused is True)
+
+
+def control_entry_block(control: Any, *, unexpected_exposure: bool = False) -> str | None:
+    if unexpected_exposure:
+        return "unexpected_exposure"
+    if control["emergency_halted"]:
+        return "emergency_halt"
+    if control.get("flatten_command_id") is not None:
+        return "flatten_in_progress"
+    if control["entries_paused"]:
+        return "entries_paused"
+    return None
+
 
 _COMMAND_MAX_BYTES = 1_024
 _CONTROL_TTL_SECONDS = 300

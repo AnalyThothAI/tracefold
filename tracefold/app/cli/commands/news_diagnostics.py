@@ -83,6 +83,7 @@ def _handle_reanalyze(args: Namespace) -> tuple[int, dict[str, Any]]:
     try:
         with repositories(settings) as repos:
             with repos.transaction():
+                repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
                 listing = repos.news.semantic_work.reanalysis_scope_list(
                     event_id=str(args.event), now_ms=now_ms(), input=repos.news.semantic_input
                 )
@@ -93,6 +94,7 @@ def _handle_reanalyze(args: Namespace) -> tuple[int, dict[str, Any]]:
             with repos.transaction():
                 revision = repos.news.semantic_work.request_reanalysis(
                     input=repos.news.semantic_input,
+                    listing=listing,
                     event_id=str(args.event),
                     expected_wanted_revision=args.wanted,
                     expected_head_revision=expected_head,

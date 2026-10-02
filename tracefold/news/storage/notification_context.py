@@ -30,13 +30,13 @@ from ..source_contracts import classify_source_contracts
 from ..updates.assembly import different_listing_assets
 from ..updates.contracts import Claim, EventUpdate
 from ..updates.identity import digest
-from .notification_rows import NOTIFY_JOBS_SQL, UPDATE_RECEIPTS_SQL
-from .semantic_rows import ANALYSES_SQL
+from .reader_check import ReaderCheck
 from .semantic_updates import SemanticUpdateStorage
 from .sql_values import _dumps
 
 _RECEIPT_COLUMNS: Final = (
-    "d.intent_id, d.event_id, d.kind, d.body, d.payload_sha256, d.settled_at_ms, "
+    "d.intent_id, d.event_id, d.kind, d.card->>'body' AS body, d.card->>'payload_sha256' AS "
+    "payload_sha256, d.settled_at_ms, "
     "d.receipt, d.card, d.history_context, d.claim_refs"
 )
 
@@ -105,15 +105,15 @@ class NotificationContextStorage:
         if not refs:
             return []
         rows = self.conn.execute(
-            f"""
+            """
             SELECT DISTINCT change->>'previous_ref' AS ref
-              FROM ({ANALYSES_SQL}) u
+              FROM news_analyses u
               CROSS JOIN LATERAL jsonb_array_elements(u.document->'changes') change
              WHERE u.adopted_at_ms < %s
                AND jsonb_path_query_array(u.document, '$.changes[*].previous_ref') ?| %s::text[]
                AND change->>'previous_ref'=ANY(%s::text[])
                AND change->>'relation' IN ('corrects','real_world_change')
-            """,  # noqa: S608 -- fixed SQL; bound values.
+            """,
             (int(as_of_ms), list(refs), list(refs)),
         ).fetchall()
         return sorted(str(row["ref"]) for row in rows)
@@ -122,10 +122,10 @@ class NotificationContextStorage:
         """This Event's claims in sends still in flight, and in sends whose outcome is ambiguous."""
 
         rows = self.conn.execute(
-            f"""
-            SELECT state, claim_refs FROM ({UPDATE_RECEIPTS_SQL})
+            """
+            SELECT state, claim_refs FROM news_notifications
              WHERE event_id = %s AND kind = 'update' AND state IN ('sending', 'ambiguous')
-            """,  # noqa: S608 -- fixed SQL; bound values.
+            """,
             (event_id,),
         ).fetchall()
         return (
@@ -178,14 +178,14 @@ class NotificationContextStorage:
                     SELECT {_RECEIPT_COLUMNS},
                            COALESCE(d.sent_claims, '[]'::jsonb) AS historical_claims,
                            (d.sent_claims IS NULL) AS missing_projection,
-                           d.body || ' ' || array_to_string(ARRAY(
+                           (d.card->>'body') || ' ' || array_to_string(ARRAY(
                                SELECT claim ->> 'statement'
                                FROM jsonb_array_elements(COALESCE(d.sent_claims, '[]'::jsonb)) claim
                            ), ' ') AS search_text
-                      FROM ({UPDATE_RECEIPTS_SQL}) d
+                      FROM news_notifications d
                      WHERE d.kind = 'update' AND d.state = 'sent'
                        AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
-                       AND d.body IS NOT NULL AND d.payload_sha256 IS NOT NULL
+                       AND (d.card->>'body') IS NOT NULL AND (d.card->>'payload_sha256') IS NOT NULL
                 ), structured AS (
                     SELECT q.ref AS current_ref, b.*, 'structure' AS route, matched.priority::real AS route_score,
                            NULL::text[] AS lexical_terms,
@@ -387,7 +387,7 @@ class NotificationContextStorage:
             for row in self.conn.execute(
                 f"""
                 SELECT {_RECEIPT_COLUMNS}, d.state, COALESCE(d.sent_claims, '[]'::jsonb) AS historical_claims
-                  FROM ({UPDATE_RECEIPTS_SQL}) d
+                  FROM news_notifications d
                  WHERE d.kind = 'update'
                    AND d.claim_refs ?| %s::text[]
                    AND (d.state = 'sending'
@@ -575,15 +575,30 @@ class NotificationContextStorage:
         state = self.reader_state(event_id=event_id, head=head, now_ms=now_ms)
         return str(state["revision"])
 
+    def read_permission(self, event_id: str, *, now_ms: int) -> ReaderCheck:
+        generation = int(
+            self.conn.execute("SELECT revision FROM news_reader_clock WHERE singleton").fetchone()["revision"]
+        )
+        return ReaderCheck(event_id, self.current_reader_revision(event_id, now_ms=now_ms), generation)
+
+    def read_plan_permission(self, update_ref: str, *, now_ms: int) -> ReaderCheck | None:
+        row = self.conn.execute("SELECT event_id FROM news_analyses WHERE update_ref=%s", (update_ref,)).fetchone()
+        return None if row is None else self.read_permission(str(row["event_id"]), now_ms=now_ms)
+
+    def read_intent_permission(self, intent_id: str, *, now_ms: int) -> ReaderCheck | None:
+        row = self.conn.execute("SELECT event_id FROM news_notifications WHERE intent_id=%s", (intent_id,)).fetchone()
+        return None if row is None else self.read_permission(str(row["event_id"]), now_ms=now_ms)
+
     def notification_snapshot_material(self, *, event_id: str, channel: str, now_ms: int) -> dict[str, Any] | None:
         """The pending head, the receipts the planner may compare, and the related-receipt reader revision."""
 
         # The port starts a repeatable-read transaction before session configuration or any query.
         # Several reads below must see one MVCC view for the model input and revision.
         work = self.conn.execute(
-            f"SELECT content_revision, state, next_attempt_at_ms, updated_at_ms FROM ({NOTIFY_JOBS_SQL}) "  # noqa: S608
-            "WHERE event_id = %s AND channel = %s",
-            (event_id, channel),
+            "SELECT detail->>'content_revision' AS content_revision,state,next_attempt_at_ms,updated_at_ms "
+            "FROM news_jobs "
+            "WHERE job_kind='notify' AND subject_id=%s",
+            (event_id,),
         ).fetchone()
         if work is None or work["state"] != "pending":
             return None

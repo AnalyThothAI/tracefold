@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..bus import DeferError, TransientError
 from ..clock import clock_ms
@@ -23,6 +23,7 @@ from ..updates.contracts import EventUpdate
 from .errors import EventUpdateConflict
 from .notification_context import delivered_text
 from .notification_work import INTENT_LEASE_MS
+from .reader_check import ReaderCheck
 
 if TYPE_CHECKING:
     from ..pipeline.runtime import NewsDatabasePort
@@ -101,17 +102,10 @@ class PgNotificationStore:
     async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
         token = self.lease_token()
         plan_json = plan.model_dump_json()
-        now_ms = self.clock()
-        reserved = await self.db.tx(
-            "news_update_record_plan",
-            lambda repos: repos.news.notification_work.record_notification_plan(
-                plan=plan,
-                plan_json=plan_json,
-                lease_token=token,
-                now_ms=now_ms,
-                lease_ms=self.intent_lease_ms,
-            ),
-        )
+        for _ in range(3):
+            reserved, check = await self._record_plan_once(plan, token, plan_json)
+            if reserved["status"] != "reader_changed" or check is None or check.revision != plan.reader_revision:
+                break
         status = str(reserved["status"])
         if status != "committed":
             return PlanCommit(status=status)
@@ -129,6 +123,30 @@ class PgNotificationStore:
                 card=None if frozen is None else FrozenCard.model_validate(frozen),
             ),
         )
+
+    async def _record_plan_once(
+        self, plan: NotificationPlan, token: str, plan_json: str
+    ) -> tuple[dict[str, Any], ReaderCheck | None]:
+        now_ms = self.clock()
+        check = await self.db.read(
+            "news_update_plan_permission",
+            lambda repos: repos.news.notification_context.read_plan_permission(plan.update_ref, now_ms=now_ms),
+            repeatable_read=True,
+        )
+        if check is None:
+            return {"status": "head_changed"}, None
+        reserved = await self.db.tx(
+            "news_update_record_plan",
+            lambda repos: repos.news.notification_work.record_notification_plan(
+                plan=plan,
+                plan_json=plan_json,
+                lease_token=token,
+                now_ms=now_ms,
+                lease_ms=self.intent_lease_ms,
+                check=check,
+            ),
+        )
+        return reserved, check
 
     async def lookup_card_copy(self, input_digest: str) -> CardCopy | None:
         document = await self.db.read(
@@ -174,9 +192,25 @@ class PgNotificationStore:
     async def atomic_begin_send(
         self, lease: IntentLease, card: FrozenCard, *, timings: DeliveryTimings | None = None
     ) -> BeginSendStatus:
-        now_ms = self.clock()
         timings_json = None if timings is None else timings.model_dump_json()
-        return await self.db.tx(
+        for _ in range(3):
+            status, check = await self._begin_send_once(lease, card, timings_json)
+            if status != "reader_changed" or check is None or check.revision != lease.plan.reader_revision:
+                return status
+        return "reader_changed"
+
+    async def _begin_send_once(
+        self, lease: IntentLease, card: FrozenCard, timings_json: str | None
+    ) -> tuple[BeginSendStatus, ReaderCheck | None]:
+        now_ms = self.clock()
+        check = await self.db.read(
+            "news_update_send_permission",
+            lambda repos: repos.news.notification_context.read_intent_permission(lease.intent_id, now_ms=now_ms),
+            repeatable_read=True,
+        )
+        if check is None:
+            return "lease_lost", None
+        status: BeginSendStatus = await self.db.tx(
             "news_update_begin_send",
             lambda repos: repos.news.notification_delivery.begin_intent_send(
                 intent_id=lease.intent_id,
@@ -185,8 +219,10 @@ class PgNotificationStore:
                 card=card,
                 now_ms=now_ms,
                 timings_json=timings_json,
+                check=check,
             ),
         )
+        return status, check
 
     async def settle_send(
         self,

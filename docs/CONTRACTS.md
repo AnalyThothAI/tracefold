@@ -67,6 +67,8 @@
 
 Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed`；`failed` 是通知工作的持久终态，带 `last_error_code`，对应结果 `outcome.kind = notification_failed`（归入“被拦截”），只有 `news retry-work --kind notification` 按精确 content revision 重开。逐命题原因 `send_outcome_ambiguous` 表示此前发送结果不明、按可能已送达处理且不重发；`send_outcome_unresolved` 只表示本 Event 仍有发送进行中。`processing.notification.plan.origin` 为 `reader_v2` 时，逐命题行另带 `novelty`（known / increment / development / in_flight / unlinked）、`render`（full / increment / correction）、`importance` 与分布、`reader_backend`；`editorial_v1` 历史只给出旧原因。
 
+News 状态测量缓存新鲜期为 30 秒，刷新时最多提供 60 秒前的结果；无可用结果的 follower 最多等待 2 秒，失败轮次共享并缓存 1 秒，随后以 503 / `service_busy` 返回。测量时间仍由返回值标明。
+
 ### 认证与浏览器行为
 
 `/api/bootstrap` 返回名为 `ws_token` 的读取 bearer。字段名是历史拼写，不证明仍有 WebSocket。该令牌不提供命令权限，也不是独立保护整个公开站点的身份系统；对外服务时需保护整个工作台 origin，见[安全](SECURITY.md)。
@@ -140,7 +142,7 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 
 本地 `trading issue` 使用关闭的命令语法，必须有稳定 `--request-id` 和调用方封存的 `--requested-at-ns`，重试保留两者。它记录本地 OS 认证的意图，不证明交易所动作完成。
 
-执行结果只从与 Plan 精确绑定的交易所原生成交计算。原生成交按交易所交易 ID 去重，延迟归因另记不可变绑定；缺少完整成交或 USDT 手续费时净收益显示未知。执行器周期性核验仍有责任的订单与账户。
+执行结果只从与 entry 精确绑定的交易所原生成交计算。原生成交按交易所交易 ID 去重，延迟归因另记不可变绑定；缺少完整成交或 USDT 手续费时净收益显示未知。执行器周期性核验仍有责任的订单与账户。
 
 <a id="section-cli-与配置"></a>
 ## 06 · CLI 与配置
@@ -153,7 +155,7 @@ Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed
 | `news` | broker、目录、校准、离线 replay、钱包诊断、why 与精确 retry-work |
 | `trading` | status / diagnose、Case / scoreboard / Signal / fill 查询、本地操作与历史核验 |
 
-P4 的 HTTP 输出保持原有键；CLI 删除 `trading replay`，`trading signals` 不再输出 `seq`，`trading diagnose` 的 `heartbeat_at_ns` 改为 `heartbeat_at_ms`。operator intent 的 seq 保留为命令顺序，消费按待处置状态进行。
+P4 的 HTTP 输出保持原有键；CLI 删除 `trading replay`，`trading signals` 不再输出 `seq`，`trading diagnose` 的 `heartbeat_at_ns` 改为 `heartbeat_at_ms`。operator intent 的 seq 保留为命令顺序，消费按待处置状态进行。CLI `trading fills` 与 `trading diagnose` 的执行身份键从 `plan_id` 改为 `entry_id`。账户 flatten 未完成时 resume 拒绝为 `flatten_in_progress`，较新 stop 命令已接受时仍为 `superseded`。
 
 `news replay` 在本地重放 provider hits 的准入 / Gate，不调用模型或 broker；它也不代表完整 EventUpdate→通知→交易回放。实际参数和默认值见[生成 CLI 帮助](generated/cli-help.md)，不要把命令名称扩展为未实现能力。
 

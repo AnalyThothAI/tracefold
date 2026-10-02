@@ -6,14 +6,14 @@ import json
 from typing import Any, cast
 
 from tracefold.trading.executor.core import SignalV4
-from tracefold.trading.operator_control import PreparedOperatorIntent
+from tracefold.trading.operator_control import CONTROL_EFFECTS, ENTRY_STOP_ACTIONS, PreparedOperatorIntent
 
 SIGNAL_LEDGER_SQL = (
     "SELECT request FROM trading_entries WHERE source='signal' AND requested_at_ns>=%s "
     "ORDER BY created_at_ns DESC,entry_id DESC LIMIT %s"
 )
 FILL_LEDGER_SQL = (
-    "SELECT f.environment,f.native_symbol,f.trade_id,o.entry_id AS plan_id,f.client_order_id,"
+    "SELECT f.environment,f.native_symbol,f.trade_id,o.entry_id,f.client_order_id,"
     "f.venue_order_id,f.quantity,f.price,f.realized_pnl,f.fee,f.fee_asset,f.traded_at_ns "
     "FROM trading_fills f LEFT JOIN trading_orders o USING(client_order_id) "
     "WHERE f.traded_at_ns>=%s ORDER BY f.traded_at_ns DESC,f.trade_id DESC LIMIT %s"
@@ -24,10 +24,10 @@ OPERATOR_INTENTS_SQL = (
     "FROM trading_operator_intents WHERE requested_at_ns>=%s AND (%s::text IS NULL OR action=%s) "
     "ORDER BY seq DESC LIMIT %s"
 )
-EXECUTION_PLANS_SQL = (
-    "SELECT e.entry_id AS plan_id,CASE WHEN e.source='signal' THEN e.entry_id END AS signal_id,"
+EXECUTION_ENTRIES_SQL = (
+    "SELECT e.entry_id,CASE WHEN e.source='signal' THEN e.entry_id END AS signal_id,"
     "e.command_id,e.account_slot,e.native_symbol,e.side,e.quantity,e.stop_bps,e.tp_bps,e.max_hold_s,"
-    "e.state AS status,e.opened_at_ns,e.terminal_at_ns,e.terminal_reason,e.pnl_status,e.realized_pnl,"
+    "e.state,e.opened_at_ns,e.terminal_at_ns,e.terminal_reason,e.pnl_status,e.realized_pnl,"
     "e.fees,e.net_pnl,e.updated_at_ns,e.case_id,CASE WHEN e.source='signal' THEN "
     "e.requested_at_ns END AS decided_at_ns,"
     "CASE WHEN e.source='signal' THEN e.expires_at_ns END AS expires_at_ns,i.requested_at_ns FROM trading_entries e "
@@ -50,11 +50,11 @@ EXECUTION_REFUSALS_SQL = """
     ORDER BY disposed_at_ns DESC LIMIT %s
     """
 EXECUTION_ORDERS_SQL = (
-    "SELECT client_order_id,entry_id AS plan_id,leg,attempt,status,error_code,evidence FROM trading_orders "
+    "SELECT client_order_id,entry_id,leg,attempt,status,error_code,evidence FROM trading_orders "
     "WHERE entry_id=ANY(%s) ORDER BY entry_id,attempt"
 )
 EXECUTION_FILLS_SQL = (
-    "SELECT o.entry_id AS plan_id,f.client_order_id,f.quantity,f.price,f.traded_at_ns,f.trade_id "
+    "SELECT o.entry_id,f.client_order_id,f.quantity,f.price,f.traded_at_ns,f.trade_id "
     "FROM trading_fills f JOIN trading_orders o USING(client_order_id) "
     "WHERE o.entry_id=ANY(%s) ORDER BY f.traded_at_ns,f.trade_id"
 )
@@ -129,19 +129,20 @@ class ExecutorStorage:
         return row or {"entries_paused": True, "emergency_halted": False, "flatten_command_id": None}
 
     def set_control(self, *, account_slot: str, paused: bool, halted: bool, now_ns: int) -> None:
-        self.ensure_account(account_slot)
         self.conn.execute(
             "UPDATE trading_accounts SET entries_paused=%s,emergency_halted=%s,control_updated_at_ns=%s "
             "WHERE account_slot=%s",
             (paused, halted, now_ns, account_slot),
         )
 
-    def request_flatten(self, *, account_slot: str, command_id: str, now_ns: int) -> None:
-        self.ensure_account(account_slot)
+    def apply_control(self, *, account_slot: str, action: str, command_id: str, now_ns: int) -> None:
+        effect = CONTROL_EFFECTS[action]
         self.conn.execute(
-            "UPDATE trading_accounts SET entries_paused=true,flatten_command_id=%s,control_updated_at_ns=%s "
+            "UPDATE trading_accounts SET entries_paused=COALESCE(%s,entries_paused),"
+            "emergency_halted=COALESCE(%s,emergency_halted),"
+            "flatten_command_id=CASE WHEN %s THEN %s ELSE flatten_command_id END,control_updated_at_ns=%s "
             "WHERE account_slot=%s",
-            (command_id, now_ns, account_slot),
+            (effect.paused, effect.halted, effect.flatten, command_id, now_ns, account_slot),
         )
 
     def clear_flatten(self, *, account_slot: str) -> None:
@@ -151,7 +152,6 @@ class ExecutorStorage:
         )
 
     def append_signal(self, signal: SignalV4) -> str:
-        self.ensure_account(signal.account_slot)
         payload = signal.model_dump(mode="json")
         inserted = self.conn.execute(
             "INSERT INTO trading_entries(entry_id,source,case_id,account_slot,native_symbol,side,request,"
@@ -251,8 +251,8 @@ class ExecutorStorage:
         return (
             self.conn.execute(
                 "SELECT 1 FROM trading_operator_intents WHERE account_slot=%s AND seq>%s "
-                "AND action IN ('pause_entries','emergency_halt') AND disposition='accepted' LIMIT 1",
-                (account_slot, seq),
+                "AND action=ANY(%s) AND disposition='accepted' LIMIT 1",
+                (account_slot, seq, list(ENTRY_STOP_ACTIONS)),
             ).fetchone()
             is not None
         )
@@ -272,7 +272,6 @@ class ExecutorStorage:
         max_hold_s: int,
         now_ns: int,
     ) -> bool:
-        self.ensure_account(account_slot)
         values = (quantity, reference_price, quantity, reference_price, stop_bps, tp_bps, max_hold_s, now_ns, now_ns)
         if command_id is None:
             row = self.conn.execute(
@@ -437,9 +436,9 @@ class ExecutorStorage:
         return cast(
             list[dict[str, Any]],
             self.conn.execute(
-                "SELECT entry_id AS plan_id,CASE WHEN source='signal' THEN entry_id END AS signal_id,"
+                "SELECT entry_id,CASE WHEN source='signal' THEN entry_id END AS signal_id,"
                 "command_id,account_slot,'DEMO' AS environment,native_symbol,side,quantity,reference_price,"
-                "reserved_notional,stop_bps,tp_bps,max_hold_s,state AS status,opened_at_ns,terminal_at_ns,"
+                "reserved_notional,stop_bps,tp_bps,max_hold_s,state,opened_at_ns,terminal_at_ns,"
                 "terminal_reason,pnl_status,realized_pnl,fees,net_pnl,pnl_deadline_ns,updated_at_ns "
                 "FROM trading_entries WHERE account_slot=%s AND state IN ('accepted','open','closing') "
                 "ORDER BY updated_at_ns",
@@ -503,7 +502,6 @@ class ExecutorStorage:
         return None if row is None or row["cursor"] is None else int(row["cursor"]["next_trade_id"])
 
     def advance_trade_cursor(self, *, account_slot: str, symbol: str, next_id: int, now_ns: int) -> None:
-        self.ensure_account(account_slot)
         self.conn.execute(
             "UPDATE trading_accounts SET trade_cursors=jsonb_set(trade_cursors,ARRAY[%s],"
             "jsonb_build_object('next_trade_id',GREATEST(COALESCE((trade_cursors->%s->>'next_trade_id')::bigint,0),%s),"
@@ -667,9 +665,9 @@ class ExecutorStorage:
     def console_executions(self, *, since_ns: int, limit: int, case_id: str | None = None) -> list[dict[str, Any]]:
         from decimal import Decimal
 
-        plans = self.conn.execute(EXECUTION_PLANS_SQL, (since_ns, case_id, case_id, limit)).fetchall()
+        plans = self.conn.execute(EXECUTION_ENTRIES_SQL, (since_ns, case_id, case_id, limit)).fetchall()
         refused = self.conn.execute(EXECUTION_REFUSALS_SQL, (since_ns, case_id, case_id, limit)).fetchall()
-        ids = [plan["plan_id"] for plan in plans]
+        ids = [plan["entry_id"] for plan in plans]
         orders = self.conn.execute(
             EXECUTION_ORDERS_SQL,
             (ids,),
@@ -681,13 +679,13 @@ class ExecutorStorage:
         by_orders: dict[str, list[dict[str, Any]]] = {}
         by_fills: dict[str, list[dict[str, Any]]] = {}
         for order in orders:
-            by_orders.setdefault(order["plan_id"], []).append(order)
+            by_orders.setdefault(order["entry_id"], []).append(order)
         for fill in fills:
-            by_fills.setdefault(fill["plan_id"], []).append(fill)
+            by_fills.setdefault(fill["entry_id"], []).append(fill)
         result = []
         for plan in plans:
-            own_orders = by_orders.get(plan["plan_id"], [])
-            own_fills = by_fills.get(plan["plan_id"], [])
+            own_orders = by_orders.get(plan["entry_id"], [])
+            own_fills = by_fills.get(plan["entry_id"], [])
             entry = next((row for row in own_orders if row["leg"] == "entry"), None)
             entry_ids = {row["client_order_id"] for row in own_orders if row["leg"] == "entry"}
             entry_fills = [row for row in own_fills if row["client_order_id"] in entry_ids]
@@ -703,7 +701,7 @@ class ExecutorStorage:
             result.append(
                 {
                     "source": "signal" if plan["signal_id"] is not None else "manual",
-                    "entry_id": plan["plan_id"],
+                    "entry_id": plan["entry_id"],
                     "case_id": plan["case_id"],
                     "market_key": f"crypto:perp:{base}:USDT",
                     "direction": plan["side"],

@@ -307,14 +307,24 @@ def test_populated_chain_preserves_model_inputs_and_all_public_ledgers(source, s
     with closing(connect_postgres_test()) as conn:
         case_id = seed(conn)
         expected = projections(FrozenTrading0423(conn), case_id)
+        # The intentional CLI key change preserves every fill identity and value.
+        expected["fills"] = [
+            {"entry_id": row["plan_id"], **{k: v for k, v in row.items() if k != "plan_id"}}
+            for row in expected["fills"]
+        ]
     command.upgrade(source, TARGET)
     verify_log = capsys.readouterr().err
     assert "p4_verify ok" in verify_log
-    assert verify_log.count(" md5=") == 13
+    assert sum(" md5=" in line for line in verify_log.splitlines() if line.startswith("p4_verify")) == 13
     with closing(connect_postgres_test()) as conn:
         assert projections(TradingRepository(conn), case_id) == expected
         tables = {row["tablename"] for row in conn.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'")}
-        assert tables == {"alembic_version", "runtime_processes", *NEWS_TABLES, *TRADING_TABLES}
+        assert tables == {
+            "alembic_version",
+            "runtime_processes",
+            *(set(NEWS_TABLES) - {"news_reader_clock"}),
+            *TRADING_TABLES,
+        }
         assert len(tables) == 26 and len(TRADING_TABLES) == 7
         account = TradingRepository(conn).account(SLOT)
         assert (account["entries_paused"], account["emergency_halted"], account["unexpected_exposure"]) == (

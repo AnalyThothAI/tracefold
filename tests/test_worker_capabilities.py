@@ -221,7 +221,7 @@ def test_external_data_metrics_use_bounded_labels_and_a_live_success_age(monkeyp
     )
     telemetry.record_external_data_turn("quote_snapshot", "error", 0.5)
     telemetry.record_external_data_provider_call("quote_snapshot", "binance_spot", "success", 0.1)
-    telemetry.record_external_data_skipped("event_reaction", "coalesced")
+    telemetry.record_external_data_skipped("quote_snapshot", "coalesced")
 
     rendered = telemetry.render_prometheus_text()
     assert 'tracefold_external_data_turn_total{name="quote_snapshot",outcome="success"} 1.0' in rendered
@@ -234,7 +234,7 @@ def test_external_data_metrics_use_bounded_labels_and_a_live_success_age(monkeyp
         " 1.0" in rendered
     )
     assert (
-        'tracefold_external_data_skipped_or_coalesced_total{name="event_reaction",reason="coalesced"} 1.0' in rendered
+        'tracefold_external_data_skipped_or_coalesced_total{name="quote_snapshot",reason="coalesced"} 1.0' in rendered
     )
 
     with pytest.raises(ValueError, match="external_data_name_invalid"):

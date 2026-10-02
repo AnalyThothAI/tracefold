@@ -509,9 +509,6 @@ def test_liquidation_whose_venue_clock_ran_ahead_stores_like_any_other(conn) -> 
     news = repos.news
     ahead = parse_liquidation(
         "BTC Large Short Liquidation 1M at $100000",
-        item_id="ahead-liq-item",
-        fact_id="fact:ahead-liq",
-        source_strategy_id="2083",
         provider_source="okx",
         event_at_ms=NOW + 250,
         received_at_ms=NOW,
@@ -519,7 +516,7 @@ def test_liquidation_whose_venue_clock_ran_ahead_stores_like_any_other(conn) -> 
     assert ahead is not None
     with repos.transaction():
         _item(news, "ahead-liq-item")
-        _liquidation(news, ahead)
+        _liquidation(news, ahead, item_id="ahead-liq-item")
 
     stored = conn.execute(
         "SELECT source_venue, source_strategy_id, raw_instrument, event_at_ms, received_at_ms "
@@ -536,9 +533,6 @@ def test_a_purged_item_takes_its_typed_market_facts_with_it(conn) -> None:
     news = repos.news
     fact = parse_liquidation(
         "BTC Large Short Liquidation 1M at $100000",
-        item_id="cascade-liq-item",
-        fact_id="fact:cascade",
-        source_strategy_id="2083",
         provider_source="binance",
         event_at_ms=NOW,
         received_at_ms=NOW,
@@ -546,7 +540,7 @@ def test_a_purged_item_takes_its_typed_market_facts_with_it(conn) -> None:
     assert fact is not None
     with repos.transaction():
         _item(news, "cascade-liq-item")
-        _liquidation(news, fact)
+        _liquidation(news, fact, item_id="cascade-liq-item")
 
     conn.execute("DELETE FROM news_market_observations WHERE observation_id = 'cascade-liq-item'")
     remaining = conn.execute(
@@ -555,15 +549,15 @@ def test_a_purged_item_takes_its_typed_market_facts_with_it(conn) -> None:
     assert remaining["n"] == 0
 
 
-def _liquidation(news, fact):
+def _liquidation(news, fact, item_id="cascade-liq-item"):
     news.insert_market_observation(
         MarketObservation(
-            observation_id=fact.item_id,
+            observation_id=item_id,
             kind="liquidation",
             source_id="opennews",
-            source_item_key=fact.item_id,
-            source_strategy_id=fact.source_strategy_id,
-            title=fact.item_id,
+            source_item_key=item_id,
+            source_strategy_id="2083",
+            title=item_id,
             raw_first_line="",
             description="",
             provider_metadata={},

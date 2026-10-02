@@ -101,15 +101,19 @@ def seed_market(conn):
     legacy_item(conn, "liquidation", "liquidation", strategy="2083", at=NOW + 3)
     liquidation = parse_liquidation(
         "SOL Large Short Liquidation 202.71K at $137.01",
-        item_id="liquidation",
-        fact_id="fact-liquidation",
-        source_strategy_id="2083",
         provider_source="okx",
         event_at_ms=NOW + 3,
         received_at_ms=NOW + 3,
     )
     assert liquidation is not None
-    seed.insert_market_liquidation(fact=liquidation, ingest_mode="live", now_ms=NOW + 4)
+    seed.insert_market_liquidation(
+        fact=liquidation,
+        item_id="liquidation",
+        fact_id="fact-liquidation",
+        source_strategy_id="2083",
+        ingest_mode="live",
+        now_ms=NOW + 4,
+    )
     legacy_item(conn, "smart-money", "smart_money", strategy="2026", at=NOW + 4)
     smart_money = parse_smart_money(
         "js-2 Close Short SOL $482,113.55 , Price $137.01 , PNL -$8,204.10",

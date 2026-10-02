@@ -6,7 +6,7 @@ import hashlib
 import json
 from typing import Any
 
-from tracefold.news.storage.semantic_rows import ANALYSES_SQL
+from tests.support.news_0424_sql import ANALYSES_SQL
 
 
 def seed_delivery(

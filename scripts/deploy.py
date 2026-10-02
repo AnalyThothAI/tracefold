@@ -266,6 +266,15 @@ class Deployment:
         if code != "0":
             self.compose("logs", "--no-color", "--tail=50", "migrate", "rabbitmq-policy")
             raise DeploymentError(f"migrate exited {code}; application roles were not started")
+        expected_head = self.image_head(self.inspect(container, "{{.Image}}"))
+        actual_head = self.database_head()
+        if actual_head != expected_head:
+            raise DeploymentError(
+                f"migration head mismatch: database={actual_head} image={expected_head}; "
+                "application roles were not started"
+            )
+        self.compose("logs", "--no-color", "migrate")
+        print(f"Migration head verified: {actual_head}", flush=True)
 
     def apply(self, image: str, *, expected_manifest: str | None = None) -> None:
         self.select_app_image(image)

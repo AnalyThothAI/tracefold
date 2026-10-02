@@ -12,7 +12,7 @@ from ..notifications.contracts import NEWS_CHANNEL, NOTIFICATION_ATTEMPTS_MAX, N
 from .errors import EventUpdateConflict, IntentLeaseLost
 from .notification_context import NotificationContextStorage
 from .notification_jobs import NotificationJobDetail
-from .semantic_rows import ANALYSIS_HEADS_SQL
+from .reader_check import ReaderCheck, reader_unchanged
 from .sql_values import _dumps
 from .update_commit import lock_event
 
@@ -85,10 +85,11 @@ class NotificationWorkStorage:
         plan_json: str,
         lease_token: str,
         now_ms: int,
+        check: ReaderCheck,
         lease_ms: int = INTENT_LEASE_MS,
     ) -> dict[str, Any]:
         head = self.conn.execute(
-            f"SELECT event_id,content_revision FROM ({ANALYSIS_HEADS_SQL}) WHERE update_ref=%s",  # noqa: S608 -- fixed SQL; bound values.
+            "SELECT event_id,content_revision FROM news_analyses WHERE update_ref=%s AND adopted_at_ms IS NOT NULL",
             (plan.update_ref,),
         ).fetchone()
         if head is None:
@@ -96,7 +97,8 @@ class NotificationWorkStorage:
         event_id = str(head["event_id"])
         lock_event(self.conn, event_id)
         head = self.conn.execute(
-            f"SELECT content_revision FROM ({ANALYSIS_HEADS_SQL}) WHERE event_id=%s AND update_ref=%s",  # noqa: S608 -- fixed SQL; bound values.
+            "SELECT a.content_revision FROM news_events e JOIN news_analyses a ON "
+            "a.analysis_id=e.current_analysis_id WHERE e.event_id=%s AND a.update_ref=%s",
             (event_id, plan.update_ref),
         ).fetchone()
         work = self.conn.execute(
@@ -109,7 +111,11 @@ class NotificationWorkStorage:
         if work["state"] != "pending":
             return {"status": "already_settled"}
         plan = self._record_decision(event_id, plan, plan_json, now_ms=now_ms)
-        if self.context.current_reader_revision(event_id, now_ms=now_ms) != plan.reader_revision:
+        if (
+            check.event_id != event_id
+            or check.revision != plan.reader_revision
+            or not reader_unchanged(self.conn, check)
+        ):
             return {"status": "reader_changed"}
         intent_id = plan.intent_id if plan.action == "notify" else None
         others = self.conn.execute(

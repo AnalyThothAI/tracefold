@@ -162,9 +162,9 @@ docker compose exec -T workers tracefold news instruments resolve --symbol SYMBO
 docker compose exec -T workers tracefold news wallets --hours 24 --queue-limit 10
 ```
 
-目录 `snapshot` 是外部读取并写目录的维护操作，不与 `summary` 混用。OI 问题沿**来源 → 解析 → 类型化事实 → 分组 / intent → relay**检查；报价 / Reaction 的缺失不能解释成 OI 为零。
+目录 `snapshot` 是外部读取并写目录的维护操作，不与 `summary` 混用。OI 问题沿**来源 → 解析 → 类型化事实 → 分组 / intent → relay**检查；报价的缺失不能解释成 OI 为零。
 
-钱包沿**已发布名单 → 完整回执前缀 → 净买入资格 → episode → 发送时复查 → 实际回执**检查。价格采样另看目标与实际观察时间，不能拿迟到报价补成触发当时的价格。
+钱包沿**已发布名单 → 完整回执前缀 → 净买入资格 → episode → 发送时复查 → 实际回执**检查。钱包价格 outcome 已删除；实际发送与链上事实按各自时钟对账。
 
 <a id="5-trading-and-account-operations"></a>
 <a id="trading-operations"></a>
@@ -195,7 +195,7 @@ docker compose exec -T executor tracefold trading issue '/pause maintenance' \
 
 ### #764 P4 账本收敛
 
-当前 head 为 `20261001_0424`。先保存应用状态和交易所持仓/挂单，停 Analysis 并在 300 秒内排空 pending，再停 Executor、Workers 和 Serve；完整备份和 14 张旧表导出应记录 sha256。迁移用 13 组校验确认事实与投影一致，启动后核对 pause/halt、订单身份与 70 秒内的账户对账。具体顺序及回滚见 [迁移手册](MIGRATIONS.md)。进程 UUID 与毫秒心跳属于平台，停止或过期的 executor 心跳不能证明可以发布 Signal；账户的签名对账证据仍属于 Trading。
+P4 在 `20261001_0424` 完成账本收敛，当前 head 为 `20261002_0425`。P4 切换前保存应用状态和交易所持仓/挂单，停 Analysis 并在 300 秒内排空 pending，再停 Executor、Workers 和 Serve；完整备份和 14 张旧表导出应记录 sha256。迁移用 13 组校验确认事实与投影一致，启动后核对 pause/halt、订单身份与 70 秒内的账户对账。0425 仅增加语义任务部分索引，无退役表导出；仍按迁移前停写者、成功后启动匹配镜像的顺序执行。具体顺序及回滚见 [迁移手册](MIGRATIONS.md)。进程 UUID 与毫秒心跳属于平台，停止或过期的 executor 心跳不能证明可以发布 Signal；账户的签名对账证据仍属于 Trading。
 
 ### #746 Trading 硬切
 
@@ -246,3 +246,6 @@ docker compose exec -T postgres pg_restore --list < "$backup"
 ---
 
 [返回文档中心](README.md) · [架构图谱](ARCHITECTURE.md#atlas) · [返回顶部](#运维与故障定位)
+
+
+#764 性能验收使用同一 24 小时窗口的前后增量，按表分别记录 `pg_stat_user_tables.n_tup_upd`、`n_tup_hot_upd`、`n_dead_tup` 和大小，以及 `pg_stat_statements` 的调用数、平均耗时与 p95 采样。重点分类 news_events、news_jobs、news_collectors、news_analyses、news_notifications、trading_accounts。有索引字段变化的状态转换不能 HOT；append-only 表不以零更新计算 HOT 比例。两万条历史任务的本地查询预算证明不能代替生产 24 小时观测，早期约 35% 的全库 HOT 比例也不能当作达标结论。

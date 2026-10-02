@@ -7,18 +7,18 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 
 from psycopg.errors import QueryCanceled
 
-from ..updates.contracts import SemanticLease
+from ..updates.contracts import FrozenInput, SemanticLease
 from ..updates.identity import identity
 from ..updates.judgment import error_code
 from ..updates.projection import reading_views
 from .errors import EventUpdateConflict, SemanticLeaseLost
 from .semantic_input import frozen_input
 from .semantic_jobs import SemanticJobDetail, SemanticJobs, semantic_job
-from .semantic_rows import ANALYSES_SQL, SEMANTIC_JOBS_SQL, SEMANTIC_RESULTS_SQL
 from .sql_values import _retry_delay
 from .update_commit import lock_event
 
@@ -41,58 +41,69 @@ SEMANTIC_INPUT_TIMEOUT: Final = "news_semantic_input_timeout"
 EXTRA_READ_OUTCOMES: Final = frozenset({"attached", "no_material", "unavailable_or_budget_exhausted"})
 
 
-_WAKE_STATE_LIMIT: Final = 1_000
+_SEMANTIC_SWEEP_LIMIT: Final = 1_000
 
 
-_RUNNABLE: Final = f"attempts < {SEMANTIC_ATTEMPTS_MAX} AND last_outcome IS DISTINCT FROM 'failed'"
+_RUNNABLE: Final = f"state='pending' AND attempts < {SEMANTIC_ATTEMPTS_MAX}"
+
+
+_OUTSTANDING_JOBS_SQL: Final = """
+    SELECT state, attempts, updated_at_ms,
+           next_attempt_at_ms, lease_until_ms
+      FROM news_jobs
+     WHERE job_kind='semantic'
+       AND state IN ('pending','failed')
+"""
 
 
 SEMANTIC_WAKE_STATE_SQL: Final = f"""
     WITH pending AS MATERIALIZED (
-      SELECT attempts, last_outcome, updated_at_ms FROM ({SEMANTIC_JOBS_SQL})
-       WHERE done_revision IS NULL OR done_revision < wanted_revision
-       ORDER BY next_attempt_at_ms, event_id
-       LIMIT {_WAKE_STATE_LIMIT}
+      {_OUTSTANDING_JOBS_SQL}
     )
     SELECT count(*) FILTER (WHERE {_RUNNABLE}) AS pending,
            min(updated_at_ms) FILTER (WHERE {_RUNNABLE}) AS oldest_pending_at_ms,
-           count(*) FILTER (WHERE last_outcome = 'failed') AS expired
+           count(*) FILTER (WHERE state = 'failed') AS expired
       FROM pending
 """  # noqa: S608 - code-owned integer constants only
 
 
 SEMANTIC_STATUS_SQL: Final = f"""
     WITH outstanding AS MATERIALIZED (
-      SELECT attempts, last_outcome, next_attempt_at_ms, leased_until_ms
-        FROM ({SEMANTIC_JOBS_SQL})
-       WHERE done_revision IS NULL OR done_revision < wanted_revision
-       ORDER BY next_attempt_at_ms, event_id
-       LIMIT {_WAKE_STATE_LIMIT}
+      {_OUTSTANDING_JOBS_SQL}
     )
     SELECT
-      (SELECT count(*) FROM ({SEMANTIC_RESULTS_SQL}) WHERE completed_at_ms >= %(since)s)
+      (SELECT count(*) FROM news_analyses WHERE origin='semantic' AND completed_at_ms >= %(since)s)
         AS semantic_observations_24h,
-      (SELECT count(*) FROM ({ANALYSES_SQL}) WHERE adopted_at_ms >= %(since)s) AS semantic_adopted_24h,
-      (SELECT count(*) FROM ({SEMANTIC_JOBS_SQL}) WHERE last_outcome = 'failed' AND updated_at_ms >= %(since)s)
+      (SELECT count(*) FROM news_analyses WHERE adopted_at_ms >= %(since)s) AS semantic_adopted_24h,
+      (SELECT count(*) FROM news_jobs WHERE job_kind='semantic'
+         AND detail->>'last_outcome'='failed' AND updated_at_ms >= %(since)s)
         AS semantic_failed_24h,
       (SELECT count(*) FROM outstanding WHERE {_RUNNABLE}
-         AND next_attempt_at_ms <= %(now)s AND (leased_until_ms IS NULL OR leased_until_ms <= %(now)s))
+         AND next_attempt_at_ms <= %(now)s AND (lease_until_ms IS NULL OR lease_until_ms <= %(now)s))
         AS semantic_pending,
       (SELECT count(*) FROM outstanding WHERE {_RUNNABLE}
          AND next_attempt_at_ms > %(now)s) AS semantic_deferred,
-      (SELECT count(*) FROM outstanding WHERE leased_until_ms > %(now)s) AS semantic_in_progress,
-      (SELECT count(*) FROM outstanding WHERE last_outcome = 'failed') AS semantic_failed_exhausted
+      (SELECT count(*) FROM outstanding WHERE lease_until_ms > %(now)s) AS semantic_in_progress,
+      (SELECT count(*) FROM outstanding WHERE state = 'failed') AS semantic_failed_exhausted
 """  # noqa: S608 - code-owned integer constant only
 
 
-SEMANTIC_FAILED_CODES_SQL: Final = f"""
+SEMANTIC_FAILED_CODES_SQL: Final = """
     SELECT COALESCE(last_error_code, 'unknown') AS code, count(*) AS n
-      FROM ({SEMANTIC_JOBS_SQL})
-     WHERE last_outcome = 'failed' AND updated_at_ms >= %s
+      FROM news_jobs
+     WHERE job_kind='semantic' AND detail->>'last_outcome'='failed' AND updated_at_ms >= %s
      GROUP BY 1
-"""  # noqa: S608 -- fixed SQL; bound values.
+"""
 
 log = logging.getLogger("tracefold.news")
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticClaimRead:
+    event_id: str
+    wanted_revision: int
+    source: FrozenInput | None
+    error_code: str | None = None
 
 
 class SemanticWorkStorage:
@@ -139,35 +150,74 @@ class SemanticWorkStorage:
         self.jobs.save(row)
         return True
 
-    def claim_semantic_work(
-        self, *, event_id: str, lease_token: str, now_ms: int, lease_ms: int, input: SemanticInputStorage
-    ) -> SemanticLease | None:
-        """Spend an attempt by a conditional UPDATE; input timeout rolls back only its savepoint."""
-        lock_event(self.conn, event_id)
+    def read_semantic_claim(
+        self, *, event_id: str, now_ms: int, input: SemanticInputStorage
+    ) -> SemanticClaimRead | None:
+        """Freeze input in the caller's read-only, repeatable-read snapshot without any Event lock."""
         row = semantic_job(
             self.conn.execute(
-                """UPDATE news_jobs SET attempts=attempts+1,lease_token=%s,lease_until_ms=%s,updated_at_ms=%s
-               WHERE job_kind='semantic' AND subject_id=%s AND state='pending' AND attempts<%s
-                 AND next_attempt_at_ms<=%s AND (lease_until_ms IS NULL OR lease_until_ms<=%s)
-               RETURNING *""",
-                (lease_token, now_ms + lease_ms, now_ms, event_id, SEMANTIC_ATTEMPTS_MAX, now_ms, now_ms),
+                "SELECT * FROM news_jobs WHERE job_kind='semantic' AND subject_id=%s", (event_id,)
             ).fetchone()
         )
-        if row is None:
+        if (
+            row is None
+            or row["state"] != "pending"
+            or row["attempts"] >= SEMANTIC_ATTEMPTS_MAX
+            or row["next_attempt_at_ms"] > now_ms
+            or (row["lease_until_ms"] or 0) > now_ms
+        ):
             return None
         try:
             with self.conn.transaction():
                 material = input.semantic_input_material(event_id, now_ms=now_ms)
             source = frozen_input(event_id, material)
         except QueryCanceled:
+            return SemanticClaimRead(event_id, row["wanted_revision"], None, SEMANTIC_INPUT_TIMEOUT)
+        except (LookupError, ValueError) as exc:
+            return SemanticClaimRead(
+                event_id, row["wanted_revision"], None, error_code(exc, default="news_semantic_input_invalid")
+            )
+        return SemanticClaimRead(event_id, row["wanted_revision"], source)
+
+    def claim_semantic_work(
+        self, *, read: SemanticClaimRead, lease_token: str, now_ms: int, lease_ms: int
+    ) -> SemanticLease | None:
+        """Spend an attempt only if the frozen revision remains claimable in a short transaction."""
+        event_id = read.event_id
+        lock_event(self.conn, event_id)
+        row = semantic_job(
+            self.conn.execute(
+                """UPDATE news_jobs SET attempts=attempts+1,lease_token=%s,lease_until_ms=%s,updated_at_ms=%s
+               WHERE job_kind='semantic' AND subject_id=%s AND state='pending' AND attempts<%s
+                 AND next_attempt_at_ms<=%s AND (lease_until_ms IS NULL OR lease_until_ms<=%s)
+                 AND (detail->>'wanted_revision')::integer=%s
+               RETURNING *""",
+                (
+                    lease_token,
+                    now_ms + lease_ms,
+                    now_ms,
+                    event_id,
+                    SEMANTIC_ATTEMPTS_MAX,
+                    now_ms,
+                    now_ms,
+                    read.wanted_revision,
+                ),
+            ).fetchone()
+        )
+        if row is None:
+            return None
+        if read.error_code == SEMANTIC_INPUT_TIMEOUT:
             self._input_timed_out(event_id, attempts=int(row["attempts"]), now_ms=now_ms)
             return None
-        except (LookupError, ValueError) as exc:
-            code = error_code(exc, default="news_semantic_input_invalid")
+        if read.error_code is not None:
+            code = read.error_code
             log.warning("news semantic input failed event_id=%s code=%s", event_id, code)
-            row.update(lease_token=None, leased_until_ms=None, last_outcome="failed", last_error_code=code)
+            row.update(lease_token=None, lease_until_ms=None, last_outcome="failed", last_error_code=code)
             self.jobs.save(row)
             return None
+        source = read.source
+        if source is None:
+            raise ValueError("news_semantic_claim_input_missing")
         row["attempt_read_refs"] = [view.read_ref for view in reading_views(source)]
         self.jobs.save(row)
         return SemanticLease(source=source, lease_token=lease_token, attempts=int(row["attempts"]))
@@ -180,7 +230,7 @@ class SemanticWorkStorage:
         log.warning("news semantic input timed out event_id=%s attempts=%s exhausted=%s", event_id, attempts, exhausted)
         row.update(
             lease_token=None,
-            leased_until_ms=None,
+            lease_until_ms=None,
             last_outcome="failed" if exhausted else SEMANTIC_INPUT_TIMEOUT,
             last_error_code=SEMANTIC_INPUT_TIMEOUT,
             next_attempt_at_ms=now_ms + _retry_delay(SEMANTIC_RETRY_MS, attempts),
@@ -191,7 +241,7 @@ class SemanticWorkStorage:
 
     def require_semantic_owner(self, lease: SemanticLease, *, now_ms: int) -> dict[str, Any]:
         row = self.jobs.lock(lease.event_id)
-        if row is None or row["lease_token"] != lease.lease_token or (row["leased_until_ms"] or 0) <= now_ms:
+        if row is None or row["lease_token"] != lease.lease_token or (row["lease_until_ms"] or 0) <= now_ms:
             raise SemanticLeaseLost("news_semantic_lease_lost")
         return row
 
@@ -215,7 +265,7 @@ class SemanticWorkStorage:
             row["failed_read_refs"] = sorted(
                 set(row["failed_read_refs"]) | {v.read_ref for v in reading_views(lease.source)}
             )
-        row.update(lease_token=None, leased_until_ms=None)
+        row.update(lease_token=None, lease_until_ms=None)
         if row["wanted_revision"] <= lease.wanted_revision:
             row.update(
                 last_outcome="failed" if failed else reason,
@@ -244,7 +294,7 @@ class SemanticWorkStorage:
                 last_error_code=None,
                 next_attempt_at_ms=now_ms,
             )
-        row.update(lease_token=None, leased_until_ms=None, updated_at_ms=now_ms)
+        row.update(lease_token=None, lease_until_ms=None, updated_at_ms=now_ms)
         self.jobs.save(row)
         return True
 
@@ -264,7 +314,7 @@ class SemanticWorkStorage:
         rows = self.conn.execute(
             """SELECT subject_id FROM news_jobs WHERE job_kind='semantic' AND state='pending' AND attempts>=%s
                AND (lease_until_ms IS NULL OR lease_until_ms<=%s) ORDER BY updated_at_ms,subject_id LIMIT %s""",
-            (SEMANTIC_ATTEMPTS_MAX, now_ms, min(_WAKE_STATE_LIMIT, max(1, limit))),
+            (SEMANTIC_ATTEMPTS_MAX, now_ms, min(_SEMANTIC_SWEEP_LIMIT, max(1, limit))),
         ).fetchall()
         changed = 0
         for candidate in rows:
@@ -286,7 +336,7 @@ class SemanticWorkStorage:
                 row is None
                 or row["state"] != "pending"
                 or row["attempts"] < SEMANTIC_ATTEMPTS_MAX
-                or (row["leased_until_ms"] or 0) > now_ms
+                or (row["lease_until_ms"] or 0) > now_ms
             ):
                 continue
             row.update(
@@ -294,7 +344,7 @@ class SemanticWorkStorage:
                 last_error_code="news_semantic_attempts_exhausted_after_lease",
                 failed_read_refs=sorted(set(row["failed_read_refs"]) | set(row["attempt_read_refs"])),
                 lease_token=None,
-                leased_until_ms=None,
+                lease_until_ms=None,
                 updated_at_ms=now_ms,
             )
             self.jobs.save(row)
@@ -310,28 +360,6 @@ class SemanticWorkStorage:
             (SEMANTIC_ATTEMPTS_MAX, now_ms, now_ms, now_ms - SEMANTIC_WAKE_STALE_MS, limit),
         ).fetchall()
         return [str(row["subject_id"]) for row in rows]
-
-    def semantic_work(self, event_id: str) -> dict[str, Any] | None:
-        row = semantic_job(
-            self.conn.execute(
-                "SELECT * FROM news_jobs WHERE job_kind='semantic' AND subject_id=%s", (event_id,)
-            ).fetchone()
-        )
-        if row is None:
-            return None
-        return {
-            key: row[key]
-            for key in (
-                *SemanticJobDetail.model_fields,
-                "event_id",
-                "attempts",
-                "next_attempt_at_ms",
-                "lease_token",
-                "leased_until_ms",
-                "last_error_code",
-                "updated_at_ms",
-            )
-        }
 
     def reanalysis_scope_list(self, *, event_id: str, now_ms: int, input: SemanticInputStorage) -> dict[str, Any]:
         """Inspect the exact current task reads without changing semantic work."""
@@ -383,6 +411,7 @@ class SemanticWorkStorage:
         read_ref: str,
         reason: str,
         now_ms: int,
+        listing: Mapping[str, Any],
     ) -> int:
         if not reason.strip() or not read_ref:
             raise ValueError("news_reanalysis_target_or_reason_missing")
@@ -392,13 +421,14 @@ class SemanticWorkStorage:
         settled = row["done_revision"] == expected_wanted_revision or row["last_outcome"] == "failed"
         if row["wanted_revision"] != expected_wanted_revision or not settled:
             raise EventUpdateConflict("news_reanalysis_wanted_revision_changed_or_incomplete")
-        if (row["leased_until_ms"] or 0) > now_ms:
+        if (row["lease_until_ms"] or 0) > now_ms:
             raise EventUpdateConflict("news_reanalysis_lease_active")
         head = input.head_document(event_id)
         head_revision = None if head is None else str(head["content_revision"])
         if head_revision != expected_head_revision:
             raise EventUpdateConflict("news_reanalysis_head_changed")
-        listing = self.reanalysis_scope_list(event_id=event_id, now_ms=now_ms, input=input)
+        if listing["wanted_revision"] != expected_wanted_revision or listing["head_revision"] != expected_head_revision:
+            raise EventUpdateConflict("news_reanalysis_read_scope_changed")
         if read_ref not in {e["read_ref"] for e in listing["scopes"]}:
             raise EventUpdateConflict("news_reanalysis_read_scope_changed")
         next_revision = expected_wanted_revision + 1
@@ -411,7 +441,7 @@ class SemanticWorkStorage:
             last_outcome=None,
             last_error_code=None,
             lease_token=None,
-            leased_until_ms=None,
+            lease_until_ms=None,
             reanalysis_read_ref=read_ref,
             reanalysis_reason=reason.strip(),
             reanalysis_head_ref=None if head_revision is None else identity("update", event_id, head_revision),
@@ -501,14 +531,14 @@ class SemanticWorkStorage:
             row is None
             or row["wanted_revision"] != wanted
             or row["state"] != "failed"
-            or (row["leased_until_ms"] or 0) > now_ms
+            or (row["lease_until_ms"] or 0) > now_ms
         ):
             return False
         row.update(
             attempts=0,
             last_outcome=None,
             lease_token=None,
-            leased_until_ms=None,
+            lease_until_ms=None,
             failed_read_refs=[],
             next_attempt_at_ms=now_ms,
             published_at_ms=None,

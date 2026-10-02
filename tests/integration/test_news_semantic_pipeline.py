@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_0424_sql import ITEM_REVISIONS_SQL, NOTIFY_JOBS_SQL, SEMANTIC_RESULTS_SQL
 from tests.support.news_update_admission import TITLE, RecordingBus, add_member_evidence, event_of, raw, snapshots, work
 from tests.support.news_update_pg import (
     EVENT,
@@ -40,8 +41,6 @@ from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.semantic import SemanticWorker
 from tracefold.news.storage.judgment_cache import JUDGMENT_CACHE_RETENTION_MS
 from tracefold.news.storage.judgment_store import PgJudgmentCache
-from tracefold.news.storage.notification_rows import NOTIFY_JOBS_SQL
-from tracefold.news.storage.semantic_rows import ITEM_REVISIONS_SQL, SEMANTIC_RESULTS_SQL
 from tracefold.news.storage.semantic_store import PgSemanticStore, PgSourceReader
 from tracefold.news.storage.semantic_work import SEMANTIC_ATTEMPTS_MAX
 from tracefold.news.updates.contracts import (
@@ -683,6 +682,7 @@ def test_a_failed_revision_can_be_reanalysed_by_its_exact_revision() -> None:
             )
             assert listing["failed"] and listing["last_error_code"] == "news_citation_not_in_frozen_source"
             revision = news.semantic_work.request_reanalysis(
+                listing=listing,
                 event_id=EVENT,
                 expected_wanted_revision=1,
                 expected_head_revision=None,

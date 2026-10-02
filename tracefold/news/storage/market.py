@@ -29,7 +29,6 @@ from typing import Any, Final, TypedDict
 from ..market_contracts import MARKET_TIMELINE_MAX, MARKET_TRACK_FIELDS, MARKET_WINDOW_ROW_CAP, notification_status
 from ..source_contracts import MARKET_KINDS
 from .notification_jobs import MarketNotificationJobDetail
-from .notification_rows import MARKET_JOBS_SQL, MARKET_NOTIFICATIONS_SQL
 from .sql_values import _dumps
 from .wallet_snapshots import wallet_snapshot
 
@@ -127,7 +126,7 @@ class MarketSourceSummaryRow(TypedDict):
 
 
 # Public observation projection, verified against the pre-cut projection in revision 0421.
-_OBSERVATIONS_SQL = f"""
+_OBSERVATIONS_SQL = """
 SELECT o.observation_id AS item_id, o.kind AS market_kind, o.source_strategy_id, o.parse_status, o.parse_error,
        o.ingest_mode, o.historical, o.title, o.event_at_ms, o.received_at_ms, o.available_at_ms, o.provider,
        o.source_venue, COALESCE(o.raw_instrument, e.token) AS raw_instrument, COALESCE(o.symbol, e.token_symbol) AS
@@ -144,8 +143,10 @@ SELECT o.observation_id AS item_id, o.kind AS market_kind, o.source_strategy_id,
        e.notification_eligible AS wallet_notify_eligible, e.notification_reason AS wallet_notification_reason,
        e.trigger_max_age_s AS wallet_trigger_max_age_s,
        o.notify_state, o.notify_group_key, o.notification_id AS delivery_key, d.state AS delivery_state,
-       d.error AS delivery_error, d.trigger_item_id AS delivery_trigger_item_id, t.pending_reason AS track_reason,
-       COALESCE(o.notification_id IS NULL AND o.received_at_ms < t.round_started_at_ms, false) AS round_closed,
+       d.error_code AS delivery_error, d.trigger_observation_id AS delivery_trigger_item_id,
+       (t.detail->>'pending_reason') AS track_reason,
+       COALESCE(o.notification_id IS NULL AND o.received_at_ms
+                < (t.detail->>'round_started_at_ms')::bigint, false) AS round_closed,
        CASE WHEN o.oi_event_id IS NOT NULL THEN 'oi|' || o.provider || '|' || COALESCE(o.source_venue, '') || '|'
            || o.raw_instrument || '|' || o.measurement_definition
             WHEN o.liquidated_position_side IS NOT NULL THEN 'liquidation|' || o.provider || '|' ||
@@ -157,9 +158,9 @@ SELECT o.observation_id AS item_id, o.kind AS market_kind, o.source_strategy_id,
             ELSE 'raw|' || o.kind || '|' || o.observation_id END AS group_key
   FROM news_market_observations o
   LEFT JOIN news_market_wallet_events e ON e.item_id = o.observation_id
-  LEFT JOIN ({MARKET_NOTIFICATIONS_SQL}) d ON d.delivery_key = o.notification_id
-  LEFT JOIN ({MARKET_JOBS_SQL}) t ON t.group_key = o.notify_group_key
-"""  # noqa: S608 -- fixed SQL; bound values.
+  LEFT JOIN news_notifications d ON d.kind='market' AND d.notification_id = o.notification_id
+  LEFT JOIN news_jobs t ON t.job_kind='market_notify' AND t.subject_id = o.notify_group_key
+"""
 
 _OBSERVATION_KEYS: Final[tuple[str, ...]] = (
     "item_id",
@@ -276,7 +277,7 @@ MARKET_TIMELINE_SQL = f"""
 # The receipt side of the status block, read from the cards themselves rather than from the Items:
 # one card covers many observations, so "how many observations were told about" and "how many cards
 # were sent" are two different questions, and this one asks the second.
-MARKET_DELIVERY_SUMMARY_SQL = f"""
+MARKET_DELIVERY_SUMMARY_SQL = """
     SELECT market_kind,
            count(*) FILTER (WHERE state = 'sent') AS sent,
            count(*) FILTER (WHERE state = 'failed') AS failed,
@@ -284,11 +285,11 @@ MARKET_DELIVERY_SUMMARY_SQL = f"""
            max(settled_at_ms) FILTER (WHERE state = 'sent') AS last_sent_at_ms,
            max(settled_at_ms) FILTER (WHERE state = 'failed') AS last_failed_at_ms,
            max(settled_at_ms) FILTER (WHERE state = 'unknown') AS last_unknown_at_ms
-      FROM ({MARKET_NOTIFICATIONS_SQL})
-     WHERE created_at_ms >= %s
+      FROM news_notifications
+     WHERE kind='market' AND created_at_ms >= %s
        AND created_at_ms < %s
      GROUP BY market_kind
-"""  # noqa: S608 -- fixed SQL; bound values.
+"""
 
 # Deliberately uncapped. This is the answer to "what arrived", and a capped count would report a
 # ceiling as a fact -- `received = 5000` on a busy window would read as the provider's number. The
@@ -319,7 +320,6 @@ MARKET_SOURCES_SQL = f"""
 # `MarketTrack`'s own columns, in the module that defines them. Building the statement from the tuple
 # rather than restating it is what makes a new column impossible to add to the dataclass and forget
 # in the INSERT, the VALUES and the conflict update at once.
-_TRACK_COLUMNS: Final[tuple[str, ...]] = MARKET_TRACK_FIELDS
 
 # The loop's take query. `notify_state = 'pending'` is a marker, not a cursor: an Item stays in
 # this answer until the loop has grouped it, whatever order its transaction became visible in.
@@ -329,7 +329,7 @@ MARKET_NOTIFY_BACKLOG_SQL = f"""
      LIMIT %s
 """  # noqa: S608 -- interpolates only this module's own observation projection
 
-MARKET_TRACK_SQL = f"SELECT * FROM ({MARKET_JOBS_SQL}) WHERE group_key = %s"  # noqa: S608 -- fixed SQL; bound values.
+MARKET_TRACK_SQL = "SELECT * FROM news_jobs WHERE job_kind='market_notify' AND subject_id=%s"
 
 MARKET_TRACK_UPSERT_SQL = """
 INSERT INTO news_jobs(job_kind,subject_id,state,next_attempt_at_ms,detail,created_at_ms,updated_at_ms)
@@ -382,26 +382,26 @@ MARKET_ADOPT_UNCLAIMED_SQL = """
 # Named rather than starred: this one is on a public route, and a star over a base relation is how a
 # column added later silently reaches the wire.
 _DELIVERY_COLUMNS = """
-           delivery_key, group_key, market_kind, trigger_reason, trigger_item_id, state, attempts,
-           covered_count, covered_from_ms, covered_to_ms, card, receipt, error, next_attempt_at_ms,
-           first_attempt_at_ms, last_attempt_at_ms, settled_at_ms, created_at_ms, updated_at_ms
+ notification_id AS delivery_key,group_key,market_kind,trigger_reason,trigger_observation_id AS trigger_item_id,
+ state,attempts,covered_count,covered_from_ms,covered_to_ms,card,receipt,error_code AS error,next_attempt_at_ms,
+ attempted_at_ms AS first_attempt_at_ms,last_attempt_at_ms,settled_at_ms,created_at_ms,updated_at_ms
 """
 
 MARKET_DUE_DELIVERY_SQL = f"""
-    SELECT {_DELIVERY_COLUMNS} FROM ({MARKET_NOTIFICATIONS_SQL}) n
-     WHERE state = ANY (ARRAY['pending', 'unavailable'])
+    SELECT {_DELIVERY_COLUMNS} FROM news_notifications n
+     WHERE kind='market' AND state = ANY (ARRAY['pending', 'unavailable'])
        AND next_attempt_at_ms <= %s
        AND (market_kind <> 'wallet' OR EXISTS (
             SELECT 1 FROM news_market_wallet_events e
-             WHERE e.item_id = n.trigger_item_id))
+             WHERE e.item_id = n.trigger_observation_id))
        AND (%s OR market_kind <> 'wallet')
-     ORDER BY next_attempt_at_ms, created_at_ms, delivery_key
+     ORDER BY next_attempt_at_ms, created_at_ms, notification_id
      LIMIT 1
      FOR UPDATE SKIP LOCKED
 """  # noqa: S608 -- interpolates only this module's own column list
 
 MARKET_DELIVERY_SQL = f"""
-    SELECT {_DELIVERY_COLUMNS} FROM ({MARKET_NOTIFICATIONS_SQL}) n WHERE delivery_key = %s
+    SELECT {_DELIVERY_COLUMNS} FROM news_notifications n WHERE kind='market' AND notification_id=%s
 """  # noqa: S608 -- interpolates only this module's own column list
 
 # Stop only unfinished wallet cards. Attempts, frozen cards, receipts and their timestamps are
@@ -425,12 +425,12 @@ MARKET_STOP_WALLET_DELIVERIES_SQL = """
 # The one un-started card of a group, read from the unique partial index that enforces there is at
 # most one. Asking the index rather than the track's copy of the key is what keeps two processes
 # from each believing they opened the first card.
-MARKET_GROUP_OPEN_DELIVERY_SQL = f"""
-    SELECT delivery_key FROM ({MARKET_NOTIFICATIONS_SQL})
-     WHERE group_key = %s
+MARKET_GROUP_OPEN_DELIVERY_SQL = """
+    SELECT notification_id AS delivery_key FROM news_notifications
+     WHERE kind='market' AND group_key = %s
        AND state = ANY (ARRAY['pending', 'unavailable'])
        AND attempts = 0
-"""  # noqa: S608 -- fixed SQL; bound values.
+"""
 
 MARKET_DISCARD_DELIVERY_SQL = """
     DELETE FROM news_notifications
@@ -513,7 +513,7 @@ MARKET_SETTLE_DELIVERY_SQL = """
              WHEN %s = ANY (ARRAY['sent', 'failed', 'unknown']) THEN %s ELSE NULL END,
            updated_at_ms = %s
      WHERE kind='market' AND notification_id = %s
-       AND state = 'sending'
+       AND state = 'sending' AND attempts=%s
 """
 
 MARKET_TRACK_ATTEMPT_SQL = """
@@ -731,7 +731,15 @@ class MarketStorage:
 
         statement = MARKET_TRACK_SQL + (" FOR UPDATE" if for_update else "")
         row = self.conn.execute(statement, (group_key,)).fetchone()
-        return None if row is None else dict(row)
+        if row is None:
+            return None
+        return {
+            **MarketNotificationJobDetail.model_validate(row["detail"]).model_dump(),
+            "group_key": row["subject_id"],
+            "next_due_at_ms": row["next_attempt_at_ms"],
+            "created_at_ms": row["created_at_ms"],
+            "updated_at_ms": row["updated_at_ms"],
+        }
 
     def market_save_track(self, *, track: Mapping[str, Any], now_ms: int) -> None:
         detail = MarketNotificationJobDetail.model_validate(
@@ -904,6 +912,7 @@ class MarketStorage:
         self,
         *,
         delivery_key: str,
+        attempts: int,
         state: str,
         receipt: Mapping[str, Any] | None,
         error: str | None,
@@ -921,6 +930,7 @@ class MarketStorage:
                 int(now_ms),
                 int(now_ms),
                 delivery_key,
+                attempts,
             ),
         )
         return bool(cursor.rowcount)

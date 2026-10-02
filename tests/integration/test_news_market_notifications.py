@@ -27,6 +27,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.market_oi import _oi_item, _write_oi
+from tests.support.news_0424_sql import MARKET_JOBS_SQL, MARKET_NOTIFICATIONS_SQL
 from tests.support.news_current_delivery import seed_delivery
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news import card_format as fmt
@@ -51,7 +52,6 @@ from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
 from tracefold.news.pipeline.delivery_quotes import read_display_quotes, read_pushed_news
 from tracefold.news.smart_money import parse_smart_money
-from tracefold.news.storage.notification_rows import MARKET_JOBS_SQL, MARKET_NOTIFICATIONS_SQL
 
 pytestmark = pytest.mark.integration
 
@@ -793,9 +793,6 @@ def _liquidation_item(conn: Any, item_id: str, *, at_ms: int, side: str) -> None
     title = f"DOGE Large {side.title()} Liquidation 412.53K at $0.2181"
     fact = parse_liquidation(
         title,
-        item_id=item_id,
-        fact_id=item_id,
-        source_strategy_id="2083",
         provider_source="binance",
         event_at_ms=at_ms,
         received_at_ms=at_ms,
@@ -2034,3 +2031,53 @@ def test_a_card_pushed_inside_the_window_for_an_event_inside_it_is_quoted_and_co
     body = _card_body(conn)
     assert "相关新闻 48h · 已推 1 · 共 1" in body
     assert "· 窗口之内开的 Event " + fmt.clock(NOW - 10 * 3_600_000) in body
+
+
+def test_late_market_settlement_cannot_overwrite_a_new_attempt_or_move_its_anchor(conn, monkeypatch, caplog):
+    from contextlib import closing
+
+    from tracefold.news.market_notifications import SendOutcome
+
+    _oi_item(conn, "oi-late-settlement", at_ms=NOW - 60_000, change_bps=600)
+    original = MarketNotificationLoop._settle
+
+    def late(self, repos, claimed, outcome, now_ms):
+        with closing(connect_postgres_test()) as other:
+            owner = repositories_for_connection(other).news
+            with other.transaction():
+                assert owner.market_settle_delivery(
+                    delivery_key=claimed.delivery_key,
+                    attempts=claimed.attempts,
+                    state="pending",
+                    receipt=None,
+                    error="retry",
+                    next_attempt_at_ms=now_ms,
+                    now_ms=now_ms,
+                )
+                assert owner.market_begin_send(
+                    delivery_key=claimed.delivery_key,
+                    card=dict(claimed.channel_payload),
+                    covered_count=claimed.covered_count,
+                    covered_from_ms=NOW - 60_000,
+                    covered_to_ms=NOW - 60_000,
+                    attempts=claimed.attempts,
+                    due_at_ms=now_ms,
+                    now_ms=now_ms,
+                )
+        before = repos.conn.execute(
+            "SELECT detail FROM news_jobs WHERE job_kind='market_notify' AND subject_id=%s", (claimed.group_key,)
+        ).fetchone()
+        assert before is not None
+        original(self, repos, claimed, SendOutcome(state="sent", receipt={"message_id": "late"}), now_ms)
+        assert (
+            repos.conn.execute(
+                "SELECT detail FROM news_jobs WHERE job_kind='market_notify' AND subject_id=%s", (claimed.group_key,)
+            ).fetchone()
+            == before
+        )
+
+    monkeypatch.setattr(MarketNotificationLoop, "_settle", late)
+    asyncio.run(_loop(_Db(conn), _Sender(), clock=_Clock()).advance())
+    row = _deliveries(conn)[0]
+    assert row["state"] == "sending" and row["attempts"] == 2 and row["receipt"] is None
+    assert "news_market_settle_lost_attempt" in caplog.text

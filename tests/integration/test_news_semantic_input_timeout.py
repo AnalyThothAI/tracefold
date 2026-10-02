@@ -12,11 +12,11 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_0424_sql import SEMANTIC_JOBS_SQL
 from tests.support.news_update_admission import work
 from tests.support.news_update_pg import EVENT, STAMP, Clock, ThreadedDb, seed_event, sql
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.storage.evidence import EvidenceStorage
-from tracefold.news.storage.semantic_rows import SEMANTIC_JOBS_SQL
 from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.storage.semantic_work import SEMANTIC_ATTEMPTS_MAX, SEMANTIC_RETRY_MS
 from tracefold.news.updates.projection import reading_views
@@ -54,7 +54,7 @@ def test_input_timeout_spends_the_attempt_backs_off_and_fails_visibly_when_exhau
         assert asyncio.run(store.claim_semantic_work(EVENT, lease_ms=180_000)) is None
         row = work(EVENT)
         assert row["attempts"] == attempt
-        assert row["lease_token"] is None and row["leased_until_ms"] is None
+        assert row["lease_token"] is None and row["lease_until_ms"] is None
         assert row["last_error_code"] == "news_semantic_input_timeout"
         assert row["attempt_read_refs"] == [] and row["failed_read_refs"] == []
         if attempt < SEMANTIC_ATTEMPTS_MAX:

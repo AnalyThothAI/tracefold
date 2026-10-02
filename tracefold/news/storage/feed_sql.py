@@ -7,8 +7,6 @@ from typing import Final
 # S608 exemptions below compose only the module's fixed feed predicate list; all request values stay bound.
 from ..models import ADMITTED_ADMISSIONS
 from ..source_contracts import EVENT_KINDS
-from .notification_rows import NOTIFICATION_DECISIONS_SQL, NOTIFY_JOBS_SQL, UPDATE_PENDING_SQL, UPDATE_RECEIPTS_SQL
-from .semantic_rows import ANALYSES_SQL, ANALYSIS_HEADS_SQL, SEMANTIC_JOBS_SQL
 
 STATUS_PRIMARY_ASSET_MARKETS_SQL: Final = """
     SELECT COALESCE(asset->>'market_type', 'unknown') AS market_type, count(*) AS n
@@ -26,28 +24,30 @@ ITEM_RELATED_KEYS_SQL: Final = (
     "SELECT DISTINCT event_id FROM news_event_members "
     "WHERE item_id=%s AND (%s::text IS NULL OR event_id > %s) ORDER BY event_id LIMIT %s"
 )
-ITEM_RELATED_EVENTS_SQL: Final = f"""
-    SELECT e.event_id,e.leader_item_id,e.focus_fact_text,e.focus_fact_method,
-           w.wanted_revision,w.done_revision,w.last_outcome,w.last_error_code,
-           h.content_revision AS adopted_content_revision,
-           n.state AS notification_state,d.plan->>'action' AS notification_action,
-           (SELECT q.state FROM ({UPDATE_PENDING_SQL}) q
-             WHERE q.event_id=e.event_id AND q.kind='update'
-             ORDER BY q.updated_at_ms DESC,q.intent_id DESC LIMIT 1) AS intent_state,
-           (SELECT count(*) FROM ({UPDATE_RECEIPTS_SQL}) sent
-             WHERE sent.event_id=e.event_id AND sent.kind='update' AND sent.state='sent') AS sent_count,
-           (SELECT array_agg(DISTINCT m.fact_text ORDER BY m.fact_text)
-              FROM news_event_members m WHERE m.event_id=e.event_id AND m.item_id=%s) AS member_scopes,
-           (SELECT array_agg(DISTINCT m.match_kind ORDER BY m.match_kind)
-              FROM news_event_members m WHERE m.event_id=e.event_id AND m.item_id=%s) AS match_kinds
-      FROM news_events e
-      LEFT JOIN ({SEMANTIC_JOBS_SQL}) w ON w.event_id=e.event_id
-      LEFT JOIN ({ANALYSIS_HEADS_SQL}) h ON h.event_id=e.event_id
-      LEFT JOIN ({NOTIFY_JOBS_SQL}) n ON n.event_id=e.event_id AND n.channel='news'
-      LEFT JOIN ({NOTIFICATION_DECISIONS_SQL}) d ON d.decision_ref=n.decision_ref
-     WHERE e.event_id=ANY(%s)
-     ORDER BY e.event_id
-"""  # noqa: S608 -- fixed SQL; bound values.
+ITEM_RELATED_EVENTS_SQL: Final = """
+ SELECT e.event_id,e.leader_item_id,e.focus_fact_text,e.focus_fact_method,
+        (w.detail->>'wanted_revision')::integer AS wanted_revision,
+        (w.detail->>'done_revision')::integer AS done_revision,
+        w.detail->>'last_outcome' AS last_outcome,w.last_error_code,
+        h.content_revision AS adopted_content_revision,n.state AS notification_state,
+        d.plan->>'action' AS notification_action,
+        (SELECT CASE q.state WHEN 'sending' THEN 'pending' WHEN 'terminal' THEN 'dead' ELSE q.state END
+         FROM news_notifications q WHERE q.event_id=e.event_id AND q.kind='update'
+          AND (q.state IN ('pending','dead','sending') OR (q.state='terminal' AND q.reserved_at_ms IS NOT NULL))
+         ORDER BY q.updated_at_ms DESC,q.intent_id DESC LIMIT 1) AS intent_state,
+        (SELECT count(*) FROM news_notifications sent
+          WHERE sent.event_id=e.event_id AND sent.kind='update' AND sent.state='sent') AS sent_count,
+        (SELECT array_agg(DISTINCT m.fact_text ORDER BY m.fact_text) FROM news_event_members m
+          WHERE m.event_id=e.event_id AND m.item_id=%s) AS member_scopes,
+        (SELECT array_agg(DISTINCT m.match_kind ORDER BY m.match_kind) FROM news_event_members m
+          WHERE m.event_id=e.event_id AND m.item_id=%s) AS match_kinds
+ FROM news_events e
+ LEFT JOIN news_jobs w ON w.job_kind='semantic' AND w.subject_id=e.event_id
+ LEFT JOIN news_analyses h ON h.analysis_id=e.current_analysis_id
+ LEFT JOIN news_jobs n ON n.job_kind='notify' AND n.subject_id=e.event_id
+ LEFT JOIN news_notifications d ON d.notification_id=n.detail->>'decision_ref' AND d.origin<>'legacy_delivery'
+ WHERE e.event_id=ANY(%s) ORDER BY e.event_id
+"""
 
 ADMITTED_SQL: Final = ", ".join(f"'{value}'" for value in sorted(ADMITTED_ADMISSIONS))
 # Reader cards are EventUpdate intents.
@@ -56,24 +56,24 @@ READER_DELIVERY_KINDS_SQL: Final = "('update')"
 # beside both statement builders makes the page and count query share one definition.
 # The EventUpdate path (#706), after the ledger and the Gate: semantic work still owed a revision, or an
 # adopted head whose notification is undecided, deferred or decided to notify.
-_SEMANTIC_OWED_SQL: Final = "sw.wanted_revision > COALESCE(sw.done_revision, 0)"
+_SEMANTIC_OWED_SQL: Final = "sw.state IN ('pending','failed')"
 _UPDATE_PENDING_SQL: Final = (
-    f"({_SEMANTIC_OWED_SQL} AND sw.last_outcome IS DISTINCT FROM 'failed')"
+    f"({_SEMANTIC_OWED_SQL} AND sw.state='pending')"
     f" OR (NOT COALESCE({_SEMANTIC_OWED_SQL}, false) AND h.event_id IS NOT NULL"
-    f" AND ((nw.event_id IS NULL AND q.state='pending')"
+    f" AND ((nw.subject_id IS NULL AND q.state='pending')"
     " OR nw.state='pending'))"
     f" OR (NOT COALESCE({_SEMANTIC_OWED_SQL}, false) AND nw.state='done' AND d.state='sending')"
     f" OR (NOT COALESCE({_SEMANTIC_OWED_SQL}, false) AND nw.state='done'"
     " AND nd.plan->>'action'='notify' AND q.state='pending'"
-    " AND q.content_revision=nw.content_revision)"
+    " AND q.content_revision=(nw.detail->>'content_revision'))"
 )
 _PENDING_CORE_SQL: Final = f"e.admission IN ({ADMITTED_SQL}) AND COALESCE(({_UPDATE_PENDING_SQL}), false)"
 _PUSHED_CORE_SQL: Final = (
     f"e.admission IN ({ADMITTED_SQL}) AND COALESCE(d.state='sent', false)"
     f" AND NOT COALESCE({_SEMANTIC_OWED_SQL}, false)"
-    " AND (nw.event_id IS NULL OR (nw.state='done' AND COALESCE(nd.plan->>'action','') <> 'no_notification'))"
+    " AND (nw.subject_id IS NULL OR (nw.state='done' AND COALESCE(nd.plan->>'action','') <> 'no_notification'))"
     " AND NOT COALESCE(q.state='pending'"
-    " AND (nw.event_id IS NULL OR q.content_revision=nw.content_revision), false)"
+    " AND (nw.subject_id IS NULL OR q.content_revision=(nw.detail->>'content_revision')), false)"
 )
 OUTCOME_GROUP_SQL: Final = {
     "pushed": _PUSHED_CORE_SQL,
@@ -119,17 +119,17 @@ EVENT_MEMBERS_SQL: Final = """
               FROM news_event_members m JOIN news_items i ON i.item_id = m.item_id
              WHERE m.event_id = %s ORDER BY m.joined_at_ms, m.item_id
 """
-STATUS_SOURCE_CONTRACTS_SQL: Final = f"""
+STATUS_SOURCE_CONTRACTS_SQL: Final = """
     SELECT e.event_kind, count(*) AS received,
            count(*) FILTER (WHERE h.event_id IS NOT NULL) AS adopted
       FROM news_events e
-      LEFT JOIN ({ANALYSIS_HEADS_SQL}) h ON h.event_id=e.event_id
+      LEFT JOIN news_analyses h ON h.analysis_id=e.current_analysis_id
      WHERE e.opened_at_ms >= %s
        AND e.evidence_version IS NOT NULL
      GROUP BY e.event_kind
-"""  # noqa: S608 -- fixed SQL; bound values.
+"""
 
-STATUS_PIPELINE_SQL: Final = f"""
+STATUS_PIPELINE_SQL: Final = """
     WITH event_counts AS (
       SELECT count(*) FILTER (WHERE opened_at_ms >= %s) AS events_1h,
              count(*) AS events_24h,
@@ -140,29 +140,24 @@ STATUS_PIPELINE_SQL: Final = f"""
     ), decision_counts AS (
       SELECT count(*) AS decisions_24h,
              count(*) FILTER (WHERE plan->>'action'='notify') AS selected_24h
-        FROM ({NOTIFICATION_DECISIONS_SQL})
-       WHERE origin IN ('editorial_v1','reader_v2') AND created_at_ms >= %s
+        FROM news_notifications
+       WHERE kind='update' AND origin IN ('editorial_v1','reader_v2') AND decided_at_ms >= %s
     )
     SELECT event_counts.*,decision_counts.* FROM event_counts CROSS JOIN decision_counts
-"""  # noqa: S608 -- fixed SQL; bound values.
+"""
 
 STATUS_DELIVERY_SQL: Final = f"""
     WITH terminal AS NOT MATERIALIZED (
-      SELECT event_id, error_code, settled_at_ms FROM ({UPDATE_RECEIPTS_SQL}) WHERE state = 'terminal'
-      UNION ALL
-      SELECT q.event_id, q.error_code, q.settled_at_ms FROM ({UPDATE_PENDING_SQL}) q
-       WHERE q.state = 'dead'
-         AND NOT EXISTS (
-           SELECT 1 FROM ({UPDATE_RECEIPTS_SQL}) d WHERE d.intent_id = q.intent_id
-         )
+      SELECT event_id,error_code,settled_at_ms FROM news_notifications
+       WHERE kind='update' AND state IN ('terminal','dead')
     )
     SELECT
-      (SELECT count(*) FROM ({UPDATE_RECEIPTS_SQL}) d
+      (SELECT count(*) FROM news_notifications d
          JOIN news_events e ON e.event_id = d.event_id
-        WHERE d.state = 'sent' AND d.settled_at_ms >= %s) AS sent_24h,
-      (SELECT count(*) FROM ({UPDATE_RECEIPTS_SQL}) d
+        WHERE d.kind='update' AND d.state = 'sent' AND d.settled_at_ms >= %s) AS sent_24h,
+      (SELECT count(*) FROM news_notifications d
          JOIN news_events e ON e.event_id = d.event_id
-        WHERE d.state = 'sent' AND d.settled_at_ms >= %s) AS sent_1h,
+        WHERE d.kind='update' AND d.state = 'sent' AND d.settled_at_ms >= %s) AS sent_1h,
       (SELECT count(*) FROM terminal d
          JOIN news_events e ON e.event_id = d.event_id
         WHERE d.settled_at_ms >= %s) AS terminal_24h,
@@ -171,36 +166,36 @@ STATUS_DELIVERY_SQL: Final = f"""
         ORDER BY d.settled_at_ms DESC NULLS LAST LIMIT 1) AS last_error_code,
       (SELECT percentile_cont(0.5)
          WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
-         FROM ({UPDATE_RECEIPTS_SQL}) d JOIN news_events e ON e.event_id = d.event_id
+         FROM news_notifications d JOIN news_events e ON e.event_id = d.event_id
          JOIN news_items i ON i.item_id = e.leader_item_id
-        WHERE d.state = 'sent' AND d.kind IN {READER_DELIVERY_KINDS_SQL} AND d.settled_at_ms >= %s
+        WHERE d.kind='update' AND d.state = 'sent' AND d.kind IN {READER_DELIVERY_KINDS_SQL} AND d.settled_at_ms >= %s
           -- The first EventUpdate card this reader received.
           AND NOT EXISTS (
-            SELECT 1 FROM ({UPDATE_RECEIPTS_SQL}) earlier
+            SELECT 1 FROM news_notifications earlier
              WHERE earlier.event_id = d.event_id AND earlier.kind IN {READER_DELIVERY_KINDS_SQL}
                AND earlier.state = 'sent'
                AND (earlier.settled_at_ms, earlier.intent_id) < (d.settled_at_ms, d.intent_id)
           )) AS e2e_p50_ms,
       (SELECT percentile_cont(0.95)
          WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
-         FROM ({UPDATE_RECEIPTS_SQL}) d JOIN news_events e ON e.event_id = d.event_id
+         FROM news_notifications d JOIN news_events e ON e.event_id = d.event_id
          JOIN news_items i ON i.item_id = e.leader_item_id
-        WHERE d.state = 'sent' AND d.kind IN {READER_DELIVERY_KINDS_SQL} AND d.settled_at_ms >= %s
+        WHERE d.kind='update' AND d.state = 'sent' AND d.kind IN {READER_DELIVERY_KINDS_SQL} AND d.settled_at_ms >= %s
           -- The first EventUpdate card this reader received.
           AND NOT EXISTS (
-            SELECT 1 FROM ({UPDATE_RECEIPTS_SQL}) earlier
+            SELECT 1 FROM news_notifications earlier
              WHERE earlier.event_id = d.event_id AND earlier.kind IN {READER_DELIVERY_KINDS_SQL}
                AND earlier.state = 'sent'
                AND (earlier.settled_at_ms, earlier.intent_id) < (d.settled_at_ms, d.intent_id)
           )) AS e2e_p95_ms
 """  # noqa: S608
 
-STATUS_FUNNEL_DECISIONS_SQL: Final = f"""
+STATUS_FUNNEL_DECISIONS_SQL: Final = """
     SELECT plan->>'action' AS action,count(*) AS n
-      FROM ({NOTIFICATION_DECISIONS_SQL})
-     WHERE origin IN ('editorial_v1','reader_v2') AND created_at_ms >= %s
+      FROM news_notifications
+     WHERE kind='update' AND origin IN ('editorial_v1','reader_v2') AND decided_at_ms >= %s
      GROUP BY 1
-"""  # noqa: S608 -- fixed SQL; bound values.
+"""
 
 _JUDGED_SQL: Final = "current_event.current_analysis_id IS NOT NULL"
 STATUS_FUNNEL_TOTALS_SQL: Final = f"""
@@ -212,7 +207,7 @@ STATUS_FUNNEL_TOTALS_SQL: Final = f"""
            count(*) FILTER (
              WHERE admission IN ({ADMITTED_SQL}) AND ({_JUDGED_SQL})
                AND EXISTS (
-                 SELECT 1 FROM ({UPDATE_RECEIPTS_SQL}) d
+                 SELECT 1 FROM news_notifications d
                   WHERE d.event_id = current_event.event_id AND d.kind IN {READER_DELIVERY_KINDS_SQL}
                     AND d.state = 'sent'
                )
@@ -227,55 +222,54 @@ STATUS_FUNNEL_TOTALS_SQL: Final = f"""
 # EventUpdate join is on a primary key. `d` is the Event's representative ledger row -- the current
 # revision's latest attempt, else its latest sent card, else its latest attempt -- over the
 # `(event_id, kind)` index, so an earlier revision's receipt never hides what happened to the current one
-# (#742 R1); `q` is its latest intent still owed with no ledger row, from one pass over the in-flight queue.
+# (#742 R1); `q` is its latest intent still owed with no ledger row.
 _READER_DELIVERY_ORDER_SQL: Final = (
     "(dl.content_revision = current_head.content_revision) DESC, (dl.state = 'sent') DESC,"
     " dl.created_at_ms DESC, dl.intent_id DESC"
 )
 _FEED_PAGE_DELIVERY_SQL: Final = f"""
-          LEFT JOIN LATERAL (
-            SELECT dl.kind, dl.state, dl.settled_at_ms, dl.error_code, dl.card, dl.plan_key,
-                   dl.content_revision, dl.payload_sha256
-              FROM ({UPDATE_RECEIPTS_SQL}) dl
-              LEFT JOIN ({ANALYSIS_HEADS_SQL}) current_head ON current_head.event_id = dl.event_id
-             WHERE dl.event_id = e.event_id AND dl.kind IN {READER_DELIVERY_KINDS_SQL}
-             ORDER BY {_READER_DELIVERY_ORDER_SQL}
-             LIMIT 1
-          ) d ON true
-"""  # noqa: S608
-# Counts inspect every matching Event. Pick its representative receipt once for the whole
-# ledger, rather than sorting a correlated lookup for each Event in the retained history.
+ LEFT JOIN LATERAL (
+   SELECT dl.kind,dl.state,dl.settled_at_ms,
+          CASE WHEN dl.state='sending' THEN NULL ELSE dl.error_code END AS error_code,
+          dl.card,dl.plan_key,dl.content_revision,dl.card->>'payload_sha256' AS payload_sha256
+   FROM news_notifications dl WHERE dl.event_id=e.event_id AND dl.kind='update'
+    AND dl.state IN ('sending','sent','ambiguous','terminal')
+   ORDER BY {_READER_DELIVERY_ORDER_SQL.replace("current_head.content_revision", "h.content_revision")} LIMIT 1
+ ) d ON true
+"""  # noqa: S608 -- code-owned ordering.
 _FEED_COUNTS_DELIVERY_SQL: Final = f"""
-          LEFT JOIN (
-            SELECT DISTINCT ON (dl.event_id) dl.event_id, dl.state
-              FROM ({UPDATE_RECEIPTS_SQL}) dl
-              LEFT JOIN ({ANALYSIS_HEADS_SQL}) current_head ON current_head.event_id = dl.event_id
-             WHERE dl.kind IN {READER_DELIVERY_KINDS_SQL}
-             ORDER BY dl.event_id, {_READER_DELIVERY_ORDER_SQL}
-          ) d ON d.event_id = e.event_id
-"""  # noqa: S608
+ LEFT JOIN (
+   SELECT DISTINCT ON (dl.event_id) dl.event_id,dl.state FROM news_notifications dl
+   JOIN news_events de ON de.event_id=dl.event_id
+   LEFT JOIN news_analyses current_head ON current_head.analysis_id=de.current_analysis_id
+   WHERE dl.kind='update' AND dl.state IN ('sending','sent','ambiguous','terminal')
+   ORDER BY dl.event_id,{_READER_DELIVERY_ORDER_SQL}
+ ) d ON d.event_id=e.event_id
+"""  # noqa: S608 -- code-owned ordering.
 
 
 def _feed_joins_sql(*, bulk_deliveries: bool = False) -> str:
     delivery_join = _FEED_COUNTS_DELIVERY_SQL if bulk_deliveries else _FEED_PAGE_DELIVERY_SQL
+    pending_join = f"""
+      LEFT JOIN {"(" if bulk_deliveries else "LATERAL ("}
+        SELECT {"DISTINCT ON (owed.event_id)" if bulk_deliveries else ""}
+               owed.event_id,owed.state,owed.error_code,owed.content_revision,owed.card IS NOT NULL AS frozen_card
+        FROM news_notifications owed WHERE {"" if bulk_deliveries else "owed.event_id=e.event_id AND "}
+         owed.kind='update' AND owed.state IN ('pending','dead')
+        ORDER BY {"owed.event_id," if bulk_deliveries else ""} owed.reserved_at_ms DESC,owed.intent_id DESC
+        {"" if bulk_deliveries else "LIMIT 1"}
+      ) q ON {"q.event_id=e.event_id" if bulk_deliveries else "true"}
+    """  # noqa: S608 -- fixed alternatives.
     return f"""
-          JOIN news_items i ON i.item_id = e.leader_item_id
-          JOIN LATERAL (SELECT 1 WHERE e.evidence_version IS NOT NULL) current_evidence ON true
-          LEFT JOIN ({SEMANTIC_JOBS_SQL}) sw ON sw.event_id = e.event_id
-          LEFT JOIN ({ANALYSIS_HEADS_SQL}) h ON h.event_id = e.event_id
-          LEFT JOIN ({ANALYSES_SQL}) u ON u.event_id = h.event_id AND u.content_revision = h.content_revision
-          LEFT JOIN ({NOTIFY_JOBS_SQL}) nw ON nw.event_id = e.event_id AND nw.channel = 'news'
-          LEFT JOIN ({NOTIFICATION_DECISIONS_SQL}) nd ON nd.decision_ref = nw.decision_ref
-          {delivery_join}
-          LEFT JOIN (
-            SELECT DISTINCT ON (owed.event_id) owed.event_id, owed.state, owed.error_code,
-                   owed.content_revision, owed.frozen_card IS NOT NULL AS frozen_card
-              FROM ({UPDATE_PENDING_SQL}) owed
-             WHERE owed.kind IN {READER_DELIVERY_KINDS_SQL}
-               AND NOT EXISTS (SELECT 1 FROM ({UPDATE_RECEIPTS_SQL}) settled WHERE settled.intent_id = owed.intent_id)
-             ORDER BY owed.event_id, owed.enqueued_at_ms DESC, owed.intent_id DESC
-          ) q ON q.event_id = e.event_id
-    """  # noqa: S608
+      JOIN news_items i ON i.item_id=e.leader_item_id
+      LEFT JOIN news_jobs sw ON sw.job_kind='semantic' AND sw.subject_id=e.event_id
+      LEFT JOIN news_analyses h ON h.analysis_id=e.current_analysis_id
+      LEFT JOIN LATERAL (SELECT h.document WHERE h.adopted_at_ms IS NOT NULL) u ON true
+      LEFT JOIN news_jobs nw ON nw.job_kind='notify' AND nw.subject_id=e.event_id
+      LEFT JOIN news_notifications nd ON nd.notification_id=nw.detail->>'decision_ref' AND nd.origin<>'legacy_delivery'
+      {delivery_join}
+      {pending_join}
+    """
 
 
 def feed_page_sql(where_sql: str) -> str:
@@ -291,8 +285,10 @@ def feed_page_sql(where_sql: str) -> str:
                e.admission, e.provider_score_max, e.engine_type, e.asset_class, e.grounded_assets,
                e.watchlist_hits, e.storyline_key, e.context_line, e.published_at_ms, e.ingest_mode,
                i.canonical_url AS leader_url, i.reporting_origin, i.provenance,
-               sw.event_id IS NOT NULL AS has_semantic_work, sw.wanted_revision AS semantic_wanted_revision,
-               sw.done_revision AS semantic_done_revision, sw.last_outcome AS semantic_last_outcome,
+               sw.subject_id IS NOT NULL AS has_semantic_work,
+               (sw.detail->>'wanted_revision')::integer AS semantic_wanted_revision,
+               (sw.detail->>'done_revision')::integer AS semantic_done_revision,
+               (sw.detail->>'last_outcome') AS semantic_last_outcome,
                sw.last_error_code AS semantic_last_error_code,
                h.content_revision AS update_content_revision, h.adopted_at_ms AS update_adopted_at_ms,
                jsonb_array_length(u.document -> 'claims') AS update_claim_n,
@@ -324,7 +320,7 @@ def feed_page_sql(where_sql: str) -> str:
                ) AS update_claim_headline,
                nw.state AS notification_state, nw.attempts AS notification_attempts,
                nw.last_error_code AS notification_last_error_code,
-               nw.content_revision AS notification_content_revision,
+               (nw.detail->>'content_revision') AS notification_content_revision,
                nd.plan ->> 'action' AS notification_action,
                nd.plan -> 'claim_decisions' AS notification_claim_decisions,
                d.kind AS delivery_kind, d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms,

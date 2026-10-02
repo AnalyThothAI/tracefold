@@ -22,8 +22,8 @@ QuoteState = Literal["fresh", "stale", "unavailable", "unlisted"]
 FreshnessBasis = Literal["source_and_received", "received_only"]
 
 # Shared venue candle alignment and gap tolerance.
-CANDLE_INTERVAL: Final = "5m"
-CANDLE_INTERVAL_MS: Final = 300_000
+CANDLE_INTERVAL: Final = "1m"
+CANDLE_INTERVAL_MS: Final = 60_000
 # One interval plus provider timestamp jitter. Wide enough that a boundary rounding difference between two
 # venues does not read as a hole, narrow enough that a halted or illiquid session never forward-fills.
 CANDLE_GAP_TOLERANCE_MS: Final = CANDLE_INTERVAL_MS + 30_000

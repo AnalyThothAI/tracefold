@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from tracefold.news.liquidations import LiquidationFact
@@ -78,8 +79,18 @@ class LegacyMarketSeed:
             ),
         )
 
-    def insert_market_liquidation(self, *, fact: LiquidationFact, ingest_mode: str, now_ms: int) -> None:
+    def insert_market_liquidation(
+        self,
+        *,
+        fact: LiquidationFact,
+        item_id: str,
+        fact_id: str,
+        source_strategy_id: str,
+        ingest_mode: str,
+        now_ms: int,
+    ) -> None:
 
+        # Frozen 0420 metadata is explicit; the current parser no longer carries retired fields.
         self.conn.execute(
             """
             INSERT INTO news_market_liquidations (
@@ -98,33 +109,33 @@ class LegacyMarketSeed:
             ON CONFLICT (source_key) DO NOTHING
             """,
             (
-                fact.source_key,
-                fact.item_id,
-                fact.fact_id,
+                hashlib.sha256(f"{item_id}\x1f{fact_id}\x1fliquidation_parser_v1".encode()).hexdigest(),
+                item_id,
+                fact_id,
                 ingest_mode,
                 MARKET_PROVIDER,
                 fact.symbol,
                 fact.raw_instrument,
                 fact.source_venue,
-                fact.source_strategy_id,
+                source_strategy_id,
                 fact.liquidated_position_side,
                 fact.forced_order_side,
                 fact.notional_usd,
-                fact.quantity,
+                None,
                 fact.price,
                 int(fact.event_at_ms),
                 int(fact.received_at_ms),
                 fact.parser_version,
-                fact.provider_record_identity,
-                fact.symbol_contract_identity,
-                fact.position_side_semantics,
-                fact.quantity_semantics,
-                fact.notional_semantics,
-                fact.price_semantics,
-                fact.completeness_assumption,
-                fact.throttle_assumption,
+                item_id,
+                f"unresolved:{fact.source_venue or 'unknown'}:{fact.symbol}",
+                "template_position_side;short=>forced_buy;long=>forced_sell",
+                "not_provided",
+                "provider_reported_usd_notional",
+                "provider_reported_unspecified_price",
+                "selected_events_without_heartbeat_sequence_or_coverage_sla",
+                "provider_throttle_unknown",
                 fact.source_contract_version,
-                bool(fact.source_contract_complete),
+                False,
                 int(now_ms),
                 int(now_ms),
             ),

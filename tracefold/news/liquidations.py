@@ -16,7 +16,6 @@ supporting trading on it, and the two were never the same claim.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -68,37 +67,17 @@ _MAX_VENUE_LEN: Final = 32
 
 @dataclass(frozen=True, slots=True)
 class LiquidationFact:
-    source_key: str
-    item_id: str
-    fact_id: str
     symbol: str
     raw_instrument: str
     source_venue: str | None
-    source_strategy_id: str
     liquidated_position_side: Literal["long", "short"]
     forced_order_side: Literal["buy", "sell"]
     notional_usd: Decimal
-    quantity: Decimal | None
     price: Decimal
     event_at_ms: int
     received_at_ms: int
-    provider_record_identity: str
-    symbol_contract_identity: str
-    position_side_semantics: str
-    quantity_semantics: str
-    notional_semantics: str
-    price_semantics: str
-    completeness_assumption: str
-    throttle_assumption: str
     source_contract_version: str = SOURCE_CONTRACT_VERSION
-    source_contract_complete: bool = False
     parser_version: str = PARSER_VERSION
-
-
-def source_key(*, item_id: str, fact_id: str) -> str:
-    """Provider-record identity plus fact and parser generation."""
-
-    return hashlib.sha256(f"{item_id}\x1f{fact_id}\x1f{PARSER_VERSION}".encode()).hexdigest()
 
 
 def scaled_amount(digits: str, suffix: str) -> Decimal:
@@ -117,13 +96,9 @@ def scaled_amount(digits: str, suffix: str) -> Decimal:
 def parse_liquidation(
     title: str,
     *,
-    item_id: str,
-    fact_id: str,
-    source_strategy_id: str,
     provider_source: str,
     event_at_ms: int,
     received_at_ms: int,
-    provider_record_identity: str | None = None,
 ) -> LiquidationFact | None:
     """Parse the shared liquidation wire template, failing closed on ambiguous units only.
 
@@ -151,29 +126,15 @@ def parse_liquidation(
     if not symbol:
         return None
     return LiquidationFact(
-        source_key=source_key(item_id=item_id, fact_id=fact_id),
-        item_id=item_id,
-        fact_id=fact_id,
         symbol=symbol,
         raw_instrument=raw_instrument,
         source_venue=venue or None,
-        source_strategy_id=str(source_strategy_id),
         liquidated_position_side=position_side,  # type: ignore[arg-type]
         forced_order_side="buy" if position_side == "short" else "sell",
         notional_usd=notional,
-        quantity=None,
         price=price,
         event_at_ms=int(event_at_ms),
         received_at_ms=int(received_at_ms),
-        provider_record_identity=str(provider_record_identity or item_id),
-        # OpenNews names a base symbol and venue but not the exact listed contract.
-        symbol_contract_identity=f"unresolved:{venue or 'unknown'}:{symbol}",
-        position_side_semantics="template_position_side;short=>forced_buy;long=>forced_sell",
-        quantity_semantics="not_provided",
-        notional_semantics="provider_reported_usd_notional",
-        price_semantics="provider_reported_unspecified_price",
-        completeness_assumption="selected_events_without_heartbeat_sequence_or_coverage_sla",
-        throttle_assumption="provider_throttle_unknown",
     )
 
 
@@ -187,5 +148,4 @@ __all__ = [
     "LiquidationFact",
     "parse_liquidation",
     "scaled_amount",
-    "source_key",
 ]

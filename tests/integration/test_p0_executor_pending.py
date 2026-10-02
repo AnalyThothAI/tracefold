@@ -109,7 +109,7 @@ def test_late_commit_is_consumed_after_higher_sequence_is_disposed(postgres_clon
             assert second.next_intent(account_slot=SLOT)["command_id"] == "a" * 64
 
 
-@pytest.mark.parametrize("stop", ["pause_entries", "emergency_halt"])
+@pytest.mark.parametrize("stop", ["pause_entries", "emergency_halt", "flatten"])
 def test_late_resume_cannot_reverse_newer_accepted_stop(postgres_clone_dsn, stop: str) -> None:
     now = time.time_ns()
     with closing(connect_postgres_test()) as late, closing(connect_postgres_test()) as conn:
@@ -180,3 +180,40 @@ def test_identical_order_evidence_does_not_rewrite_xmin(postgres_clone_dsn) -> N
         )
         conn.commit()
         assert conn.execute("SELECT xmin::text FROM trading_orders").fetchone()["xmin"] != before["xmin"]
+
+
+def test_resume_refuses_until_flatten_command_is_cleared(postgres_clone_dsn):
+    now = time.time_ns()
+    with closing(connect_postgres_test()) as conn:
+        db = ExecutorStorage(conn)
+        db.ensure_account(SLOT)
+        db.append_operator_intent(intent("b", "flatten", now))
+        conn.commit()
+        runner = ExecutorRunner(
+            settings=Settings(trading={"execution": {"binance": {"environment": "DEMO"}}}), conn=conn, venue=object()
+        )
+        runner.account_slot = SLOT
+        asyncio.run(runner._one_intent(now))
+        db.append_operator_intent(intent("c", "resume_entries", now + 1))
+        conn.commit()
+        asyncio.run(runner._one_intent(now + 1))
+        result = db.disposition(kind="intent", input_id="c" * 64)
+        assert (result["disposition"], result["reason"]) == ("refused", "flatten_in_progress")
+        assert db.control(SLOT)["entries_paused"] is True
+        db.clear_flatten(account_slot=SLOT)
+        db.append_operator_intent(intent("d", "resume_entries", now + 3))
+        conn.commit()
+        asyncio.run(runner._one_intent(now + 3))
+        assert db.control(SLOT)["entries_paused"] is False
+
+
+def test_signal_publication_does_not_create_an_executor_account(postgres_clone_dsn):
+    from psycopg.errors import ForeignKeyViolation
+
+    with closing(connect_postgres_test()) as conn:
+        seed_case(conn)
+        conn.execute("DELETE FROM trading_accounts WHERE account_slot=%s", (SLOT,))
+        conn.commit()
+        with pytest.raises(ForeignKeyViolation), conn.transaction():
+            ExecutorStorage(conn).append_signal(signal("a", time.time_ns()))
+        assert conn.execute("SELECT count(*) AS n FROM trading_accounts").fetchone()["n"] == 0

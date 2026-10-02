@@ -205,10 +205,19 @@ class PgSemanticStore:
     async def claim_semantic_work(self, event_id: str, *, lease_ms: int) -> SemanticLease | None:
         token = self.lease_token()
         now_ms = self.clock()
+        read = await self.db.read(
+            "news_update_read_claim",
+            lambda repos: repos.news.semantic_work.read_semantic_claim(
+                event_id=event_id, now_ms=now_ms, input=repos.news.semantic_input
+            ),
+            repeatable_read=True,
+        )
+        if read is None:
+            return None
         return await self.db.tx(
             "news_update_claim_work",
             lambda repos: repos.news.semantic_work.claim_semantic_work(
-                event_id=event_id, lease_token=token, now_ms=now_ms, lease_ms=lease_ms, input=repos.news.semantic_input
+                read=read, lease_token=token, now_ms=self.clock(), lease_ms=lease_ms
             ),
         )
 

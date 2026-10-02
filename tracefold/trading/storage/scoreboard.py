@@ -1,4 +1,3 @@
-# ruff: noqa: S608 -- SQL composition uses owned constants and bound parameters.
 """One PostgreSQL-backed scoreboard query and projection shared by CLI and HTTP."""
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ from typing import Any, Literal
 from tracefold.trading.engine.forecast import Driver, Forecast, LegProbabilities, PolicyDecision
 from tracefold.trading.engine.paper import PaperLeg
 from tracefold.trading.engine.scoreboard import ScoredCase, forecast_score, policy_scores
-from tracefold.trading.storage.case_rows import ACTION_ROWS_SQL, ASSESSMENT_ROWS_SQL, PAPER_ROWS_SQL
+from tracefold.trading.storage.case_documents import assessment_view, paper_view, policy_view
 
 SCOREBOARD_CASES_SQL = (
     "SELECT case_id,asset_id,trigger_kind,created_at_ms,view FROM trading_cases "
@@ -22,18 +21,19 @@ SCOREBOARD_TRIGGER_COUNT_SQL = (
     "received_at_ms>=%s AND received_at_ms<%s"
 )
 SCOREBOARD_ASSESSMENTS_SQL = (
-    "SELECT * FROM (" + ASSESSMENT_ROWS_SQL + ") a WHERE case_id=ANY(%s) AND (%s::text IS NULL OR program_sha=%s)"
+    "SELECT case_id,program_sha,assessment FROM trading_cases WHERE case_id=ANY(%s) "
+    "AND assessment IS NOT NULL AND (%s::text IS NULL OR program_sha=%s)"
 )
 SCOREBOARD_ACTIONS_SQL = (
-    "SELECT * FROM (" + ACTION_ROWS_SQL + ") a WHERE case_id=ANY(%s) AND (%s::text IS NULL OR program_sha=%s)"
+    "SELECT case_id,program_sha,policy_decisions FROM trading_cases WHERE case_id=ANY(%s) "
+    "AND (%s::text IS NULL OR program_sha=%s)"
 )
-SCOREBOARD_LEGS_SQL = (
-    "SELECT * FROM (" + PAPER_ROWS_SQL + ") l WHERE case_id=ANY(%s) AND geometry_version='leg_geometry_v1'"
-)
+SCOREBOARD_LEGS_SQL = "SELECT case_id,paper_legs FROM trading_cases WHERE case_id=ANY(%s)"
 SCOREBOARD_EXECUTIONS_SQL = (
-    "SELECT a.program_sha,a.case_id,a.action,e.net_pnl,e.reserved_notional,e.stop_bps "
-    "FROM (" + ACTION_ROWS_SQL + ") a JOIN trading_entries e ON e.entry_id=a.signal_id "
-    "WHERE a.case_id=ANY(%s) AND a.signal_id IS NOT NULL AND e.pnl_status='complete'"
+    "SELECT c.program_sha,c.case_id,a->>'action' AS action,e.net_pnl,e.reserved_notional,e.stop_bps "
+    "FROM trading_cases c JOIN trading_entries e ON e.case_id=c.case_id "
+    "CROSS JOIN LATERAL jsonb_array_elements(c.policy_decisions) a WHERE c.case_id=ANY(%s) "
+    "AND a->>'signal_id'=e.entry_id AND e.pnl_status='complete'"
 )
 SCOREBOARD_DISPOSITIONS_SQL = (
     "SELECT count(*) FILTER (WHERE state IN ('accepted','open','closing','terminal')) AS accepted, "
@@ -116,25 +116,28 @@ class ScoreboardStorage:
             }
         ids = list(cases)
         assessments = [
-            dict(row)
+            assessment_view(row)
             for row in self.conn.execute(
                 SCOREBOARD_ASSESSMENTS_SQL,
                 (ids, program_sha, program_sha),
             ).fetchall()
         ]
         actions = [
-            dict(row)
+            view
             for row in self.conn.execute(
                 SCOREBOARD_ACTIONS_SQL,
                 (ids, program_sha, program_sha),
             ).fetchall()
+            for view in policy_view(row)
         ]
         legs = [
-            dict(row)
+            view
             for row in self.conn.execute(
                 SCOREBOARD_LEGS_SQL,
                 (ids,),
             ).fetchall()
+            for view in paper_view(row)
+            if view["geometry_version"] == "leg_geometry_v1"
         ]
         execution_rows = [
             dict(row)

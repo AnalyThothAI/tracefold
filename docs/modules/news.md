@@ -643,3 +643,11 @@ P1 将 OI、清算、大户报告、钱包触发和无法结构化的市场记�
 `news_collectors` 固定拥有 `opennews`、`chain_tape`、`wallet_roster`、`instrument_catalog` 四行。各行状态由对应 Pydantic 模型验证，修改时锁住整行并一次写回状态与事故数组。事故保留全部未关闭或待恢复记录以及最近 20 个已关闭且恢复结算的记录；单调 ID 不随裁剪重用。名单由 `news_market_wallets` 的成员区间保存，历史版本按加入和退出边界读取；相同成员只更新来源信息，不生成新版本。钱包和市场观察各自执行有界保留清理。
 
 当前报价、发送时行情补充与持续报价采集继续运行；旧 Event Reaction 和钱包 outcome 采样已删除。Feed / Event Detail 不再返回 reaction / reactions，钱包接口不再返回 reference 与 outcomes，Workers 不再声明 `news_reactions` 和 `wallet_prices` 能力。迁移备份、预检和回退边界见[迁移手册](../MIGRATIONS.md)。
+
+
+语义 claim 与通知 plan/send 的输入、读者召回在 `REPEATABLE READ READ ONLY` 事务中完成，之后以 Event → job 的顺序进行短事务校验。语义领取按 wanted revision CAS，只对仍可领取的版本消耗一次尝试；输入超时继续记录尝试和退避。通知提交校验读者 revision 与 News reader clock（由采用、回执与读者事实触发器原子推进），相关事实变化使证明失效时在锁外最多重读三次，再保持待处理；不会在 Event 锁内重跑召回。admission 的 250ms 锁等待上限保留。
+
+编辑发送清扫以实际 `lease_until_ms` 到期为所有权丢失，并按候选 lease token 与 attempted time CAS；在途 owned intent 排除。市场发送结算按当前 attempts CAS，失败不推进组 anchor。collector 的无变化 mutation 不写行；正常成功帧五秒最多记录一次，broker 事故后的首个成功帧在同一 mutation 中关闭事故并刷新时钟。
+
+
+`news_reader_clock` 只保存一个可 HOT 更新的版本数，作为 RR 输入的 CAS 围栏；它不存知识或发送事实。短写事务在 Event 和 job/intent 后锁住此行；有界 sending sweep 在结算前先按顺序锁住全部候选 Event，避免跨 Event 的锁环。相关事实的 AFTER constraint 触发器默认延迟至提交时推进版本，事实与版本对其他事务原子可见；admission 先写 Item/member 再锁 Event 时不会提前持有 clock，避免反向锁序。Trading、collector 时钟与其他数据库的写入不改变该版本。新增这一张元数据表后 News 为 18 表、全库 27 表；这是为并发证明增加的唯一表，而非恢复旧投影或双写路径。

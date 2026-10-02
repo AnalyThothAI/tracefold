@@ -28,7 +28,6 @@ SIGNAL_PATH = (
     "app/trading_case_prepare.py",
     "app/trading_intake.py",
     "trading/storage/case_documents.py",
-    "trading/storage/case_rows.py",
     "trading/storage/root.py",
     "trading/storage/history.py",
     "trading/storage/scoreboard.py",

@@ -157,14 +157,6 @@ class CollectorsStorage:
     def __init__(self, conn: Any) -> None:
         self.conn = conn
 
-    def collector_state(self, collector_id: str, model: type[StateT]) -> tuple[StateT, int]:
-        row = self.conn.execute(
-            "SELECT state,updated_at_ms FROM news_collectors WHERE collector_id=%s", (collector_id,)
-        ).fetchone()
-        if row is None:
-            raise RuntimeError(f"news_collector_missing:{collector_id}")
-        return model.model_validate(row["state"]), int(row["updated_at_ms"])
-
     @contextmanager
     def mutate_collector(
         self, collector_id: str, model: type[StateT], *, now_ms: int
@@ -182,6 +174,8 @@ class CollectorsStorage:
             state = model.model_validate(state.model_dump())
             incidents = CollectorIncidents.model_validate(incidents.model_dump())
             incidents.retain()
+            if state.model_dump() == row["state"] and incidents.model_dump() == row["incidents"]:
+                return
             self.conn.execute(
                 "UPDATE news_collectors SET state=%s::jsonb,incidents=%s::jsonb,updated_at_ms=%s WHERE collector_id=%s",
                 (
@@ -211,6 +205,25 @@ class CollectorsStorage:
                 state.last_publish_at_ms = last_publish_at_ms
             if clear_error or last_error_code is not None:
                 state.last_error_code = None if clear_error else last_error_code
+
+    def record_published_frame(self, *, now_ms: int) -> int:
+        closed = 0
+        with self.mutate_collector("opennews", OpenNewsState, now_ms=now_ms) as (state, incidents):
+            for incident in incidents.root:
+                if incident.closed_at_ms is None and incident.cause_class in {
+                    "broker_backpressure",
+                    "broker_unavailable",
+                }:
+                    incident.closed_at_ms = now_ms
+                    incident.recovery_to_at_ms = incident.recovery_to_at_ms or now_ms
+                    incident.recovery_status = "pending"
+                    incident.updated_at_ms = now_ms
+                    closed += 1
+            if closed or state.last_publish_at_ms is None or now_ms - state.last_publish_at_ms >= 5_000:
+                state.last_frame_at_ms = now_ms
+                state.last_publish_at_ms = now_ms
+                state.last_error_code = None
+        return closed
 
     def ingest_liveness(self) -> dict[str, Any] | None:
         row = self.conn.execute(INGEST_LIVENESS_SQL).fetchone()

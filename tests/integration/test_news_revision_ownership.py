@@ -5,6 +5,7 @@ from itertools import pairwise
 
 import pytest
 
+from tests.support.news_0424_sql import ITEM_REVISIONS_SQL, SEMANTIC_RESULTS_SQL, UPDATE_RECEIPTS_SQL
 from tests.support.news_event_updates import _draft, material
 from tests.support.news_update_admission import TITLE, RecordingBus, add_member_evidence, event_of, raw, work
 from tests.support.news_update_pg import (
@@ -28,9 +29,7 @@ from tests.support.news_update_semantic import prior_of
 from tracefold.news.notifications.card import freeze_card
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.storage.errors import SemanticLeaseLost
-from tracefold.news.storage.notification_rows import UPDATE_RECEIPTS_SQL
 from tracefold.news.storage.notification_store import PgNotificationStore
-from tracefold.news.storage.semantic_rows import ITEM_REVISIONS_SQL, SEMANTIC_RESULTS_SQL
 from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.updates.contracts import Extraction, FrozenInput, PriorClaim, RelationDraft
 from tracefold.news.updates.judgment import ProviderUnavailable
