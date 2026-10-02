@@ -2,7 +2,8 @@ import { getApi } from "@lib/api/client";
 import type { components } from "@lib/types/openapi";
 import { newsFeedIdentity, queryKeys } from "@shared/query/queryKeys";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+
+import { useNewsReadingState } from "../state/newsReadingSession";
 
 type NewsSchemas = components["schemas"];
 
@@ -197,7 +198,10 @@ export const useNewsFeedFirstPageWithToken = (token: string, filters: NewsFeedFi
 
 /** One bounded, sequentially revalidated cursor chain for both News Event lists. */
 export function useNewsFeedWindowWithToken(token: string, filters: NewsFeedFilters) {
-  const [generation, setGeneration] = useState(0);
+  const [generation, setGeneration] = useNewsReadingState(
+    `feed-window:${JSON.stringify(newsFeedIdentity(filters))}`,
+    0,
+  );
   const query = useInfiniteQuery({
     enabled: Boolean(token),
     queryKey: queryKeys.newsFeedWindow(filters, generation),
@@ -210,7 +214,12 @@ export function useNewsFeedWindowWithToken(token: string, filters: NewsFeedFilte
       current.state.data?.pageParams[0] === null ? NEWS_FEED_REFETCH_MS : false,
   });
   const olderWindow = query.data?.pageParams[0] != null;
-  return { query, olderWindow, returnLatest: () => setGeneration((value) => value + 1) };
+  return {
+    query,
+    olderWindow,
+    generation,
+    returnLatest: () => setGeneration((value) => value + 1),
+  };
 }
 
 const marketKindParam = (kinds: readonly NewsMarketKind[]): string | null =>

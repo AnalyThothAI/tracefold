@@ -1,5 +1,4 @@
 import { newsEventPath } from "@shared/routing/paths";
-import type { MouseEvent } from "react";
 import { Link } from "react-router-dom";
 
 import type { NewsFeedEvent, NewsQuote } from "../../api/newsQueries";
@@ -22,9 +21,8 @@ const ROW_ASSET_CHIPS = 3;
  * and the server's `reason_zh` under it.
  *
  * The whole row opens the Event through a stretched headline link — one accessible name, no click handler on
- * a non-interactive element. `onOpen` intercepts a plain left click at desktop width so the Event opens in the
- * drawer beside the list instead of replacing it; a modified click, a middle click and every assistive path
- * still follow the real href.
+ * a non-interactive element. Plain clicks and keyboard activation enter the detail page at every width;
+ * modified and middle clicks retain the browser's native link behavior.
  *
  * The approved list has no inline reaction or expansion controls. The headline link is the one way into the
  * Event, and the filter/search state follows it into the detail surface.
@@ -32,13 +30,11 @@ const ROW_ASSET_CHIPS = 3;
 export function NewsEventRow({
   event,
   fresh = false,
-  onOpen,
   quotes,
   searchState,
 }: {
   event: NewsFeedEvent;
   fresh?: boolean;
-  onOpen?: (eventId: string, trigger: HTMLAnchorElement) => void;
   quotes?: Record<string, NewsQuote>;
   searchState?: string;
 }) {
@@ -47,19 +43,6 @@ export function NewsEventRow({
   const assets = event.assets ?? [];
   const sentAt = event.delivery?.state === "sent" ? event.delivery.settled_at_ms : null;
   const openState = searchState == null ? undefined : { feedSearch: searchState };
-  const onHeadlineClick = (clickEvent: MouseEvent<HTMLAnchorElement>) => {
-    if (!onOpen) return;
-    if (
-      clickEvent.metaKey ||
-      clickEvent.ctrlKey ||
-      clickEvent.shiftKey ||
-      clickEvent.button !== 0
-    ) {
-      return;
-    }
-    clickEvent.preventDefault();
-    onOpen(event.event_id, clickEvent.currentTarget);
-  };
   return (
     <article
       className="news-event-row"
@@ -78,7 +61,7 @@ export function NewsEventRow({
 
       <div className="news-event-main">
         <h2 className="news-event-headline">
-          <Link onClick={onHeadlineClick} state={openState} to={newsEventPath(event.event_id)}>
+          <Link state={openState} to={newsEventPath(event.event_id)}>
             {headline}
           </Link>
         </h2>
