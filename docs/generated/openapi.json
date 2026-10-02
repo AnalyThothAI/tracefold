@@ -1,6 +1,30 @@
 {
   "components": {
     "schemas": {
+      "AnchorEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "probabilities": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Probabilities",
+            "type": "object"
+          }
+        },
+        "required": [
+          "probabilities",
+          "confidence"
+        ],
+        "title": "AnchorEvidence",
+        "type": "object"
+      },
       "ApiEnvelope_BootstrapData_": {
         "additionalProperties": false,
         "properties": {
@@ -854,6 +878,76 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InterruptEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "probabilities": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              }
+            ],
+            "title": "Probabilities",
+            "type": "array"
+          }
+        },
+        "required": [
+          "probabilities",
+          "confidence"
+        ],
+        "title": "InterruptEvidence",
+        "type": "object"
+      },
+      "MaterialityEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "probabilities": {
+            "items": {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Probabilities",
+            "type": "array"
+          },
+          "value": {
+            "maximum": 3.0,
+            "minimum": 0.0,
+            "title": "Value",
+            "type": "number"
+          }
+        },
+        "required": [
+          "value",
+          "probabilities",
+          "confidence"
+        ],
+        "title": "MaterialityEvidence",
         "type": "object"
       },
       "NetBuyMember": {
@@ -1844,6 +1938,31 @@
       "NewsClaimDecisionData": {
         "additionalProperties": false,
         "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AnchorEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "certification_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "uncalibrated",
+                  "certified"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Certification Status"
+          },
           "claim_ref": {
             "title": "Claim Ref",
             "type": "string"
@@ -1861,6 +1980,17 @@
             "default": "",
             "title": "Decision Zh",
             "type": "string"
+          },
+          "e": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "E"
           },
           "earlier": {
             "anyOf": [
@@ -1883,7 +2013,30 @@
             ],
             "title": "Earlier Intent Id"
           },
-          "importance": {
+          "held": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Held"
+          },
+          "historical_judgment": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Historical Judgment"
+          },
+          "i": {
             "anyOf": [
               {
                 "type": "number"
@@ -1892,23 +2045,19 @@
                 "type": "null"
               }
             ],
-            "title": "Importance"
+            "title": "I"
           },
-          "importance_probabilities": {
+          "interrupt": {
             "anyOf": [
               {
-                "items": {
-                  "type": "number"
-                },
-                "type": "array"
+                "$ref": "#/components/schemas/InterruptEvidence"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Importance Probabilities"
+            ]
           },
-          "importance_threshold": {
+          "m": {
             "anyOf": [
               {
                 "type": "number"
@@ -1917,7 +2066,17 @@
                 "type": "null"
               }
             ],
-            "title": "Importance Threshold"
+            "title": "M"
+          },
+          "materiality": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaterialityEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "novelty": {
             "anyOf": [
@@ -1941,6 +2100,28 @@
             "default": "",
             "title": "Novelty Zh",
             "type": "string"
+          },
+          "p_key": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P Key"
+          },
+          "p_push": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P Push"
           },
           "reader_backend": {
             "anyOf": [
@@ -2003,6 +2184,21 @@
               }
             ],
             "title": "Render"
+          },
+          "report_kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReportKindEvidence"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "report_kind_zh": {
+            "default": "",
+            "title": "Report Kind Zh",
+            "type": "string"
           },
           "statement": {
             "anyOf": [
@@ -7924,6 +8120,63 @@
           "composition"
         ],
         "title": "ReadinessData",
+        "type": "object"
+      },
+      "ReportKindEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "probabilities": {
+            "additionalProperties": {
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            "propertyNames": {
+              "enum": [
+                "new_action",
+                "official_communication",
+                "market_move",
+                "scheduled_data",
+                "self_reported_metric",
+                "unconfirmed_incident",
+                "recap_or_old_period",
+                "promotion",
+                "commentary",
+                "background"
+              ]
+            },
+            "title": "Probabilities",
+            "type": "object"
+          },
+          "value": {
+            "enum": [
+              "new_action",
+              "official_communication",
+              "market_move",
+              "scheduled_data",
+              "self_reported_metric",
+              "unconfirmed_incident",
+              "recap_or_old_period",
+              "promotion",
+              "commentary",
+              "background"
+            ],
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value",
+          "probabilities",
+          "confidence"
+        ],
+        "title": "ReportKindEvidence",
         "type": "object"
       },
       "ServeRuntimeData": {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
@@ -11,9 +12,9 @@ from typing import Final, Literal
 
 from ..updates.contracts import Claim, ClaimFields, ContentKind, EventUpdate
 from ..updates.identity import identity
-from .contracts import ClaimReason, ReaderSnapshot
+from .contracts import ClaimReason, ReaderPolicyScores, ReaderSnapshot
 from .novelty import ReaderNovelty, Render
-from .reader import NONE, AnchorEvidence, ReaderBackend, ReaderJudgment
+from .reader import NONE, AnchorEvidence, ReaderBackend, ReaderJudgment, ReportKind
 
 # An ordinary push reaches the reader within three hours of the claim first being visible; a correction of
 # something the reader was told is still worth it for twelve.
@@ -53,34 +54,71 @@ _MONTHS: Final = (
 
 
 @dataclass(frozen=True, slots=True)
-class ReaderCuts:
-    """One backend's independently fitted push, held and level-4-tail thresholds."""
+class ReaderCalibration:
+    """Reviewed logistic parameters and independently certified cuts for one backend.
 
-    # Unanchored claims use push or the level-4 tail; anchored facts and linked details
-    # must cross held before the level-4 tail can mark them key.
-    push: float
-    held: float
-    key_tail: float
+    The zero coefficients are an explicitly unfitted placeholder. They never
+    authorize a push; real reasks and independent owner labels are required
+    before replacing them and marking this backend certified.
+    """
+
+    materiality_floor: int = 2
+    push_coefficients: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    key_coefficients: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    push_cut: float | None = None
+    key_cut: float | None = None
     # A claim is anchored to its most likely message when P(none) is below this. An increment is written
     # against the anchored message; a linked increment without an anchor is written in full.
-    anchor_none_below: float
+    anchor_none_below: float = 0.2
+    certification_status: Literal["uncalibrated", "certified"] = "uncalibrated"
+
+    def __post_init__(self) -> None:
+        if self.materiality_floor not in {1, 2, 3}:
+            raise ValueError("news_reader_materiality_floor_invalid")
+        if (
+            len(self.push_coefficients) != 4
+            or len(self.key_coefficients) != 3
+            or not all(math.isfinite(value) for value in (*self.push_coefficients, *self.key_coefficients))
+        ):
+            raise ValueError("news_reader_calibration_coefficients_invalid")
+        if not 0 < self.anchor_none_below < 1 or any(
+            cut is not None and not 0 <= cut <= 1 for cut in (self.push_cut, self.key_cut)
+        ):
+            raise ValueError("news_reader_calibration_cut_invalid")
+        if self.certification_status not in {"uncalibrated", "certified"} or (
+            self.certification_status == "certified" and (self.push_cut is None or self.key_cut is None)
+        ):
+            raise ValueError("news_reader_calibration_certification_invalid")
 
 
-# #791 current-v3 reasks calibrate importance and the level-4 tail separately.
-# Lower held preserves important new terms/grounds of an already reported action;
-# a .4 tail keeps routine ordinary pushes from being marked key. The native route
-# has all 1,497 answers; generated calibration uses its available subset only.
-# Measurements and remaining error are recorded in docs/reports/news-791-b.md.
-READER_CUTS: Final[dict[ReaderBackend, ReaderCuts]] = {
-    "native": ReaderCuts(push=2.4, held=2.5, key_tail=0.4, anchor_none_below=0.2),
-    "generated": ReaderCuts(push=2.4, held=2.6, key_tail=0.4, anchor_none_below=0.2),
+PUSHABLE_KINDS: Final[dict[ReportKind, bool]] = {
+    "new_action": True,
+    "official_communication": True,
+    "market_move": True,
+    "scheduled_data": True,
+    "self_reported_metric": True,
+    "unconfirmed_incident": True,
+    "recap_or_old_period": False,
+    "promotion": False,
+    "commentary": False,
+    "background": False,
+}
+KIND_FLOOR: Final = 0.3
+LOGIT_EPSILON: Final = 1e-6
+
+READER_CALIBRATIONS: Final[dict[ReaderBackend, ReaderCalibration]] = {
+    "native": ReaderCalibration(),
+    "generated": ReaderCalibration(),
 }
 
 
 NOTIFICATION_POLICY_IDENTITY: Final = identity(
     "news_notification_policy",
-    "level4_tail_key_v1",
-    {backend: asdict(cuts) for backend, cuts in READER_CUTS.items()},
+    "report_kind_materiality_interrupt_v1",
+    PUSHABLE_KINDS,
+    KIND_FLOOR,
+    LOGIT_EPSILON,
+    {backend: asdict(calibration) for backend, calibration in READER_CALIBRATIONS.items()},
     SOURCE_MAX_AGE_MS,
     CORRECTION_MAX_AGE_MS,
     OCCURRENCE_MAX_AGE_DAYS,
@@ -88,18 +126,18 @@ NOTIFICATION_POLICY_IDENTITY: Final = identity(
 )
 
 
-def cuts_for(judgment: ReaderJudgment) -> ReaderCuts:
-    """Use the backend that answered; unavailable model evidence has no policy cut."""
+def calibration_for(judgment: ReaderJudgment) -> ReaderCalibration:
+    """Use the independently calibrated backend that actually answered."""
 
     if judgment.backend is None:
         raise ValueError("news_reader_judgment_unavailable")
-    return READER_CUTS[judgment.backend]
+    return READER_CALIBRATIONS[judgment.backend]
 
 
-def anchor_index(evidence: AnchorEvidence, cuts: ReaderCuts) -> int | None:
+def anchor_index(evidence: AnchorEvidence, calibration: ReaderCalibration) -> int | None:
     """Select a core-fact anchor from model evidence under this policy."""
 
-    if evidence.probabilities[NONE] >= cuts.anchor_none_below:
+    if evidence.probabilities[NONE] >= calibration.anchor_none_below:
         return None
     best = max(
         (value for value in evidence.probabilities if value != NONE),
@@ -118,6 +156,53 @@ class ReaderDecision:
     # The earlier receipt the card and the record name: the delivered claim a development changes, else the
     # message the anchor says already reported the claim's core fact.
     anchor_intent_id: str | None = None
+    scores: ReaderPolicyScores | None = None
+
+
+def _logit(probability: float) -> float:
+    clipped = min(1 - LOGIT_EPSILON, max(LOGIT_EPSILON, probability))
+    return math.log(clipped) - math.log1p(-clipped)
+
+
+def _sigmoid(value: float) -> float:
+    if value >= 0:
+        return 1 / (1 + math.exp(-value))
+    exponential = math.exp(value)
+    return exponential / (1 + exponential)
+
+
+def reader_scores(
+    judgment: ReaderJudgment, *, held: bool = False, calibration: ReaderCalibration | None = None
+) -> ReaderPolicyScores:
+    """Replay stored distributions without changing the model or its cache identity.
+
+    Neither the materiality expectation nor the anchor probability participates
+    in these probabilities. The incremental materiality question already
+    compares all supplied messages.
+    """
+
+    if judgment.report_kind is None or judgment.materiality is None or judgment.interrupt is None:
+        raise ValueError("news_reader_judgment_unavailable")
+    calibration = calibration or calibration_for(judgment)
+    # Validated distributions tolerate provider rounding at 1e-6. Keep the raw
+    # evidence intact while ensuring a summed probability is still in [0, 1].
+    e = min(
+        1.0,
+        sum(probability for kind, probability in judgment.report_kind.probabilities.items() if PUSHABLE_KINDS[kind]),
+    )
+    m = min(1.0, sum(judgment.materiality.probabilities[calibration.materiality_floor :]))
+    i = judgment.interrupt.probability
+    a, b1, b2, b3 = calibration.push_coefficients
+    c, d, f = calibration.key_coefficients
+    return ReaderPolicyScores(
+        e=e,
+        m=m,
+        i=i,
+        p_push=_sigmoid(a + b1 * _logit(e) + b2 * _logit(m) + b3 * held),
+        p_key=_sigmoid(c + d * _logit(i) + f * _logit(e)),
+        held=held,
+        certification_status=calibration.certification_status,
+    )
 
 
 def novelty_outcome(novelty: ReaderNovelty, *, first_available_at_ms: int) -> ReaderDecision | None:
@@ -147,16 +232,16 @@ def reader_decision(
     *,
     first_available_at_ms: int,
     message_intents: Sequence[str],
-    cuts: ReaderCuts | None = None,
+    calibration: ReaderCalibration | None = None,
     claim_fields: ClaimFields | None = None,
 ) -> ReaderDecision:
     """The reader rows of the decision table, in order, for one claim with an available judgment.
 
     Known and in-flight claims are never pushed, and a later correction of a delivered claim always is
     (`novelty_outcome`). Everything else, a real-world development of a delivered claim included, is pushed
-    on what it adds: its incremental importance against the push and held cuts of the backend that answered
-    (the replay passes others). An anchored core fact, or a linked detail/confirmation, needs the held cut. An
-    unanchored effective state change is scored at the ordinary push cut: a background link
+    on its eligible type mass and calibrated incremental materiality. Held is
+    one logistic input, never a separate cut. An unanchored effective state change
+    is scored as an ordinary new fact: a background link
     does not make an actual new action a detail. A development is written against the claim it changes; anything
     else is written as an increment only on the message the anchor names, since a link alone may join
     different facts of one story. `message_intents` are the receipts behind `ReaderInput.messages`.
@@ -165,13 +250,15 @@ def reader_decision(
     decided = novelty_outcome(novelty, first_available_at_ms=first_available_at_ms)
     if decided is not None:
         return decided
-    if judgment.importance is None:
+    if judgment.status != "available":
         raise ValueError("news_reader_judgment_unavailable")
-    cuts = cuts or cuts_for(judgment)
+    calibration = calibration or calibration_for(judgment)
     if novelty.novelty == "development":
         anchor = novelty.intent_id
     else:
-        index = None if judgment.anchor is None else anchor_index(judgment.anchor, cuts)
+        index = None if judgment.anchor is None else anchor_index(judgment.anchor, calibration)
+        if index is not None and index >= len(message_intents):
+            raise ValueError("news_reader_anchor_message_missing")
         anchor = None if index is None else message_intents[index]
     # A semantic information link can join an incident to its later recovery,
     # or a plan to actual execution. An unanchored effective state change is
@@ -186,11 +273,16 @@ def reader_decision(
     held = (novelty.novelty == "increment" and not (anchor is None and effective_action)) or (
         novelty.novelty == "unlinked" and anchor is not None
     )
-    value = judgment.importance.value
-    tail = judgment.importance.probabilities[4]
-    pushed = value >= cuts.held if held else (value >= cuts.push or tail >= cuts.key_tail)
-    outcome: ReaderOutcome = "feed" if not pushed else ("key" if tail >= cuts.key_tail else "push")
-    return ReaderDecision(outcome, "full" if anchor is None else "increment", anchor)
+    scores = reader_scores(judgment, held=held, calibration=calibration)
+    pushed = (
+        calibration.certification_status == "certified"
+        and scores.e >= KIND_FLOOR
+        and calibration.push_cut is not None
+        and scores.p_push >= calibration.push_cut
+    )
+    key = pushed and calibration.key_cut is not None and scores.p_key >= calibration.key_cut
+    outcome: ReaderOutcome = "feed" if not pushed else ("key" if key else "push")
+    return ReaderDecision(outcome, "full" if anchor is None else "increment", anchor, scores)
 
 
 def large_daily_move(claim: Claim) -> bool:

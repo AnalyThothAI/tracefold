@@ -32,7 +32,7 @@ ClaimReason = Literal[
     "correction_of_sent",
     "protected_listing",
     "large_daily_move",
-    # the incremental importance of what the claim adds, against the answering backend's cuts
+    # calibrated probabilities over independent report kind, materiality and interrupt evidence
     "reader_key",
     "reader_push",
     "reader_feed",
@@ -106,6 +106,18 @@ class ReaderRepairContext(Exact):
     body: str
 
 
+class ReaderPolicyScores(Exact):
+    """Frozen policy features and probabilities, separate from the model's answer evidence."""
+
+    e: float = Field(ge=0, le=1)
+    m: float = Field(ge=0, le=1)
+    i: float = Field(ge=0, le=1)
+    p_push: float = Field(ge=0, le=1)
+    p_key: float = Field(ge=0, le=1)
+    held: bool
+    certification_status: Literal["uncalibrated", "certified"]
+
+
 class ReaderRecord(Exact):
     """What the reader rows decided from, for one claim: novelty, the judgment and the frozen input's shape."""
 
@@ -118,6 +130,7 @@ class ReaderRecord(Exact):
     input_digest: str | None = None
     message_intents: tuple[str, ...] = ()
     judgment: ReaderJudgment | None = None
+    scores: ReaderPolicyScores | None = None
 
 
 class ClaimDecision(Exact):

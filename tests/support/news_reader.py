@@ -1,25 +1,33 @@
-"""Deterministic reader judges for notification seam tests: one fixed incremental importance for every claim."""
+"""Synthetic independent reader evidence for notification seam tests."""
 
 from __future__ import annotations
 
 from tracefold.news.notifications.reader import (
+    REPORT_KIND_OPTIONS,
     AnchorEvidence,
-    ImportanceEvidence,
+    InterruptEvidence,
+    MaterialityEvidence,
     ReaderInput,
     ReaderJudgment,
+    ReportKind,
+    ReportKindEvidence,
     anchor_options,
 )
 from tracefold.news.updates.judgment import Budget
 
 
 class FixedReader:
-    """Answers every claim with one importance value and one anchor, none by default; counts what it was asked."""
+    """Returns a fixed materiality, report kind and interrupt probability; records exact inputs."""
 
     identity = "fixture_reader_fixed"
 
-    def __init__(self, value: float = 2.6, anchor: str = "none") -> None:
+    def __init__(
+        self, value: float = 2.6, anchor: str = "none", *, kind: ReportKind = "new_action", interrupt: float = 0.05
+    ) -> None:
         self.value = value
         self.anchor = anchor
+        self.kind = kind
+        self.interrupt = interrupt
         self.asked: list[ReaderInput] = []
 
     async def judge(self, reader: ReaderInput, budget: Budget) -> ReaderJudgment:
@@ -29,7 +37,13 @@ class FixedReader:
             status="available",
             backend="native",
             identity=self.identity,
-            importance=ImportanceEvidence(value=self.value, probabilities=_distribution(self.value), confidence=0.8),
+            report_kind=ReportKindEvidence(
+                value=self.kind,
+                probabilities={value: 1.0 if value == self.kind else 0.0 for value, _ in REPORT_KIND_OPTIONS},
+                confidence=0.8,
+            ),
+            materiality=MaterialityEvidence(value=self.value, probabilities=_distribution(self.value), confidence=0.8),
+            interrupt=InterruptEvidence(probabilities=(1 - self.interrupt, self.interrupt), confidence=0.8),
             anchor=None
             if not options
             else AnchorEvidence(
@@ -40,9 +54,6 @@ class FixedReader:
 
 class PushAll(FixedReader):
     identity = "fixture_reader_push_all"
-
-    def __init__(self) -> None:
-        super().__init__(2.6)
 
 
 class FeedOnly(FixedReader):
@@ -65,9 +76,9 @@ class Unavailable:
 
 def _distribution(value: float) -> tuple[float, ...]:
     low = int(value)
-    high = min(4, low + 1)
+    high = min(3, low + 1)
     weight = value - low
-    levels = [0.0] * 5
+    levels = [0.0] * 4
     levels[low] += 1 - weight
     levels[high] += weight
     return tuple(levels)

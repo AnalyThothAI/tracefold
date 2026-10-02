@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from tracefold.app.learning_runtime import compose_news_models
@@ -19,7 +20,7 @@ from tracefold.app.news_updates import NewsJudgmentEndpoint, compose_reader_judg
 from tracefold.news.adapters.extraction import DspyExtractor
 from tracefold.news.adapters.reader_judge import DspyReaderJudge
 from tracefold.news.adapters.semantic_judgments import GeneratedJudgments
-from tracefold.news.notifications.reader import ReaderInput
+from tracefold.news.notifications.reader import READER_QUESTIONS_IDENTITY, ReaderInput
 from tracefold.news.updates.contracts import FrozenInput
 from tracefold.news.updates.extraction import ground_extraction, validate_extraction
 from tracefold.news.updates.identity import canonical_json, digest
@@ -73,6 +74,12 @@ async def reask(args: argparse.Namespace) -> None:
             raise ValueError("news_offline_resume_cases_changed")
         if any(record.get("program_identity") != expected_identity for record in journal.values()):
             raise ValueError("news_offline_resume_program_changed")
+        if args.kind == "reader" and any(
+            record.get("questions_identity") != READER_QUESTIONS_IDENTITY
+            or record.get("requested_backend") != args.backend
+            for record in journal.values()
+        ):
+            raise ValueError("news_offline_resume_questions_or_backend_changed")
         if any(
             case in by_id and record["input_sha256"] != input_digest(by_id[case], args.kind)
             for case, record in journal.items()
@@ -134,6 +141,9 @@ async def reask(args: argparse.Namespace) -> None:
                 "kind": args.kind,
                 "program_identity": expected_identity,
             }
+            if args.kind == "reader":
+                result.update(questions_identity=READER_QUESTIONS_IDENTITY, requested_backend=args.backend)
+            started = monotonic()
             try:
                 async with asyncio.timeout(args.timeout):
                     if args.kind == "extraction":
@@ -151,6 +161,7 @@ async def reask(args: argparse.Namespace) -> None:
                 # Provider exception strings can contain URLs or credentials. Keep a bounded class only.
                 result["error_class"] = type(exc).__name__
                 result["error_code"] = error_code(exc, default="news_offline_call_failed")
+            result["duration_ms"] = round((monotonic() - started) * 1000, 3)
             with args.output.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(result, ensure_ascii=False) + "\n")
             completed.add(row["case_id"])

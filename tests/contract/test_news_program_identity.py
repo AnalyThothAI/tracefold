@@ -61,7 +61,7 @@ def test_program_and_signature_schema_identities_are_pinned() -> None:
         "copy": "news_card_copy:410f061c5d2ead4ecb1011ed64d4895d831266aceb836a446cf5225fc8125876",
         "generated": "generated_judgment:59a8be20d63b8ba3c8b29aff590486774ce2c56bff75de22b8fd1f47f4cf4c7f",
         "native": "native_judgment:0b0c7a11510f5d0f22095b42810311a0fa5f30b23e17ce7cf433395c7b1627c8",
-        "reader": "news_reader_judge:8da64dd6febbb9d6e316d38981a91ef4505ff90b32f307b0222ea492f452b820",
+        "reader": "news_reader_judge:15b10baf2cd1f33e54ede8017542a9cbc76c8adf427bcdc91392e71b0b242e51",
     }
     assert {
         "extract": digest(ExtractSignature.model_json_schema()),
@@ -74,5 +74,5 @@ def test_program_and_signature_schema_identities_are_pinned() -> None:
         "copy": "27c46b662ab3832abc75669acea346cc3a4dbecbed1a7675cfcddad287e5b64e",
         "judge": "a0878d7aef415b4f4dfe64a0ff99adc03a86bfb3aa3e0448b2efa5e9d038e42e",
         "native": "f3a475e9ce2ee597e078d877cdbefa79acc41550caaf7180cd48534e6fc6abd6",
-        "reader": "848ad2e014208b83cf5ef4e78c1428f42e8d40d52cb79e23954436ea39c8e8f8",
+        "reader": "3e7d290ab9e94c127ca067e2a0f34ae6de8dd256969078c8dd23b41464cf70cd",
     }

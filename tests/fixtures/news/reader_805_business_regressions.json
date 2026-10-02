@@ -1,0 +1,24 @@
+{
+  "protocol": "805_synthetic_policy_business_regressions_v1",
+  "limitations": ["Distributions and calibration are synthetic test inputs, not model answers or certification evidence."],
+  "cases": [
+    {"case_id": "riyadh_explosions", "statement": "A single news agency reports multiple explosions in Riyadh.", "kind": "unconfirmed_incident", "materiality": 2, "interrupt": 0.1, "expected_outcome": "push"},
+    {"case_id": "acurast_peaq", "statement": "Acurast integrates hundreds of thousands of processors into peaqOS.", "kind": "new_action", "materiality": 2, "interrupt": 0.1, "expected_outcome": "push"},
+    {"case_id": "diesel_release_increment", "statement": "The United States requests that France and Germany release 100 million barrels of diesel within 20 days.", "kind": "official_communication", "materiality": 2, "interrupt": 0.1, "anchor": "m1", "expected_outcome": "push"},
+    {"case_id": "diesel_price_move", "statement": "European diesel futures fall about $110 per tonne after reserve-release news.", "kind": "market_move", "materiality": 2, "interrupt": 0.1, "expected_outcome": "push"},
+    {"case_id": "g7_emergency_meeting", "statement": "The G7 holds an emergency meeting on the energy crisis.", "kind": "new_action", "materiality": 2, "interrupt": 0.1, "expected_outcome": "push"},
+    {"case_id": "tesla_old_quarter", "statement": "An October 2 source footnote repeats Tesla 2026 Q1 net profit.", "kind": "recap_or_old_period", "materiality": 2, "interrupt": 0.9, "expected_outcome": "feed"},
+    {"case_id": "robinhood_old_quarter", "statement": "An October 2 source footnote repeats Robinhood 2026 Q1 results.", "kind": "recap_or_old_period", "materiality": 2, "interrupt": 0.9, "expected_outcome": "feed"},
+    {"case_id": "western_digital_old_quarter", "statement": "An October 2 source footnote repeats Western Digital fiscal 2026 Q3 results.", "kind": "recap_or_old_period", "materiality": 2, "interrupt": 0.9, "expected_outcome": "feed"},
+    {"case_id": "falcon_monthly_recap", "statement": "Falcon's monthly recap says KGST became USDf collateral during September.", "kind": "recap_or_old_period", "materiality": 2, "interrupt": 0.9, "expected_outcome": "feed"},
+    {"case_id": "crypto_weekly_recap", "statement": "A crypto weekly report summarises previously announced developments.", "kind": "recap_or_old_period", "materiality": 2, "interrupt": 0.9, "expected_outcome": "feed"},
+    {"case_id": "download_wallet_promotion", "statement": "Download our wallet now and enjoy rewards.", "kind": "promotion", "materiality": 2, "interrupt": 0.9, "expected_outcome": "feed"},
+    {"case_id": "analyst_price_target", "statement": "An analyst raises an equity price target.", "kind": "commentary", "materiality": 2, "interrupt": 0.9, "expected_outcome": "feed"},
+    {"case_id": "hormuz_reopens", "statement": "Officials say the Strait of Hormuz is open and oil is passing through.", "kind": "official_communication", "materiality": 3, "interrupt": 0.95, "expected_outcome": "key"},
+    {"case_id": "payroll_surprise", "statement": "US payrolls rise 29,000, far below the expected 90,000.", "kind": "scheduled_data", "materiality": 3, "interrupt": 0.95, "expected_outcome": "key"},
+    {"case_id": "self_reported_milestone", "statement": "A project reports deposits have passed $500 million.", "kind": "self_reported_metric", "materiality": 2, "interrupt": 0.1, "expected_outcome": "push"},
+    {"case_id": "primary_scheduled_release", "statement": "The new US monthly CPI rate is released without an expected value.", "kind": "scheduled_data", "materiality": 2, "interrupt": 0.1, "expected_outcome": "push"},
+    {"case_id": "minor_scheduled_release", "statement": "A secondary scheduled release matches its prior value.", "kind": "scheduled_data", "materiality": 1, "interrupt": 0.9, "expected_outcome": "feed"},
+    {"case_id": "scheduled_reminder", "statement": "Monthly CPI will be released tonight.", "kind": "background", "materiality": 2, "interrupt": 0.9, "expected_outcome": "feed"}
+  ]
+}

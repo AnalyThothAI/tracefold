@@ -1004,6 +1004,10 @@ describe("NewsPage", () => {
     );
     const delivery = await screen.findByRole("region", { name: "读者收到的推送" });
     expect(delivery).toHaveTextContent("【重点】钢铁进口关税上调至 50%");
+    const facts = screen.getByRole("region", { name: "每件事与推送原因" });
+    expect(facts).toHaveTextContent("报道类型：官方新表态");
+    expect(facts).toHaveTextContent("新增影响 2.80 / 3");
+    expect(facts).toHaveTextContent("已认证推送概率 98% · 重点概率 90%");
     expect(
       screen
         .getByRole("region", { name: "每件事与推送原因" })
@@ -1014,6 +1018,24 @@ describe("NewsPage", () => {
     expect(container.querySelector("#news-processing")).not.toHaveAttribute("open");
     expect(container.querySelector("#news-market")).not.toHaveAttribute("open");
     expect(screen.queryByRole("button", { name: "中文释义" })).toBeNull();
+  });
+
+  it("identifies uncertified candidate probabilities without implying a release certificate", async () => {
+    const detail = newsUpdateDetailFixture();
+    const row = detail.processing!.notification!.plan!.claim_decisions![1];
+    row.certification_status = "uncalibrated";
+    server.use(
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        HttpResponse.json({ ok: true, data: detail }),
+      ),
+    );
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
+    );
+    const facts = await screen.findByRole("region", { name: "每件事与推送原因" });
+    expect(facts).toHaveTextContent("未认证候选推送概率 98%");
+    expect(facts).not.toHaveTextContent("已认证推送概率");
   });
 
   it("focuses cold source URLs and restores citation locations on browser back", async () => {
@@ -1500,6 +1522,11 @@ describe("NewsPage", () => {
     expect(processing).toHaveTextContent("通知 · 有命题值得通知");
     expect(within(processing).getByText("读者已收到同一事实")).toBeInTheDocument();
     expect(within(processing).getByText("进展")).toBeInTheDocument();
+    fireEvent.click(within(processing).getByText("模型证据与冻结策略概率"));
+    const evidence = within(processing).getByText(/"report_kind":/);
+    expect(evidence).toHaveTextContent('"probabilities"');
+    expect(evidence).toHaveTextContent('"confidence": 0.9');
+    expect(evidence).toHaveTextContent('"p_push": 0.98');
     fireEvent.click(processing.querySelector("#delivery-record > summary")!);
     fireEvent.click(within(processing).getByText("实际发送正文"));
     expect(within(processing).getByText("【重点】钢铁进口关税上调至 50%")).toBeVisible();

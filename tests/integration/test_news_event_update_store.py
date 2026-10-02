@@ -79,7 +79,7 @@ from tracefold.news.updates.ports import SemanticObservation
 from tracefold.news.updates.projection import reading_views
 from tracefold.news.updates.public import public_updates
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn", "synthetic_reader_calibration")]
 
 
 def head_claim(claim_ref: str, *, statement: str | None = None, **fields: Any) -> dict[str, Any]:

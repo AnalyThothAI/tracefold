@@ -1,4 +1,4 @@
-"""The reader judgment of one claim: its frozen input, one two-question request, the fallback and reuse.
+"""The reader judgment of one claim: its frozen input, independent questions, fallback and reuse.
 
 The native tests drive DspyReaderJudge through a real SystemOneConnection, the official SDK and DSPy's
 decision adapter over httpx2.MockTransport; the generative route is a scripted DSPy LM. No provider is called.
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import dspy
@@ -19,18 +20,24 @@ from tests.support.news_update_semantic import MemoryCache
 from tests.support.scripted_lm import ScriptedLM
 from tracefold.app.system_one import SystemOneConnection
 from tracefold.news.adapters.reader_judge import DspyReaderJudge
-from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, ReaderNovelty, current_links, reader_novelty
-from tracefold.news.notifications.policy import READER_CUTS, ReaderCuts, anchor_index, cuts_for, reader_decision
+from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, current_links, reader_novelty
+from tracefold.news.notifications.policy import READER_CALIBRATIONS, anchor_index, calibration_for
 from tracefold.news.notifications.reader import (
     ANCHOR_QUESTION,
-    IMPORTANCE_LEVELS,
-    IMPORTANCE_QUESTION,
+    INTERRUPT_QUESTION,
+    MATERIALITY_LEVELS,
+    MATERIALITY_QUESTION,
     READER_INSTRUCTIONS,
     READER_QUOTE_CHARS_MAX,
+    REPORT_KIND_OPTIONS,
+    REPORT_KIND_QUESTION,
     AnchorEvidence,
-    ImportanceEvidence,
+    InterruptEvidence,
+    MaterialityEvidence,
     ReaderInput,
     ReaderJudgment,
+    ReportKind,
+    ReportKindEvidence,
     cache_key,
     cached_judgments,
 )
@@ -135,7 +142,7 @@ def _score(probabilities: list[float]) -> dict[str, Any]:
         "type": "score",
         "score": sum(index * p for index, p in enumerate(probabilities)),
         "confidence": 0.8,
-        "legend": {str(index): level for index, level in enumerate(IMPORTANCE_LEVELS)},
+        "legend": {str(index): level for index, level in enumerate(MATERIALITY_LEVELS)},
         "probabilities": {str(index): p for index, p in enumerate(probabilities)},
     }
 
@@ -147,6 +154,14 @@ def _choice(probabilities: dict[str, float]) -> dict[str, Any]:
         "confidence": 0.9,
         "probabilities": probabilities,
     }
+
+
+def _kind_probabilities(**values: float) -> dict[ReportKind, float]:
+    return {kind: values.get(kind, 0.0) for kind, _ in REPORT_KIND_OPTIONS}
+
+
+def _noul(probability: float) -> dict[str, Any]:
+    return {"type": "noul", "noul": probability, "confidence": abs(2 * probability - 1)}
 
 
 def _response(answers: dict[str, Any]) -> httpx2.Response:
@@ -185,7 +200,7 @@ def _judge(connection: SystemOneConnection | None, generated: Any = None, **opti
     )
 
 
-def test_one_native_request_asks_both_questions_over_one_shared_state() -> None:
+def test_one_native_request_asks_four_independent_questions_over_one_shared_state() -> None:
     async def run() -> tuple[ReaderJudgment, list[dict[str, Any]], str]:
         sent: list[dict[str, Any]] = []
 
@@ -194,8 +209,10 @@ def test_one_native_request_asks_both_questions_over_one_shared_state() -> None:
             sent.append(json.loads(request.content))
             return _response(
                 {
-                    "importance": _score([0.0, 0.1, 0.1, 0.7, 0.1]),
+                    "report_kind": _choice(_kind_probabilities(new_action=0.8, background=0.2)),
                     "anchor_message": _choice({"m1": 0.85, "m2": 0.05, "none": 0.1}),
+                    "materiality": _score([0.0, 0.1, 0.7, 0.2]),
+                    "interrupt_now": _noul(0.75),
                 }
             )
 
@@ -208,33 +225,50 @@ def test_one_native_request_asks_both_questions_over_one_shared_state() -> None:
         return judgment, sent, judge.native_identity or ""
 
     judgment, sent, native_identity = asyncio.run(run())
+    assert len(sent) == 1
     request = sent[0]
     assert "temperature" not in request and "max_tokens" not in request
     assert request["state"]["instructions"] == READER_INSTRUCTIONS
     assert [row["id"] for row in request["state"]["inputs"]["messages"]] == ["m1", "m2"]
     assert request["state"]["inputs"]["claim"]["statement"] == "Nvidia announced a $150 billion share buyback."
-    importance = request["questions"]["importance"]
-    assert importance["type"] == "score" and importance["instructions"] == IMPORTANCE_QUESTION
-    assert importance["criteria"] == list(IMPORTANCE_LEVELS)
+    assert set(request["questions"]) == {"report_kind", "anchor_message", "materiality", "interrupt_now"}
+    kind = request["questions"]["report_kind"]
+    assert kind["type"] == "choice" and kind["instructions"] == REPORT_KIND_QUESTION
+    assert kind["criteria"] == dict(REPORT_KIND_OPTIONS)
+    materiality = request["questions"]["materiality"]
+    assert materiality["type"] == "score" and materiality["instructions"] == MATERIALITY_QUESTION
+    assert materiality["criteria"] == list(MATERIALITY_LEVELS)
+    interrupt = request["questions"]["interrupt_now"]
+    assert interrupt["type"] == "noul" and interrupt["instructions"] == INTERRUPT_QUESTION
     anchor = request["questions"]["anchor_message"]
     assert anchor["type"] == "choice" and anchor["instructions"] == ANCHOR_QUESTION
     assert list(anchor["criteria"]) == ["m1", "m2", "none"]
 
     assert judgment.status == "available" and judgment.backend == "native"
     assert judgment.identity == native_identity and judgment.served_model == "jev-1.13-served"
-    assert judgment.importance is not None and judgment.importance.value == pytest.approx(2.8)
-    assert judgment.importance.probabilities == pytest.approx((0.0, 0.1, 0.1, 0.7, 0.1))
-    assert judgment.anchor is not None and anchor_index(judgment.anchor, cuts_for(judgment)) == 0
+    assert judgment.report_kind is not None and judgment.report_kind.value == "new_action"
+    assert judgment.report_kind.probabilities == pytest.approx(_kind_probabilities(new_action=0.8, background=0.2))
+    assert judgment.materiality is not None and judgment.materiality.value == pytest.approx(2.1)
+    assert judgment.materiality.probabilities == pytest.approx((0.0, 0.1, 0.7, 0.2))
+    assert judgment.interrupt is not None and judgment.interrupt.probabilities == pytest.approx((0.25, 0.75))
+    assert judgment.interrupt.probability == 0.75 and judgment.interrupt.confidence == 0.5
+    assert judgment.anchor is not None and anchor_index(judgment.anchor, calibration_for(judgment)) == 0
     assert judgment.matches(_reader()) and not judgment.matches(_reader(SENT[:1]))
 
 
-def test_no_recalled_message_asks_only_the_importance_question() -> None:
+def test_no_recalled_message_asks_all_questions_except_the_anchor() -> None:
     async def run() -> tuple[ReaderJudgment, list[dict[str, Any]]]:
         sent: list[dict[str, Any]] = []
 
         async def respond(request: httpx2.Request) -> httpx2.Response:
             sent.append(json.loads(request.content))
-            return _response({"importance": _score([0.5, 0.5, 0.0, 0.0, 0.0])})
+            return _response(
+                {
+                    "report_kind": _choice(_kind_probabilities(background=1.0)),
+                    "materiality": _score([0.5, 0.5, 0.0, 0.0]),
+                    "interrupt_now": _noul(0.05),
+                }
+            )
 
         connection = _connection(respond)
         try:
@@ -244,15 +278,19 @@ def test_no_recalled_message_asks_only_the_importance_question() -> None:
         return judgment, sent
 
     judgment, sent = asyncio.run(run())
-    assert set(sent[0]["questions"]) == {"importance"}
+    assert set(sent[0]["questions"]) == {"report_kind", "materiality", "interrupt_now"}
     assert "messages" not in sent[0]["state"]["inputs"]
-    assert judgment.anchor is None and judgment.importance is not None
-    assert judgment.importance.value == pytest.approx(0.5)
+    assert judgment.anchor is None and judgment.materiality is not None
+    assert judgment.materiality.value == pytest.approx(0.5)
+    assert judgment.report_kind is not None and judgment.report_kind.value == "background"
+    assert judgment.interrupt is not None and judgment.interrupt.probability == 0.05
 
 
 def _generated_answer(request: Any) -> dict[str, Any]:
     return {
-        "importance": {"probabilities": {"0": 0.1, "1": 0.2, "2": 0.4, "3": 0.2, "4": 0.1}, "confidence": 0.6},
+        "report_kind": {"probabilities": _kind_probabilities(new_action=0.6, commentary=0.4), "confidence": 0.6},
+        "materiality": {"probabilities": {"0": 0.1, "1": 0.2, "2": 0.4, "3": 0.3}, "confidence": 0.6},
+        "interrupt_now": {"noul": 0.2},
         "anchor_message": {"probabilities": {"m1": 0.1, "m2": 0.1, "none": 0.8}, "confidence": 0.7},
     }
 
@@ -278,13 +316,16 @@ def test_an_unavailable_native_answer_falls_back_once_to_the_same_questions_on_t
     judgment, requests, generated, judge = asyncio.run(run())
     assert requests == 1 and len(generated.requests) == 1
     assert judgment.status == "available" and judgment.backend == "generated"
-    assert judgment.identity == judge.generated_identity and cuts_for(judgment) == READER_CUTS["generated"]
-    assert judgment.importance is not None and judgment.importance.value == pytest.approx(2.0)
-    assert judgment.anchor is not None and anchor_index(judgment.anchor, cuts_for(judgment)) is None
+    assert judgment.identity == judge.generated_identity
+    assert calibration_for(judgment) == READER_CALIBRATIONS["generated"]
+    assert judgment.materiality is not None and judgment.materiality.value == pytest.approx(1.9)
+    assert judgment.report_kind is not None and judgment.report_kind.value == "new_action"
+    assert judgment.interrupt is not None and judgment.interrupt.probabilities == pytest.approx((0.8, 0.2))
+    assert judgment.anchor is not None and anchor_index(judgment.anchor, calibration_for(judgment)) is None
     request = generated.requests[0]
     prompt = "\n".join([str(request.system or ""), *(message.text for message in request.messages)])
     assert READER_INSTRUCTIONS in prompt
-    for text in (IMPORTANCE_LEVELS[3], ANCHOR_QUESTION):
+    for text in (REPORT_KIND_OPTIONS[0][1], MATERIALITY_LEVELS[3], ANCHOR_QUESTION, INTERRUPT_QUESTION):
         assert json.dumps(text, ensure_ascii=False)[1:-1] in prompt
 
 
@@ -292,7 +333,7 @@ def test_a_slow_native_answer_falls_back_within_the_stage_deadline() -> None:
     async def run() -> ReaderJudgment:
         async def respond(request: httpx2.Request) -> httpx2.Response:
             await asyncio.sleep(1.0)
-            return _response({"importance": _score([1.0, 0.0, 0.0, 0.0, 0.0])})
+            return _response({})
 
         connection = _connection(respond)
         try:
@@ -302,6 +343,55 @@ def test_a_slow_native_answer_falls_back_within_the_stage_deadline() -> None:
             await connection.aclose()
 
     assert asyncio.run(run()).backend == "generated"
+
+
+@pytest.mark.parametrize(
+    ("question", "distribution"),
+    [
+        ("report_kind", "probabilities"),
+        ("materiality", "probabilities"),
+        ("interrupt_now", "probability"),
+        ("anchor_message", "probabilities"),
+    ],
+)
+def test_missing_native_distribution_falls_back_for_each_independent_question(
+    monkeypatch: pytest.MonkeyPatch, question: str, distribution: str
+) -> None:
+    prediction = SimpleNamespace(
+        report_kind=SimpleNamespace(value="new_action", probabilities=_kind_probabilities(new_action=1), confidence=1),
+        materiality=SimpleNamespace(value=2, probabilities={0: 0, 1: 0, 2: 1, 3: 0}, confidence=1),
+        interrupt_now=SimpleNamespace(probability=0.7, confidence=0.4),
+        anchor_message=SimpleNamespace(probabilities={"m1": 0, "m2": 0, "none": 1}, confidence=1),
+    )
+    setattr(getattr(prediction, question), distribution, None)
+
+    async def native(*args: Any, **kwargs: Any) -> Any:
+        return prediction
+
+    monkeypatch.setattr("tracefold.news.adapters.reader_judge.native_predict", native)
+    generated = ScriptedLM([_generated_answer])
+    judge = DspyReaderJudge(
+        lambda: generated,
+        generated_model_identity="generated-test",
+        native_lm_factory=lambda: None,
+        native_model_identity="native-test",
+    )
+    judgment = asyncio.run(judge.judge(_reader(), Budget.start(5)))
+    assert judgment.status == "available" and judgment.backend == "generated"
+    assert len(generated.requests) == 1
+
+
+def test_generated_without_messages_preserves_all_three_evidence_distributions() -> None:
+    def answer(request: Any) -> dict[str, Any]:
+        values = _generated_answer(request)
+        del values["anchor_message"]
+        return values
+
+    judgment = asyncio.run(_judge(None, ScriptedLM([answer])).judge(_reader(()), Budget.start(5)))
+    assert judgment.status == "available" and judgment.backend == "generated" and judgment.anchor is None
+    assert judgment.report_kind is not None and len(judgment.report_kind.probabilities) == len(REPORT_KIND_OPTIONS)
+    assert judgment.materiality is not None and len(judgment.materiality.probabilities) == len(MATERIALITY_LEVELS)
+    assert judgment.interrupt is not None and judgment.interrupt.probabilities == pytest.approx((0.8, 0.2))
 
 
 def test_when_neither_backend_answers_the_judgment_is_unavailable_and_never_stored() -> None:
@@ -323,14 +413,14 @@ def test_when_neither_backend_answers_the_judgment_is_unavailable_and_never_stor
     first, second, cache = asyncio.run(run())
     assert first.status == second.status == "unavailable"
     assert first.error_code == "news_generation_lm_server_error"
-    assert first.importance is None and first.anchor is None
+    assert first.report_kind is first.materiality is first.interrupt is first.anchor is None
     assert cache.values == {}
 
 
 def test_generated_score_decoder_value_error_is_an_unavailable_answer(monkeypatch: pytest.MonkeyPatch) -> None:
     class MalformedScore:
         async def acall(self, **kwargs: Any) -> Any:
-            raise ValueError("Invalid Score distribution for 'importance'.")
+            raise ValueError("Invalid Score distribution for 'materiality'.")
 
     monkeypatch.setattr(dspy, "Predict", lambda signature: MalformedScore())
     judgment = asyncio.run(_judge(None, ScriptedLM([])).judge(_reader(), Budget.start(5)))
@@ -365,7 +455,11 @@ class _CountingJudge:
             status="available",
             backend="native",
             identity="native-test",
-            importance=ImportanceEvidence(value=2.6, probabilities=(0.0, 0.1, 0.3, 0.5, 0.1), confidence=0.7),
+            report_kind=ReportKindEvidence(
+                value="new_action", probabilities=_kind_probabilities(new_action=1), confidence=0.7
+            ),
+            materiality=MaterialityEvidence(value=2.6, probabilities=(0.0, 0.1, 0.2, 0.7), confidence=0.7),
+            interrupt=InterruptEvidence(probabilities=(0.4, 0.6), confidence=0.2),
             anchor=AnchorEvidence(probabilities={"m1": 0.2, "m2": 0.1, "none": 0.7}, confidence=0.7),
         )
 
@@ -394,21 +488,30 @@ def test_evidence_shapes_and_judgment_status_are_exact() -> None:
     with pytest.raises(ValidationError, match="news_reader_anchor_options_invalid"):
         AnchorEvidence(probabilities={"none": 1.0}, confidence=0.5)
     with pytest.raises(ValidationError):
-        ImportanceEvidence(value=2.0, probabilities=(0.5, 0.5), confidence=0.5)
+        MaterialityEvidence(value=2.0, probabilities=(0.5, 0.5), confidence=0.5)
+    with pytest.raises(ValidationError, match="news_reader_report_kind_options_invalid"):
+        ReportKindEvidence(value="new_action", probabilities={"new_action": 1}, confidence=0.5)
+    with pytest.raises(ValidationError, match="news_reader_materiality_distribution_invalid"):
+        MaterialityEvidence(value=2.0, probabilities=(0.0, 0.0, 0.2, 0.2), confidence=0.5)
+    with pytest.raises(ValidationError, match="news_reader_interrupt_distribution_invalid"):
+        InterruptEvidence(probabilities=(0.2, 0.2), confidence=0.5)
+    with pytest.raises(ValidationError):
+        InterruptEvidence(probabilities=(-0.2, 1.2), confidence=0.5)
     with pytest.raises(ValidationError, match="news_reader_unavailable_judgment_has_answer"):
         ReaderJudgment(status="unavailable", error_code="x", backend="native")
     with pytest.raises(ValidationError, match="news_reader_available_judgment_incomplete"):
         ReaderJudgment(status="available", backend="native", identity="n")
+    assert set(ReaderJudgment.model_json_schema()["properties"]) >= {
+        "report_kind",
+        "materiality",
+        "interrupt",
+        "anchor",
+    }
+    assert "importance" not in ReaderJudgment.model_json_schema()["properties"]
     anchor = AnchorEvidence(probabilities={"m1": 0.1, "m2": 0.75, "none": 0.15}, confidence=0.5)
-    assert anchor_index(anchor, READER_CUTS["native"]) == 1
+    assert anchor_index(anchor, READER_CALIBRATIONS["native"]) == 1
     unsure = AnchorEvidence(probabilities={"m1": 0.1, "m2": 0.55, "none": 0.35}, confidence=0.5)
-    assert anchor_index(unsure, READER_CUTS["native"]) is None
-    for cuts in READER_CUTS.values():
-        assert (
-            0 < cuts.push < cuts.held < len(IMPORTANCE_LEVELS) - 1
-            and 0 < cuts.anchor_none_below < 1
-            and 0 < cuts.key_tail < 1
-        )
+    assert anchor_index(unsure, READER_CALIBRATIONS["native"]) is None
 
 
 def test_the_cache_key_names_the_judge_and_the_frozen_input_only() -> None:
@@ -476,146 +579,6 @@ def test_known_outranks_in_flight_which_outranks_development_and_increment() -> 
     assert current_links([_link("c", "c", "equivalent")]) == ()
 
 
-def _judgment(value: float, anchor: dict[str, float] | None = None) -> ReaderJudgment:
-    return ReaderJudgment(
-        status="available",
-        backend="native",
-        identity="native-test",
-        importance=ImportanceEvidence(value=value, probabilities=(0.0, 0.0, 0.0, 1.0, 0.0), confidence=0.5),
-        anchor=None if anchor is None else AnchorEvidence(probabilities=anchor, confidence=0.5),
-    )
-
-
-def test_reader_decision_rows_in_order() -> None:
-    cuts = READER_CUTS["native"]
-    corrects = ReaderNovelty(
-        novelty="development", intent_id="ra", settled_at_ms=10, path=(_link("c", "a", "corrects"),)
-    )
-    change = corrects.model_copy(update={"path": (_link("c", "a", "real_world_change"),)})
-
-    def decide(novelty: ReaderNovelty, value: float, **options: Any) -> tuple[str, str, str | None]:
-        options.setdefault("first_available_at_ms", 20)
-        result = reader_decision(
-            novelty, _judgment(value, options.pop("anchor", None)), message_intents=("ra", "rb"), **options
-        )
-        return result.outcome, result.render, result.anchor_intent_id
-
-    assert decide(ReaderNovelty(novelty="known", intent_id="ra"), 3.5) == ("known", "full", "ra")
-    assert decide(ReaderNovelty(novelty="in_flight", intent_id="ra"), 3.5)[0] == "in_flight"
-    # A correction of a delivered claim is repaired regardless of its score, but only when it came later.
-    assert decide(corrects, 0.1) == ("correction", "correction", "ra")
-    assert decide(corrects, 0.1, first_available_at_ms=5) == ("feed", "increment", "ra")
-    # A real-world development is pushed on what it adds, as an increment on the earlier message.
-    assert decide(change, cuts.push) == ("push", "increment", "ra")
-    assert decide(change, cuts.push - 0.01)[0] == "feed"
-    # What the reader already has the core fact of, by a link or by the anchor, needs the key cut; it is an
-    # increment only on the message the anchor names, whichever message the link reached.
-    anchored, unanchored = {"m1": 0.1, "m2": 0.8, "none": 0.1}, {"m1": 0.1, "m2": 0.1, "none": 0.8}
-    increment = ReaderNovelty(novelty="increment", intent_id="ra", linked_intents=("ra",))
-    assert decide(increment, cuts.held, anchor=anchored) == ("push", "increment", "rb")
-    assert decide(increment, cuts.held, anchor=unanchored) == ("push", "full", None)
-    assert decide(increment, cuts.held) == ("push", "full", None)
-    assert decide(increment, cuts.held - 0.01, anchor=anchored) == ("feed", "increment", "rb")
-    unlinked = ReaderNovelty(novelty="unlinked")
-    assert decide(unlinked, cuts.held, anchor=anchored) == ("push", "increment", "rb")
-    assert decide(unlinked, cuts.held - 0.01, anchor=anchored) == ("feed", "increment", "rb")
-    assert decide(unlinked, cuts.push, anchor=unanchored) == ("push", "full", None)
-    assert decide(unlinked, 1.0) == ("feed", "full", None)
-    looser = ReaderCuts(push=0.5, held=3.9, key_tail=0.05, anchor_none_below=0.9)
-    assert decide(unlinked, 1.0, cuts=looser)[0] == "push"
-
-
-# The first live receipt's repeats (#742 PR-4). P005: the same PSL cut 14 s after P004, a separate Event with
-# no link, anchored to P004. P010: the UK Navy confirming the Hormuz ship fire, linked as adding to the
-# IRGC-fire push 1.7 h earlier, with an anchor that disagreed and so no "补充" either.
-P005 = (ReaderNovelty(novelty="unlinked"), {"m1": 0.83, "m2": 0.0, "none": 0.17}, "increment", "ra")
-P010 = (
-    ReaderNovelty(novelty="increment", intent_id="ra", linked_intents=("ra",)),
-    {"m1": 0.35, "m2": 0.0, "none": 0.65},
-    "full",
-    None,
-)
-
-
-@pytest.mark.parametrize("case", [P005, P010], ids=["P005-anchored", "P010-linked"])
-@pytest.mark.parametrize(
-    ("importance", "outcome"),
-    [
-        (READER_CUTS["native"].push, "feed"),
-        (READER_CUTS["native"].held - 0.02, "feed"),
-        (READER_CUTS["native"].held - 0.01, "feed"),
-        (READER_CUTS["native"].held, "push"),
-    ],
-)
-def test_a_known_core_fact_is_pushed_only_at_the_key_cut(
-    case: tuple[Any, ...], importance: float, outcome: str
-) -> None:
-    novelty, anchor, render, intent = case
-    result = reader_decision(
-        novelty, _judgment(importance, anchor), first_available_at_ms=20, message_intents=("ra", "rb")
-    )
-    assert (result.outcome, result.render, result.anchor_intent_id) == (outcome, render, intent)
-
-
-@pytest.mark.parametrize(
-    ("kind", "mode", "phase", "expected"),
-    [
-        ("state_change", "observation", "executing", "push"),  # withdrawals actually resume
-        ("state_change", "observation", "completed", "push"),  # mainnet actually goes live
-        ("official_measure", "decision", "ordered", "push"),  # a measure has been ordered
-        ("official_measure", "decision", "effective", "push"),
-        ("state_change", "observation", "cancelled", "push"),
-        ("state_change", "observation", None, "feed"),
-        ("state_change", "observation", "unknown", "feed"),
-        ("state_change", "commitment", "announced", "feed"),
-        ("state_change", "forecast", "completed", "feed"),
-        ("new_quantity", "observation", "completed", "feed"),
-        ("quantified_flow", "observation", "executing", "feed"),
-        ("other", "commitment", "announced", "feed"),
-    ],
-)
-def test_a_background_link_does_not_raise_the_bar_for_an_actual_unanchored_action(
-    kind: str, mode: str, phase: str | None, expected: str
-) -> None:
-    fields = ClaimFields.model_validate(
-        {
-            "subject": "Venue",
-            "action": "resumed withdrawals",
-            "content_kind": kind,
-            "mode": mode,
-            "phase": phase,
-        }
-    )
-    result = reader_decision(
-        ReaderNovelty(novelty="increment", intent_id="hack", linked_intents=("hack",)),
-        _judgment(2.45, {"m1": 0.2, "none": 0.8}),
-        first_available_at_ms=20,
-        message_intents=("hack",),
-        claim_fields=fields,
-    )
-    assert (result.outcome, result.render, result.anchor_intent_id) == (expected, "full", None)
-
-
-def test_an_actual_action_keeps_exact_known_inflight_and_anchor_protections() -> None:
-    fields = ClaimFields(
-        subject="Venue",
-        action="resumed withdrawals",
-        content_kind="state_change",
-        mode="observation",
-        phase="executing",
-    )
-    anchor = {"m1": 0.9, "none": 0.1}
-    for novelty, expected in (("known", "known"), ("in_flight", "in_flight"), ("increment", "feed")):
-        result = reader_decision(
-            ReaderNovelty.model_validate({"novelty": novelty, "intent_id": "ra"}),
-            _judgment(2.45, anchor),
-            first_available_at_ms=20,
-            message_intents=("ra",),
-            claim_fields=fields,
-        )
-        assert result.outcome == expected
-
-
 @pytest.mark.parametrize("stamp,expected", [(1790899199999, "2026-10-01"), (1790899200000, "2026-10-02")])
 def test_reader_as_of_uses_the_fixed_first_visibility_utc_date(stamp: int, expected: str) -> None:
     update = _update()
@@ -625,28 +588,3 @@ def test_reader_as_of_uses_the_fixed_first_visibility_utc_date(stamp: int, expec
     assert reader.model_inputs()["as_of"] == expected
     later = update.model_copy(update={"adopted_at_ms": stamp + 5 * 86_400_000})
     assert ReaderInput.of(claim, later, ()).digest == reader.digest
-
-
-def test_level_four_tail_pushes_and_marks_key_below_expected_push_but_respects_held() -> None:
-    from tracefold.news.notifications.policy import ReaderCuts
-
-    judgment = ReaderJudgment(
-        status="available",
-        backend="native",
-        identity="fixture",
-        importance=ImportanceEvidence(value=1.15, probabilities=(0, 0.95, 0, 0, 0.05), confidence=0.95),
-    )
-    cuts = ReaderCuts(push=2.3, held=2.98, key_tail=0.05, anchor_none_below=0.2)
-    unlinked = ReaderNovelty(novelty="unlinked")
-    held = ReaderNovelty(novelty="increment")
-    assert (
-        reader_decision(unlinked, judgment, first_available_at_ms=STAMP, message_intents=(), cuts=cuts).outcome == "key"
-    )
-    assert reader_decision(held, judgment, first_available_at_ms=STAMP, message_intents=(), cuts=cuts).outcome == "feed"
-    certain_three = judgment.model_copy(
-        update={"importance": ImportanceEvidence(value=3, probabilities=(0, 0, 0, 1, 0), confidence=1)}
-    )
-    assert (
-        reader_decision(unlinked, certain_three, first_available_at_ms=STAMP, message_intents=(), cuts=cuts).outcome
-        == "push"
-    )

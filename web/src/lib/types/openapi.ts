@@ -390,6 +390,15 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AnchorEvidence */
+        AnchorEvidence: {
+            /** Confidence */
+            confidence: number;
+            /** Probabilities */
+            probabilities: {
+                [key: string]: number;
+            };
+        };
         /** ApiEnvelope[BootstrapData] */
         ApiEnvelope_BootstrapData_: {
             data?: components["schemas"]["BootstrapData"] | null;
@@ -586,6 +595,25 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** InterruptEvidence */
+        InterruptEvidence: {
+            /** Confidence */
+            confidence: number;
+            /** Probabilities */
+            probabilities: [
+                number,
+                number
+            ];
+        };
+        /** MaterialityEvidence */
+        MaterialityEvidence: {
+            /** Confidence */
+            confidence: number;
+            /** Probabilities */
+            probabilities: number[];
+            /** Value */
+            value: number;
         };
         /**
          * NetBuyMember
@@ -915,6 +943,9 @@ export interface components {
         };
         /** NewsClaimDecisionData */
         NewsClaimDecisionData: {
+            anchor?: components["schemas"]["AnchorEvidence"] | null;
+            /** Certification Status */
+            certification_status?: ("uncalibrated" | "certified") | null;
             /** Claim Ref */
             claim_ref: string;
             /**
@@ -927,15 +958,23 @@ export interface components {
              * @default
              */
             decision_zh: string;
+            /** E */
+            e?: number | null;
             earlier?: components["schemas"]["NewsEarlierNotificationData"] | null;
             /** Earlier Intent Id */
             earlier_intent_id?: string | null;
-            /** Importance */
-            importance?: number | null;
-            /** Importance Probabilities */
-            importance_probabilities?: number[] | null;
-            /** Importance Threshold */
-            importance_threshold?: number | null;
+            /** Held */
+            held?: boolean | null;
+            /** Historical Judgment */
+            historical_judgment?: {
+                [key: string]: unknown;
+            } | null;
+            /** I */
+            i?: number | null;
+            interrupt?: components["schemas"]["InterruptEvidence"] | null;
+            /** M */
+            m?: number | null;
+            materiality?: components["schemas"]["MaterialityEvidence"] | null;
             /** Novelty */
             novelty?: ("known" | "increment" | "development" | "in_flight" | "unlinked") | null;
             /**
@@ -943,6 +982,10 @@ export interface components {
              * @default
              */
             novelty_zh: string;
+            /** P Key */
+            p_key?: number | null;
+            /** P Push */
+            p_push?: number | null;
             /** Reader Backend */
             reader_backend?: ("native" | "generated") | null;
             /**
@@ -957,6 +1000,12 @@ export interface components {
             reason_zh: string;
             /** Render */
             render?: ("full" | "increment" | "correction") | null;
+            report_kind?: components["schemas"]["ReportKindEvidence"] | null;
+            /**
+             * Report Kind Zh
+             * @default
+             */
+            report_kind_zh: string;
             /** Statement */
             statement?: string | null;
         };
@@ -3201,6 +3250,20 @@ export interface components {
              * @constant
              */
             store: "postgresql";
+        };
+        /** ReportKindEvidence */
+        ReportKindEvidence: {
+            /** Confidence */
+            confidence: number;
+            /** Probabilities */
+            probabilities: {
+                [key: string]: number;
+            };
+            /**
+             * Value
+             * @enum {string}
+             */
+            value: "new_action" | "official_communication" | "market_move" | "scheduled_data" | "self_reported_metric" | "unconfirmed_incident" | "recap_or_old_period" | "promotion" | "commentary" | "background";
         };
         /** ServeRuntimeData */
         ServeRuntimeData: {

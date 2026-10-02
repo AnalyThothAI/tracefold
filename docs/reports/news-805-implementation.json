@@ -1,0 +1,73 @@
+{
+  "issue": "https://github.com/AnalyThothAI/tracefold/issues/805",
+  "scope": "implementation_only",
+  "base_sha": "32e585326f2e40fb248053ae38ec208356ac1049",
+  "reader_input_version": "news_reader_input_v3",
+  "questions_identity": "news_reader_questions:f98af6943278e7e3fc186bbca685548683cd9256b4bd6fd3f5ab551cb982c4e0",
+  "guide_version": "news_reader_owner_guide_v1:b5b3ac70f3b5cdcc552371718b01d18b1284e25c821dd2bcf294e82ccc6929d6",
+  "eligibility_table_sha256": "dc85a5d39389316abd061caf28dd108e03e73f0582f9890f94ae133543465d5c",
+  "kind_floor": 0.3,
+  "dataset_sha256": null,
+  "precision_targets": {
+    "push": 0.65,
+    "key": 0.75,
+    "family_delta": 0.1
+  },
+  "minimum_effective_owner_labels": {
+    "push": 150,
+    "key": 60
+  },
+  "backends": {
+    "native": {
+      "calibration": {
+        "materiality_floor": 2,
+        "push_coefficients": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "key_coefficients": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "push_cut": null,
+        "key_cut": null,
+        "anchor_none_below": 0.2,
+        "certification_status": "uncalibrated"
+      },
+      "owner_labels": 0,
+      "precision_lower_bound": null,
+      "empirical_report": null,
+      "activation_allowed": false
+    },
+    "generated": {
+      "calibration": {
+        "materiality_floor": 2,
+        "push_coefficients": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "key_coefficients": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "push_cut": null,
+        "key_cut": null,
+        "anchor_none_below": 0.2,
+        "certification_status": "uncalibrated"
+      },
+      "owner_labels": 0,
+      "precision_lower_bound": null,
+      "empirical_report": null,
+      "activation_allowed": false
+    }
+  },
+  "synthetic_fixtures_are_certificates": false,
+  "real_reasks_performed": false,
+  "deployment_performed": false
+}

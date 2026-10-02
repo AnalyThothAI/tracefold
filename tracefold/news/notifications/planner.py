@@ -92,6 +92,7 @@ class NotificationPlanner:
                     input_digest=None if claim.ref not in inputs else inputs[claim.ref].digest,
                     message_intents=intents,
                     judgment=judgments.get(claim.ref),
+                    scores=None if decided is None else decided.scores,
                 )
             rows.append(
                 ClaimDecision(claim_ref=claim.ref, decision=REASON_DECISIONS[reason], reason=reason, reader=record)

@@ -6,9 +6,10 @@ Event detail and its timeline, and each is registered with the query audit under
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Final
 
-from ..update_view import decode_plan
+from ..notifications.novelty import ClaimLink
 from .notification_view import pending_notification, receipt_notification
 from .semantic_jobs import semantic_job
 
@@ -95,14 +96,18 @@ def attach_earlier_receipts(conn: Any, work: dict[str, Any] | None, view: dict[s
     receipts = conn.execute(EVENT_EARLIER_RECEIPTS_SQL, (ids, before)).fetchall() if ids else []
     by_id = {row["intent_id"]: row for row in receipts}
     targets = {}
-    plan = decode_plan(work.get("plan"))
-    for row in () if plan is None else plan.claim_decisions:
-        if row.reader is None or row.reader.novelty != "known":
+    raw_plan = work.get("plan")
+    # The projection already validated current or historical metadata. Reading known links must not
+    # reinterpret old judgment evidence or make receipt attachment depend on the current question schema.
+    for row in raw_plan.get("claim_decisions", ()) if isinstance(raw_plan, Mapping) else ():
+        record = row.get("reader")
+        if not isinstance(record, Mapping) or record.get("novelty") != "known":
             continue
-        target = row.claim_ref
-        for link in row.reader.link_path:
+        target = row["claim_ref"]
+        for raw_link in record.get("link_path", ()):
+            link = ClaimLink.model_validate(raw_link)
             target = link.previous_ref if target == link.current_ref else link.current_ref
-        targets[row.claim_ref] = target
+        targets[row["claim_ref"]] = target
     known = (
         conn.execute(EVENT_KNOWN_RECEIPTS_SQL, (sorted(set(targets.values())), before)).fetchall() if targets else []
     )

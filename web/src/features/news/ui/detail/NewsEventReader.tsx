@@ -243,13 +243,18 @@ export function NewsReaderFacts({
                       有关联的此前推送，摘要暂不可读；工程细节保留其记录标识。
                     </p>
                   ) : null}
-                  {decision?.importance != null ? (
+                  {decision?.report_kind ? (
                     <small className="news-reader-score">
-                      增量重要性 {decision.importance.toFixed(2)}
-                      {decision.importance_threshold != null
-                        ? ` / 适用推送线 ${decision.importance_threshold}`
+                      报道类型：{decision.report_kind_zh || decision.report_kind.value}
+                      {decision.materiality
+                        ? ` · 新增影响 ${decision.materiality.value.toFixed(2)} / 3`
+                        : ""}
+                      {decision.p_push != null && decision.p_key != null
+                        ? ` · ${decision.certification_status === "certified" ? "已认证" : "未认证候选"}推送概率 ${(decision.p_push * 100).toFixed(0)}% · 重点概率 ${(decision.p_key * 100).toFixed(0)}%`
                         : ""}
                     </small>
+                  ) : decision?.historical_judgment ? (
+                    <small className="news-reader-score">历史判断按原记录保留，仅供查看。</small>
                   ) : null}
                   <div className="news-reader-citations">
                     {Array.from(

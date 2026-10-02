@@ -1,4 +1,4 @@
-"""Importance and anchor evidence through one native request with bounded generation fallback."""
+"""Independent reader evidence through one native request with bounded generation fallback."""
 
 from __future__ import annotations
 
@@ -6,24 +6,30 @@ import asyncio
 import logging
 from collections.abc import Callable, Mapping
 from functools import lru_cache
+from math import isfinite
 from typing import Any, Final
 
 import dspy  # type: ignore[import-untyped]
-from dspy.adapters.types.decision import Choice, Score  # type: ignore[import-untyped]
+from dspy.adapters.types.decision import Choice, Noul, Score  # type: ignore[import-untyped]
 from pydantic import ValidationError
 
 from ..notifications.reader import (
     ANCHOR_QUESTION,
-    IMPORTANCE_LEVELS,
-    IMPORTANCE_QUESTION,
+    INTERRUPT_QUESTION,
+    MATERIALITY_LEVELS,
+    MATERIALITY_QUESTION,
     READER_INSTRUCTIONS,
     READER_MESSAGES_MAX,
     READER_QUESTIONS_IDENTITY,
+    REPORT_KIND_OPTIONS,
+    REPORT_KIND_QUESTION,
     AnchorEvidence,
-    ImportanceEvidence,
+    InterruptEvidence,
+    MaterialityEvidence,
     ReaderBackend,
     ReaderInput,
     ReaderJudgment,
+    ReportKindEvidence,
     anchor_options,
 )
 from ..updates.identity import identity
@@ -34,14 +40,14 @@ from .generation import ADAPTER_VERSION, native_predict
 log = logging.getLogger("tracefold.news")
 
 
-# A native request shares state for both questions and falls back inside the same stage deadline.
+# A native request shares state for all questions and falls back inside the same stage deadline.
 
 READER_NATIVE_SECONDS: Final = 3.0
 
 
 @lru_cache(maxsize=READER_MESSAGES_MAX + 1)
 def reader_signature(messages: int) -> Any:
-    """Both reader questions over one shared state: importance always, the anchor when messages were supplied.
+    """Independent reader questions over one state, with an anchor only when messages were supplied.
 
     The same signature serves System One natively and the generative route through DSPy's decision
     adapter, so both backends answer exactly the same questions.
@@ -59,34 +65,56 @@ def reader_signature(messages: int) -> Any:
             list[dict[str, str]],
             dspy.InputField(desc="Messages already pushed to this reader, each with its id."),
         )
-    fields["importance"] = (Score[IMPORTANCE_LEVELS], dspy.OutputField(desc=IMPORTANCE_QUESTION))
+    fields["report_kind"] = (Choice[REPORT_KIND_OPTIONS], dspy.OutputField(desc=REPORT_KIND_QUESTION))
     if messages:
         fields["anchor_message"] = (
             Choice[anchor_options(messages)],
             dspy.OutputField(desc=ANCHOR_QUESTION),
         )
+    fields["materiality"] = (Score[MATERIALITY_LEVELS], dspy.OutputField(desc=MATERIALITY_QUESTION))
+    fields["interrupt_now"] = (Noul, dspy.OutputField(desc=INTERRUPT_QUESTION))
     return dspy.Signature(fields, instructions=READER_INSTRUCTIONS)
 
 
 def _normalized(values: Mapping[Any, float]) -> dict[Any, float]:
+    if any(not isfinite(value) or value < 0 for value in values.values()):
+        raise ContractFault("news_reader_distribution_invalid")
     total = sum(values.values())
-    if total <= 0:
+    if not isfinite(total) or total <= 0:
         raise ContractFault("news_reader_distribution_empty")
     return {key: value / total for key, value in values.items()}
 
 
-def _reader_evidence(prediction: Any, messages: int) -> tuple[ImportanceEvidence, AnchorEvidence | None]:
-    score = prediction.importance
+def _reader_evidence(
+    prediction: Any, messages: int
+) -> tuple[ReportKindEvidence, MaterialityEvidence, InterruptEvidence, AnchorEvidence | None]:
+    kind = prediction.report_kind
+    if kind.probabilities is None:
+        raise ContractFault("news_reader_report_kind_distribution_missing")
+    report_kind = ReportKindEvidence(
+        value=kind.value,
+        probabilities=_normalized(kind.probabilities),
+        confidence=kind.confidence,
+    )
+    score = prediction.materiality
     if score.probabilities is None:
-        raise ContractFault("news_reader_importance_distribution_missing")
+        raise ContractFault("news_reader_materiality_distribution_missing")
     levels = _normalized(score.probabilities)
-    importance = ImportanceEvidence(
+    if set(levels) != set(range(len(MATERIALITY_LEVELS))):
+        raise ContractFault("news_reader_materiality_distribution_invalid")
+    materiality = MaterialityEvidence(
         value=score.value,
-        probabilities=tuple(levels[index] for index in range(len(IMPORTANCE_LEVELS))),
+        probabilities=tuple(levels[index] for index in range(len(MATERIALITY_LEVELS))),
         confidence=score.confidence,
     )
+    urgency = prediction.interrupt_now
+    if urgency.probability is None:
+        raise ContractFault("news_reader_interrupt_distribution_missing")
+    interrupt = InterruptEvidence(
+        probabilities=(1.0 - urgency.probability, urgency.probability), confidence=urgency.confidence
+    )
     if not messages:
-        return importance, None
+        return report_kind, materiality, interrupt, None
     choice = prediction.anchor_message
     if choice.probabilities is None:
         raise ContractFault("news_reader_anchor_distribution_missing")
@@ -94,13 +122,13 @@ def _reader_evidence(prediction: Any, messages: int) -> tuple[ImportanceEvidence
         probabilities={str(key): value for key, value in _normalized(choice.probabilities).items()},
         confidence=choice.confidence,
     )
-    return importance, anchor
+    return report_kind, materiality, interrupt, anchor
 
 
 class DspyReaderJudge:
     """The reader judgment of one claim: System One when configured, else the generative News route.
 
-    One request asks both questions. A native answer that is unavailable falls back once to the generative
+    One request asks all questions. A native answer that is unavailable falls back once to the generative
     route with the same signature; authentication/configuration faults propagate. When neither backend
     answers, the result is `unavailable` with a bounded code, which the planner waits on and never reuses.
     """
@@ -155,7 +183,7 @@ class DspyReaderJudge:
         self, backend: ReaderBackend, prediction: Any, reader: ReaderInput, *, served_model: str | None
     ) -> ReaderJudgment:
         try:
-            importance, anchor = _reader_evidence(prediction, len(reader.messages))
+            report_kind, materiality, interrupt, anchor = _reader_evidence(prediction, len(reader.messages))
         except (AttributeError, ValidationError) as exc:
             raise ContractFault("news_reader_answer_invalid") from exc
         return ReaderJudgment(
@@ -163,7 +191,9 @@ class DspyReaderJudge:
             backend=backend,
             identity=self.native_identity if backend == "native" else self.generated_identity,
             served_model=served_model,
-            importance=importance,
+            report_kind=report_kind,
+            materiality=materiality,
+            interrupt=interrupt,
             anchor=anchor,
         )
 

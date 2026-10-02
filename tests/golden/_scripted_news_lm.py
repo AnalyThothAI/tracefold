@@ -12,10 +12,15 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import AsyncIterator, Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import dspy
 from dspy.lm15 import Message, Request, Response, Usage, response_to_events
+
+from tracefold.news.notifications.reader import REPORT_KIND_OPTIONS
+
+if TYPE_CHECKING:
+    from tracefold.news.notifications.policy import ReaderCalibration
 
 _SECTION = re.compile(r"\[\[ ## (\w+) ## \]\]\n(.*?)(?=\n\n\[\[ ## |\Z)", re.S)
 JUDGMENTS: dict[str, Any] = {
@@ -60,7 +65,7 @@ def _answer(request: Request) -> dict[str, Any]:
                 "statement": text,
                 "fields": {
                     "subject": "exchange",
-                    "action": "lists perpetual futures",
+                    "action": "announces a custody service" if "custody service" in text else "lists perpetual futures",
                     "mode": "decision",
                     "phase": "announced",
                     "content_kind": "state_change",
@@ -76,7 +81,12 @@ def _answer(request: Request) -> dict[str, Any]:
         return {"result": {"answers": [{"item_id": item["item_id"], "value": JUDGMENTS[task]} for item in items]}}
     if "claim" in inputs:
         answer: dict[str, Any] = {
-            "importance": {"probabilities": {"0": 0.0, "1": 0.0, "2": 0.0, "3": 1.0, "4": 0.0}, "confidence": 0.9}
+            "report_kind": {
+                "probabilities": {value: 1.0 if value == "new_action" else 0.0 for value, _ in REPORT_KIND_OPTIONS},
+                "confidence": 0.9,
+            },
+            "materiality": {"probabilities": {"0": 0.0, "1": 0.0, "2": 1.0, "3": 0.0}, "confidence": 0.9},
+            "interrupt_now": {"noul": 0.05},
         }
         if "messages" in inputs:
             ids = [message["id"] for message in _json(inputs["messages"])]
@@ -87,8 +97,18 @@ def _answer(request: Request) -> dict[str, Any]:
         return answer
     if "selected_claims_json" in inputs:
         claims = _json(inputs["selected_claims_json"])
-        lines = [{"claim_ref": claim["claim_ref"], "text_zh": LINE_ZH} for claim in claims]
-        return {"result": {"headline_zh": HEADLINE_ZH, "lines": lines}}
+        custody = any("custody service" in claim["statement"] for claim in claims)
+        headline = "交易所宣布推出数字资产托管服务" if custody else HEADLINE_ZH
+        lines = [
+            {
+                "claim_ref": claim["claim_ref"],
+                "text_zh": "交易所宣布推出新的数字资产托管服务。"
+                if "custody service" in claim["statement"]
+                else LINE_ZH,
+            }
+            for claim in claims
+        ]
+        return {"result": {"headline_zh": headline, "lines": lines}}
     raise AssertionError(f"golden provider got an unknown signature: {sorted(inputs)}")
 
 
@@ -149,3 +169,23 @@ def scripted_generative_lm(endpoint: Any, *, max_tokens: int, timeout: float) ->
 
     del max_tokens, timeout
     return _ScriptedNewsLM(str(endpoint.model_name))
+
+
+def synthetic_reader_calibration() -> ReaderCalibration:
+    """A test-only arithmetic fixture that exercises the ordinary certified-policy gate.
+
+    This is not a fitted model or an empirical release certificate. Creating
+    the scripted provider never installs it; the isolated golden Workers
+    entry point explicitly supplies it in that subprocess only.
+    """
+
+    from tracefold.news.notifications.policy import ReaderCalibration
+
+    return ReaderCalibration(
+        materiality_floor=2,
+        push_coefficients=(0.0, 0.0, 1.0, -1.0),
+        key_coefficients=(0.0, 1.0, 0.0),
+        push_cut=0.65,
+        key_cut=0.75,
+        certification_status="certified",
+    )

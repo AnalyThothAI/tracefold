@@ -255,21 +255,21 @@ class NotificationWorkStorage:
         if work["content_revision"] != content_revision or work["plan"] is None or work["decision_ref"] != decision_ref:
             self._wake_work(event_id, now_ms=now_ms)
             return
-        plan = NotificationPlan.model_validate(work["plan"]).model_copy(
-            update={"decision_ref": str(work["decision_ref"])}
+        # Completion consumes the recorded decision's delivery metadata, not
+        # its model evidence. Old frozen plans remain settleable after the
+        # reader questions change; their distributions are never reinterpreted.
+        deferred = any(row["decision"] == "deferred" for row in work["plan"]["claim_decisions"])
+        state = "failed" if error_code is not None else ("pending" if deferred else "done")
+        self._settle_recorded_work(
+            event_id,
+            reader_revision=work["plan"]["reader_revision"],
+            decision_ref=str(work["decision_ref"]),
+            state=state,
+            attempts=0 if state == "done" else int(work["attempts"]),
+            next_at_ms=now_ms + NOTIFICATION_WAIT_MS if state == "pending" else now_ms,
+            now_ms=now_ms,
+            error_code=error_code,
         )
-        if error_code is None:
-            self._complete_plan(event_id, plan, attempts=int(work["attempts"]), now_ms=now_ms)
-        else:
-            self._settle_work(
-                event_id,
-                plan,
-                state="failed",
-                attempts=int(work["attempts"]),
-                next_at_ms=now_ms,
-                now_ms=now_ms,
-                error_code=error_code,
-            )
 
     def _wait_work(self, event_id: str, plan: NotificationPlan, *, attempts: int, now_ms: int) -> None:
         """Wait for this Event's send, a linked send, or unavailable reader evidence without an attempt.
@@ -298,14 +298,37 @@ class NotificationWorkStorage:
         now_ms: int,
         error_code: str | None = None,
     ) -> None:
+        self._settle_recorded_work(
+            event_id,
+            reader_revision=plan.reader_revision,
+            decision_ref=plan.record_ref,
+            state=state,
+            attempts=attempts,
+            next_at_ms=next_at_ms,
+            now_ms=now_ms,
+            error_code=error_code,
+        )
+
+    def _settle_recorded_work(
+        self,
+        event_id: str,
+        *,
+        reader_revision: str,
+        decision_ref: str,
+        state: str,
+        attempts: int,
+        next_at_ms: int,
+        now_ms: int,
+        error_code: str | None = None,
+    ) -> None:
         detail = NotificationJobDetail(
             content_revision=self.conn.execute(
                 "SELECT detail->>'content_revision' AS revision FROM news_jobs WHERE job_kind='notify' "
                 " AND subject_id=%s",
                 (event_id,),
             ).fetchone()["revision"],
-            reader_revision=plan.reader_revision,
-            decision_ref=plan.record_ref,
+            reader_revision=reader_revision,
+            decision_ref=decision_ref,
         )
         self.conn.execute(
             """UPDATE news_jobs SET state=%s,detail=%s::jsonb,attempts=%s,

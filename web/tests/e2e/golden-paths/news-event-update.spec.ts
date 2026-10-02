@@ -7,7 +7,9 @@ import { installMockApi } from "@tests/e2e/support/mockApi";
 import { newsUpdateDetailFixture, newsOutcomeFixture } from "@tests/fixtures/newsFixture";
 
 /** Continuous reading, real scroll and keyboard links at every configured viewport. */
-test("reads sent content, all facts and original without opening engineering", async ({ page }) => {
+test("reads sent content, all facts and original without opening engineering", async ({
+  page,
+}, testInfo) => {
   await installMockApi(page);
   await page.goto("/news/events/evt-agent-tariff");
   await expect(
@@ -18,6 +20,12 @@ test("reads sent content, all facts and original without opening engineering", a
   );
   await expect(page.locator(".news-reader-fact")).toHaveCount(2);
   await expect(page.locator(".news-reader-fact").first()).toHaveAttribute("id", "news-claim-2");
+  const addedFact = page.locator("#news-claim-2");
+  await expect(addedFact).toContainText("报道类型：官方新表态");
+  await expect(addedFact).toContainText("新增影响 2.80 / 3");
+  // The synthetic fixture's status proves stored-evidence rendering, not production certification.
+  await expect(addedFact).toContainText("已认证推送概率 98% · 重点概率 90%");
+  await addedFact.screenshot({ path: testInfo.outputPath("reader-evidence.png") });
   await expect(page.locator("#news-processing")).not.toHaveAttribute("open", "");
   await expect(page.getByRole("tablist", { name: "事件详情" })).toHaveCount(0);
   await page.locator("#news-claim-1").getByRole("button", { name: "查看原文 1 ↗" }).click();

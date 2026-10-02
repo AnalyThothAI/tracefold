@@ -9,7 +9,13 @@ from tracefold.news.models import MarketType
 from tracefold.news.notifications.contracts import ClaimDecisionValue, ClaimReason, PlanAction, PlanReason, PlanTimings
 from tracefold.news.notifications.novelty import Novelty, Render
 from tracefold.news.notifications.ports import DeliveryTimings
-from tracefold.news.notifications.reader import ReaderBackend
+from tracefold.news.notifications.reader import (
+    AnchorEvidence,
+    InterruptEvidence,
+    MaterialityEvidence,
+    ReaderBackend,
+    ReportKindEvidence,
+)
 from tracefold.news.update_view import LegacyClaimReason
 from tracefold.news.updates.contracts import ChangeKind, ContentKind, Mode, Phase, Relation
 
@@ -312,16 +318,26 @@ class NewsClaimDecisionData(ExactApiSchema):
     # `reader_v2` reasons, or the named reasons of an `editorial_v1` decision shown as history.
     reason: Literal[ClaimReason, LegacyClaimReason]
     reason_zh: str = ""
-    # Reader rows only: what the reader already held, how the card is written, the incremental importance
-    # (0..4) and its distribution, and which backend answered.
+    # Frozen model evidence and policy probabilities; historical plans are never rescored on reads.
     novelty: Novelty | None = None
     novelty_zh: str = ""
     render: Render | None = None
     earlier_intent_id: str | None = None
     earlier: NewsEarlierNotificationData | None = None
-    importance_threshold: float | None = None
-    importance: float | None = None
-    importance_probabilities: list[float] | None = None
+    report_kind: ReportKindEvidence | None = None
+    report_kind_zh: str = ""
+    materiality: MaterialityEvidence | None = None
+    interrupt: InterruptEvidence | None = None
+    anchor: AnchorEvidence | None = None
+    e: float | None = None
+    m: float | None = None
+    i: float | None = None
+    p_push: float | None = None
+    p_key: float | None = None
+    held: bool | None = None
+    certification_status: Literal["uncalibrated", "certified"] | None = None
+    # Original superseded evidence, exposed only for a read-only historical plan.
+    historical_judgment: dict[str, Any] | None = None
     reader_backend: ReaderBackend | None = None
 
 

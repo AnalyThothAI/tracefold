@@ -312,7 +312,7 @@ def test_a_mixed_feed_page_partitions_into_the_same_tabs_its_rows_report(conn) -
     assert rows["agent-sent"]["update"]["claim_n"] == 2
     assert rows["agent-silent"]["update"]["headline"] == seeded["silent"].claims[0].statement
     assert rows["agent-silent"]["update"]["headline_source"] == "claim"
-    assert rows["agent-silent"]["outcome"]["reason_zh"] == "重要性未达推送线，只进信息流"
+    assert rows["agent-silent"]["outcome"]["reason_zh"] == "类型资格或推送概率未达要求，只进信息流"
     assert rows["agent-pending"]["update"] is None
     assert rows["source-only"]["update"] is None
     assert rows["source-only"]["update"] is None

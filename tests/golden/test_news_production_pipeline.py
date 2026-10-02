@@ -17,7 +17,8 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
     Admission commits its evidence and semantic work together and wakes the semantic worker on
     `news.triage`; the News Agent adopts an EventUpdate; the Deliverer plans it, composes the card for
     the selected claim only, freezes it and sends it through the push provider. Only the model provider
-    and the push provider are scripted; every contract, transaction and projection is production code.
+    and the push provider are scripted, with an explicit test-only calibration; every contract,
+    transaction and projection is production code.
     """
 
     title = "Binance will list ACMEUSDT perpetual futures on 2026-09-08"
@@ -63,6 +64,30 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
             (str(event["event_id"]),),
         ).fetchone()
     assert int(owed["n"]) == 0, "a delivered update is no longer owed"
+
+
+def test_ordinary_candidate_uses_reader_evidence_and_test_calibration_in_workers(golden_runtime: Any) -> None:
+    """A normal candidate crosses the real subprocess's model-dependent policy and delivery path."""
+
+    title = "Exchange announces a new digital-asset custody service"
+    golden_runtime.publish_opennews(
+        {
+            "id": 2_850_002,
+            "newsType": "strategy",
+            "engineType": "news",
+            "text": title,
+            "source": "exchange",
+            "coins": [],
+            "ts": int(time.time() * 1_000),
+            "strategy": {"id": 1018, "name": "News", "engineType": "news", "sourceType": "news"},
+        }
+    )
+
+    event = _wait_for_event(golden_runtime, title=title)
+    data = _wait_for_sent_update(golden_runtime, event_id=str(event["event_id"]))
+    assert data["event"]["admission"] == "candidate"
+    _assert_one_sent_update(data, title=title, headline_zh="交易所宣布推出数字资产托管服务")
+    _assert_scripted_reader_decision(data)
 
 
 def test_an_unroutable_semantic_wake_is_repaired_without_restarting_workers(golden_runtime: Any) -> None:
@@ -138,7 +163,9 @@ def test_an_unroutable_semantic_wake_is_repaired_without_restarting_workers(gold
     assert after_janitor["process_id"] == initial_readiness["process_id"]
 
 
-def _assert_one_sent_update(data: dict[str, Any], *, title: str) -> None:
+def _assert_one_sent_update(
+    data: dict[str, Any], *, title: str, headline_zh: str = "交易所宣布上线新的永续合约"
+) -> None:
     update = data["event_update"]
     assert update is not None
     assert [claim["statement"] for claim in update["claims"]] == [title]
@@ -152,9 +179,23 @@ def _assert_one_sent_update(data: dict[str, Any], *, title: str) -> None:
     (intent,) = processing["intents"]
     assert intent["state"] == "sent"
     assert intent["claim_refs"] == [claim["ref"] for claim in update["claims"]]
-    assert intent["headline_zh"] == "交易所宣布上线新的永续合约"
-    assert intent["body"].startswith("交易所宣布上线新的永续合约")
+    assert intent["headline_zh"] == headline_zh
+    assert intent["body"].startswith(headline_zh)
     assert intent["receipt"] is not None
+
+
+def _assert_scripted_reader_decision(data: dict[str, Any]) -> None:
+    (decision,) = data["processing"]["notification"]["plan"]["claim_decisions"]
+    assert decision["reason"] == "reader_push"
+    assert decision["reader_backend"] == "generated"
+    assert decision["report_kind"]["value"] == "new_action"
+    assert decision["materiality"]["probabilities"] == [0.0, 0.0, 1.0, 0.0]
+    assert decision["interrupt"]["probabilities"] == [0.95, 0.05]
+    assert decision["anchor"] is None
+    # This status is supplied by the isolated test harness's arithmetic fixture; it is not a
+    # production model certificate. The subprocess still runs the ordinary certification gate.
+    assert decision["certification_status"] == "certified"
+    assert decision["p_push"] > 0.65 and decision["p_key"] < 0.75
 
 
 def _wait_for_sent_update(golden_runtime: Any, *, event_id: str, timeout: float = 60.0) -> dict[str, Any]:
