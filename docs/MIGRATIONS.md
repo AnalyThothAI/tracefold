@@ -26,6 +26,8 @@ P2 先停 Workers，再停 Serve，核实没有 News 写者会话。完整备份
 
 `20261001_0423`（#764 P3）从 `0422` 升级：观察与采纳、scope repair 统一到 `news_analyses`，Event 保存唯一 head 指针；证据保存 material 摘要、焦点来源、事实范围及版本摘要日志，来源修订归 `news_items.revisions`，band 归 Event 数组，语义任务归 `news_jobs`，checkpoint 归缓存。`news_event_assets` 保留，命题链接从不可变 changes 派生。
 
+命题链接按 `(update_ref,current_ref,previous_ref)` 保留文档中的第一条有效关系，与旧 writer 的 `ON CONFLICT DO NOTHING` 一致；不同关系不能展开成两行。生产备份演练发现两组重复关系，部署前修正须记录对尚未在生产执行的已合并 revision 的例外授权。迁移临时索引旧 band 的 Event，并将 Claim 引用展开到临时索引表，避免逐行重复解析 JSON；十组数量、md5 与双向行差异校验均保留。
+
 P3 先停 Workers，再停 Serve，核实无 News 写者会话。完整备份外导出 `news_claim_links`、`news_event_update_heads`、`news_event_updates`、`news_head_scope_repairs`、`news_semantic_observations`、`news_semantic_checkpoints`、`news_semantic_work`、`news_event_evidence_snapshots`、`news_event_bands`、`news_item_revisions`，记录 sha256 并验证 `pg_restore --list`。band 身份、采纳来源、repair、head 或 checkpoint 键不一致时拒绝升级；迁移逐列核对源投影、数量与 md5，日志须有 `p3_verify ok`。孤儿证据只记录 NOTICE，不作为存活 Event 事实回填。
 
 启动前在维护窗口执行 `VACUUM (FULL, ANALYZE) news_events; ANALYZE news_analyses, news_jobs, news_items;`，回收回填旧版本并刷新统计。租约和重试预算保留，未发送唤醒由现有 repair turn 恢复。核对详情版本、head 和待处理任务；回滚恢复已核验备份加旧镜像。生产迁移、维护 VACUUM、HOT 比率与 24 小时性能观测尚未执行。
