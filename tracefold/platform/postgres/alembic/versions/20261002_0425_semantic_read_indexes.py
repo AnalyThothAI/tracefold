@@ -7,12 +7,14 @@ Migration evidence:
 - current_source_revision: 20261001_0424
 - minimum_supported_source_revision: 20261001_0424
 - lock_level_and_order: SHARE on news_jobs, then SHARE ROW EXCLUSIVE for reader triggers;
-  stop News writers first. Runtime mutations lock Event, its job/intent, then reader clock.
+  stop News writers first. Permission writers lock Event, its job/intent, then reader clock;
+  fact triggers lock the clock at commit.
 - statement_timeout: 120s.
 - lock_timeout: 5s.
 - estimated_rows: 13,604 total jobs in the frozen production rehearsal; index only matching jobs.
 - estimated_bytes: under 1 MiB of additional indexes at the measured production size.
-- rewrite_or_index_build: two partial B-tree indexes, one singleton counter table and AFTER triggers;
+- rewrite_or_index_build: two partial B-tree indexes, one singleton counter table
+  and deferred AFTER constraint triggers;
   existing facts and job detail stay unchanged.
 - preflight_and_maintenance_boundary: verified full backup; stop writers through the supported
   migrate-before-start workflow, including Analysis then drained Executor because image head changes.
@@ -50,6 +52,9 @@ def upgrade() -> None:
 
     # This counter fences permission snapshots only; the analyses and receipts remain the facts.
     # It avoids unrelated database/Trading XIDs invalidating every News permission read.
+    # Defer fact triggers until commit: admission may write Item/member before Event,
+    # so an immediate counter lock would invert the permission writer's Event -> clock order.
+    # The fact and its generation are still visible atomically to every other transaction.
     op.execute("""
         CREATE TABLE public.news_reader_clock (
           singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
@@ -61,33 +66,42 @@ def upgrade() -> None:
           UPDATE public.news_reader_clock SET revision=revision+1 WHERE singleton;
           RETURN NULL;
         END $$;
-        CREATE TRIGGER news_reader_analysis_insert AFTER INSERT ON public.news_analyses
+        CREATE CONSTRAINT TRIGGER news_reader_analysis_insert AFTER INSERT ON public.news_analyses
+          DEFERRABLE INITIALLY DEFERRED
           FOR EACH ROW WHEN (NEW.adopted_at_ms IS NOT NULL) EXECUTE FUNCTION public.news_reader_advance();
-        CREATE TRIGGER news_reader_analysis_update AFTER UPDATE ON public.news_analyses
+        CREATE CONSTRAINT TRIGGER news_reader_analysis_update AFTER UPDATE ON public.news_analyses
+          DEFERRABLE INITIALLY DEFERRED
           FOR EACH ROW WHEN (NEW.adopted_at_ms IS NOT NULL AND
             (OLD.adopted_at_ms IS DISTINCT FROM NEW.adopted_at_ms OR OLD.document IS DISTINCT FROM NEW.document))
           EXECUTE FUNCTION public.news_reader_advance();
-        CREATE TRIGGER news_reader_analysis_delete AFTER DELETE ON public.news_analyses
+        CREATE CONSTRAINT TRIGGER news_reader_analysis_delete AFTER DELETE ON public.news_analyses
+          DEFERRABLE INITIALLY DEFERRED
           FOR EACH ROW WHEN (OLD.adopted_at_ms IS NOT NULL) EXECUTE FUNCTION public.news_reader_advance();
-        CREATE TRIGGER news_reader_notification_insert AFTER INSERT ON public.news_notifications
+        CREATE CONSTRAINT TRIGGER news_reader_notification_insert AFTER INSERT ON public.news_notifications
+          DEFERRABLE INITIALLY DEFERRED
           FOR EACH ROW WHEN (NEW.kind='update' AND NEW.state IN ('sending','sent','ambiguous'))
           EXECUTE FUNCTION public.news_reader_advance();
-        CREATE TRIGGER news_reader_notification_update AFTER UPDATE ON public.news_notifications
+        CREATE CONSTRAINT TRIGGER news_reader_notification_update AFTER UPDATE ON public.news_notifications
+          DEFERRABLE INITIALLY DEFERRED
           FOR EACH ROW WHEN (NEW.kind='update' AND
             (NEW.state IN ('sending','sent','ambiguous') OR OLD.state IN ('sending','sent','ambiguous')) AND
             (NEW.state,NEW.card,NEW.receipt,NEW.claim_refs,NEW.sent_claims,NEW.history_context,NEW.settled_at_ms)
             IS DISTINCT FROM
             (OLD.state,OLD.card,OLD.receipt,OLD.claim_refs,OLD.sent_claims,OLD.history_context,OLD.settled_at_ms))
           EXECUTE FUNCTION public.news_reader_advance();
-        CREATE TRIGGER news_reader_notification_delete AFTER DELETE ON public.news_notifications
+        CREATE CONSTRAINT TRIGGER news_reader_notification_delete AFTER DELETE ON public.news_notifications
+          DEFERRABLE INITIALLY DEFERRED
           FOR EACH ROW WHEN (OLD.kind='update' AND OLD.state IN ('sending','sent','ambiguous'))
           EXECUTE FUNCTION public.news_reader_advance();
-        CREATE TRIGGER news_reader_membership AFTER INSERT OR UPDATE OR DELETE ON public.news_event_members
+        CREATE CONSTRAINT TRIGGER news_reader_membership AFTER INSERT OR UPDATE OR DELETE ON public.news_event_members
+          DEFERRABLE INITIALLY DEFERRED
           FOR EACH ROW EXECUTE FUNCTION public.news_reader_advance();
-        CREATE TRIGGER news_reader_item_metadata AFTER UPDATE ON public.news_items
+        CREATE CONSTRAINT TRIGGER news_reader_item_metadata AFTER UPDATE ON public.news_items
+          DEFERRABLE INITIALLY DEFERRED
           FOR EACH ROW WHEN (NEW.provider_metadata IS DISTINCT FROM OLD.provider_metadata)
           EXECUTE FUNCTION public.news_reader_advance();
-        CREATE TRIGGER news_reader_event_kind AFTER UPDATE ON public.news_events
+        CREATE CONSTRAINT TRIGGER news_reader_event_kind AFTER UPDATE ON public.news_events
+          DEFERRABLE INITIALLY DEFERRED
           FOR EACH ROW WHEN (NEW.event_kind IS DISTINCT FROM OLD.event_kind)
           EXECUTE FUNCTION public.news_reader_advance();
     """)

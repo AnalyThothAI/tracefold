@@ -153,6 +153,8 @@ def test_reader_generation_rolls_back_with_its_fact_and_ignores_noop_metadata():
             "UPDATE news_items SET provider_metadata='{\"reader_test\":true}' WHERE item_id=%s",
             (f"it-{EVENT}",),
         )
+        assert conn.execute("SELECT revision FROM news_reader_clock").fetchone()["revision"] == before
+        conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
         assert conn.execute("SELECT revision FROM news_reader_clock").fetchone()["revision"] == before + 1
         raise RuntimeError("rollback_fact")
     assert sql("SELECT revision FROM news_reader_clock")[0]["revision"] == before

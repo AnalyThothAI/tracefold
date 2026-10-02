@@ -1,7 +1,8 @@
 """A News-only transactional generation witnesses a repeatable-read permission snapshot.
 
 The short writer locks the singleton after its Event/job or intent. Relevant fact triggers
-advance it under the same lock, so a reader either sees their commit or rejects its old proof.
+advance it under the same lock at commit, so fact and generation become visible atomically.
+Deferring that lock prevents admission's Item/member writes from preceding its Event lock.
 """
 
 from dataclasses import dataclass

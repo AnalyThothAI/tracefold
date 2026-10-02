@@ -2635,3 +2635,70 @@ def test_receipt_committing_inside_permission_read_invalidates_its_generation(mo
     assert (
         sql("SELECT count(*) AS n FROM news_notifications WHERE event_id=%s AND state='pending'", (EVENT,))[0]["n"] == 0
     )
+
+
+@pytest.mark.parametrize("metadata_change", [False, True])
+def test_admission_fact_generation_does_not_invert_notification_event_lock(monkeypatch, metadata_change):
+    from threading import Event
+
+    from psycopg import Connection
+
+    import tracefold.news.storage.notification_work as work
+
+    pg, db, clock = store()
+    head = adopted_head(pg.semantic, clock)
+    seed_event("ev-incoming", fingerprint="incoming")
+    snapshot = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
+    plan = notify_plan(head, snapshot.reader.revision)
+    generation = sql("SELECT revision FROM news_reader_clock")[0]["revision"]
+    checking = Event()
+    updating_event = Event()
+    original_execute = Connection.execute
+    original_check = work.reader_unchanged
+
+    def execute(conn, query, *args, **kwargs):
+        if "member_count = member_count + 1" in str(query):
+            updating_event.set()
+        return original_execute(conn, query, *args, **kwargs)
+
+    def check(conn, proof):
+        # The notification writer already owns Event; admission must not own the clock
+        # before it obtains that same Event. The old immediate trigger formed a lock ring.
+        checking.set()
+        assert updating_event.wait(3)
+        conn.execute("SET LOCAL lock_timeout='250ms'")
+        return original_check(conn, proof)
+
+    monkeypatch.setattr(Connection, "execute", execute)
+    monkeypatch.setattr(work, "reader_unchanged", check)
+
+    def admission(repos):
+        if metadata_change:
+            repos.news.conn.execute(
+                'UPDATE news_items SET provider_metadata=\'{"strategies":[{"engine_type":"listing"}]}\' '
+                "WHERE item_id='it-ev-incoming'"
+            )
+        return repos.news.add_member(
+            event_id=EVENT,
+            item_id="it-ev-incoming",
+            joined_at_ms=clock.now_ms,
+            match_kind="near",
+            jaccard_estimate=0.9,
+            provider_score=90,
+            fact_id="incoming",
+            fact_text="New evidence",
+            now_ms=clock.now_ms,
+        )
+
+    async def race():
+        planning = asyncio.create_task(pg.notifications.atomic_record_plan(plan))
+        assert await asyncio.to_thread(checking.wait, 3)
+        adding = asyncio.create_task(db.tx("admission", admission))
+        return await asyncio.wait_for(asyncio.gather(planning, adding, return_exceptions=True), 5)
+
+    planned, added = asyncio.run(race())
+    assert not isinstance(planned, BaseException), planned
+    assert planned.lease is not None
+    assert added is True
+    assert sql("SELECT count(*) AS n FROM news_event_members WHERE event_id=%s", (EVENT,))[0]["n"] == 2
+    assert sql("SELECT revision FROM news_reader_clock")[0]["revision"] == generation + (2 if metadata_change else 1)
