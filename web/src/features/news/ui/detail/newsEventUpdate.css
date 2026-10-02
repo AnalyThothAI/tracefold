@@ -517,7 +517,11 @@
 
     .news-update-text-button,
     .news-update-disclosure > summary {
-      min-height: 44px;
+      min-height: var(--tap-target);
+    }
+
+    .news-update-text-button {
+      min-width: var(--tap-target);
     }
 
     .news-update-processing-summary {
@@ -535,7 +539,8 @@
     }
 
     .news-update-source-label a {
-      min-height: 32px;
+      min-width: var(--tap-target);
+      min-height: var(--tap-target);
     }
   }
 }
