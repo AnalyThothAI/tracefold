@@ -46,7 +46,8 @@ uv sync --locked
 | 命题提取与采用 | `news/updates`、语义 storage；具体模型调用放 `news/adapters` |
 | 通知选择、卡片与持久发送工作流 | `news/notifications`、通知 storage；实际传输由 pipeline 适配器完成 |
 | 市场 / 钱包确定性规则 | 对应 market、chain_tape 领域逻辑，不复制进 UI |
-| 交易计划、特征与编译 | `trading/engine` 的纯逻辑 |
+| LIVE 特征、概率策略与纸面双腿几何 | `trading/engine` 的纯逻辑 |
+| Signal 准入与执行生命周期决策 | `trading/executor` 的纯逻辑；I/O 编排由 `app/executor.py` 拥有 |
 | 持久 Case / 执行记录 | `trading/storage` |
 | 外部 provider、交易所或传输 | `integrations`，通过已有业务端口装配 |
 | 进程、HTTP / CLI、跨域映射 | `app` |
@@ -172,7 +173,7 @@ PR 可以在远程 CI 等待时提交，但不能把 pending 说成通过。授�
 
 提交 PR 不意味着允许合并、部署、数据库变更、接受模型复核或真实账户操作。保留其他任务的工作树与用户未提交修改；只有明确授权后才清理相应任务资源。
 
-部署和开发入口分离：`make sync` 安装锁定开发依赖，`make dev-serve` / `make dev-workers` / `make dev-analysis` 在前台运行隔离实例；普通 Compose 部署不依赖这些宿主机进程。配置与服务归属见[安装](SETUP.md)及[scripts 工具说明](../scripts/README.md)。
+部署和开发入口分离：`make sync` 安装锁定开发依赖，`make dev-serve` / `make dev-workers` / `make dev-analysis` / `make dev-executor` 在前台运行隔离实例；普通 Compose 部署不依赖这些宿主机进程。配置与服务归属见[安装](SETUP.md)及[scripts 工具说明](../scripts/README.md)。
 
 ---
 

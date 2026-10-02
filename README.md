@@ -43,13 +43,13 @@ config:
 ---
 flowchart TB
     accTitle: Tracefold 产品能力总览
-    accDescr: News 保存来源与增量知识并独立通知；Analysis 形成研究决策；符合条件的 Signal 可交给独立 Nautilus。工作台读取持久记录。此图是能力关系，不是完整部署连线。
+    accDescr: News 保存来源与增量知识并独立通知；Analysis 冻结预测与六策略动作；符合条件的 Signal 可交给 DEMO Executor。工作台读取持久记录。此图是能力关系，不是完整部署连线。
     Inputs["消息 · 市场观察 · 链上回执"] --> News["News / Workers<br/>理解增量，保留来源证据"]
     News --> Ledger[("PostgreSQL<br/>事实 · 版本 · 决策 · 回执")]
     News --> Notify["读者通知<br/>选择 → 成文 → 实际回执"]
     Ledger --> Research["Trading / Analysis<br/>冻结证据，研究入场计划"]
-    Research --> Decision["研究决策<br/>TRADE · NO_TRADE · WATCH"]
-    Decision -.->|符合发布与执行条件| Runtime["Nautilus<br/>独立账户执行与对账"]
+    Research --> Decision["冻结预测与六策略<br/>long · short · abstain"]
+    Decision -.->|符合发布与执行条件| Runtime["DEMO Executor<br/>账户执行与对账"]
     Ledger --> Console["React / Serve<br/>只读中文工作台"]
 
     classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
@@ -66,7 +66,7 @@ class Runtime execution;
 
 *能力视图：实线表示主要产物关系；虚线表示有条件的后续。省略了恢复与回写连线，不代表所有消息都会产生交易。*
 
-系统只有 **News、Trading 两个业务域**，以及 **Serve、Workers、Analysis、Nautilus 四种进程角色**。前三者共用应用镜像；Nautilus 单独管理。RabbitMQ 承接原始消息与语义唤醒，PostgreSQL 保存事实、工作和回执。完整部署图与依赖方向见[系统架构](docs/ARCHITECTURE.md)。
+系统包含 **News、Trading 两个业务域**，以及 **Serve、Workers、Analysis、Executor 四种进程角色**，共用应用镜像并由 Compose 管理。RabbitMQ 承接原始消息与语义唤醒，PostgreSQL 保存事实、工作和回执。完整部署图与依赖方向见[系统架构](docs/ARCHITECTURE.md)。
 
 > [!IMPORTANT]
 > **采用知识 ≠ 已发通知；研究决策 ≠ 已发布 Signal；订单受理 ≠ 真实成交。**
@@ -95,10 +95,10 @@ make up
 | 配置新闻源、模型与可选推送 | 编辑 `TRACEFOLD_HOME/config.yaml`，默认 `~/.tracefold/config.yaml`，见[按能力配置](docs/SETUP.md#capabilities) |
 | 核实应用状态 | `make topology` 查看脱敏拓扑，`make status-app` 检查应用；`make logs` 包含 Analysis |
 | 查看有效配置 | `make config`，使用容器镜像输出脱敏配置 |
-| 停止服务、保留数据 | `make down`；先停独立执行进程，再停应用与依赖 |
+| 停止服务、保留数据 | `make down`；账户执行已启用时先核实实际持仓与挂单 |
 
 > [!NOTE]
-> 默认没有外部新闻和模型凭据，推送、交易分析、Signal 发布和执行各自受配置控制。空列表不一定是启动失败。`make up` **不会启动或重启 Nautilus**；停止进程也不表示账户已平仓。
+> 默认没有外部新闻和模型凭据，推送、交易分析、Signal 发布和执行各自受配置控制。空列表不一定是启动失败。`make up` 管理全部四个应用角色；停止 Executor 不表示账户已平仓。
 
 业务配置与部署参数分开：可选 `.env` 只配置 Compose 项目名、宿主机目录和端口，不是业务字段的替代来源。开发 worktree 使用独立项目、配置与端口；生产来源核验由显式 `make verify-main-ci` 完成，不成为停止或恢复服务的联网前置条件。
 
@@ -111,7 +111,7 @@ make up
 | 运行与管理系统 | [安装](docs/SETUP.md) → [运维](docs/OPERATIONS.md) → [安全](docs/SECURITY.md) |
 | 理解设计或审查边界 | [架构图谱](docs/ARCHITECTURE.md#atlas) → [模块手册](docs/README.md#modules) → 对应实现与测试 |
 | 修改后端或 Agent | [开发](docs/DEVELOPMENT.md) → [News](docs/modules/news.md) / [Trading](docs/modules/trading.md) → [验证](docs/TESTING.md) |
-| 修改只读工作台 | [前端架构](docs/FRONTEND.md) → [接口契约](docs/CONTRACTS.md) → [界面设计记录](docs/design/news-event-detail.md) |
+| 修改只读工作台 | [前端架构](docs/FRONTEND.md) → [接口契约](docs/CONTRACTS.md) → `web/src` 与对应测试 |
 
 <details>
 <summary><strong>源码目录速览</strong></summary>
@@ -133,6 +133,6 @@ notebooks/         离线研究与明确标识的历史实验
 
 ---
 
-文档描述同版本源码，不证明某个部署已健康。精确字段与命令见[生成参考](docs/generated/README.md)；历史研究不构成当前模型质量或收益保证。当前没有进程内 Paper 模拟执行，也不保留旧 GEPA / release / canary 在线流程。
+文档描述同版本源码，不证明某个部署已健康。精确字段与命令见[生成参考](docs/generated/README.md)；模型评测与纸面标签各有证明范围，不构成真实成交或收益保证。
 
 [中文手册](docs/README.md) · [贡献与开发](docs/DEVELOPMENT.md) · [AI 开发入口](AGENTS.md) · [Claude 入口](CLAUDE.md) · [安全与权限](docs/SECURITY.md)

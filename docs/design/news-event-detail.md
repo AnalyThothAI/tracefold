@@ -43,7 +43,3 @@
 当前可读历史未找到独立 `held_gate` 示例，真实拦截图使用 `held_recovery`，不伪造 Gate 判定。`held_gate`、结果不明、历史发送与新 head、冷错误与重试另由固定测试输入覆盖。
 
 自动验证覆盖冻结正文及映射、重叠引用、当前版／历史版隔离、此前回执状态与时间边界、故事窗口／限额、索引升级降级与事实保留、契约生成、冷链接／键盘／刷新／后退／复制、失败重试及四视口布局。具体执行结果保存在实现 PR；远程 CI 和部署需分别核实，不从截图推断通过。
-
-## 历史设计
-
-此前 [PR #795](https://github.com/AnalyThothAI/tracefold/pull/795) 使用四 tab 主卡片与通知侧栏。本轮完整替换其阅读路径；[旧 HTML 原型](news-event-detail-prototype.html)、[旧桌面图](news-event-detail-implementation-desktop.jpg)和[旧手机图](news-event-detail-implementation-mobile.jpg)仅保留历史审阅证据，不作为当前交互规则或实时内容。

@@ -89,7 +89,7 @@ class Runtime execution;
 | 角色 | 实际入口 | 拥有的职责 | 不承担的职责 |
 | --- | --- | --- | --- |
 | Serve | [serve_runtime.py](../tracefold/app/serve_runtime.py)、[HTTP routes](../tracefold/app/http/routes/) | 读取持久化投影、提供 React 静态文件 | 模型重跑、公开写接口、下单 |
-| Workers | [entrypoint.py](../tracefold/app/workers/entrypoint.py)、[task_contract.py](../tracefold/app/workers/task_contract.py) | 消息接收、准入、语义、通知、行情复盘、钱包与维护 | Trading Analysis 生命周期、账户执行 |
+| Workers | [entrypoint.py](../tracefold/app/workers/entrypoint.py)、[task_contract.py](../tracefold/app/workers/task_contract.py) | 消息接收、准入、语义、通知、标的目录、当前报价、钱包与维护 | Trading Analysis 生命周期、账户执行 |
 | Analysis | [trading_analysis.py](../tracefold/app/trading_analysis.py)、[trading_assessor.py](../tracefold/app/trading_assessor.py) | 来源转交、LIVE CaseView、冻结预测、六策略、两腿纸面结果 | 发送新闻卡片、向交易所写订单 |
 | Executor | [app/executor.py](../tracefold/app/executor.py)、[REST 适配](../tracefold/integrations/trading/binance.py) | Signal / 操作意图消费、订单、保护、原生成交与对账 | 新闻理解、重新决定 ReaderCard 内容 |
 
@@ -164,11 +164,13 @@ class Trading research;
 | [news/storage](../tracefold/news/storage/) | News 事实与短事务；语义、通知使用各自存储接口和显式 SQL 协作者 | [新闻状态](modules/news.md#state) |
 | [market_notifications.py](../tracefold/news/market_notifications.py) | OI / 清算 / 大户 / 钱包通知的确定性分支与发送循环 | [市场观察](modules/oi.md) |
 | [news/market_review](../tracefold/news/market_review/) | 标的目录、当前报价与发送时行情 | [行情复盘](modules/market-review.md) |
-| [news/chain_tape](../tracefold/news/chain_tape/) | 名单、回执完整前缀、成交解释、净买入与价格采样 | [钱包](modules/wallets.md) |
+| [news/chain_tape](../tracefold/news/chain_tape/) | 名单、回执完整前缀、成交解释与净买入 | [钱包](modules/wallets.md) |
 | [news/learning](../tracefold/news/learning/) | 卡片评审器与固定语料校准 | [复核](modules/review.md) |
 | [trading/engine](../tracefold/trading/engine/) | 类型化目标、LIVE 特征、双腿几何、预测策略与记分纯函数 | [交易研究](modules/trading.md) |
+| [trading/executor](../tracefold/trading/executor/) | Signal v4、入场准入与执行生命周期纯状态决策 | [执行](modules/execution.md) |
 | [trading/storage](../tracefold/trading/storage/) | Trigger、Case、修订、研究和执行记录 | [交易状态](modules/trading.md) |
-| [app/news_updates.py](../tracefold/app/news_updates.py)、[trading_analysis.py](../tracefold/app/trading_analysis.py) | News 公开更新映射、接收确认及研究调度 | [跨域交接](#handoff) |
+| [app/news_updates.py](../tracefold/app/news_updates.py) | News 语义、判断路由与通知的装配 | [新闻 Agent](modules/news.md#agent) |
+| [app/trading_intake.py](../tracefold/app/trading_intake.py)、[trading_analysis.py](../tracefold/app/trading_analysis.py) | News 公开更新映射、接收确认及研究调度 | [跨域交接](#handoff) |
 | [integrations/trading](../tracefold/integrations/trading/) | DEMO 账户签名 REST 执行适配 | [执行](modules/execution.md) |
 | [platform](../tracefold/platform/)、[app](../tracefold/app/)、[integrations](../tracefold/integrations/) | 配置、资源、数据库、进程装配与外部 I/O | [平台](modules/platform.md) |
 | [web/src](../web/src/)、[web/tests](../web/tests/) | 只读工作台、路由、查询和浏览器验证 | [前端](FRONTEND.md) |
@@ -183,7 +185,7 @@ class Trading research;
 | --- | --- | --- |
 | 编辑型消息 | Item 修订 → FactUnit / Event → 命题理解 → EventUpdate | 独立通知；符合条件的公开新闻更新 |
 | OI / 清算 / 大户报告 | 已识别来源契约 → 确定性解析 → 类型化观察或显式解析失败 | 市场通知；OI 可独立进入交易研究 |
-| 链上回执 | 已发布名单 → 完整回执前缀 → 成交解释 → 净买入 episode | 钱包通知、详情与独立价格观察 |
+| 链上回执 | 已发布名单 → 完整回执前缀 → 成交解释 → 净买入 episode | 钱包通知与链上事实详情 |
 
 OI 不先通过编辑型新闻模型；钱包首报不先经过 LLM 或价格收益评估。三者共用必要基础设施和发送适配，但不共用一套虚构的“总评分”或 Event 状态。
 
@@ -234,7 +236,7 @@ sequenceDiagram
 | `source_update` | 在选标的之前保存历史命题修订；不创建新 Case、不续期、不自动撤单或平仓 |
 | 类型化 OI 来源 | 保留独立 measurement 与 source-key 语义；无需先有编辑型 Event |
 
-修订按显式 claim refs 指向旧知识，可能跨 Event。它可以让尚未提交的入场以 `source_corrected` 被拒绝，但本身没有处理现有仓位的权限。冻结 Case 的知识截止时间不会被后来修订改写。
+修订按显式 claim refs 指向旧知识，可能跨 Event。它可以让尚未发布的决策在发布资格检查中以 `source_corrected` 被拒绝；已发布 Signal 不因此自动撤销，修订本身也没有处理现有仓位的权限。冻结 Case 的知识截止时间不会被后来修订改写。
 
 <a id="ownership"></a>
 <a id="section-数据归属与独立状态轴"></a>
@@ -279,6 +281,22 @@ class Case,Amendment,Decision research;
 
 这是**概念数据关系**，不是物理外键 ER 图。精确表、列和约束见[数据库生成参考](generated/db-schema.md)。
 
+### 当前账本结构
+
+当前 schema head 为 `20261002_0428`，包含 19 张 News 表、7 张 Trading 表及 `runtime_processes`、`alembic_version`，共 28 张表。表集合由 [audit.py](../tracefold/platform/postgres/audit.py)校验，版本由 [Alembic](../tracefold/platform/postgres/alembic/versions/)维护。
+
+| 持久所有者 | 主要记录 | 当前作用 |
+| --- | --- | --- |
+| News 输入与语义 | `news_items`、`news_event_members`、`news_events`、`news_analyses`、`news_jobs` | 来源修订、范围与工作、不可变采用文档和当前 head |
+| News 召回与读者 | `news_claim_index`、`news_reader_clock`、`news_notifications` | 精确文本向量与 FTS 投影、读者 CAS 围栏、冻结通知及真实结果 |
+| News 市场与链上 | `news_market_observations`、`news_collectors`、`news_market_wallets`、钱包 fills / events | 类型化市场事实、采集进度、名单成员区间与链上事实 |
+| News 对外交接 | `news_trade_events` | Trading 尚未确认或已确认的公开来源记录 |
+| Trading 研究 | `trading_inputs`、`trading_cases` | 接收与修订、冻结模型输入/预测、六策略和双腿纸面标签 |
+| Trading 执行 | `trading_entries`、`trading_accounts`、`trading_orders`、`trading_fills`、`trading_operator_intents` | Signal / Plan 生命周期、账户控制与对账、原生订单成交和本地操作意图 |
+| Platform | `runtime_processes` | 进程身份与心跳；不替代业务进度或账户证据 |
+
+这些是表组与职责摘要，完整列、约束和其他 News 目录/报价/缓存表由生成参考维护。召回索引可重建；reader clock 提供事务内并发围栏。两者不能代替其所引用的采用文档与发送事实。
+
 | 状态轴 | 能回答的问题 | 不能推断的结论 |
 | --- | --- | --- |
 | 输入工作版本 | 最新证据是否已处理、谁持有租约、还可重试几次 | 当前 adopted head 一定是最新输入的结果 |
@@ -286,7 +304,7 @@ class Case,Amendment,Decision research;
 | 通知计划 / 卡片 | 选择了什么、正文是否冻结、生成是否失败 | 外部提供商已经成功发送 |
 | 实际发送回执 | 精确正文及 sent / not_sent / ambiguous 结果 | 允许交易、存在成交 |
 | Case / 决策 / 发布 | 研究用了什么、决定什么、是否产生 Signal | 交易所接受或成交 |
-| 账户 / 保护 / 原生历史 | 当前仓位是否已核实、是否有保护、费用与资金费率覆盖是否完整 | 仅靠进程存活就能判断账户安全或已平仓 |
+| 账户 / 保护 / 原生历史 | 当前仓位是否已核实、是否有保护、原生成交与手续费证据是否完整 | 仅靠进程存活就能判断账户安全或已平仓 |
 
 最新语义输入失败时，旧的有效 head 仍可读；无实质变化时，done 可以前进而内容版本不增加。通知与交易分析可以在同一条新闻上独立成功、失败或暂缓。
 
@@ -314,7 +332,7 @@ class Case,Amendment,Decision research;
 
 [后端边界测试](../tests/architecture/test_backend_boundaries.py)与[Trading 边界测试](../tests/architecture/test_trading_boundaries.py)约束依赖方向。模块手册链接可执行行为测试；[契约](CONTRACTS.md)维护接口语义；[运维](OPERATIONS.md)维护实际操作。
 
-旧类名、队列名或目录名可能保留历史拼写，例如 `news.triage` 与 `oi_runtime`。它们不能证明旧的三预测器 Program、OI 专属下单通道或 Paper 模拟器仍在运行。当前能力由实际装配与调用路径决定。
+边界测试约束跨域依赖、SQL 所有权、公开运行入口和退役路径。队列 `news.triage` 的名称保留协议拼写，当前用途是语义唤醒；Analysis 的纸面双腿是基于 LIVE 行情的离线结果标签，账户订单仍由 DEMO Executor 按场所证据处理。
 
 ---
 

@@ -13,14 +13,14 @@
 > [!IMPORTANT]
 > 页面不写订单、不重跑模型；Query 缓存、URL 筛选和短暂交互不重复保存同一事实。
 
-[接口契约](CONTRACTS.md) · [详情设计记录](design/news-event-detail.md)
+[接口契约](CONTRACTS.md) · [前端测试范围](TESTING.md)
 
 <details>
 <summary><strong>本页目录</strong></summary>
 
 1. [从 URL 到已记录证据](#section-从-url-到已记录证据)
 2. [实际路由与页面职责](#section-实际路由与页面职责)
-3. [新闻页面不是旧 verdict 页面](#section-新闻页面不是旧-verdict-页面)
+3. [新闻阅读与详情交互](#section-新闻阅读与详情交互)
 4. [行情、钱包和执行的状态展示](#section-行情钱包和执行的状态展示)
 5. [API 类型与生成物](#section-api-类型与生成物)
 6. [视觉与交互约定](#section-视觉与交互约定)
@@ -68,6 +68,21 @@ class URL,Route,Session,Client,Query,API,DB,Model,View store;
 
 Query 管理服务器状态，URL 管理可分享的筛选和详情位置，组件 state 管理短暂交互。不要再用全局 store 复制同一批记录，否则刷新、分享链接和浏览器后退容易看到三份不同状态。
 
+[AppRoot](../web/src/app/AppRoot.tsx)提供一个 QueryClient，默认重试一次、8 秒 stale time、窗口聚焦时不自动刷新；各 feature 可覆盖这些设置。[useAppSession](../web/src/app/useAppSession.ts)获取 bootstrap 后配置读取 token，只有会话就绪才启用业务 Query。路由的 `ShellChromeRoute` 先构造外壳，`ShellRoute` 再处理 bootstrap 加载 / 失败并提供页面会话，News 与 Trading 路由按需加载。
+
+[HTTP 客户端](../web/src/lib/api/client.ts)只使用同源 GET；开发时由 Vite 代理 `/api`。认证使用 Bearer，token 变化会清空 ETag 响应缓存。请求键必须包含实际过滤条件、游标和类型化资产身份；304 复用对应已验证响应，仍按响应内的业务时钟解释 freshness。
+
+| 查询 | 当前刷新策略 | 所有者 |
+| --- | --- | --- |
+| 新闻流 / 标的 Event 列表 | 最新窗口每 3 秒；25 条 / 页，最多三页；旧窗口暂停轮询 | [newsQueries](../web/src/features/news/api/newsQueries.ts) |
+| Event 详情、News 状态、当前报价 | 每 15 秒，报价与新闻内容分别缓存 | News API |
+| 市场观察、钱包状态与 episode 列表 | 每 10 秒；历史页与原始 Item 详情单独查询 | News API |
+| 外壳基础状态 | 每 15 秒；共享 News 状态 Query，不从 News 页面轮询 Trading | [cockpit API](../web/src/features/cockpit/api/useCockpitStatusQuery.ts)、[shellChromeData](../web/src/routes/shellChromeData.ts) |
+| Trading Case、记分板与执行记录 | 每 15 秒，冻结输入与逐步完成的结果一起读取 | [tradingQueries](../web/src/features/trading/api/tradingQueries.ts) |
+| Trading 账户状态 | 每 1 秒，窗口聚焦强制刷新，响应设置 `no-store` | Trading API |
+
+Trading 账户状态将网络往返时间扣除后端给出的 `facts_remaining_ms`，再由 [useTradingFactExpiry](../web/src/features/trading/state/useTradingFactExpiry.ts)在有效期到达时失效展示。一次成功请求不延长账户事实的有效期。
+
 <a id="section-实际路由与页面职责"></a>
 ## 02 · 实际路由与页面职责
 
@@ -87,10 +102,10 @@ Query 管理服务器状态，URL 管理可分享的筛选和详情位置，组�
 
 状态页“主要资产市场分布”读取 `/api/news/status` 的 `primary_asset_markets_24h`，展示最近 24 小时已采用解析的 primary 资产总数、市场未定数量及占比、各已知市场数量。比例由后端计算；空样本显示“暂无主要资产样本”，不写成 0%。该观测不另算健康状态，不改变新闻处理或推送。
 
-Trading 的 tab / case 等页面选择由路由会话保留，不应复制一套客户端状态机。旧 Radar、Review 写页面和 `/app/*` 路径不属于当前产品；未知页面显示明确未找到状态。
+Trading 的 tab / case 等页面选择由 URL 与路由会话保留。React 未匹配的路径显示未找到；Serve 只挂载 `/`、`/news`、`/news/{path:path}` 与 `/trading` 的 SPA 入口，其他宿主路径返回 404。News 子路径交给 React 匹配，不能用静态入口的 200 证明该页面存在。
 
-<a id="section-新闻页面不是旧-verdict-页面"></a>
-## 03 · 新闻页面不是旧 verdict 页面
+<a id="section-新闻阅读与详情交互"></a>
+## 03 · 新闻阅读与详情交互
 
 Event 详情应分别呈现：最新 wanted 输入是否完成、当前 adopted head 是哪一版、命题与引文如何变化、为什么选择 / 不选择通知、哪个 intent 的正文真正发出。
 “新增了什么”中的一条当前命题只展示一次；它与多条历史命题的比较并不代表多条新增报道或命题。
@@ -119,9 +134,11 @@ News 状态还要分开 `semantic_pending`、`semantic_deferred`、`semantic_in_
 
 **未知不等于零，过期不等于缺失，部分完成不等于失败。** 行情应显示来源、价格种类和时钟；钱包应区分 first、current、send snapshot；执行页应区分研究 action、发布、受理、成交、保护与平仓。
 
+Event 与标的页面展示当前报价，保留价格种类、venue、来源 / 接收时钟和 fresh / stale / unavailable。24H 变化只作滚动市场参考，不是事件收益；钱包首报、当前与发送快照中的净流量属于钱包事实，不能由当前价格倒推历史参考价或收益。
+
 请求失败时可以保留最后成功缓存，但必须标记数据陈旧与错误，不突然把整页变成“没有数据”。同一查询的加载、空数据、失败、部分数据和正常状态保持可理解的布局与重试入口。
 
-全局健康探针不是所有业务能力的汇总完成证明。尤其不能把“Runtime 进程在线”直接画成“账户已核实、已保护、费用齐全”。
+全局健康探针不是所有业务能力的汇总完成证明。尤其不能把“Executor 进程在线”直接画成“账户已核实、已保护、费用齐全”。
 
 <a id="section-api-类型与生成物"></a>
 ## 05 · API 类型与生成物
@@ -139,7 +156,7 @@ make regen-contract
 
 工作台优先呈现信息层级，而不是装饰性面板。使用现有 `PageShell`、`PageHeader`、`PageReadingContent` 及统一 token；保持内容宽度、间距、表格密度和详情区节奏一致，避免每个 feature 自建一套外观。
 
-中文文案说明状态与下一步，英文保留精确契约名和代码标识。错误和风险不仅靠颜色表达；交互元素可键盘聚焦，有可辨识名称。长 ID、原文和模型解释提供适当换行 / 展开，不挤坏主要事实。
+中文文案说明状态与下一步，英文保留精确契约名和代码标识。错误和风险不仅靠颜色表达；交互元素可键盘聚焦，有可辨识名称。长 ID、原文和模型解释提供适当换行 / 展开，不挤坏主要事实。窄屏主要按钮、来源链接与记录展开行使用 44px `--tap-target`，保持工作台真实滚动容器内的焦点可见。
 
 顶部搜索服务于 News 阅读场景，不虚构一个覆盖全部产品的全局搜索。可分享过滤条件放入 URL，刷新和后退应恢复同一阅读位置。
 
@@ -206,5 +223,3 @@ npm run build:checked
 ---
 
 [返回文档中心](README.md) · [架构图谱](ARCHITECTURE.md#atlas) · [返回顶部](#frontend中文只读工作台)
-
-#764 P1：Event 详情与标的行移除固定期限反应，钱包详情移除参考价格与 outcome。当前行情继续展示价格种类、来源、时钟、fresh / stale / unavailable 和 24H 参考；钱包 first、current、send 快照与每地址净流量保留。相应字段由 OpenAPI 和生成类型一并删除。

@@ -1,26 +1,20 @@
-# Review：卡片评审器校准
+# 卡片评审器校准
 
-[手册](../README.md) · [News](news.md) · [术语](../../CONTEXT.md) · [测试](../TESTING.md)
+[手册](../README.md) · [News](news.md) · [测试](../TESTING.md) · [离线研究](../../notebooks/README.md)
 
-当前保留固定扰动语料的卡片评审器校准。P2 已移除没有生产消费者的 ReviewDesk、通知反馈与外部漏报表，CLI 不再提供 `news review`，事件详情也不再包含 `feedback`。校准结果是独立评估凭据，不会自动训练、发布或激活生产模型。
+`tracefold news learning judge-calibration` 在固定合成语料上测量卡片评审器是否回答正确。它是显式运行的离线评估，不参与 News 生产判定、发送或 Trading，不读取生产数据库，也不训练或激活模型。
 
-<a id="section-哪些东西可以叫-gold"></a>
-<a id="section-reviewdesk-的闭环"></a>
-## 复核与真值
+## 两个有界问题
 
-模型评分、接受标签和独立人类真值是不同证据。离线业务评估仍应记录采样范围、事件版本、实际评审者与误差定义；由人发起的 AI 评分不能写成人工复核。
+评审器只读取调用方提供的不可变证据和冻结卡片正文，分别回答：卡片的每个重要陈述是否得到证据支持，以及预先给定的 must-keep facts 是否仍在卡片中表达。它不能补充外部知识、决定通知或把模型意见写成来源真值。
 
-<a id="section-评审器校准做什么"></a>
-## 03 · 评审器校准做什么
+事实支持返回 typed verdict、未支持陈述、证据缺口和错误类型；事实覆盖必须按问题顺序给出等长布尔列表。无法访问模型、响应格式无效或答案长度错误以 `unavailable` / `judge_unavailable` 表达，不制造拒绝结论。相同证据/正文的成功回答可在一次运行中缓存并协调并发，失败不缓存。
 
-固定校准语料通过有意改变一处内容，测试评审器能否识别对应错误。实际命令需要明确模型，可能产生费用；输出是本次模型、语料与判断对应的结果凭据。
+## 固定语料与凭据
 
-```bash
-# 只查看参数，不请求模型
-uv run tracefold news learning judge-calibration --help
-```
+语料随应用包分发，当前包含 14 对证据与卡片，覆盖实体替换、数字/单位替换、条件删除、计划写成执行、无依据因果、忠实改写、证据支持的强结论七类。最后两类应通过，以检测把所有卡片都拒绝的评审器。语料加载验证 schema、case ID 唯一性、卡片结构和七类完整性。
 
-真正运行时提供 `--model MODEL`，可用 `--out FILE` 保存 JSON。该命令不写生产数据库，不修改 accepted Gold，不激活运行时模型，不提供“优化后自动发布”的隐式通路。
+评估报告按扰动类别保存已回答数、命中数和不一致样本；不可用回答单独统计，不能把提供商故障算成模型判断错误。JSON 凭据钉住语料、judge 程序、指令/schema、DSPy、显式模型与执行配置，并带 `receipt_sha256`，使不同运行的证明可核对。
 
 ```mermaid
 ---
@@ -28,50 +22,36 @@ config:
   fontFamily: "system-ui, Noto Sans CJK SC, Microsoft YaHei, WenQuanYi Zen Hei, sans-serif"
   flowchart:
     curve: linear
-    nodeSpacing: 28
-    rankSpacing: 42
 ---
-flowchart LR
-    accTitle: 固定语料校准
-    accDescr: 固定扰动语料经显式选择模型运行，产生独立结果凭据，供核对错误类型和决定后续改动。
-    Corpus["固定扰动语料"] --> Run["显式模型校准"]
-    Run --> Receipt["独立结果凭据"]
-    Receipt --> Compare["核对错误类型与误判"]
-    Compare --> Human["决定后续改动"]
-
-    classDef news fill:#ecfdf5,stroke:#0f766e,color:#134e4a,stroke-width:1.5px
-    classDef research fill:#eef2ff,stroke:#6366f1,color:#312e81,stroke-width:1.5px
-    classDef execution fill:#fff7ed,stroke:#c2410c,color:#7c2d12,stroke-width:1.5px
-    classDef store fill:#f1f5f9,stroke:#64748b,color:#1e293b,stroke-width:1.5px
-    classDef external fill:#f8fafc,stroke:#94a3b8,color:#334155,stroke-dasharray:4 3
-class Corpus,Run,Compare,Human news;
-class Receipt store;
+flowchart TB
+  accTitle: 卡片评审器的固定语料校准
+  accDescr: 固定证据和扰动卡片经显式模型回答事实支持与关键事实覆盖两个问题，分类统计输出独立评估凭据，不修改生产事实或激活模型。
+  C[固定证据 / 扰动卡片] --> J[显式模型的两个问题]
+  J --> R[分类命中 / 不一致 / 不可用]
+  R --> P[带身份和 SHA 的评估凭据]
 ```
 
-*评估视图 · 没有自动生产发布箭头；校准结果不会激活模型或改写接受记录。*
+*评估视图 · 箭头是离线测量产物，不连接生产判定、通知或模型激活。*
 
-固定合成语料适合检验已知错误类型，但不代表真实新闻分布、独立人类一致性或交易收益。需要业务评估时明确采样范围、事件版本、reviewer 与误差定义，不能从一个总分推出在线质量全面提升。
+## 运行入口与证明范围
 
-<a id="section-旧研究与当前运行的边界"></a>
-## 旧研究与当前运行的边界
+```bash
+# 查看参数，不调用模型
+uv run tracefold news learning judge-calibration --help
+# 显式运行；会调用配置端点
+uv run tracefold news learning judge-calibration --model MODEL --out judge-calibration.json
+```
 
-旧 Stable、teacher、GEPA 和 release 资料属于历史研究。[notebooks](../../notebooks/README.md)保留离线工作说明。
+CLI 使用已配置的 `llm.news_triage_fallback` endpoint / 凭据，并要求显式 `--model`；端点缺失具名失败。模型请求最多输出 4,096 tokens、超时 120 秒，关闭 LM cache 和自动重试。配置来源不把校准变为生产 fallback 调用；输出只保存到操作员指定文件和 CLI 摘要。
 
-<a id="section-源码责任地图"></a>
-## 源码责任地图
+合成语料证明已知错误类型的识别能力，不代表真实新闻分布、独立人类一致性或交易收益。真实业务评估应另记采样范围、来源/事件版本、实际评审者和误差定义。由人发起的 AI 评分仍是模型评审；模型分数不能写成人工确认。
 
-| 所有者 | 职责 |
+## 实现与验证
+
+| 实现 | 职责 |
 | --- | --- |
-| [learning/judge.py](../../tracefold/news/learning/judge.py) | 卡片评审器契约和调用 |
-| [learning/judge_calibration.py](../../tracefold/news/learning/judge_calibration.py) | 固定扰动语料、评估与结果凭据 |
-| [app/learning_runtime.py](../../tracefold/app/learning_runtime.py) | 显式评估执行的模型装配 |
-| [CLI](../generated/cli-help.md) | `news learning judge-calibration` 参数 |
+| [learning/judge.py](../../tracefold/news/learning/judge.py) | 两个类型化问题、调用与成功缓存 |
+| [learning/judge_calibration.py](../../tracefold/news/learning/judge_calibration.py)、[固定语料](../../tracefold/news/learning/resources/judge_calibration_cases.json) | 语料校验、分类测量和凭据 |
+| [news_learning.py](../../tracefold/app/cli/commands/news_learning.py)、[learning_runtime.py](../../tracefold/app/learning_runtime.py) | 显式端点装配与 JSON 文件输出 |
 
-验证入口：[News judge 边界](../../tests/architecture/test_news_judge_boundary.py)、[news 测试](../../tests/news/)。
-
-<a id="section-常见误解"></a>
-## 常见误解
-
-校准语料只检验已知错误类型，不代表真实新闻分布、人类一致性或交易收益。总分不能证明在线质量全面提升。
-
-[返回文档中心](../README.md) · [架构图谱](../ARCHITECTURE.md#atlas)
+[Judge 边界](../../tests/architecture/test_news_judge_boundary.py)证明评估不访问数据库或生产运行所有者；[固定语料测试](../../tests/news/test_news_judge_calibration.py)验证统计和凭据结构。真实模型校准需要本次运行凭据，离线测试通过不能代替。
