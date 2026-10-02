@@ -113,6 +113,8 @@ class ReaderRecord(Exact):
     link_path: tuple[ClaimLink, ...] = ()
     render: Render = "full"
     earlier: ReaderRepairContext | None = None
+    # Keep the actual receipt identity also for known/full rows, which need no repair copy.
+    anchor_intent_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
     input_digest: str | None = None
     message_intents: tuple[str, ...] = ()
     judgment: ReaderJudgment | None = None

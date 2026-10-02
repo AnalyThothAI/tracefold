@@ -97,6 +97,9 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_event_update_previous_claims",
         "news_event_semantic_observations",
         "news_event_notification_work",
+        "news_event_earlier_receipts",
+        "news_event_known_receipts",
+        "news_event_story",
         "news_event_asset_projection",
     ),
     "/api/news/items/{item_id}/events": (

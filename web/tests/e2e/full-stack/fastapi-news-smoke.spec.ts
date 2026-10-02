@@ -45,6 +45,24 @@ test("FastAPI serves the console, installs bootstrap bearer, and renders one New
   await expect(page.getByRole("heading", { name: "新闻事件流" })).toBeVisible();
   await expect(page.getByRole("heading", { name: headline ?? "__missing__" })).toBeVisible();
 
+  const detailResponsePromise = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.startsWith("/api/news/events/") && response.status() !== 304,
+  );
+  await page.getByRole("link", { name: headline ?? "__missing__", exact: true }).click();
+  const detailResponse = await detailResponsePromise;
+  expect(detailResponse.ok()).toBe(true);
+  const detail = asObject(asObject(await detailResponse.json()).data);
+  expect(Object.hasOwn(detail, "story")).toBe(true);
+  await expect(page.getByRole("region", { name: "读者收到的推送" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "每件事与推送原因" })).toBeAttached();
+  await expect(page.getByRole("region", { name: "原文" })).toBeAttached();
+  await expect(page.getByRole("tablist", { name: "事件详情" })).toHaveCount(0);
+  await expect(page.locator("#news-processing")).toBeAttached();
+  await expect(page.locator("#news-processing")).not.toHaveAttribute("open", "");
+
+  await page.getByRole("link", { name: "返回新闻事件流" }).click();
+
   // #336: this crosses the real topbar -> URL -> FastAPI -> PostgreSQL -> response-metadata seam.
   // Begin inside an intentionally narrow old task so the assertion proves a new search cannot inherit it.
   allowBrowserFailure(page, {

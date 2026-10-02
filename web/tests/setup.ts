@@ -42,6 +42,11 @@ function matchesWidthQuery(query: string): boolean {
 }
 
 beforeAll(() => {
+  // jsdom has no scrolling layout; real target visibility is covered by the viewport tests.
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: () => undefined,
+  });
   Object.defineProperty(window, "matchMedia", {
     writable: true,
     value: (query: string) => ({

@@ -213,6 +213,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "evidence_snapshots",
         "reader_receipt",
         "normalization",
+        "story",
         # #88: the event-level aggregate and every per-asset Reaction with the closes behind it.
     }
     assert set(components["NewsOutcomeData"]["properties"]) == {"kind", "text_zh", "reason_zh", "group"}
@@ -361,10 +362,16 @@ def test_news_contract_hard_cuts_story_brief_rss_and_title_translation_surfaces(
     }
     # #706: the notification planner's claim decisions and its work state are a current contract, named
     # deliberately rather than admitted by the retired marker.
-    named_notification_components = {"NewsNotificationPlanData", "NewsNotificationWorkData"}
+    named_notification_components = {
+        "NewsNotificationPlanData",
+        "NewsNotificationWorkData",
+        "NewsEarlierNotificationData",
+    }
+    # Bounded existing-Event browsing by storyline_key; no Story owner, brief or RSS endpoint returns.
+    named_story_components = {"NewsEventStoryData", "NewsStoryEventData"}
     assert not {
         name
-        for name in news_components - named_source_components - named_notification_components
+        for name in news_components - named_source_components - named_notification_components - named_story_components
         if any(marker in name for marker in retired_markers)
     }
     for path in ("/api/news/stories/{story_id}", "/api/news/brief", "/api/news/sources", "/api/radar"):

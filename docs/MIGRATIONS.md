@@ -68,6 +68,8 @@ P4 拒绝未执行 P0、同 case 多个 assessment、输入/动作/计划/处置
 
 0428 采用正常停写维护窗口、5 秒锁超时与 600 秒语句超时，索引创建失败整笔回滚。升级后只启动匹配 0428 镜像。需要恢复已上线的 0427 镜像时，停止写者后用 0428 镜像运行 `alembic downgrade 20261002_0427`，核对 head，再恢复旧配置、匹配旧镜像及独立模型服务；该降级只恢复这两条索引的原单列定义。不得跨越 0427 的前向读数转换。验证见[游标迁移测试](../tests/integration/test_news_claim_backfill_migration.py)。
 
+`20261002_0429` 从 0428 增加 `news_events_story_window(storyline_key,opened_at_ms,event_id)` B-tree 和仅 `kind='update' AND state='sent'` 行的 `news_notifications_sent_claims` JSONB GIN，支持详情页 48 小时故事线与旧已知事实的回执查询。卡片、事实、计划、权限与触发器不变。按正常停写维护窗口执行；按 Event、Notification 顺序取得 SHARE 锁，5 秒锁超时与 600 秒语句超时，创建失败事务回滚。降级到 0428 仅删除这两个索引，再恢复匹配旧镜像；不跨越 0427 前向转换。升级／降级与真实送达事实保留由[读者索引迁移测试](../tests/integration/test_event_reader_index_migration.py)验证。
+
 <a id="section-确认源镜像与数据库版本"></a>
 ## 01 · 确认源、镜像与数据库版本
 
@@ -83,7 +85,7 @@ uv run python -c 'from tracefold.platform.postgres.migrations import latest_migr
 docker compose exec -T workers tracefold db audit
 ```
 
-当前代码 head 为 `20261002_0428`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
+当前代码 head 为 `20261002_0429`；后续以该函数和数据库状态为准。不要把文档中的旧 head 写进 `alembic_version`，也不要从“Python import 成功”推断旧镜像能够使用新 schema。
 
 <a id="section-正常升级顺序"></a>
 ## 02 · 正常升级顺序

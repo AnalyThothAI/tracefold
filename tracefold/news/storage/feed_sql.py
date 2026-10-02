@@ -274,7 +274,7 @@ def _feed_joins_sql(*, bulk_deliveries: bool = False) -> str:
     """
 
 
-def feed_page_sql(where_sql: str) -> str:
+def feed_page_sql(where_sql: str, *, order_sql: str = "e.opened_at_ms DESC, e.event_id DESC") -> str:
     """Build the production page statement from one already-bound predicate list.
 
     The query audit calls this same builder with representative AssetSearch and TextSearch predicates,
@@ -335,7 +335,7 @@ def feed_page_sql(where_sql: str) -> str:
           FROM news_events e
           {_feed_joins_sql()}
          WHERE {where_sql}
-         ORDER BY e.opened_at_ms DESC, e.event_id DESC
+         ORDER BY {order_sql}
          LIMIT %s
     """  # noqa: S608
 

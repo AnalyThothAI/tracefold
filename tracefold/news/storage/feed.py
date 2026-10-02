@@ -49,6 +49,13 @@ from .feed_sql import (
     feed_page_sql,
 )
 
+EVENT_STORY_SQL = feed_page_sql(
+    "e.storyline_key=%s AND e.opened_at_ms BETWEEN %s AND %s AND " + EDITORIAL_EVENT_SQL,
+    order_sql="(e.event_id=%s) DESC, e.opened_at_ms DESC, e.event_id DESC",
+)
+STORY_HALF_WINDOW_MS = 24 * 3600_000
+STORY_EVENT_LIMIT = 30
+
 
 class FeedStorage:
     conn: Any
@@ -273,6 +280,7 @@ class FeedStorage:
             else None
         )
         notification_public = notification_view(current_notification, statements=statements)
+        update_reads.attach_earlier_receipts(self.conn, current_notification, notification_public)
         processing = (
             {
                 "semantic": semantic_view(work),
@@ -320,6 +328,36 @@ class FeedStorage:
             "reader_receipt": ReaderReceipt.from_delivery(
                 _delivery_public(reader_card) if reader_card is not None else None
             ).model_dump(mode="json"),
+            "story": self.event_story(event),
+        }
+
+    def event_story(self, event: Mapping[str, Any]) -> dict[str, Any] | None:
+        key = str(event.get("storyline_key") or "")
+        if key in {"", "none"}:
+            return None
+        center = int(event["opened_at_ms"])
+        start, end = center - STORY_HALF_WINDOW_MS, center + STORY_HALF_WINDOW_MS
+        raw = self.conn.execute(EVENT_STORY_SQL, (key, start, end, event["event_id"], STORY_EVENT_LIMIT + 1)).fetchall()
+        rows = [_feed_row(row, now_ms=center) for row in raw[:STORY_EVENT_LIMIT]]
+        return {
+            "storyline_key": key,
+            "from_ms": start,
+            "to_ms": end,
+            "has_more": len(raw) > STORY_EVENT_LIMIT,
+            "events": [
+                {
+                    "event_id": row["event_id"],
+                    "headline": (row.get("update") or {}).get("headline") or row["leader_title"],
+                    "reporting_origin": row["reporting_origin"],
+                    "published_at_ms": row["published_at_ms"],
+                    "opened_at_ms": row["opened_at_ms"],
+                    "outcome": row["outcome"],
+                    "received_at_ms": (row.get("delivery") or {}).get("settled_at_ms")
+                    if (row.get("delivery") or {}).get("state") == "sent"
+                    else None,
+                }
+                for row in sorted(rows, key=lambda row: (row["opened_at_ms"], row["event_id"]))
+            ],
         }
 
     def _source_contracts_24h(self, *, day_ago: int) -> dict[str, dict[str, int]]:

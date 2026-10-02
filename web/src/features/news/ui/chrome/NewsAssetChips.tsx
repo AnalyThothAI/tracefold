@@ -59,6 +59,9 @@ export function NewsAssetChips({
               {asset.symbol}
             </span>
           )}
+          {asset.resolution_state === "unlisted" ? (
+            <span className="news-asset-unlisted"> · 交易所未上架</span>
+          ) : null}
           {asset.market_type !== "unknown" ? (
             withPrice ? (
               <NewsQuoteCompact quote={quotes?.[newsAssetKey(asset.market_type, asset.symbol)]} />

@@ -9,12 +9,12 @@ import type {
   NewsProcessing,
   NewsUpdateSource,
 } from "../../api/newsQueries";
+import { sourceDisplayName } from "../../model/eventReader";
 import { absoluteTime, optionalTime, validExternalUrl } from "../../model/newsLabels";
 
 import "./newsEventUpdate.css";
 
-export type NewsDetailTab = "content" | "source" | "market" | "processing";
-export type NewsDetailNavigate = (tab: NewsDetailTab, focus?: string) => void;
+export type NewsDetailNavigate = (target: string) => void;
 
 function claimTarget(index: number): string {
   return "news-claim-" + (index + 1);
@@ -25,7 +25,7 @@ function sourceTarget(index: number): string {
 }
 
 /** One current claim is one reading unit; its comparisons do not become extra claims. */
-export function NewsUpdateContent({
+export function NewsClaimRecords({
   update,
   onNavigate,
 }: {
@@ -79,99 +79,6 @@ export function NewsUpdateContent({
           {update.claims.length} 条命题引用同一份材料，不代表 {update.claims.length} 个独立来源。
         </p>
       ) : null}
-    </section>
-  );
-}
-
-export function NewsUpdateSources({
-  update,
-  onNavigate,
-}: {
-  update: NewsEventUpdate;
-  onNavigate: NewsDetailNavigate;
-}) {
-  const sources = update.sources ?? [];
-  const claimPositions = new Map(update.claims.map((claim, index) => [claim.ref, index]));
-  const excerpts = new Map<string, string>();
-  for (const claim of update.claims) {
-    for (const citation of claim.citations) {
-      if (!excerpts.has(citation.evidence_ref)) excerpts.set(citation.evidence_ref, citation.quote);
-    }
-  }
-  const disputed = update.disputed_claim_refs?.length ?? 0;
-  return (
-    <section aria-label="来源与分歧" className="news-detail-update-source">
-      <header className="news-update-section-head">
-        <h2>来源证据</h2>
-        <span>
-          {sources.length} 份材料
-          {disputed ? " · " + disputed + " 条命题来源分歧" : ""}
-        </span>
-      </header>
-      {!sources.length ? (
-        <EmptyNote>这一版没有引用来源。</EmptyNote>
-      ) : (
-        <ol className="news-update-sources">
-          {sources.map((item, index) => {
-            const excerpt = excerpts.get(item.evidence_ref);
-            return (
-              <li
-                className="news-update-source"
-                id={sourceTarget(index)}
-                key={item.evidence_ref}
-                tabIndex={-1}
-              >
-                <div className="news-update-source-heading">
-                  <span aria-hidden className="news-update-source-number">
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
-                  <SourceLabel source={item.source} />
-                </div>
-                {excerpt ? (
-                  <blockquote className="news-update-source-excerpt">{excerpt}</blockquote>
-                ) : null}
-                <p className="news-update-source-clock">
-                  首次可用：{absoluteTime(item.source.first_available_at_ms)}
-                </p>
-                <ul className="news-update-relations">
-                  {(item.relations ?? []).map((relation) => {
-                    const position = claimPositions.get(relation.claim_ref);
-                    return (
-                      <li
-                        data-relation={relation.relation}
-                        key={relation.claim_ref + "-" + relation.relation}
-                      >
-                        <span className="news-update-badge" data-kind={relation.relation}>
-                          {relation.relation_zh || relation.relation}
-                        </span>
-                        {position !== undefined ? (
-                          <button
-                            className="news-update-text-button"
-                            onClick={() => onNavigate("content", claimTarget(position))}
-                            type="button"
-                          >
-                            命题 {String(position + 1).padStart(2, "0")}
-                          </button>
-                        ) : (
-                          <span>{relation.claim_statement || relation.claim_ref}</span>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-                <details
-                  className="news-update-disclosure"
-                  id={"source-text-" + (index + 1)}
-                  tabIndex={-1}
-                >
-                  <summary>来源原文{item.text_truncated ? "（节选）" : ""}</summary>
-                  <p className="news-update-source-text">{item.text}</p>
-                </details>
-              </li>
-            );
-          })}
-        </ol>
-      )}
     </section>
   );
 }
@@ -292,7 +199,7 @@ function ClaimItem({
     <li
       className="news-update-claim"
       data-retired={claim.retired || claim.superseded || undefined}
-      id={claimTarget(index)}
+      id={"claim-record-" + (index + 1)}
       tabIndex={-1}
     >
       <span aria-hidden className="news-update-claim-number">
@@ -332,7 +239,7 @@ function ClaimItem({
           <p className="news-update-claim-evidence">
             <button
               className="news-update-text-button"
-              onClick={() => onNavigate("source", sourceTarget(sourcePosition))}
+              onClick={() => onNavigate(sourceTarget(sourcePosition))}
               type="button"
             >
               来源 {String(sourcePosition + 1).padStart(2, "0")}
@@ -434,7 +341,7 @@ function ClaimItem({
                       {position !== undefined ? (
                         <button
                           className="news-update-text-button"
-                          onClick={() => onNavigate("source", sourceTarget(position))}
+                          onClick={() => onNavigate(sourceTarget(position))}
                           type="button"
                         >
                           来源 {String(position + 1).padStart(2, "0")}
@@ -457,7 +364,7 @@ function SourceLabel({ source }: { source: NewsUpdateSource }) {
   const url = validExternalUrl(source.url);
   return (
     <span className="news-update-source-label">
-      <b>{source.publisher_id}</b>
+      <b>{sourceDisplayName(source, source.publisher_id)}</b>
       {source.attribution ? <span>{source.attribution}</span> : null}
       <span>{source.source_authority_zh || source.source_authority}</span>
       {source.published_at_ms != null ? (
@@ -586,7 +493,7 @@ export function NewsProcessingState({
                       {position !== undefined ? (
                         <button
                           className="news-update-text-button"
-                          onClick={() => onNavigate("content", claimTarget(position))}
+                          onClick={() => onNavigate(claimTarget(position))}
                           type="button"
                         >
                           命题 {String(position + 1).padStart(2, "0")}
@@ -607,9 +514,7 @@ export function NewsProcessingState({
                     {earlierIntent !== undefined ? (
                       <button
                         className="news-update-text-button"
-                        onClick={() =>
-                          onNavigate("processing", "news-intent-" + (earlierIntent + 1))
-                        }
+                        onClick={() => onNavigate("news-intent-" + (earlierIntent + 1))}
                         type="button"
                       >
                         查看关联发送记录

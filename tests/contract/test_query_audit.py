@@ -47,6 +47,9 @@ _NEWS_QUERY_NAMES = (
     "news_event_update_previous_claims",
     "news_event_semantic_observations",
     "news_event_notification_work",
+    "news_event_earlier_receipts",
+    "news_event_known_receipts",
+    "news_event_story",
     "news_band_lookup",
     "news_status_ingest",
     "news_status_incidents_open",
@@ -152,6 +155,9 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_event_update_previous_claims",
         "news_event_semantic_observations",
         "news_event_notification_work",
+        "news_event_earlier_receipts",
+        "news_event_known_receipts",
+        "news_event_story",
         "news_event_asset_projection",
     )
     assert catalog.query_routes["/api/news/items/{item_id}/events"] == (
