@@ -83,6 +83,10 @@ Receiver 对可接受帧使用 broker publish confirms；Deduper 消费 raw 消�
 4. 纯组装生成知识版本；保存 observation，再在短事务中校验 owner、lease、wanted revision 和 expected head，原子采用 EventUpdate、公开 outbox、命题索引及必要通知工作。
 5. 无新证据或无实质变化只结算版本。采用后可有一次由持久 reservation 限定的已有来源补读，失败不能撤回已采用知识。
 
+关系提问与组装共用逐命题比较范围：外部 prior 只有被该命题选中的配对才参与；兄弟命题选中的 prior 不算本命题缺失回答。新命题只有冲突关系或没有实质关系时，范围内的缺失关系、`unresolved` 或被代码否决的等价仍产生 `possible_new`，不能据此制造 catalyst；全部比较为 `unrelated` 的新命题产生 `new_fact` 并公开为 `catalyst_delta`。采用前 head 前进时补入的本 Event prior 仍全对比较；未启用召回的路径和重放保持 supplied prior 全量比较。
+
+[命题范围回归](../../tests/news/test_news_relation_scope.py)覆盖兄弟命题隔离、真实未决、缺失关系、等价否决与采用冲突后的补算；[PostgreSQL 发布回归](../../tests/integration/test_news_relation_scope.py)覆盖原子采用、公开 outbox、通知待办与历史不可变。
+
 `EventUpdate.current_claims` 唯一推导有效命题，排除被更正退休和真实变化替代的 ref。抽取只读本 Event prior；外部 prior 只用于比较，相关 Event 再次采用不使抽取 checkpoint 失效。同一可见正文和范围已读、已隔离或已排入本轮时，转载副本不重复抽取；同一记录自身正文变化仍须读取。
 
 生成使用严格 schema，解码容忍可修复可选字段、层级和单个条目；缺 statement、subject、action 或可用 citation 的命题被具名丢弃。全部条目不可用、空回答和 provider 截断是明确错误。引用可容忍外层引号、强调和空白差异，但必须保存真实源文片段。
