@@ -62,7 +62,7 @@ ContentKind = Literal[
     "schedule",
     "other",
 ]
-# `possible_new` is a claim whose relation to at least one supplied prior claim was not established. It is
+# `possible_new` is a claim whose relation to at least one prior in its comparison scope was not established. It is
 # adopted content and a notification candidate, but never a public catalyst: an unresolved comparison is not
 # evidence that the world changed.
 ChangeKind = Literal[
@@ -577,6 +577,20 @@ class FrozenInput(Exact):
     @property
     def own_prior(self) -> tuple[PriorClaim, ...]:
         return tuple(row for row in self.prior if row.event_id == self.event_id)
+
+    def relation_priors(self, slot: str, relation_pairs: frozenset[tuple[str, str]] | None) -> tuple[PriorClaim, ...]:
+        """The same comparison scope for relation questions and adopted changes.
+
+        Own priors always participate, including those added when adoption rebases on a newer head.
+        None compares every supplied prior; an empty selection compares only this Event's priors.
+        A sibling slot's selected external prior is not an unanswered comparison for this slot.
+        """
+
+        return tuple(
+            prior
+            for prior in self.prior
+            if prior.event_id == self.event_id or relation_pairs is None or (slot, prior.claim.ref) in relation_pairs
+        )
 
     def extraction_document(self) -> dict[str, object]:
         """What extraction reads. Related Events' claims are comparison candidates, not extraction context."""

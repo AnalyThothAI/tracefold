@@ -276,8 +276,13 @@ def _equivalent_prior(
     return previous[equivalent[0].previous_ref]
 
 
-def _unsettled_priors(relations: list[RelationDraft], source: FrozenInput) -> tuple[str, ...]:
-    """Supplied priors this claim's relation to was not established.
+def _unsettled_priors(
+    slot: str,
+    relations: list[RelationDraft],
+    source: FrozenInput,
+    relation_pairs: frozenset[tuple[str, str]] | None,
+) -> tuple[str, ...]:
+    """Priors in this claim's comparison scope whose relation was not established.
 
     An unresolved or unavailable answer, a missing relation, and an `equivalent` answer the code refuted
     all leave the comparison open. Only `unrelated` settles it without a change.
@@ -285,7 +290,7 @@ def _unsettled_priors(relations: list[RelationDraft], source: FrozenInput) -> tu
 
     by_prior = {row.previous_ref: row for row in relations}
     unsettled = []
-    for prior in source.prior:
+    for prior in source.relation_priors(slot, relation_pairs):
         relation = by_prior.get(prior.claim.ref)
         if relation is None or relation.relation in {"unresolved", "equivalent"}:
             unsettled.append(prior.claim.ref)
@@ -303,6 +308,7 @@ def _occurrence_changes(
     material_relations: tuple[RelationDraft, ...],
     previous: dict[str, PriorClaim],
     source: FrozenInput,
+    relation_pairs: frozenset[tuple[str, str]] | None,
 ) -> list[Change]:
     """Changes introduced by a new occurrence that is not a restatement.
 
@@ -312,7 +318,7 @@ def _occurrence_changes(
 
     changes: list[Change] = []
     if all(relation.relation == "conflicts" for relation in material_relations):
-        unsettled = _unsettled_priors(relations, source)
+        unsettled = _unsettled_priors(draft.slot, relations, source, relation_pairs)
         if not unsettled:
             changes.append(Change(kind="new_fact", current_ref=ref))
         # An unresolved comparison cannot manufacture a catalyst. The claim is adopted and can reach a
@@ -390,6 +396,7 @@ def assemble_update(
     head: EventUpdate | None,
     *,
     adopted_at_ms: int,
+    relation_pairs: frozenset[tuple[str, str]] | None = None,
 ) -> EventUpdate | None:
     """Return new substantive content or None; no reader/history/card input."""
     validate_extraction(source, extraction)
@@ -477,7 +484,9 @@ def assemble_update(
                     )
                 )
             else:
-                changes.extend(_occurrence_changes(draft, ref, relations, material_relations, previous, source))
+                changes.extend(
+                    _occurrence_changes(draft, ref, relations, material_relations, previous, source, relation_pairs)
+                )
         # Relationship deltas do not depend on whether this occurrence already existed.
         # An equivalent Claim can acquire a cross-Event conflict or correction while
         # retaining its ref and its first available time -- once: a later revision that
