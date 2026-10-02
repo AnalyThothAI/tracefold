@@ -2,7 +2,7 @@
 
 [手册](README.md) · [运维备份](OPERATIONS.md#backup) · [结构参考](generated/db-schema.md)
 
-当前 schema 使用 [Alembic 单链](../tracefold/platform/postgres/alembic/versions/)，基线为 `20260831_0340`，本版本 head 为 `20261002_0428`。当前账本共 28 张表：19 张 News、7 张 Trading，以及 `runtime_processes`、`alembic_version`。已应用的迁移是升级与恢复证据，文档清理不删除或重写这些文件。
+当前 schema 使用 [Alembic 单链](../tracefold/platform/postgres/alembic/versions/)，基线为 `20260831_0340`，本版本 head 为 `20261002_0429`。当前账本共 28 张表：19 张 News、7 张 Trading，以及 `runtime_processes`、`alembic_version`。已应用的迁移是升级与恢复证据，文档清理不删除或重写这些文件。
 
 本页只维护版本兼容、维护顺序、必要导出和回退边界。具体业务行为由模块手册维护，部署回执与历史性能结果从对应 Git / Issue 记录检索。
 
@@ -33,7 +33,7 @@ docker compose exec -T workers tracefold db audit
 
 部署器会拒绝仍有旧 Nautilus 容器的迁移，以及已启用 Executor 运行时跨 schema 更新。迁移失败时保持写进程停止，确认事务回滚后的真实 head 再恢复配对镜像。不要以容器 running 代替一次性迁移的退出码；部署器会比较迁移镜像 head 与实际数据库 head，并输出迁移日志后才启动角色。
 
-## 当前召回与索引迁移：0425–0428
+## 当前召回与索引迁移：0425–0429
 
 `20261002_0425` 从 `0424` 升级，增加两个语义任务部分索引与 News 专用的单行 reader clock 围栏：按 next_attempt / subject 排序读取 pending/failed 任务，按 updated_at 查近期失败。失败索引也包含已完成但保留失败 outcome 的任务；查询不以 state='failed' 替代原失败统计。迁移不改事实、detail、租约或重试预算，新增计数表与相关事实的 AFTER constraint 触发器（默认延迟到提交，防止 admission 的 Item/member → Event 路径先持有 clock；事实与版本原子可见），News 18 表、全库 27 表；计数是权限 CAS 证明，不替代事实。索引 SHARE 锁、触发器 SHARE ROW EXCLUSIVE 锁、5 秒锁超时和 120 秒语句超时，失败时事务回滚。按正常迁移顺序停写者，保留配套完整备份；新 head 成功后使用匹配镜像，失败时确认仍在 0424 才恢复前驱镜像。无需重复 P3 的表重写或 retired-table 导出。旧镜像不拥有 reader clock，成功后仅启动配套镜像。
 
@@ -49,6 +49,8 @@ docker compose exec -T workers tracefold db audit
 
 
 <a id="local-embedding-upgrade"></a>
+`20261002_0429` 从 0428 增加 `news_events_story_window(storyline_key,opened_at_ms,event_id)` B-tree 和仅 `kind='update' AND state='sent'` 行的 `news_notifications_sent_claims` JSONB GIN，支持详情页 48 小时故事线与旧已知事实的回执查询。卡片、事实、计划、权限与触发器不变。按正常停写维护窗口执行；按 Event、Notification 顺序取得 SHARE 锁，5 秒锁超时与 600 秒语句超时，创建失败事务回滚。降级到 0428 仅删除这两个索引，再恢复匹配旧镜像；不跨越 0427 前向转换。升级／降级与真实送达事实保留由[读者索引迁移测试](../tests/integration/test_event_reader_index_migration.py)验证。
+
 ### 旧独立嵌入服务切换为本地 ONNX
 
 **从 0427 的独立嵌入服务升级：** 0428，仅将现有两条时间索引补齐稳定 ID，作为历史回填游标索引，不重写事实或已有向量。先保存完整备份、配对的旧镜像 ID、私密配置和原模型文件。另备新格式私密配置副本，先删除 embedding 的旧端点和密钥字段并设置本地缓存，再为准备命令指定该新 operator 目录（`TRACEFOLD_HOME`），用新镜像准备并检查缓存；新命令会拒绝旧配置字段，不能先用旧配置运行 prepare。旧应用继续使用原配置。在停写维护窗口切换新配置并按[迁移手册](MIGRATIONS.md)升级至 0428；启动匹配的新应用后核对 dense 状态、pending 和真实通知处理。删除 Compose 定义不会自动停掉旧容器：使用 `docker ps -a --filter label=com.docker.compose.project=YOUR_PROJECT --filter label=com.docker.compose.service=news-embedding` 核对所属项目和容器 ID，再执行 `docker stop VERIFIED_CONTAINER_ID`。回滚窗口内保留旧镜像、权重、密钥和旧配置；不删除卷。
@@ -132,6 +134,7 @@ P4 拒绝未执行 P0、同 case 多个 assessment、输入/动作/计划/处置
 | 情况 | 支持的处理 |
 | --- | --- |
 | 当前 schema 与服务命令兼容的本地镜像替换 | `make deploy-image IMAGE_ID=sha256:<完整 ID>`；目标 image head 必须等于实际 database head |
+| 0429 回到 0428 | 停写后仅删除新增故事与已送达命题索引，核对 head，再恢复配对 0428 镜像 |
 | 0428 回到 0427 | 停写后执行对应可逆索引降级、核对 head，再恢复配对配置与 0427 镜像 |
 | 0427 读数转换、0417/0418 硬切或其他不可降级转换 | 恢复已验证的迁移前完整备份与对应旧镜像，或经验证的前向修复 |
 | 基线之前或来源未知的备份 | 使用备份记录的源码 / 镜像和恢复流程，在隔离库核实；当前单链不保证无条件接续 |

@@ -21,6 +21,7 @@ from .collectors import (
 )
 from .decisions import MARKET_NEWS_PUSHED_SQL, MARKET_NEWS_TOTAL_SQL
 from .events import BAND_CANDIDATES_SQL
+from .feed import EVENT_STORY_SQL
 from .feed_sql import (
     ASSET_SEARCH_PREDICATE,
     EDITORIAL_EVENT_CARD_SQL,
@@ -56,6 +57,8 @@ from .semantic_work import SEMANTIC_FAILED_CODES_SQL, SEMANTIC_STATUS_SQL, SEMAN
 from .update_reads import (
     EVENT_DELIVERIES_SQL,
     EVENT_DELIVERY_QUEUE_SQL,
+    EVENT_EARLIER_RECEIPTS_SQL,
+    EVENT_KNOWN_RECEIPTS_SQL,
     EVENT_NOTIFICATION_WORK_SQL,
     EVENT_SEMANTIC_OBSERVATIONS_SQL,
     EVENT_SEMANTIC_WORK_SQL,
@@ -288,6 +291,27 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             params=("event",),
             max_read_return_amplification=4.0,
             max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_event_earlier_receipts",
+            sql=EVENT_EARLIER_RECEIPTS_SQL,
+            params=(["intent:" + "0" * 64], now_ms),
+            max_read_return_amplification=8.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_event_known_receipts",
+            sql=EVENT_KNOWN_RECEIPTS_SQL,
+            params=(["claim:" + "0" * 64], now_ms),
+            max_read_return_amplification=20.0,
+            max_scanned_rows=INDEXED_ROW_SCAN_BUDGET,
+        ),
+        ReadQuerySpec(
+            name="news_event_story",
+            sql=EVENT_STORY_SQL,
+            params=("asset:BLAST", now_ms - 24 * 3600_000, now_ms + 24 * 3600_000, "event", 31),
+            max_read_return_amplification=32.0,
+            max_scanned_rows=BOUNDED_WINDOW_SCAN_BUDGET,
         ),
         ReadQuerySpec(
             name="news_event_deliveries",

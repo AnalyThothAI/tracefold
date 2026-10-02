@@ -450,6 +450,7 @@ def test_news_schemas_publish_current_event_update_without_review_feedback() -> 
         "evidence_snapshots",
         "reader_receipt",
         "normalization",
+        "story",
     }
     assert not hasattr(event_schemas, "NewsEventFeedbackData")
     assert set(status_schemas.NewsSourceContractStageCountsData.model_fields) == {"received", "parsed", "adopted"}

@@ -44,6 +44,7 @@ export type NewsFeedUpdate = NewsSchemas["NewsFeedUpdateData"];
 export type NewsEventUpdate = NewsSchemas["NewsEventUpdateData"];
 export type NewsClaim = NewsSchemas["NewsClaimData"];
 export type NewsClaimChange = NewsSchemas["NewsClaimChangeData"];
+export type NewsClaimDecision = NewsSchemas["NewsClaimDecisionData"];
 export type NewsUpdateEvidence = NewsSchemas["NewsUpdateEvidenceData"];
 export type NewsUpdateSource = NewsSchemas["NewsUpdateSourceData"];
 export type NewsImplication = NewsSchemas["NewsImplicationData"];

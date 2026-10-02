@@ -289,7 +289,7 @@ class Case,Amendment,Decision research;
 
 ### 当前账本结构
 
-当前 schema head 为 `20261002_0428`，包含 19 张 News 表、7 张 Trading 表及 `runtime_processes`、`alembic_version`，共 28 张表。表集合由 [audit.py](../tracefold/platform/postgres/audit.py)校验，版本由 [Alembic](../tracefold/platform/postgres/alembic/versions/)维护。
+当前 schema head 为 `20261002_0429`，包含 19 张 News 表、7 张 Trading 表及 `runtime_processes`、`alembic_version`，共 28 张表。表集合由 [audit.py](../tracefold/platform/postgres/audit.py)校验，版本由 [Alembic](../tracefold/platform/postgres/alembic/versions/)维护。
 
 | 持久所有者 | 主要记录 | 当前作用 |
 | --- | --- | --- |

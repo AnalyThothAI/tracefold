@@ -565,6 +565,23 @@ export interface components {
             /** Ws Token */
             ws_token: string;
         };
+        /**
+         * DeliveryTimings
+         * @description Where one send spent its time before the provider call, kept beside its receipt. Audit only.
+         *
+         *     The card clocks are absent when a frozen card was reused rather than composed by this turn.
+         *     `send_slot_wait_ms` is from the card being ready to this turn holding the process's one send slot.
+         */
+        DeliveryTimings: {
+            /** Card Finished At Ms */
+            card_finished_at_ms?: number | null;
+            /** Card Started At Ms */
+            card_started_at_ms?: number | null;
+            /** Ready At Ms */
+            ready_at_ms: number;
+            /** Send Slot Wait Ms */
+            send_slot_wait_ms: number;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -910,12 +927,15 @@ export interface components {
              * @default
              */
             decision_zh: string;
+            earlier?: components["schemas"]["NewsEarlierNotificationData"] | null;
             /** Earlier Intent Id */
             earlier_intent_id?: string | null;
             /** Importance */
             importance?: number | null;
             /** Importance Probabilities */
             importance_probabilities?: number[] | null;
+            /** Importance Threshold */
+            importance_threshold?: number | null;
             /** Novelty */
             novelty?: ("known" | "increment" | "development" | "in_flight" | "unlinked") | null;
             /**
@@ -1033,6 +1053,19 @@ export interface components {
              */
             all: number;
         };
+        /** NewsEarlierNotificationData */
+        NewsEarlierNotificationData: {
+            /** Body */
+            body: string;
+            /** Event Id */
+            event_id: string;
+            /** Headline Zh */
+            headline_zh: string;
+            /** Intent Id */
+            intent_id: string;
+            /** Received At Ms */
+            received_at_ms: number;
+        };
         /** NewsEventData */
         NewsEventData: {
             /** Admission */
@@ -1146,6 +1179,7 @@ export interface components {
             outcome: components["schemas"]["NewsOutcomeData"];
             processing?: components["schemas"]["NewsProcessingData"] | null;
             reader_receipt: components["schemas"]["NewsReaderReceiptData"];
+            story?: components["schemas"]["NewsEventStoryData"] | null;
             /** Timeline */
             timeline?: components["schemas"]["NewsTimelineStepData"][];
         };
@@ -1184,6 +1218,22 @@ export interface components {
             title: string;
             /** Url */
             url?: string | null;
+        };
+        /** NewsEventStoryData */
+        NewsEventStoryData: {
+            /** Events */
+            events?: components["schemas"]["NewsStoryEventData"][];
+            /** From Ms */
+            from_ms: number;
+            /**
+             * Has More
+             * @default false
+             */
+            has_more: boolean;
+            /** Storyline Key */
+            storyline_key: string;
+            /** To Ms */
+            to_ms: number;
         };
         /**
          * NewsEventUpdateData
@@ -2024,6 +2074,7 @@ export interface components {
              * @default
              */
             reason_zh: string;
+            timings?: components["schemas"]["PlanTimings"] | null;
             /** Update Ref */
             update_ref: string;
         };
@@ -2524,6 +2575,13 @@ export interface components {
             /** Wanted Revision */
             wanted_revision: number;
         };
+        /** NewsSentLineData */
+        NewsSentLineData: {
+            /** Claim Ref */
+            claim_ref: string;
+            /** Text Zh */
+            text_zh: string;
+        };
         /** NewsSourceContractStageCountsData */
         NewsSourceContractStageCountsData: {
             /**
@@ -2588,6 +2646,22 @@ export interface components {
             watchlist?: string[];
             /** Workers State */
             workers_state?: string | null;
+        };
+        /** NewsStoryEventData */
+        NewsStoryEventData: {
+            /** Event Id */
+            event_id: string;
+            /** Headline */
+            headline: string;
+            /** Opened At Ms */
+            opened_at_ms: number;
+            outcome: components["schemas"]["NewsOutcomeData"];
+            /** Published At Ms */
+            published_at_ms?: number | null;
+            /** Received At Ms */
+            received_at_ms?: number | null;
+            /** Reporting Origin */
+            reporting_origin: string;
         };
         /**
          * NewsSymbolContractData
@@ -2716,8 +2790,11 @@ export interface components {
              * @default false
              */
             key: boolean;
+            /** Lines */
+            lines?: components["schemas"]["NewsSentLineData"][];
             /** Payload Sha256 */
             payload_sha256?: string | null;
+            plan_timings?: components["schemas"]["PlanTimings"] | null;
             /** Receipt */
             receipt?: {
                 [key: string]: unknown;
@@ -2734,6 +2811,7 @@ export interface components {
              * @default
              */
             state_zh: string;
+            timings?: components["schemas"]["DeliveryTimings"] | null;
         };
         /**
          * NewsUpdateSourceData
@@ -3082,6 +3160,27 @@ export interface components {
             roster: components["schemas"]["NewsWalletRosterData"];
             tape: components["schemas"]["NewsWalletTapeStateData"] | null;
             thresholds: components["schemas"]["NewsWalletThresholdsData"];
+        };
+        /**
+         * PlanTimings
+         * @description Where one planning turn spent its time. Audit only: nothing reads it back to decide anything.
+         *
+         *     `due_at_ms` is when the work became due and `started_at_ms` when this turn took it, so the wait for a
+         *     prepare slot is their difference; the two durations are the snapshot read and the reader judgments;
+         *     `planned_at_ms` is when the plan was complete. The decision row's `created_at_ms` is the write, so every
+         *     stage from adoption to the recorded decision can be read back with SQL alone.
+         */
+        PlanTimings: {
+            /** Due At Ms */
+            due_at_ms?: number | null;
+            /** Judgment Ms */
+            judgment_ms?: number | null;
+            /** Planned At Ms */
+            planned_at_ms?: number | null;
+            /** Snapshot Ms */
+            snapshot_ms?: number | null;
+            /** Started At Ms */
+            started_at_ms?: number | null;
         };
         /** ReadinessData */
         ReadinessData: {

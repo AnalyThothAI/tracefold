@@ -1,5 +1,5 @@
 @layer app.features {
-  /* These are reading units inside the detail page's shared tab card. */
+  /* Recorded fields within the Event reader's engineering disclosure. */
   .news-update-section-head {
     display: flex;
     flex-wrap: wrap;
@@ -24,8 +24,6 @@
   }
 
   .news-update-claims,
-  .news-update-sources,
-  .news-update-relations,
   .news-update-decisions,
   .news-update-intents {
     display: grid;
@@ -42,7 +40,6 @@
   }
 
   .news-update-claim + .news-update-claim,
-  .news-update-source + .news-update-source,
   .news-update-intents > li + li {
     border-top: 1px solid var(--border-faint);
   }
@@ -235,34 +232,6 @@
     font: var(--type-meta);
   }
 
-  .news-update-source {
-    min-width: 0;
-    padding-block: 18px;
-  }
-
-  .news-update-source:first-child {
-    padding-top: 4px;
-  }
-
-  .news-update-source-heading {
-    display: grid;
-    grid-template-columns: 32px minmax(0, 1fr);
-    gap: 10px;
-    align-items: center;
-  }
-
-  .news-update-source-number {
-    display: grid;
-    place-items: center;
-    width: 32px;
-    height: 32px;
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-sm);
-    background: var(--surface-raised);
-    color: var(--text-muted);
-    font: var(--type-mono-meta);
-  }
-
   .news-update-source-label {
     display: inline-flex;
     flex-wrap: wrap;
@@ -289,48 +258,6 @@
   .news-update-source-label svg {
     width: 12px;
     height: 12px;
-  }
-
-  .news-update-source-excerpt {
-    margin: 16px 0 10px;
-    padding-left: 13px;
-    border-left: 2px solid var(--border-subtle);
-    color: var(--text-secondary);
-    font: var(--type-body);
-    overflow-wrap: anywhere;
-  }
-
-  .news-update-source-clock {
-    margin: 0 0 10px;
-    color: var(--text-muted);
-    font: var(--type-meta);
-  }
-
-  .news-update-relations {
-    gap: 6px;
-    padding-block: 10px;
-    border-top: 1px solid var(--border-faint);
-  }
-
-  .news-update-relations li {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px 10px;
-    align-items: center;
-    color: var(--text-secondary);
-    font: var(--type-meta);
-    overflow-wrap: anywhere;
-  }
-
-  .news-update-source-text {
-    margin: 0;
-    padding: 13px 14px;
-    border-radius: var(--radius-sm);
-    background: var(--surface-raised);
-    color: var(--text-secondary);
-    font: var(--type-body);
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
   }
 
   .news-detail-update-inference {

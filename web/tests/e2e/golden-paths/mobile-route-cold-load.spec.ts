@@ -71,17 +71,20 @@ const routeCases: RouteCase[] = [
         page.getByRole("heading", { exact: true, level: 1, name: "钢铁进口关税上调至 50%" }),
       ).toBeVisible();
       await expect(page.locator(".news-detail-hero .news-outcome")).toContainText("已推送");
-      await expect(page.getByRole("tabpanel", { name: "事件内容" })).toBeVisible();
-      await page.getByRole("tab", { name: "来源证据" }).click();
-      await expect(page.getByRole("tabpanel", { name: "来源证据" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "读者收到的推送" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "每件事与推送原因" })).toBeVisible();
+      await expect(page.getByRole("region", { name: "原文", exact: true })).toBeVisible();
+      await expect(page.getByRole("tab")).toHaveCount(0);
+      await expect(page.locator("#news-processing")).toBeAttached();
+      await expect(page.locator("#news-processing")).not.toHaveAttribute("open", "");
+      await page.locator("#news-processing > summary").click();
       await page.locator("#member-record > summary").click();
       await expect(page.locator("#member-record")).toHaveAttribute("open", "");
       await expect(page.locator("#member-record").getByText("Reuters World")).toBeVisible();
-      await page.getByRole("tab", { name: "处理记录" }).click();
       await page.locator("#timeline-record > summary").click();
       await expect(page.locator("#timeline-record")).toHaveAttribute("open", "");
       await expect(page.locator("#timeline-record").getByRole("listitem")).toHaveCount(4);
-      await expect(page.getByRole("tabpanel")).toHaveCount(1);
+      await expect(page.getByRole("tabpanel")).toHaveCount(0);
       // #256: the judgment is still reported; the door into the retired ReviewDesk is not.
       await expect(page.getByRole("heading", { name: "人工复盘" })).toHaveCount(0);
       await expect(page.getByRole("link", { name: "在学习复盘中打开" })).toHaveCount(0);
