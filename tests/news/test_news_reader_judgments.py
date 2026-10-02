@@ -93,7 +93,7 @@ def test_reader_input_is_the_claim_its_sources_and_the_recalled_bodies_and_nothi
     reader = ReaderInput.of(update.claims[0], update, SENT)
 
     assert reader.claim.topics == (TOPIC_NAME,)
-    assert reader.schema_version == "news_reader_input_v2"
+    assert reader.schema_version == "news_reader_input_v3"
     assert [(s.publisher, s.origin, s.attribution, s.authority) for s in reader.sources] == [
         ("news-opennews", "opennews", "Reuters", "reputable_secondary")
     ]
@@ -404,7 +404,11 @@ def test_evidence_shapes_and_judgment_status_are_exact() -> None:
     unsure = AnchorEvidence(probabilities={"m1": 0.1, "m2": 0.55, "none": 0.35}, confidence=0.5)
     assert anchor_index(unsure, READER_CUTS["native"]) is None
     for cuts in READER_CUTS.values():
-        assert 0 < cuts.push < cuts.key < len(IMPORTANCE_LEVELS) - 1 and 0 < cuts.anchor_none_below < 1
+        assert (
+            0 < cuts.push < cuts.held < len(IMPORTANCE_LEVELS) - 1
+            and 0 < cuts.anchor_none_below < 1
+            and 0 < cuts.key_tail < 1
+        )
 
 
 def test_the_cache_key_names_the_judge_and_the_frozen_input_only() -> None:
@@ -477,7 +481,7 @@ def _judgment(value: float, anchor: dict[str, float] | None = None) -> ReaderJud
         status="available",
         backend="native",
         identity="native-test",
-        importance=ImportanceEvidence(value=value, probabilities=(0.2, 0.2, 0.2, 0.2, 0.2), confidence=0.5),
+        importance=ImportanceEvidence(value=value, probabilities=(0.0, 0.0, 0.0, 1.0, 0.0), confidence=0.5),
         anchor=None if anchor is None else AnchorEvidence(probabilities=anchor, confidence=0.5),
     )
 
@@ -508,16 +512,16 @@ def test_reader_decision_rows_in_order() -> None:
     # increment only on the message the anchor names, whichever message the link reached.
     anchored, unanchored = {"m1": 0.1, "m2": 0.8, "none": 0.1}, {"m1": 0.1, "m2": 0.1, "none": 0.8}
     increment = ReaderNovelty(novelty="increment", intent_id="ra", linked_intents=("ra",))
-    assert decide(increment, cuts.key, anchor=anchored) == ("key", "increment", "rb")
-    assert decide(increment, cuts.key, anchor=unanchored) == ("key", "full", None)
-    assert decide(increment, cuts.key) == ("key", "full", None)
-    assert decide(increment, cuts.key - 0.01, anchor=anchored) == ("feed", "increment", "rb")
+    assert decide(increment, cuts.held, anchor=anchored) == ("push", "increment", "rb")
+    assert decide(increment, cuts.held, anchor=unanchored) == ("push", "full", None)
+    assert decide(increment, cuts.held) == ("push", "full", None)
+    assert decide(increment, cuts.held - 0.01, anchor=anchored) == ("feed", "increment", "rb")
     unlinked = ReaderNovelty(novelty="unlinked")
-    assert decide(unlinked, cuts.key, anchor=anchored) == ("key", "increment", "rb")
-    assert decide(unlinked, cuts.key - 0.01, anchor=anchored) == ("feed", "increment", "rb")
+    assert decide(unlinked, cuts.held, anchor=anchored) == ("push", "increment", "rb")
+    assert decide(unlinked, cuts.held - 0.01, anchor=anchored) == ("feed", "increment", "rb")
     assert decide(unlinked, cuts.push, anchor=unanchored) == ("push", "full", None)
     assert decide(unlinked, 1.0) == ("feed", "full", None)
-    looser = ReaderCuts(push=0.5, key=3.9, anchor_none_below=0.9)
+    looser = ReaderCuts(push=0.5, held=3.9, key_tail=0.05, anchor_none_below=0.9)
     assert decide(unlinked, 1.0, cuts=looser)[0] == "push"
 
 
@@ -539,8 +543,8 @@ P010 = (
     [
         (READER_CUTS["native"].push, "feed"),
         (2.59, "feed"),
-        (READER_CUTS["native"].key - 0.01, "feed"),
-        (READER_CUTS["native"].key, "key"),
+        (READER_CUTS["native"].held - 0.01, "feed"),
+        (READER_CUTS["native"].held, "push"),
     ],
 )
 def test_a_known_core_fact_is_pushed_only_at_the_key_cut(
@@ -610,3 +614,39 @@ def test_an_actual_action_keeps_exact_known_inflight_and_anchor_protections() ->
             claim_fields=fields,
         )
         assert result.outcome == expected
+
+
+@pytest.mark.parametrize("stamp,expected", [(1790899199999, "2026-10-01"), (1790899200000, "2026-10-02")])
+def test_reader_as_of_uses_the_fixed_first_visibility_utc_date(stamp: int, expected: str) -> None:
+    update = _update()
+    claim = update.claims[0].model_copy(update={"first_available_at_ms": stamp})
+    reader = ReaderInput.of(claim, update, ())
+    assert reader.as_of.isoformat() == expected
+    assert reader.model_inputs()["as_of"] == expected
+    later = update.model_copy(update={"adopted_at_ms": stamp + 5 * 86_400_000})
+    assert ReaderInput.of(claim, later, ()).digest == reader.digest
+
+
+def test_level_four_tail_pushes_and_marks_key_below_expected_push_but_respects_held() -> None:
+    from tracefold.news.notifications.policy import ReaderCuts
+
+    judgment = ReaderJudgment(
+        status="available",
+        backend="native",
+        identity="fixture",
+        importance=ImportanceEvidence(value=1.15, probabilities=(0, 0.95, 0, 0, 0.05), confidence=0.95),
+    )
+    cuts = ReaderCuts(push=2.3, held=2.98, key_tail=0.05, anchor_none_below=0.2)
+    unlinked = ReaderNovelty(novelty="unlinked")
+    held = ReaderNovelty(novelty="increment")
+    assert (
+        reader_decision(unlinked, judgment, first_available_at_ms=STAMP, message_intents=(), cuts=cuts).outcome == "key"
+    )
+    assert reader_decision(held, judgment, first_available_at_ms=STAMP, message_intents=(), cuts=cuts).outcome == "feed"
+    certain_three = judgment.model_copy(
+        update={"importance": ImportanceEvidence(value=3, probabilities=(0, 0, 0, 1, 0), confidence=1)}
+    )
+    assert (
+        reader_decision(unlinked, certain_three, first_available_at_ms=STAMP, message_intents=(), cuts=cuts).outcome
+        == "push"
+    )

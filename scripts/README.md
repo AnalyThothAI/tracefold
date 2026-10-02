@@ -38,3 +38,9 @@ uv run --locked python scripts/eval_news_recall.py \
 `news_freeze_audit_2026_09_22.py` 样本导入器已删除；历史实现由 Git 保存，
 不留下转发 alias。当前 ReviewDesk 写入使用维护中的 `tracefold news review` CLI，
 不再将一次性历史批次脚本作为常用运维入口。
+
+## #791 offline speech and reader evaluation
+
+`reask_news_models.py speech|extraction|reader --input /private/sample.jsonl --output /private/journal.jsonl` uses the operator-selected News route directly. It constructs no store, judgment cache or sender. Reader runs choose `--backend native|generated` separately; native fallback is recorded as unavailable native proof. Journals carry exact input digests and reject changed inputs on resume. Model exception strings are never logged.
+
+`label_news_reader.py` accepts only public statement, quotes, fixed date and case ID; Claude runs with tools disabled and without session persistence. Scores, roles and production outcomes are rejected from annotation input. The owner audit is a separate gate. `eval_news_reader.py --input <current-v3-labelled-fixture> --fit` emits a cut grid and selects no passing triple when measured gates fail. Sequential story simulation and same-input repeat noise require real model reasks beyond aggregate fitting. See `docs/reports/news-791-b.md`.

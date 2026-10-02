@@ -54,36 +54,30 @@ _MONTHS: Final = (
 
 @dataclass(frozen=True, slots=True)
 class ReaderCuts:
-    """One backend's policy numbers, measured by its own replay (#742 PR-2)."""
+    """One backend's independently fitted push, held and level-4-tail thresholds."""
 
-    # Importance value (0..4) at or above which a claim is pushed, and pushed as key. A claim whose core fact
-    # the reader already has, or a linked detail/confirmation, needs the key cut.
+    # Unanchored claims use push or the level-4 tail; anchored facts and linked details
+    # must cross held before the level-4 tail can mark them key.
     push: float
-    key: float
+    held: float
+    key_tail: float
     # A claim is anchored to its most likely message when P(none) is below this. An increment is written
     # against the anchored message; a linked increment without an anchor is written in full.
     anchor_none_below: float
 
 
-# #742 PR-5 historical calibration, measured two ways; volume is diagnostic, not a policy quota:
-# the recorded replay of the 2026-09-28 day (`scripts/eval_news_reader.py`, claims a day) and the re-asked
-# production claims of 2026-09-29 09:15-14:03 UTC grouped into their messages and scaled by that window's share
-# of a day's Event updates. Native jev-1.13 at 2.3 / 2.98: 331 claims (39 key) replayed, about 370 messages
-# (68 key) in production. The generative qwen fallback scores developments higher; at 2.4 / 3.05 it replays
-# 248 claims (62 key), about 310 messages (72 key), and keeps the Starship sequence to three pushes. Native
-# scores pile up at 3.0 (a certain level 3), so its key cut sits just below it. The anchor cut favours a missed
-# anchor (full rendering at the push cut) over a wrong one (an increment of another message, held to the key
-# cut): at 0.2 native anchors 98 % of fully said claims with no false anchor, but only about half of the
-# claims that add detail to a reported core fact.
+# Initial #791 grid values. A new rubric requires real native and generated reasks and
+# independent labels before release; the historical #742 scores cannot calibrate it.
+# Reports in docs/reports/news-791-b.md record the measured gates and any pending proof.
 READER_CUTS: Final[dict[ReaderBackend, ReaderCuts]] = {
-    "native": ReaderCuts(push=2.3, key=2.98, anchor_none_below=0.2),
-    "generated": ReaderCuts(push=2.4, key=3.05, anchor_none_below=0.2),
+    "native": ReaderCuts(push=2.3, held=2.98, key_tail=0.05, anchor_none_below=0.2),
+    "generated": ReaderCuts(push=2.4, held=3.05, key_tail=0.05, anchor_none_below=0.2),
 }
 
 
 NOTIFICATION_POLICY_IDENTITY: Final = identity(
     "news_notification_policy",
-    "effective_action_increment_v1",
+    "level4_tail_key_v1",
     {backend: asdict(cuts) for backend, cuts in READER_CUTS.items()},
     SOURCE_MAX_AGE_MS,
     CORRECTION_MAX_AGE_MS,
@@ -158,8 +152,8 @@ def reader_decision(
 
     Known and in-flight claims are never pushed, and a later correction of a delivered claim always is
     (`novelty_outcome`). Everything else, a real-world development of a delivered claim included, is pushed
-    on what it adds: its incremental importance against the push and key cuts of the backend that answered
-    (the replay passes others). An anchored core fact, or a linked detail/confirmation, needs the key cut. An
+    on what it adds: its incremental importance against the push and held cuts of the backend that answered
+    (the replay passes others). An anchored core fact, or a linked detail/confirmation, needs the held cut. An
     unanchored effective state change is scored at the ordinary push cut: a background link
     does not make an actual new action a detail. A development is written against the claim it changes; anything
     else is written as an increment only on the message the anchor names, since a link alone may join
@@ -191,8 +185,9 @@ def reader_decision(
         novelty.novelty == "unlinked" and anchor is not None
     )
     value = judgment.importance.value
-    bar = cuts.key if held else cuts.push
-    outcome: ReaderOutcome = "key" if value >= cuts.key else "push" if value >= bar else "feed"
+    tail = judgment.importance.probabilities[4]
+    pushed = value >= cuts.held if held else (value >= cuts.push or tail >= cuts.key_tail)
+    outcome: ReaderOutcome = "feed" if not pushed else ("key" if tail >= cuts.key_tail else "push")
     return ReaderDecision(outcome, "full" if anchor is None else "increment", anchor)
 
 

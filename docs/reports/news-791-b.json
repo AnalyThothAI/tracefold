@@ -1,0 +1,153 @@
+{
+  "generated_at_utc": "2026-10-02T08:57:51.246796+00:00",
+  "status": "draft; quality gates are not all satisfied",
+  "models": {
+    "extraction": "qwen3.8-27b",
+    "generated_judgment": "qwen3.8-27b:judge",
+    "native_reader": "typesafe/jev-1.13-20260917",
+    "blind_annotation": [
+      "claude-opus-5-5"
+    ]
+  },
+  "safety": "Read-only bounded source/receipt exports and direct offline model calls; no caches, stores, sends, merge or deployment.",
+  "E1a": {
+    "primary_speech_cases": 853,
+    "pure_promotion": {
+      "matched": 48,
+      "total": 77,
+      "required": 73
+    },
+    "true_launch_leaves_promotion": {
+      "matched": 19,
+      "total": 22,
+      "required": 17
+    },
+    "official_roles": {
+      "matched": 361,
+      "total": 389,
+      "required_rate": 0.9
+    },
+    "head_opinion": {
+      "count": 12,
+      "total": 229,
+      "maximum_rate": 0.25
+    },
+    "archived_cluster_distributions": {
+      "logan": {
+        "cases": 16,
+        "modes": {
+          "observation": 3,
+          "guidance": 9,
+          "demand": 2,
+          "assertion": 1,
+          "opinion": 1
+        },
+        "modal_mode": "guidance",
+        "modal_share": 0.562
+      },
+      "flydubai_trump": {
+        "cases": 9,
+        "modes": {
+          "threat": 1,
+          "assertion": 8
+        },
+        "modal_mode": "assertion",
+        "modal_share": 0.889
+      },
+      "putin_kaliningrad": {
+        "cases": 6,
+        "modes": {
+          "assertion": 3,
+          "threat": 3
+        },
+        "modal_mode": "assertion",
+        "modal_share": 0.5
+      },
+      "trump_fed": {
+        "cases": 15,
+        "modes": {
+          "demand": 2,
+          "commitment": 3,
+          "opinion": 5,
+          "assertion": 4,
+          "observation": 1
+        },
+        "modal_mode": "opinion",
+        "modal_share": 0.333
+      }
+    },
+    "limitation": "Archive supplies four broad clusters; targeted five-story boundaries and 50-row owner role audit still require completion."
+  },
+  "E1b": {
+    "events": 60,
+    "multilingual_events": 30,
+    "available": 60,
+    "claims": 89,
+    "english_nonquote_fields": {
+      "matched": 87,
+      "total": 89,
+      "required_rate": 0.98
+    },
+    "numeric_blind_audit": {
+      "matched": 88,
+      "total": 89,
+      "required_rate": 0.99,
+      "annotator": [
+        "claude-opus-5-5"
+      ]
+    },
+    "conditional_threats": {
+      "matched": 7,
+      "total": 8,
+      "required_rate": 0.8
+    },
+    "dated_threats": {
+      "matched": 2,
+      "total": 2
+    },
+    "count_stability": {
+      "matched": 42,
+      "total": 60,
+      "required_per_event_tolerance": 0.1
+    },
+    "mode_fused_vs_reask": {
+      "matched": 75,
+      "total": 89,
+      "required_rate": 0.85
+    },
+    "official_binary_fused_vs_reask": {
+      "matched": 81,
+      "total": 89,
+      "required_rate": 0.9
+    },
+    "reconstruction_limitations": [
+      "Frozen full source and immutable FactUnit scopes reconstructed without unresolved members. Original source asset candidates absent from historic manifest.",
+      "Production understanding count is compared with grounded fused extraction; original pre-understanding checkpoint not yet available.",
+      "Independent Claude audit is source-only; owner audit remains separate."
+    ]
+  },
+  "E2_progress": {
+    "blind_labels": 1240,
+    "requested_labels": 1497,
+    "native_answers": 1237,
+    "generated_answers": 549,
+    "labelled_new_day_population": 1100,
+    "archived_relabel_population": 397,
+    "selected_cuts": null,
+    "pending": [
+      "Complete both backend reasks and blind annotation.",
+      "Native/generated cut fitting, regression and five sequential clusters using final accepted PR-A rank.",
+      "Same-input independent repeat noise; owner audit of 10% blind labels.",
+      "Full Event volume proof; claim-stratum weighted Event estimates have sampling limitations."
+    ]
+  },
+  "input_sha256": {
+    "speech-input": "bcc171895dc682a2f472511017efeecca330159491318eb6be919b089b512b0d",
+    "speech-extra-input": "d8afbbf1f3122352179e39d50f38cad6367b430dd406898343e297ef2d3db437",
+    "extraction-input": "8921dd4bb41197712922a547030a99c472754b3b0ec9b673b0641cb6e38723e9",
+    "extraction-grounded-answers": "8559e841badda9b86c20d66b0a358051a211a494b5d4aba6b0f9566501c2bbe3",
+    "extraction-audit-input": "daa1452492993a4da376aad663e50e7af4673c1dc55d1855b31f36fbb29e368d",
+    "reader-reask-input": "01aa342bb5447d4e8949fe04475355197b04fb87f8d54e98865628792a565f77",
+    "blind-label-input": "788e7fe79727e622b1b963ed440f5323096af8e72ecbffd738db71dd7e9afabc"
+  }
+}

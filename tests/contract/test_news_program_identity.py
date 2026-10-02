@@ -1,10 +1,8 @@
 """Program identities, with a fixed model identity, and the signature schemas they include.
 
-#770 bound `adds_information` to the same core fact and moved the questions to `news_questions_v4`, so the
-generated and native judgment identities and the native relation signature schema changed together. The
-card copy and reader programs carry no relation option and keep their identities; the generated judgment
-signature schema is unchanged. #788 changes the extractor instruction to read listed markets and omit
-uninformative source markets, intentionally changing its program identity without changing read refs.
+#791 moves extraction and speech questions to English v5, adds actor_role without
+changing claim material identity, and moves reader inputs to v3 with a fixed as_of.
+The card composer and relation signature shape remain stable.
 """
 
 from __future__ import annotations
@@ -59,11 +57,11 @@ def test_program_and_signature_schema_identities_are_pinned() -> None:
         ).identity,
     }
     assert actual == {
-        "extractor": "extractor:5d475c2f70b1c9bd4d7dfab192067d634c8b3110819c4e609de043c2700b5e36",
+        "extractor": "extractor:a84f781b6e3994b1b94c9a5d3472a64461b16f510eed231041c865e2d13069ef",
         "copy": "news_card_copy:410f061c5d2ead4ecb1011ed64d4895d831266aceb836a446cf5225fc8125876",
-        "generated": "generated_judgment:a28f6ab99c87f0a20a5e7572179bc7226ac2f16399628e52b6babf710f01c27c",
-        "native": "native_judgment:84fe75cb1b310f683dae0d73a5bda7e670ce5ecd787959ac5acc356e40cf75de",
-        "reader": "news_reader_judge:3af8592d934a884e6fcc685fcf090dd6a050b2675fffc58c3195d6f6fd7f388a",
+        "generated": "generated_judgment:b08c0cd790661c2b8bb34f9a5bebac773ebca1c5c5b00ceec9fc7a8d183d50b8",
+        "native": "native_judgment:5277aa0905c66fa2c31096e8faa91cbd7de33e3de74022cb100d8f78dd1e4281",
+        "reader": "news_reader_judge:10dad0d2f838c2ed03c0c55dc0c5bdedd0d2baf348b86d2c1857290989ab4919",
     }
     assert {
         "extract": digest(ExtractSignature.model_json_schema()),
@@ -72,9 +70,9 @@ def test_program_and_signature_schema_identities_are_pinned() -> None:
         "native": digest(native_signature("relation", 2, True, QUESTION_VERSION).model_json_schema()),
         "reader": digest(reader_signature(2).model_json_schema()),
     } == {
-        "extract": "16ba4f38c98237cb65f6c3087d3da7956021d8bb9ab7edef11e433d96f23e7e1",
+        "extract": "4e4844d2bcabcb60186152f86157f297c02b58d4a1f98d6f27fb008f6960b1d5",
         "copy": "27c46b662ab3832abc75669acea346cc3a4dbecbed1a7675cfcddad287e5b64e",
         "judge": "a0878d7aef415b4f4dfe64a0ff99adc03a86bfb3aa3e0448b2efa5e9d038e42e",
         "native": "f3a475e9ce2ee597e078d877cdbefa79acc41550caaf7180cd48534e6fc6abd6",
-        "reader": "8846b2f568693f554e058b0fae6479fbd57985b81aa7527a7a7a23c6ff94172f",
+        "reader": "64d2c6e80e612c9f4f770c1c49b372988acd3d47e2a1aafd42f978fa710c566e",
     }

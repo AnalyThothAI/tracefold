@@ -69,7 +69,7 @@
         "occurred_at": null,
         "statistical_period": null,
         "polarity": "affirmative",
-        "mode": "commentary",
+        "mode": "unknown",
         "phase": null,
         "content_kind": "other",
         "assets": []
@@ -1610,7 +1610,7 @@
         {
           "ref": "cl:8021bc4b22a4453d6fcb26e6862acb0dd96115c3345622ffebbb3f84ea725a45",
           "fields": {
-            "mode": "commentary",
+            "mode": "unknown",
             "phase": null,
             "action": "left open whether BitMine would continue buying",
             "assets": [
@@ -3067,7 +3067,7 @@
       {
         "ref": "cl:c337eee1af3b62b5774bf6b6aa63b274273a41e416b37c07dfa4e36afadec59f",
         "fields": {
-          "mode": "commentary",
+          "mode": "unknown",
           "phase": null,
           "action": "is in focus",
           "assets": [],

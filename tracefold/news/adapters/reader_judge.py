@@ -48,10 +48,11 @@ def reader_signature(messages: int) -> Any:
     """
 
     fields: dict[str, Any] = {
+        "as_of": (str, dspy.InputField(desc="UTC date when this claim first became visible; fixed for this claim.")),
         "claim": (
             dict[str, Any],
             dspy.InputField(desc="One adopted news claim: its structured fields, topics and cited sources."),
-        )
+        ),
     }
     if messages:
         fields["messages"] = (

@@ -178,6 +178,8 @@ class NewsClaimData(ExactApiSchema):
     polarity_zh: str = ""
     mode: Mode
     mode_zh: str = ""
+    actor_role: str | None = None
+    actor_role_zh: str = ""
     # `null` for a claim that is not an action; a future `effective_at` never changes it.
     phase: Phase | None = None
     phase_zh: str = ""

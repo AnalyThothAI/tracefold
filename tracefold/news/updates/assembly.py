@@ -140,7 +140,14 @@ def proven_mismatches(current: DraftClaim, previous: Claim) -> tuple[str, ...]:
     b = previous.fields
     if "unknown" not in {a.polarity, b.polarity} and a.polarity != b.polarity:
         mismatches.append("polarity")
-    if "unknown" not in {a.mode, b.mode} and a.mode != b.mode:
+    realizations = (
+        {"observation", "decision"},
+        {"assertion", "demand", "threat", "commitment", "guidance", "forecast", "opinion"},
+        {"promotion"},
+    )
+    left_class = next((index for index, group in enumerate(realizations) if a.mode in group), None)
+    right_class = next((index for index, group in enumerate(realizations) if b.mode in group), None)
+    if left_class is not None and right_class is not None and left_class != right_class:
         mismatches.append("mode")
     if a.phase not in {None, "unknown"} and b.phase not in {None, "unknown"} and a.phase != b.phase:
         mismatches.append("phase")

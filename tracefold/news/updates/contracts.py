@@ -20,10 +20,8 @@ Mode = Literal[
     "observation",
     "decision",
     "commitment",
-    "conditional_threat",
     "guidance",
     "forecast",
-    "commentary",
     "promotion",
     "unknown",
     "assertion",
@@ -233,6 +231,7 @@ class ClaimFields(Exact):
     polarity: Literal["affirmative", "negative", "unknown"] = "unknown"
     mode: Mode = "unknown"
     actor_role: ActorRole | None = None
+
     # A non-action claim can use None. A future effective_at never changes phase.
     phase: Phase | None = None
     # The notification policy's reading of the content. It is not part of claim identity: a different

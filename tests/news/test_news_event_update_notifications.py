@@ -167,7 +167,7 @@ def delivered(intent: str, *refs: str, state: str = "sent", at: int = STAMP - 60
 def test_incremental_importance_decides_push_key_and_feed_against_the_backend_cuts() -> None:
     cuts = READER_CUTS["native"]
     for value, reason, key in (
-        (cuts.key, "reader_key", True),
+        (3.5, "reader_key", True),
         (cuts.push, "reader_push", False),
         (1.0, "reader_feed", False),
     ):
@@ -228,9 +228,9 @@ def test_an_increment_is_scored_on_what_it_adds_with_the_linked_message_first() 
         link_receipts=(delivered("r-old", "old"),),
     )
     cuts = READER_CUTS["native"]
-    judge = FixedReader(cuts.key, anchor="m1")
+    judge = FixedReader(cuts.held, anchor="m1")
     plan = run_plan(update, snapshot, judge=judge)
-    assert only_reason(plan) == "reader_key"
+    assert only_reason(plan) == "reader_push"
     assert judge.asked[0].messages == ("英伟达宣布1500亿美元回购",)
     record = plan.claim_decisions[0].reader
     assert record is not None and record.novelty == "increment" and record.render == "increment"
@@ -241,11 +241,11 @@ def test_an_increment_is_scored_on_what_it_adds_with_the_linked_message_first() 
     )
     assert material[0]["earlier"] == {"render": "increment", "delivered_text": "英伟达宣布1500亿美元回购"}
     # The reader already has the core fact: what the increment adds needs the key cut.
-    assert only_reason(run_plan(update, snapshot, judge=FixedReader(cuts.key - 0.01, anchor="m1"))) == "reader_feed"
+    assert only_reason(run_plan(update, snapshot, judge=FixedReader(cuts.held - 0.01, anchor="m1"))) == "reader_feed"
     # P014 (2026-09-29): a link to an unrelated earlier push that the anchor does not confirm is no "补充".
-    plan = run_plan(update, snapshot, judge=FixedReader(cuts.key))
+    plan = run_plan(update, snapshot, judge=FixedReader(cuts.held))
     record = plan.claim_decisions[0].reader
-    assert only_reason(plan) == "reader_key" and record is not None
+    assert only_reason(plan) == "reader_push" and record is not None
     assert (record.novelty, record.render, record.earlier, plan.earlier(ref)) == ("increment", "full", None, None)
 
 
