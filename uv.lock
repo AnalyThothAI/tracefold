@@ -2407,7 +2407,7 @@ dev = [
     { name = "types-defusedxml", specifier = ">=0.7.0" },
     { name = "types-regex", specifier = ">=2024.11.6" },
 ]
-research = [{ name = "scikit-learn", specifier = ">=1.7,<2" }]
+research = [{ name = "scikit-learn", specifier = "==1.9.1" }]
 
 [[package]]
 name = "truststore"

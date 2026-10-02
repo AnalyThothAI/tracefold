@@ -9,9 +9,9 @@ Install optional fitting dependencies with ``uv sync --group research``.
 from __future__ import annotations
 
 import argparse
-import gzip
 import json
 import math
+import random
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
@@ -19,8 +19,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from scripts.label_news_reader import GUIDE_VERSION
 from scripts.news_reader_diagnostics import baseline_auc, diagnostic_report
+from scripts.news_reader_io import read_jsonl, write_jsonl
+from scripts.news_reader_labeling import GUIDE_VERSION
 from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
 from tracefold.news.notifications.policy import (
     KIND_FLOOR,
@@ -35,7 +36,15 @@ from tracefold.news.notifications.reader import READER_QUESTIONS_IDENTITY, Reade
 from tracefold.news.updates.contracts import ClaimFields
 from tracefold.news.updates.identity import digest
 
-PROTOCOL = "news_reader_calibration_v1"
+PROTOCOL = "news_reader_calibration_v2"
+FIT_CONFIG: dict[str, Any] = {
+    "C": 1.0,
+    "solver": "lbfgs",
+    "max_iter": 2000,
+    "materiality_floors": [1, 2, 3],
+    "folds": 5,
+    "sklearn_version": "1.9.1",
+}
 # This order is fixed before seeing certification labels. Stop at the first failure.
 CUT_SEQUENCE = (0.99, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5)
 PUSH_TARGET, KEY_TARGET, DELTA = 0.65, 0.75, 0.1
@@ -43,8 +52,7 @@ PUSH_MINIMUM, KEY_MINIMUM = 150, 60
 
 
 def load(path: Path) -> list[dict[str, Any]]:
-    content = gzip.decompress(path.read_bytes()).decode() if path.suffix == ".gz" else path.read_text("utf-8")
-    rows = [json.loads(line) for line in content.splitlines() if line.strip()]
+    rows = read_jsonl(path)
     if not rows or len({row["case_id"] for row in rows}) != len(rows):
         raise ValueError("news_reader_eval_empty_or_duplicate_cases")
     for row in rows:
@@ -76,6 +84,7 @@ def load(path: Path) -> list[dict[str, Any]]:
         if len(row["message_intents"]) != len(row["reader_input"]["messages"]):
             raise ValueError("news_reader_eval_message_intents_mismatch")
         row["reader_novelty"] = novelty
+        row.setdefault("split_story_id", row["story_id"])
     return rows
 
 
@@ -94,6 +103,7 @@ def assemble(
     if not inputs or len(inputs) != len(cases):
         raise ValueError("news_reader_eval_empty_or_duplicate_frozen_case")
     chosen: dict[str, dict[str, Any]] = {}
+    proxy_stories: dict[str, str] = {}
     seen = set()
     for raw in labels:
         case, labeler = raw["case_id"], raw["labeler"]
@@ -106,6 +116,10 @@ def assemble(
             raise ValueError("news_reader_eval_owner_guide_changed")
         if labeler != "owner" and not labeler.startswith("claude:"):
             raise ValueError("news_reader_eval_labeler_invalid")
+        if labeler != "owner":
+            if case in proxy_stories and proxy_stories[case] != raw["story_id"]:
+                raise ValueError("news_reader_eval_frozen_proxy_story_changed")
+            proxy_stories[case] = raw["story_id"]
         if case not in chosen or labeler == "owner":
             chosen[case] = dict(raw)
     assembled = []
@@ -113,11 +127,25 @@ def assemble(
         assembled.append(
             {
                 **inputs[case],
+                "split_story_id": inputs[case].get("split_story_id", proxy_stories.get(case, annotation["story_id"])),
+                "case_sampling": inputs[case].get("case_sampling")
+                or {
+                    key: inputs[case].get(key)
+                    for key in (
+                        "sampling_design",
+                        "inclusion_probability",
+                        "stratum",
+                        "sampling_unit",
+                        "sampling_frame",
+                    )
+                },
                 # Label inclusion includes selection for owner review; never
                 # borrow a proxy pool's probability for a targeted gold subset.
                 "sampling_design": "unknown",
                 "inclusion_probability": None,
                 "stratum": None,
+                "sampling_unit": "unknown",
+                "sampling_frame": None,
                 **{
                     key: annotation[key]
                     for key in (
@@ -128,6 +156,8 @@ def assemble(
                         "stratum",
                         "sampling_design",
                         "inclusion_probability",
+                        "sampling_unit",
+                        "sampling_frame",
                     )
                     if key in annotation
                 },
@@ -155,8 +185,12 @@ def assemble(
         for case, record in latest.items():
             if case not in by_id:
                 continue
-            if record.get("error_code") or record.get("error_class"):
-                by_id[case].setdefault("reask_failures", {})[backend] = record.get("error_code", "provider_call_failed")
+            if record.get("skipped"):
+                if inputs[case].get("reader_applicable") is not False:
+                    raise ValueError("news_reader_eval_applicable_reader_cannot_be_skipped")
+                by_id[case].setdefault("reask_skips", {})[backend] = dict(record)
+            elif record.get("error_code") or record.get("error_class"):
+                by_id[case].setdefault("reask_failures", {})[backend] = dict(record)
             else:
                 by_id[case]["answers"][backend] = dict(record)
         if any(row["answers"].get(backend) for row in assembled):
@@ -262,7 +296,7 @@ def split_cases(rows: Sequence[Mapping[str, Any]], fraction: float = 0.7) -> dic
     boundary = _time(ordered[min(len(rows) - 1, max(1, int(len(rows) * fraction)))])
     stories: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for row in ordered:
-        stories[row["story_id"]].append(row)
+        stories[row.get("split_story_id", row["story_id"])].append(row)
     fit: list[str] = []
     certification: list[str] = []
     excluded: list[str] = []
@@ -294,6 +328,49 @@ def dataset_digest(rows: Sequence[Mapping[str, Any]]) -> str:
             for row in sorted(rows, key=lambda row: row["case_id"])
         ]
     )
+
+
+HOLDOUT_ANNOTATION_FIELDS = {
+    "label",
+    "labeler",
+    "guide_version",
+    "inclusion_probability",
+    "sampling_design",
+    "sampling_unit",
+    "sampling_frame",
+    "stratum",
+    "story_id",
+}
+
+
+def frozen_dataset_digest(rows: Sequence[Mapping[str, Any]], certification: Sequence[str]) -> str:
+    """Permit later gold only in held-out rows; inputs, story grouping, answers and fit labels stay frozen."""
+    ids = set(certification)
+    return dataset_digest(
+        [
+            {
+                **{
+                    key: value
+                    for key, value in row.items()
+                    if row["case_id"] not in ids or key not in HOLDOUT_ANNOTATION_FIELDS
+                },
+                "split_story_id": row.get("split_story_id", row["story_id"]),
+            }
+            for row in rows
+        ]
+    )
+
+
+def applicable(row: Mapping[str, Any]) -> bool:
+    """Frozen production pre-reader decision, never reconstructed from model scores."""
+    if not isinstance(row.get("reader_applicable"), bool) or not row.get("pre_reader_reason"):
+        raise ValueError("news_reader_eval_production_applicability_required")
+    expected = row["pre_reader_reason"] in {"reader_unavailable", "reader_unassessed"}
+    if row["reader_applicable"] != expected:
+        raise ValueError("news_reader_eval_production_applicability_changed")
+    if not expected and row.get("deterministic_decision") not in {"notify", "drop", "deferred"}:
+        raise ValueError("news_reader_eval_deterministic_decision_required")
+    return expected
 
 
 def _logit(probability: float) -> float:
@@ -331,7 +408,7 @@ def _fit_logistic(x: list[list[float]], y: list[int], weights: list[float]) -> t
         from sklearn.linear_model import LogisticRegression  # type: ignore[import-untyped]
     except ImportError as exc:
         raise ValueError("news_reader_eval_install_research_dependency_group") from exc
-    model = LogisticRegression(C=1.0, solver="lbfgs", max_iter=2000)
+    model = LogisticRegression(C=FIT_CONFIG["C"], solver=FIT_CONFIG["solver"], max_iter=FIT_CONFIG["max_iter"])
     # Normalize inverse-probability weights so regularization is independent
     # of the absolute sampling fraction.
     normalized = [value * len(weights) / sum(weights) for value in weights]
@@ -407,9 +484,12 @@ def probability_report(labels: list[int], probabilities: list[float], weights: l
 def fit(rows: Sequence[Mapping[str, Any]], backend: ReaderBackend) -> dict[str, Any]:
     """Select m* by story-disjoint, out-of-fold fitting data; never inspect holdout labels."""
     try:
+        import sklearn  # type: ignore[import-untyped]
         from sklearn.model_selection import GroupKFold  # type: ignore[import-untyped]
     except ImportError as exc:
         raise ValueError("news_reader_eval_install_research_dependency_group") from exc
+    if sklearn.__version__ != FIT_CONFIG["sklearn_version"]:
+        raise ValueError("news_reader_eval_research_dependency_version_changed")
 
     split = split_cases(rows)
     if any(row["guide_version"] != GUIDE_VERSION for row in rows):
@@ -419,11 +499,12 @@ def fit(rows: Sequence[Mapping[str, Any]], backend: ReaderBackend) -> dict[str, 
         row
         for row in rows
         if row["case_id"] in split["fit"]
+        and applicable(row)
         and row["case_id"] in answers
         and row["label"]["push"] != "borderline"
         and novelty_outcome(row["reader_novelty"], first_available_at_ms=_time(row)) is None
     ]
-    groups = [row["story_id"] for row in training]
+    groups = [row.get("split_story_id", row["story_id"]) for row in training]
     if len(set(groups)) < 3:
         raise ValueError("news_reader_eval_three_training_stories_required")
     weights = [_weight(row) for row in training]
@@ -432,11 +513,13 @@ def fit(rows: Sequence[Mapping[str, Any]], backend: ReaderBackend) -> dict[str, 
         [int(row["label"]["key"]) for row in training],
     )
     candidates: list[dict[str, Any]] = []
-    for floor in (1, 2, 3):
+    for floor in FIT_CONFIG["materiality_floors"]:
         vectors = [features(row, answers[row["case_id"]], floor) for row in training]
         push_x, key_x = [x for x, _ in vectors], [x for _, x in vectors]
         push_oof, key_oof = [0.0] * len(training), [0.0] * len(training)
-        for train, validate in GroupKFold(n_splits=min(5, len(set(groups)))).split(push_x, push_y, groups):
+        for train, validate in GroupKFold(n_splits=min(FIT_CONFIG["folds"], len(set(groups)))).split(
+            push_x, push_y, groups
+        ):
             for x, y, oof in ((push_x, push_y, push_oof), (key_x, key_y, key_oof)):
                 coefficients = _fit_logistic([x[i] for i in train], [y[i] for i in train], [weights[i] for i in train])
                 for index, p in zip(validate, _predict(coefficients, [x[i] for i in validate]), strict=True):
@@ -477,7 +560,7 @@ def fit(rows: Sequence[Mapping[str, Any]], backend: ReaderBackend) -> dict[str, 
         }
         for row, p, k in zip(training, selected["push_oof"], selected["key_oof"], strict=True)
     ]
-    return {
+    artifact = {
         "protocol": PROTOCOL,
         "phase": "fit",
         "backend": backend,
@@ -497,7 +580,90 @@ def fit(rows: Sequence[Mapping[str, Any]], backend: ReaderBackend) -> dict[str, 
         "oof_predictions": predictions,
         "label_sources": dict(Counter(row["labeler"] for row in training)),
         "certification_status": "uncalibrated",
+        "fit_config": {**FIT_CONFIG, "materiality_floors": list(FIT_CONFIG["materiality_floors"])},
+        "fit_dataset_sha256": dataset_digest([row for row in rows if row["case_id"] in split["fit"]]),
     }
+    # Use the canonical frozen holdout including provenance, omitting only the derived object.
+    artifact["holdout_identity"] = digest(
+        {
+            "backend": backend,
+            "dataset": frozen_dataset_digest(
+                [row for row in rows if row["case_id"] in split["certification"]], split["certification"]
+            ),
+        }
+    )
+    artifact["frozen_dataset_sha256"] = frozen_dataset_digest(rows, split["certification"])
+    artifact["candidate_identity"] = candidate_identity(artifact)
+    return artifact
+
+
+DERIVATION_FIELDS = (
+    "protocol",
+    "backend",
+    "questions_identity",
+    "eligibility_table_sha256",
+    "kind_floor",
+    "frozen_dataset_sha256",
+    "guide_versions",
+    "split",
+    "calibration",
+    "cut_sequence",
+    "answer_provenance",
+    "fit_cases",
+    "materiality_candidates",
+    "oof_predictions",
+    "fit_config",
+    "fit_dataset_sha256",
+    "holdout_identity",
+)
+
+
+def candidate_identity(artifact: Mapping[str, Any]) -> str:
+    return digest({field: artifact[field] for field in DERIVATION_FIELDS})
+
+
+def verify_candidate(rows: Sequence[Mapping[str, Any]], artifact: Mapping[str, Any]) -> None:
+    """Rebuild from frozen fit data; a new self-hash cannot legitimize edited coefficients."""
+    if any(field not in artifact for field in DERIVATION_FIELDS):
+        raise ValueError("news_reader_eval_candidate_derivation_required")
+    rebuilt = fit(rows, artifact["backend"])
+    if (
+        candidate_identity(artifact) != rebuilt["candidate_identity"]
+        or artifact.get("candidate_identity") != rebuilt["candidate_identity"]
+    ):
+        raise ValueError("news_reader_eval_candidate_derivation_changed")
+
+
+def register_holdout_use(path: Path, artifact: Mapping[str, Any], *, certification_dataset_sha256: str) -> None:
+    """Local append-only protocol journal. External/repeated holdout access still needs owner review."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = path.with_name(path.name + ".lock")
+    try:
+        reservation = lock.open("x", encoding="utf-8")
+    except FileExistsError as exc:
+        raise ValueError("news_reader_eval_holdout_ledger_busy") from exc
+    try:
+        with reservation:
+            existing = read_jsonl(path) if path.exists() else []
+            same = [row for row in existing if row["holdout_identity"] == artifact["holdout_identity"]]
+            if any(row["candidate_identity"] != artifact["candidate_identity"] for row in same):
+                raise ValueError("news_reader_eval_holdout_already_used_by_another_candidate")
+            if any(row.get("certification_dataset_sha256") != certification_dataset_sha256 for row in same):
+                raise ValueError("news_reader_eval_holdout_gold_sample_changed_after_use")
+            if not same:
+                with path.open("a", encoding="utf-8") as stream:
+                    stream.write(
+                        json.dumps(
+                            {
+                                "holdout_identity": artifact["holdout_identity"],
+                                "candidate_identity": artifact["candidate_identity"],
+                                "certification_dataset_sha256": certification_dataset_sha256,
+                            }
+                        )
+                        + "\n"
+                    )
+    finally:
+        lock.unlink()
 
 
 def clopper_pearson_lower(successes: int, trials: int, delta: float = DELTA) -> float:
@@ -549,6 +715,162 @@ def _sampling_strata(rows: Sequence[Mapping[str, Any]]) -> list[str]:
     return strata
 
 
+def sampling_frame(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
+    """A claim sample with distinct observed story IDs is not a story probability frame."""
+    frames = [row.get("sampling_frame") for row in rows]
+    if not frames or not isinstance(frames[0], Mapping) or any(frame != frames[0] for frame in frames):
+        raise ValueError("news_reader_eval_frozen_sampling_frame_required")
+    frame = frames[0]
+    if (
+        not frame.get("frame_id")
+        or frame.get("unit") != "independent_story_representative"
+        or any(row.get("sampling_unit") != frame["unit"] for row in rows)
+        or frame.get("selection_frozen_before_labels") is not True
+        or frame.get("story_grouping_reviewed") is not True
+        or frame.get("scope") != "holdout"
+    ):
+        raise ValueError("news_reader_eval_independent_owner_story_sampling_frame_required")
+    sizes = frame.get("stratum_sizes")
+    if (
+        not isinstance(sizes, Mapping)
+        or not sizes
+        or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in sizes.values())
+        or set(frame.get("certification_strata", [])) != set(sizes)
+        or frame.get("units") != sum(sizes.values())
+    ):
+        raise ValueError("news_reader_eval_population_stratum_sizes_required")
+    selected_ids = frame.get("selected_case_ids")
+    if (
+        not isinstance(selected_ids, list)
+        or len(selected_ids) != len(set(selected_ids))
+        or set(selected_ids) != {row["case_id"] for row in rows}
+    ):
+        raise ValueError("news_reader_eval_selected_owner_labels_incomplete")
+    for stratum, population in sizes.items():
+        observed = [
+            row for row in rows if ("uniform" if row["sampling_design"] == "uniform" else row["stratum"]) == stratum
+        ]
+        if len(observed) > population:
+            raise ValueError("news_reader_eval_sample_exceeds_population_frame")
+        if frame.get("selection_design") == "stratified_srs_without_replacement" and any(
+            not math.isclose(row["inclusion_probability"], len(observed) / population, abs_tol=1e-12)
+            for row in observed
+        ):
+            raise ValueError("news_reader_eval_joint_selection_probability_changed")
+    return frame
+
+
+def sample_owner(
+    rows: Sequence[Mapping[str, Any]],
+    candidate: Mapping[str, Any],
+    *,
+    per_stratum: int,
+    seed: int,
+    story_grouping_reviewed: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Freeze gold selection before gold labels, from a genuine census only.
+
+    Proxy grouping proposes the finite story frame; it is not evidence that the
+    stories are independent. The separate grouping-review attestation concerns
+    the whole frame, before seeing owner push/key labels.
+    """
+    if candidate.get("phase") != "fit":
+        raise ValueError("news_reader_eval_frozen_fit_candidate_required")
+    if per_stratum <= 0 or any(row["labeler"] == "owner" for row in rows):
+        raise ValueError("news_reader_eval_owner_selection_must_precede_gold_labels")
+    sources = [row.get("case_sampling", row) for row in rows]
+    frames = [source.get("sampling_frame") for source in sources]
+    if (
+        not frames
+        or not isinstance(frames[0], Mapping)
+        or any(frame != frames[0] for frame in frames)
+        or frames[0].get("unit") != "claim_decision"
+        or frames[0].get("units") != len(rows)
+        or any(source.get("inclusion_probability") != 1 for source in sources)
+    ):
+        raise ValueError("news_reader_eval_complete_claim_census_required_for_story_frame")
+    verify_candidate(rows, candidate)
+    holdout = set(candidate["split"]["certification"])
+    stories: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if row["case_id"] in holdout:
+            stories[row.get("split_story_id", row["story_id"])].append(row)
+    representatives = [min(group, key=lambda row: (_time(row), row["case_id"])) for group in stories.values()]
+    strata: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in representatives:
+        source = row.get("case_sampling", row)
+        if not source.get("stratum"):
+            raise ValueError("news_reader_eval_owner_frame_stratum_required")
+        strata[source["stratum"]].append(row)
+    sizes = {stratum: len(group) for stratum, group in sorted(strata.items())}
+    boundary_date = datetime.fromtimestamp(candidate["split"]["boundary_ms"] / 1000, UTC).date().isoformat()
+    source_days = frames[0].get("days")
+    if not isinstance(source_days, list) or not source_days:
+        raise ValueError("news_reader_eval_frozen_census_calendar_required")
+    holdout_days = sorted(day for day in source_days if day >= boundary_date)
+    frame = {
+        "unit": "independent_story_representative",
+        "scope": "holdout",
+        "boundary_ms": candidate["split"]["boundary_ms"],
+        "units": len(representatives),
+        "stratum_sizes": sizes,
+        "certification_strata": sorted(sizes),
+        "days": holdout_days,
+        "partial_first_day": candidate["split"]["boundary_ms"] % 86400000 != 0,
+        "selection_frozen_before_labels": True,
+        "story_grouping_reviewed": story_grouping_reviewed,
+        "source_claim_frame_id": frames[0]["frame_id"],
+        "selection_design": "stratified_srs_without_replacement",
+        "candidate_identity": candidate["candidate_identity"],
+        "population_target": (
+            "one predetermined representative per frozen census holdout story; not all production claims or Event/cards"
+        ),
+    }
+    rng = random.Random(seed)  # noqa: S311 -- reproducible sampling, not a cryptographic operation.
+    selected, roster = [], []
+    for stratum, group in sorted(strata.items()):
+        ordered_group = sorted(group, key=lambda row: row["case_id"])
+        count = min(per_stratum, len(ordered_group))
+        picked = {row["case_id"] for row in rng.sample(ordered_group, count)}
+        for row in ordered_group:
+            roster.append(
+                {
+                    "case_id": row["case_id"],
+                    "split_story_id": row.get("split_story_id", row["story_id"]),
+                    "stratum": stratum,
+                }
+            )
+            if row["case_id"] in picked:
+                selected.append(
+                    {
+                        "case_id": row["case_id"],
+                        "reader_input": row["reader_input"],
+                        "sampling_design": "stratified",
+                        "sampling_unit": frame["unit"],
+                        "sampling_frame": frame,
+                        "stratum": stratum,
+                        "inclusion_probability": count / len(ordered_group),
+                    }
+                )
+    frame["selected_case_ids"] = sorted(row["case_id"] for row in selected)
+    frame["frame_id"] = digest({"frame": frame, "representatives": sorted(row["case_id"] for row in representatives)})
+    manifest = {
+        "protocol": PROTOCOL,
+        "candidate_identity": candidate["candidate_identity"],
+        "holdout_identity": candidate["holdout_identity"],
+        "sampling_frame": frame,
+        "selection": {"per_stratum": per_stratum, "seed": seed},
+        "story_roster": roster,
+        "selected": [{"case_id": row["case_id"], "input_sha256": digest(row["reader_input"])} for row in selected],
+        "independence_status": "reviewed" if story_grouping_reviewed else "proxy_grouping_unverified_cannot_certify",
+    }
+    return selected, manifest
+
+
+def clopper_pearson_upper(successes: int, trials: int, delta: float = DELTA) -> float:
+    return 1 - clopper_pearson_lower(trials - successes, trials, delta)
+
+
 def certify_sequence(
     rows: Sequence[Mapping[str, Any]],
     probabilities: Mapping[str, float],
@@ -566,10 +888,14 @@ def certify_sequence(
         raise ValueError("news_reader_eval_proxy_labels_cannot_certify")
     if len({row["story_id"] for row in rows}) != len(rows):
         raise ValueError("news_reader_eval_independent_story_representatives_required")
-    strata = _sampling_strata(rows)
+    observed_strata = _sampling_strata(rows)
+    frame = sampling_frame(rows)
+    strata = sorted(frame["stratum_sizes"])
+    if not set(observed_strata).issubset(strata) or (observed_strata == ["uniform"] and strata != ["uniform"]):
+        raise ValueError("news_reader_eval_sampling_stratum_not_in_frame")
     story_strata: dict[str, set[str]] = defaultdict(set)
     for row in rows:
-        story_strata[row["story_id"]].add("uniform" if strata == ["uniform"] else row["stratum"])
+        story_strata[row["story_id"]].add("uniform" if observed_strata == ["uniform"] else row["stratum"])
     if any(len(values) > 1 for values in story_strata.values()):
         raise ValueError("news_reader_eval_story_crosses_sampling_strata")
     tested, chosen = [], None
@@ -582,23 +908,48 @@ def certify_sequence(
             and (eligible is None or row["case_id"] in eligible)
         ]
         stratum_reports = []
+        numerator_lower = denominator_upper = 0.0
         for stratum in strata:
-            cases = [row for row in selected if ("uniform" if strata == ["uniform"] else row["stratum"]) == stratum]
+            cases = [
+                row for row in selected if ("uniform" if observed_strata == ["uniform"] else row["stratum"]) == stratum
+            ]
+            sampled = [
+                row for row in rows if ("uniform" if observed_strata == ["uniform"] else row["stratum"]) == stratum
+            ]
             n = len(cases)
             k = sum(row["label"][field] is True if field == "key" else row["label"][field] == "push" for row in cases)
+            population_fraction = frame["stratum_sizes"][stratum] / frame["units"]
+            alpha = delta / (2 * len(strata))
+            joint_lower = clopper_pearson_lower(k, len(sampled), alpha)
+            selection_upper = clopper_pearson_upper(n, len(sampled), alpha)
+            numerator_lower += population_fraction * joint_lower
+            denominator_upper += population_fraction * selection_upper
             stratum_reports.append(
                 {
                     "stratum": stratum,
                     "owner_labels": len(cases),
                     "independent_stories": n,
                     "successful_stories": k,
-                    "delta": delta / len(strata),
-                    "lower_bound": clopper_pearson_lower(k, n, delta / len(strata)),
+                    "sampled_stories": len(sampled),
+                    "population_stories": frame["stratum_sizes"][stratum],
+                    "population_fraction": population_fraction,
+                    "delta": delta if strata == ["uniform"] else alpha,
+                    "lower_bound": clopper_pearson_lower(k, n, delta) if strata == ["uniform"] else None,
+                    "selected_positive_joint_lower": joint_lower,
+                    "selected_mass_upper": selection_upper,
                 }
             )
-        # Certifying every stratum establishes a conservative lower bound for
-        # any population mixture. IPW fractional counts are NOT binomial trials.
-        lower = min(report["lower_bound"] for report in stratum_reports)
+        # Pre-frozen population masses, not sample quotas. Simultaneous bounds
+        # on joint positive selection and selection mass yield a valid ratio.
+        # A zero-selected stratum remains present with an upper unknown mass;
+        # it is never dropped after looking at model outputs or owner labels.
+        lower = (
+            stratum_reports[0]["lower_bound"]
+            if strata == ["uniform"]
+            else numerator_lower / denominator_upper
+            if denominator_upper
+            else 0.0
+        )
         independent = sum(report["independent_stories"] for report in stratum_reports)
         passed = lower >= target and independent >= minimum
         result = {
@@ -620,14 +971,20 @@ def certify_sequence(
         "target": target,
         "delta": delta,
         "minimum_independent_stories": minimum,
-        "precision_estimand": "selected independent story representatives; minimum over sampling strata",
+        "precision_estimand": "selected independent story representatives in the frozen holdout frame",
+        "bound_method": "selected-binomial CP" if strata == ["uniform"] else "simultaneous joint/selection CP ratio",
+        "sampling_frame_id": frame["frame_id"],
         "stop_rule": "first failure; no later cuts inspected",
         "labels": "owner only",
     }
 
 
 def certify(rows: Sequence[Mapping[str, Any]], artifact: Mapping[str, Any]) -> dict[str, Any]:
-    if artifact["phase"] != "fit" or artifact["dataset_sha256"] != dataset_digest(rows):
+    if artifact["phase"] != "fit":
+        raise ValueError("news_reader_eval_frozen_fit_candidate_required")
+    if artifact["split"] != split_cases(rows):
+        raise ValueError("news_reader_eval_certification_split_changed")
+    if artifact.get("frozen_dataset_sha256") != frozen_dataset_digest(rows, artifact["split"]["certification"]):
         raise ValueError("news_reader_eval_frozen_dataset_changed")
     if (
         artifact["kind_floor"] != KIND_FLOOR
@@ -639,25 +996,19 @@ def certify(rows: Sequence[Mapping[str, Any]], artifact: Mapping[str, Any]) -> d
         artifact["oof_predictions"], len(artifact["split"]["certification"])
     ):
         raise ValueError("news_reader_eval_certification_sequence_changed")
-    # Recheck split IDs: a hand-edited candidate cannot bring fitting cases into certification.
-    if artifact["split"] != split_cases(rows):
-        raise ValueError("news_reader_eval_certification_split_changed")
+    verify_candidate(rows, artifact)
     answers = recorded(rows, artifact["backend"])
     if artifact["answer_provenance"] != answer_provenance(rows, answers, artifact["backend"]):
         raise ValueError("news_reader_eval_model_adapter_changed")
     if artifact["guide_versions"] != [GUIDE_VERSION] or any(row["guide_version"] != GUIDE_VERSION for row in rows):
         raise ValueError("news_reader_eval_owner_guide_changed")
-    owner = [
-        row
-        for row in rows
-        if row["case_id"] in artifact["split"]["certification"]
-        and row["labeler"] == "owner"
-        and row["case_id"] in answers
-        and novelty_outcome(row["reader_novelty"], first_available_at_ms=_time(row)) is None
-    ]
+    owner = [row for row in rows if row["case_id"] in artifact["split"]["certification"] and row["labeler"] == "owner"]
+    for row in owner:
+        applicable(row)
+    model_owner = [row for row in owner if applicable(row) and row["case_id"] in answers]
     calibration = ReaderCalibration(**artifact["calibration"])
     push, key, eligible = {}, {}, set()
-    for row in owner:
+    for row in model_owner:
         push_x, key_x = features(row, answers[row["case_id"]], calibration.materiality_floor)
         push[row["case_id"]] = _predict(calibration.push_coefficients, [push_x])[0]
         key[row["case_id"]] = _predict(calibration.key_coefficients, [key_x])[0]
@@ -666,32 +1017,59 @@ def certify(rows: Sequence[Mapping[str, Any]], artifact: Mapping[str, Any]) -> d
     report = {
         **artifact,
         "phase": "certify",
+        "fitting_source_dataset_sha256": artifact["dataset_sha256"],
+        "dataset_sha256": dataset_digest(rows),
         "certification_owner_cases": len(owner),
+        "certification_available_reader_cases": len(model_owner),
         "release_ready": False,
-        "release_requirements": ["Event/card daily replay", "latency proof", "owner acceptance of volume tradeoff"],
+        "holdout_protocol": {
+            "candidate_identity": artifact["candidate_identity"],
+            "holdout_identity": artifact["holdout_identity"],
+            "candidate_derivation_verified": True,
+            "rule": "one frozen candidate per holdout/backend; no tuning or repeated candidate search after access",
+            "limitation": (
+                "reconstruction and local ledger do not prove absence of external holdout access; owner review required"
+            ),
+        },
+        "diagnostics": diagnostic_report(owner, answers, backend=artifact["backend"], calibration=calibration),
+        "population": {
+            "precision": (
+                "reader-selected available answers among independent story representatives in frozen owner holdout"
+            ),
+            "probability_quality": "available reader-applicable owner holdout, conditional on answered calls",
+            "recall_and_volume": (
+                "full owner holdout; fixed notifications included, failed/absent reader calls do not push"
+            ),
+            "fixed_case_count": len(owner) - sum(applicable(row) for row in owner),
+        },
     }
     if not owner:
         report.update(certification_status="uncalibrated", certification_failure="owner_probability_sample_required")
-        return report
+        return finalize_report(report)
     try:
         _sampling_strata(owner)
+        frame = sampling_frame(owner)
+        if frame.get("boundary_ms") != artifact["split"]["boundary_ms"]:
+            raise ValueError("news_reader_eval_sampling_frame_holdout_changed")
         if len({row["story_id"] for row in owner}) != len(owner):
             raise ValueError("news_reader_eval_independent_story_representatives_required")
     except ValueError as exc:
         report.update(certification_status="uncalibrated", certification_failure=str(exc))
-        return report
+        return finalize_report(report)
+    report["sampling_frame"] = frame
+    report["population_probability_sample_verified"] = True
     push_report = probability_report(
-        [int(row["label"]["push"] == "push") for row in owner],
-        [push[row["case_id"]] for row in owner],
-        [_weight(row) for row in owner],
+        [int(row["label"]["push"] == "push") for row in model_owner],
+        [push[row["case_id"]] for row in model_owner],
+        [_weight(row) for row in model_owner],
     )
     key_report = probability_report(
-        [int(row["label"]["key"]) for row in owner],
-        [key[row["case_id"]] for row in owner],
-        [_weight(row) for row in owner],
+        [int(row["label"]["key"]) for row in model_owner],
+        [key[row["case_id"]] for row in model_owner],
+        [_weight(row) for row in model_owner],
     )
     # Same-input baseline is mandatory; a historical aggregate AUC is not paired evidence.
-    prior_auc = baseline_auc(owner, artifact["backend"])
+    prior_auc = baseline_auc(model_owner, artifact["backend"])
     discrimination_passed = (
         prior_auc is not None
         and push_report["auc"] is not None
@@ -708,7 +1086,7 @@ def certify(rows: Sequence[Mapping[str, Any]], artifact: Mapping[str, Any]) -> d
         report.update(
             certification_status="uncalibrated", certification_failure="discrimination_or_paired_baseline_unverified"
         )
-        return report
+        return finalize_report(report)
     push_certificate = certify_sequence(
         owner, push, target=PUSH_TARGET, minimum=PUSH_MINIMUM, eligible=eligible, cuts=artifact["cut_sequence"]["push"]
     )
@@ -754,14 +1132,12 @@ def certify(rows: Sequence[Mapping[str, Any]], artifact: Mapping[str, Any]) -> d
         push_certificate=push_certificate,
         key_certificate=key_certificate,
         key_conditioning_certificates=key_certificates,
-        volume=volume_report(owner, pushed, keys),
+        volume=volume_report(
+            owner, pushed | {row["case_id"] for row in owner if row.get("deterministic_decision") == "notify"}, keys
+        ),
         diagnostics=diagnostic_report(
             owner, answers, backend=artifact["backend"], calibration=reviewed, pushed_case_ids=pushed, key_case_ids=keys
         ),
-        materiality_ambiguous_fraction=sum(
-            0.35 <= reader_scores(answers[row["case_id"]], calibration=calibration).m <= 0.65 for row in owner
-        )
-        / len(owner),
     )
     if not certified:
         report["certification_failure"] = (
@@ -769,6 +1145,33 @@ def certify(rows: Sequence[Mapping[str, Any]], artifact: Mapping[str, Any]) -> d
             if push_certificate["selected"] is None
             else "key_precision_or_sample_count"
         )
+    return finalize_report(report)
+
+
+def finalize_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Precision certification is one release gate; missing evidence never becomes a pass."""
+    diagnostics = report.get("diagnostics", {})
+    gates = {
+        "statistical_precision": report.get("certification_status") == "certified",
+        "paired_discrimination": report.get("discrimination_passed"),
+        "probability_sampling_population": report.get("population_probability_sample_verified", False),
+        "reader_coverage_complete": diagnostics.get("coverage", {}).get("complete"),
+        "type_false_ineligible_at_most_five_percent": diagnostics.get("report_kind", {}).get(
+            "five_percent_gate_passed"
+        ),
+        "end_to_end_push_recall_at_least_v3": diagnostics.get("recall", {}).get("at_least_paired_v3"),
+        "materiality_ambiguity_below_twenty_percent": diagnostics.get("materiality", {}).get(
+            "below_historical_reference"
+        ),
+        "paired_p90_latency_within_500ms": diagnostics.get("latency", {}).get("within_500ms"),
+        "event_card_daily_replay": None,
+        "volume_targets_or_explicit_owner_waiver": None,
+        "owner_review": None,
+        "holdout_usage_review": None,
+    }
+    report["release_gates"] = gates
+    report["release_ready"] = all(value is True for value in gates.values())
+    report["release_requirements"] = [name for name, value in gates.items() if value is not True]
     return report
 
 
@@ -776,6 +1179,9 @@ def volume_report(rows: Sequence[Mapping[str, Any]], pushed: set[str], keys: set
     if any(row.get("inclusion_probability") is None for row in rows):
         return {"status": "unestimated", "reason": "inclusion_probability_missing"}
     days: dict[str, dict[str, float]] = defaultdict(lambda: {"push": 0.0, "key": 0.0})
+    frame_days = {day for row in rows for day in (row.get("sampling_frame") or {}).get("days", [])}
+    for day in frame_days:
+        days[day]
     for row in rows:
         day = row["reader_input"]["as_of"]
         days[day]  # Include sampled days with zero pushes in P10/P50/P90.
@@ -789,12 +1195,19 @@ def volume_report(rows: Sequence[Mapping[str, Any]], pushed: set[str], keys: set
             f"p{p}": values[min(len(values) - 1, int((len(values) - 1) * p / 100))] if values else None
             for p in (10, 50, 90)
         }
+    unit = (rows[0].get("sampling_frame") or {}).get("unit") if rows else None
     return {
         "status": "estimated",
-        "estimand": "Horvitz-Thompson daily claims; no inferred Event weights",
+        "estimand": (
+            "HT story representatives by frozen ReaderInput.as_of; no inferred all-claim/Event/card weights"
+            if unit == "independent_story_representative"
+            else "Horvitz-Thompson claims by frozen ReaderInput.as_of; no inferred Event/card weights"
+        ),
         "days": dict(days),
         "quantiles": quantiles,
         "guardrail_only": True,
+        "calendar_complete": bool(frame_days),
+        "sampled_cases": len(rows),
         "volume_acceptance": "owner review required; volume never moves cuts",
     }
 
@@ -829,6 +1242,9 @@ def render_report(artifact: Mapping[str, Any], evidence_path: str | None = None)
                     "key_certificate",
                     "volume",
                     "release_requirements",
+                    "release_gates",
+                    "holdout_protocol",
+                    "population",
                 )
                 if key in artifact
             },
@@ -856,19 +1272,32 @@ def main() -> None:
     fit_parser.add_argument("--backend", choices=("native", "generated"), required=True)
     fit_parser.add_argument("--input", type=Path, required=True)
     fit_parser.add_argument("--output", type=Path, required=True)
+    owner_parser = commands.add_parser(
+        "owner-sample", help="Freeze blinded gold selection from a complete proxy story census before owner labels."
+    )
+    owner_parser.add_argument("--input", type=Path, required=True)
+    owner_parser.add_argument("--candidate", type=Path, required=True)
+    owner_parser.add_argument("--per-stratum", type=int, required=True)
+    owner_parser.add_argument("--seed", type=int, required=True)
+    owner_parser.add_argument(
+        "--story-grouping-reviewed",
+        action="store_true",
+        help="Attest independent review of the complete proxy story grouping before gold selection.",
+    )
+    owner_parser.add_argument("--output", type=Path, required=True)
+    owner_parser.add_argument("--manifest", type=Path, required=True)
     cert_parser = commands.add_parser("certify", help="Certify the frozen candidate with independent owner labels.")
     cert_parser.add_argument("--input", type=Path, required=True)
     cert_parser.add_argument("--candidate", type=Path, required=True)
     cert_parser.add_argument("--output", type=Path, required=True)
+    cert_parser.add_argument(
+        "--holdout-ledger", type=Path, required=True, help="Persistent one-candidate-per-holdout usage journal."
+    )
     report_parser = commands.add_parser("report", help="Read recorded evidence and render a review document.")
     report_parser.add_argument("--artifact", type=Path, required=True)
     report_parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.phase == "assemble":
-
-        def read_jsonl(path: Path) -> list[dict[str, Any]]:
-            return [json.loads(line) for line in path.read_text("utf-8").splitlines() if line.strip()]
-
         cases = read_jsonl(args.input)
         labels = [row for path in args.labels for row in read_jsonl(path)]
         journals: dict[ReaderBackend, Sequence[Mapping[str, Any]]] = {}
@@ -876,16 +1305,38 @@ def main() -> None:
             journals["native"] = read_jsonl(args.native_journal)
         if args.generated_journal is not None:
             journals["generated"] = read_jsonl(args.generated_journal)
-        result = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in assemble(cases, labels, journals))
+        write_jsonl(args.output, assemble(cases, labels, journals))
+        return
     elif args.phase == "fit":
         result = json.dumps(fit(load(args.input), args.backend), ensure_ascii=False, indent=2) + "\n"
-    elif args.phase == "certify":
-        result = (
-            json.dumps(
-                certify(load(args.input), json.loads(args.candidate.read_text("utf-8"))), ensure_ascii=False, indent=2
-            )
-            + "\n"
+    elif args.phase == "owner-sample":
+        if args.output.resolve() == args.manifest.resolve():
+            raise ValueError("news_reader_eval_owner_blind_and_manifest_paths_must_differ")
+        selection, manifest = sample_owner(
+            load(args.input),
+            json.loads(args.candidate.read_text("utf-8")),
+            per_stratum=args.per_stratum,
+            seed=args.seed,
+            story_grouping_reviewed=args.story_grouping_reviewed,
         )
+        write_jsonl(args.output, selection)
+        args.manifest.parent.mkdir(parents=True, exist_ok=True)
+        with args.manifest.open("w", encoding="utf-8") as stream:
+            args.manifest.chmod(0o600)
+            stream.write(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+        return
+    elif args.phase == "certify":
+        candidate = json.loads(args.candidate.read_text("utf-8"))
+        rows = load(args.input)
+        verify_candidate(rows, candidate)
+        register_holdout_use(args.holdout_ledger, candidate, certification_dataset_sha256=dataset_digest(rows))
+        certificate = certify(rows, candidate)
+        certificate["holdout_protocol"].update(
+            ledger_ref=str(args.holdout_ledger.resolve()),
+            local_registration=True,
+            ledger_records_sha256=digest(read_jsonl(args.holdout_ledger)),
+        )
+        result = json.dumps(certificate, ensure_ascii=False, indent=2) + "\n"
     else:
         result = render_report(json.loads(args.artifact.read_text("utf-8")), str(args.artifact.resolve()))
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -214,6 +214,7 @@ check-static: ## run hermetic static and generated drift checks without pytest
 	@uv run --locked python scripts/regen_cli_help.py --check
 	@uv run --locked python scripts/regen_rabbitmq_definitions.py --check
 	@uv run --locked python scripts/sync_agent_router.py --check
+	@uv run --locked python -m scripts.regen_news_reader_labeling --check
 	@uv run --locked python scripts/check_mandatory_docs_links.py
 	@uv run --locked python -m compileall tracefold tests
 

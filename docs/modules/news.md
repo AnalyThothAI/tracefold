@@ -357,9 +357,13 @@ Claim 身份材料不包含 statement 措辞或 content_kind 读法。适用的�
 
 锚点概率只控制对应消息选择和补充写法，不乘入分数，也没有独立 held 切线；`P(none) < 0.2` 时选择概率最高的具体消息。一个已锚定命题若新增重要数额或期限，仍可由增量影响和推送校准模型获准推送。
 
-native / generated 独立校准，当前均为 `uncalibrated`：零系数为未拟合占位，推送/重点切线为空，模型评分路径仅进信息流。确定性更正、上币、大涨跌等前置规则保持原行为。方案 A 的代码、契约、消费者和离线工具不证明真实模型质量或允许上线；真实重问、owner 独立标签和认证报告完成后才可填写系数与切线。#791 的[旧读者评测](../reports/news-791-b.md)保留历史证明范围，不能认证新四题。
+native / generated 独立校准，由 [reader_calibration.json](../../tracefold/news/notifications/reader_calibration.json) 和 `ReaderPolicy.load()` 加载。文件保存系数、m*、固定资格下限、切线、数据集摘要、规范版本与报告摘要；文件字节摘要和资格表进入策略身份。可执行认证还须匹配当前问题、生产组合判断器、实际作答适配器及 served model，并有完整门槛证据和 owner 审阅。身份不匹配或 `release_ready=false` 时按未认证处理。
 
-计划逐命题冻结四组分布、confidence 与 `e / m / i / p_push / p_key / held / certification_status`。HTTP 和详情页读取记录的分数，不按当前资格表重算历史。旧 importance 结构只在 `historical_judgment` 中只读显示，当前运行时拒绝旧判断；模型题目身份随拆题改变，输入保持 v3，改资格表和校准参数不改变模型缓存身份。
+当前两个后端均为 `uncalibrated`：零系数为未拟合占位，推送/重点切线为空，模型评分路径仅进信息流。确定性更正、上币、大涨跌等前置规则保持原行为。真实重问、owner 独立标签和认证报告完成后才可通过[离线导出桥接](../../scripts/export_news_reader_calibration.py)生成待审阅文件；桥接默认不激活，也不覆盖生产文件。#791 的[旧读者评测](../reports/news-791-b.md)保留历史证明范围，不能认证新四题。
+
+计划逐命题冻结四组分布、confidence 与 `e / m / i / p_push / p_key / held / certification_status / push_cut / key_cut / calibration_identity`。资格质量低于 0.3 的原因是 `reader_ineligible`，与概率不足、未认证分别展示。HTTP 和详情页读取记录的分布、分数和当时切线，不按当前资格表或当前校准重算历史；旧记录没有切线则返回 null。普通详情展示影响四档分布、概率及冻结切线。旧 importance 结构只在 `historical_judgment` 中只读显示，当前运行时拒绝旧判断；模型题目身份随拆题改变，输入保持 v3，改资格表和校准参数不改变模型缓存身份。
+
+离线数据、候选冻结和认证流程见[标注规范](news-reader-labeling.md)与[实现状态](../reports/news-805-implementation.md)。召回、覆盖和延迟使用完整 owner 抽样框，保留失败或缺失调用及既有确定性决定；成功回答上的条件指标单独报告。切换与回滚使用[排空和重新规划步骤](../OPERATIONS.md#news-reader-switch)，不删除冻结事实或重置失败预算。
 
 <details>
 <summary>读者四题英文全文（来源：reader.py）</summary>

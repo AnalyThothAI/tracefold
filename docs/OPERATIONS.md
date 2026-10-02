@@ -209,6 +209,57 @@ docker compose exec -T workers tracefold news retry-work \
 
 模型、endpoint、提示词或镜像改变不会自动重置失败预算。语义完成、知识采用与通知完成的区别见[News 状态](modules/news.md#state)。
 
+<a id="news-reader-switch"></a>
+### 读者判断切换与回滚
+
+#805 改变运行时问题和计划结构，不改变数据库 schema，通知来源仍为 `reader_v2`。
+先完成两个后端的真实认证、业务回归和部署审阅；`uncalibrated` 占位文件会让普通模型判断只进信息流，不能直接替换当前推送策略。
+校准文件、模型身份、报告和部署镜像必须是同一份已审阅结果。以下步骤在获得部署授权后执行，回滚时也执行一次。
+
+1. 保存当前镜像身份、回滚镜像、校准文件摘要与数据库备份。按既有发布流程准备目标镜像，先不要启动新 Workers。
+2. 先核对 pending intent 的失败次数和 provider 结果。有重试/发送历史的 pending 必须让旧版本按原预算完成有界重试或结算，不能清空计数后交给新版本再试。
+   然后在部署目录停止旧 Workers：`docker compose stop workers`。核对进程已退出；正常停机会释放未发送 lease，但不会清除冻结卡片。
+3. 通过数据库容器读取 update intent 状态；`sending` 必须为零。非零时先核实 provider 结果并完成正常结算/孤儿对账，不能用维护 SQL 将其改成未发送。
+
+```bash
+docker compose exec -T postgres sh -eu -c \
+  'exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+SELECT state,count(*) FROM news_notifications WHERE kind='update' GROUP BY state ORDER BY state;
+SELECT count(*) AS pending_with_attempt_history FROM news_notifications
+WHERE kind='update' AND state='pending'
+  AND (attempts > 0 OR attempted_at_ms IS NOT NULL OR settlement IS NOT NULL OR error_code IS NOT NULL);
+SELECT count(*) AS active_pending_leases FROM news_notifications
+WHERE kind='update' AND state='pending' AND lease_token IS NOT NULL
+  AND lease_until_ms > floor(extract(epoch FROM transaction_timestamp()) * 1000)::bigint;
+SQL
+```
+
+4. 使用本次已审阅 checkout 中的 [切换 SQL](../scripts/news_reader_switch.sql)清除未发送 pending reservation、卡片和卡片缓存身份，立即唤醒对应 notify job。
+   SQL 在短事务中再次检查 `sending=0`、没有有效 pending lease 或 pending 重试/发送历史、工作可以重新规划；存在冲突则整批回滚。
+   `pending` 的 lease 仍有效时等待租约到期后复查。有尝试历史时暂不切换，恢复旧 Workers 让原意图按原预算收敛，再重复停机检查。
+   工作处于 failed 或缺失时先诊断，不能通过该脚本重置失败预算。
+
+```bash
+docker compose exec -T postgres sh -eu -c \
+  'exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  < scripts/news_reader_switch.sql
+```
+
+保留输出的 `cleared_pending_reservations` 与 `due_notify_jobs`。该 SQL 不改采用知识、冻结判断与原计划，
+不删历史行，不改 sent/ambiguous/terminal 回执；清除的是未发送的预留，因此下次必须重新规划和生成卡片。
+重复执行只处理仍存在的 pending 行。不要用 `retry-work` 代替此步骤，该命令会复用原冻结卡片。
+
+5. 按既有发布流程切换共享应用镜像，更新 Serve 后最后启动 Workers。核对新的判断器/策略身份、配置摘要、Workers readiness 和通知工作推进；判断缓存随判断器身份自然失效。
+6. 检查清理的 Event 产生新计划及新卡片，已送与 ambiguous 回执保持原样。上线后 24 小时按 #805 逐条复核；日量偏离需 owner 取舍，不自动移动切线。
+
+回滚重复步骤 2–4，再切回已保存的旧镜像，最后启动旧 Workers。切换后生成的新计划保留为不可执行的历史记录，
+不能尝试让旧代码执行它们。包括新版本生成的 `dead` 意图：不得在旧镜像运行 `retry-work` 复活并继承其冻结卡片；
+恢复这类工作须使用原产出版本或单独审阅的恢复步骤。旧界面的历史展示能力按旧镜像记录，完整新证据可由新版本只读查看。
+回滚不重发已经送达或可能送达的消息，不需要删除数据库事实或手动清理判断缓存。
+
+[隔离 PostgreSQL 回归](../tests/integration/test_news_reader_switch.py)验证清除旧卡片、重新生成发送、重复清理、
+拒绝 sending/有效 lease/已有尝试、保留失败预算和已送账本。它证明切换接缝，不代替真实部署授权与上线审计。
+
 ### Broker 与死信
 
 ```bash

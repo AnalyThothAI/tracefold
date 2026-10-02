@@ -4,23 +4,25 @@
   "base_sha": "32e585326f2e40fb248053ae38ec208356ac1049",
   "reader_input_version": "news_reader_input_v3",
   "questions_identity": "news_reader_questions:f98af6943278e7e3fc186bbca685548683cd9256b4bd6fd3f5ab551cb982c4e0",
-  "guide_version": "news_reader_owner_guide_v1:b5b3ac70f3b5cdcc552371718b01d18b1284e25c821dd2bcf294e82ccc6929d6",
+  "guide_version": "news_reader_owner_guide_v1:5198a3f589d46f01593f836753afadbb4c071ed9201c596c5a2b93e49c659776",
   "eligibility_table_sha256": "dc85a5d39389316abd061caf28dd108e03e73f0582f9890f94ae133543465d5c",
   "kind_floor": 0.3,
   "dataset_sha256": null,
   "precision_targets": {
     "push": 0.65,
     "key": 0.75,
-    "family_delta": 0.1
+    "family_delta": 0.1,
+    "family_delta_scope": "each backend jointly protects push and key; no global two-backend claim"
   },
   "minimum_effective_owner_labels": {
-    "push": 150,
-    "key": 60
+    "push_selected_independent_stories": 150,
+    "key_selected_independent_stories": 60
   },
   "backends": {
     "native": {
       "calibration": {
         "materiality_floor": 2,
+        "kind_floor": 0.3,
         "push_coefficients": [
           0.0,
           0.0,
@@ -40,11 +42,16 @@
       "owner_labels": 0,
       "precision_lower_bound": null,
       "empirical_report": null,
-      "activation_allowed": false
+      "activation_allowed": false,
+      "release_ready": false,
+      "artifact_sha256": "27140c5b58766435d9ead2b342d165b4f7bafbdfb011d1d24b8fca908ca63820",
+      "review_ref": null,
+      "review_sha256": null
     },
     "generated": {
       "calibration": {
         "materiality_floor": 2,
+        "kind_floor": 0.3,
         "push_coefficients": [
           0.0,
           0.0,
@@ -64,10 +71,17 @@
       "owner_labels": 0,
       "precision_lower_bound": null,
       "empirical_report": null,
-      "activation_allowed": false
+      "activation_allowed": false,
+      "release_ready": false,
+      "artifact_sha256": "27140c5b58766435d9ead2b342d165b4f7bafbdfb011d1d24b8fca908ca63820",
+      "review_ref": null,
+      "review_sha256": null
     }
   },
   "synthetic_fixtures_are_certificates": false,
   "real_reasks_performed": false,
-  "deployment_performed": false
+  "deployment_performed": false,
+  "offline_protocol": "news_reader_calibration_v2",
+  "runtime_calibration_version": "news_reader_calibration_v1",
+  "runtime_calibration_file": "tracefold/news/notifications/reader_calibration.json"
 }

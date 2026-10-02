@@ -327,6 +327,7 @@ class NewsClaimDecisionData(ExactApiSchema):
     report_kind: ReportKindEvidence | None = None
     report_kind_zh: str = ""
     materiality: MaterialityEvidence | None = None
+    materiality_probabilities: tuple[float, float, float, float] | None = None
     interrupt: InterruptEvidence | None = None
     anchor: AnchorEvidence | None = None
     e: float | None = None
@@ -334,6 +335,9 @@ class NewsClaimDecisionData(ExactApiSchema):
     i: float | None = None
     p_push: float | None = None
     p_key: float | None = None
+    push_cut: float | None = None
+    key_cut: float | None = None
+    calibration_identity: str | None = None
     held: bool | None = None
     certification_status: Literal["uncalibrated", "certified"] | None = None
     # Original superseded evidence, exposed only for a read-only historical plan.

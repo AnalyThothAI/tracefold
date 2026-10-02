@@ -5,16 +5,21 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
+from hashlib import sha256
+from importlib.resources import files
+from pathlib import Path
 from typing import Final, Literal
 
-from ..updates.contracts import Claim, ClaimFields, ContentKind, EventUpdate
-from ..updates.identity import identity
+from pydantic import ConfigDict, Field, model_validator
+
+from ..updates.contracts import Claim, ClaimFields, ContentKind, EventUpdate, Exact
+from ..updates.identity import digest, identity
 from .contracts import ClaimReason, ReaderPolicyScores, ReaderSnapshot
 from .novelty import ReaderNovelty, Render
-from .reader import NONE, AnchorEvidence, ReaderBackend, ReaderJudgment, ReportKind
+from .reader import NONE, READER_QUESTIONS_IDENTITY, AnchorEvidence, ReaderBackend, ReaderJudgment, ReportKind
 
 # An ordinary push reaches the reader within three hours of the claim first being visible; a correction of
 # something the reader was told is still worth it for twelve.
@@ -62,7 +67,10 @@ class ReaderCalibration:
     before replacing them and marking this backend certified.
     """
 
+    __pydantic_config__ = ConfigDict(extra="forbid", allow_inf_nan=False)
+
     materiality_floor: int = 2
+    kind_floor: float = 0.3
     push_coefficients: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     key_coefficients: tuple[float, float, float] = (0.0, 0.0, 0.0)
     push_cut: float | None = None
@@ -75,6 +83,8 @@ class ReaderCalibration:
     def __post_init__(self) -> None:
         if self.materiality_floor not in {1, 2, 3}:
             raise ValueError("news_reader_materiality_floor_invalid")
+        if self.kind_floor != KIND_FLOOR:
+            raise ValueError("news_reader_kind_floor_invalid")
         if (
             len(self.push_coefficients) != 4
             or len(self.key_coefficients) != 3
@@ -106,10 +116,102 @@ PUSHABLE_KINDS: Final[dict[ReportKind, bool]] = {
 KIND_FLOOR: Final = 0.3
 LOGIT_EPSILON: Final = 1e-6
 
-READER_CALIBRATIONS: Final[dict[ReaderBackend, ReaderCalibration]] = {
-    "native": ReaderCalibration(),
-    "generated": ReaderCalibration(),
-}
+
+class ReaderPolicy(Exact):
+    """One backend's reviewed release artifact, including the evidence that its certificate covers.
+
+    A precision certificate alone is not release permission. The bundled file
+    is reviewed with the report; this loader does not manufacture missing gates.
+    """
+
+    calibration: ReaderCalibration
+    questions_identity: str
+    eligibility_table_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reader_identity: str | None = None
+    answer_identity: str | None = None
+    served_model: str | None = None
+    dataset_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    guide_version: str | None = None
+    report_ref: str | None = None
+    report_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    release_ready: bool = False
+    review_ref: str | None = None
+    review_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reviewed_by: str | None = None
+    reviewed_at: str | None = None
+    # Computed from the exact file bytes, never accepted from the file itself.
+    artifact_sha256: str | None = Field(default=None, exclude=True)
+
+    @model_validator(mode="after")
+    def check_provenance(self) -> ReaderPolicy:
+        if self.calibration.anchor_none_below != 0.2:
+            raise ValueError("news_reader_anchor_policy_changed")
+        if self.calibration.certification_status == "certified" and not all(
+            isinstance(value, str) and value.strip()
+            for value in (
+                self.questions_identity,
+                self.reader_identity,
+                self.answer_identity,
+                self.dataset_sha256,
+                self.guide_version,
+                self.report_ref,
+                self.report_sha256,
+            )
+        ):
+            raise ValueError("news_reader_certificate_provenance_missing")
+        if self.release_ready:
+            if self.calibration.certification_status != "certified" or not all(
+                isinstance(value, str) and value.strip()
+                for value in (self.review_ref, self.review_sha256, self.reviewed_by, self.reviewed_at)
+            ):
+                raise ValueError("news_reader_release_review_missing")
+            try:
+                stamp = datetime.fromisoformat(str(self.reviewed_at))
+            except ValueError as exc:
+                raise ValueError("news_reader_release_review_invalid") from exc
+            if stamp.tzinfo is None:
+                raise ValueError("news_reader_release_review_invalid")
+        return self
+
+    @property
+    def identity(self) -> str:
+        return identity("news_reader_calibration", self.artifact_sha256, self.model_dump(mode="json"))
+
+    def covers(self, judgment: ReaderJudgment, reader_identity: str | None) -> bool:
+        return (
+            self.release_ready
+            and self.questions_identity == READER_QUESTIONS_IDENTITY
+            and self.eligibility_table_sha256 == digest(PUSHABLE_KINDS)
+            and self.reader_identity == reader_identity
+            and self.answer_identity == judgment.identity
+            and self.served_model == judgment.served_model
+        )
+
+    @classmethod
+    def load(cls, path: Path | None = None) -> dict[ReaderBackend, ReaderPolicy]:
+        raw = (path or files("tracefold.news.notifications").joinpath("reader_calibration.json")).read_bytes()
+        document = _ReaderPolicyDocument.model_validate_json(raw)
+        if set(document.backends) != {"native", "generated"}:
+            raise ValueError("news_reader_calibration_backends_invalid")
+        if any(policy.artifact_sha256 is not None for policy in document.backends.values()):
+            raise ValueError("news_reader_artifact_digest_is_computed")
+        file_digest = sha256(raw).hexdigest()
+        return {
+            backend: policy.model_copy(update={"artifact_sha256": file_digest})
+            for backend, policy in document.backends.items()
+        }
+
+
+class _ReaderPolicyDocument(Exact):
+    version: Literal["news_reader_calibration_v1"]
+    backends: dict[ReaderBackend, ReaderPolicy]
+
+
+READER_POLICIES: Final = ReaderPolicy.load()
+# The parameters are the same objects loaded from the reviewed file. Tests may
+# explicitly replace a backend with an arithmetic fixture; production has no
+# configuration path that installs a synthetic calibration.
+READER_CALIBRATIONS: Final = {backend: policy.calibration for backend, policy in READER_POLICIES.items()}
 
 
 NOTIFICATION_POLICY_IDENTITY: Final = identity(
@@ -118,7 +220,7 @@ NOTIFICATION_POLICY_IDENTITY: Final = identity(
     PUSHABLE_KINDS,
     KIND_FLOOR,
     LOGIT_EPSILON,
-    {backend: asdict(calibration) for backend, calibration in READER_CALIBRATIONS.items()},
+    {backend: policy.identity for backend, policy in READER_POLICIES.items()},
     SOURCE_MAX_AGE_MS,
     CORRECTION_MAX_AGE_MS,
     OCCURRENCE_MAX_AGE_DAYS,
@@ -126,12 +228,16 @@ NOTIFICATION_POLICY_IDENTITY: Final = identity(
 )
 
 
-def calibration_for(judgment: ReaderJudgment) -> ReaderCalibration:
+def calibration_for(judgment: ReaderJudgment, *, reader_identity: str | None = None) -> ReaderCalibration:
     """Use the independently calibrated backend that actually answered."""
 
     if judgment.backend is None:
         raise ValueError("news_reader_judgment_unavailable")
-    return READER_CALIBRATIONS[judgment.backend]
+    calibration = READER_CALIBRATIONS[judgment.backend]
+    policy = READER_POLICIES[judgment.backend]
+    if calibration is policy.calibration and not policy.covers(judgment, reader_identity):
+        return replace(calibration, certification_status="uncalibrated")
+    return calibration
 
 
 def anchor_index(evidence: AnchorEvidence, calibration: ReaderCalibration) -> int | None:
@@ -146,7 +252,7 @@ def anchor_index(evidence: AnchorEvidence, calibration: ReaderCalibration) -> in
     return int(best[1:]) - 1
 
 
-ReaderOutcome = Literal["known", "in_flight", "correction", "key", "push", "feed"]
+ReaderOutcome = Literal["known", "in_flight", "correction", "key", "push", "feed", "ineligible"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +278,11 @@ def _sigmoid(value: float) -> float:
 
 
 def reader_scores(
-    judgment: ReaderJudgment, *, held: bool = False, calibration: ReaderCalibration | None = None
+    judgment: ReaderJudgment,
+    *,
+    held: bool = False,
+    calibration: ReaderCalibration | None = None,
+    reader_identity: str | None = None,
 ) -> ReaderPolicyScores:
     """Replay stored distributions without changing the model or its cache identity.
 
@@ -183,7 +293,17 @@ def reader_scores(
 
     if judgment.report_kind is None or judgment.materiality is None or judgment.interrupt is None:
         raise ValueError("news_reader_judgment_unavailable")
-    calibration = calibration or calibration_for(judgment)
+    supplied = calibration
+    calibration = calibration or calibration_for(judgment, reader_identity=reader_identity)
+    policy = READER_POLICIES.get(judgment.backend) if judgment.backend is not None else None
+    calibration_identity = (
+        policy.identity
+        if supplied is None
+        and policy is not None
+        and judgment.backend is not None
+        and READER_CALIBRATIONS[judgment.backend] is policy.calibration
+        else identity("news_reader_calibration", judgment.backend, asdict(calibration))
+    )
     # Validated distributions tolerate provider rounding at 1e-6. Keep the raw
     # evidence intact while ensuring a summed probability is still in [0, 1].
     e = min(
@@ -202,6 +322,9 @@ def reader_scores(
         p_key=_sigmoid(c + d * _logit(i) + f * _logit(e)),
         held=held,
         certification_status=calibration.certification_status,
+        push_cut=calibration.push_cut,
+        key_cut=calibration.key_cut,
+        calibration_identity=calibration_identity,
     )
 
 
@@ -234,6 +357,7 @@ def reader_decision(
     message_intents: Sequence[str],
     calibration: ReaderCalibration | None = None,
     claim_fields: ClaimFields | None = None,
+    reader_identity: str | None = None,
 ) -> ReaderDecision:
     """The reader rows of the decision table, in order, for one claim with an available judgment.
 
@@ -252,7 +376,8 @@ def reader_decision(
         return decided
     if judgment.status != "available":
         raise ValueError("news_reader_judgment_unavailable")
-    calibration = calibration or calibration_for(judgment)
+    supplied = calibration
+    calibration = calibration or calibration_for(judgment, reader_identity=reader_identity)
     if novelty.novelty == "development":
         anchor = novelty.intent_id
     else:
@@ -273,15 +398,17 @@ def reader_decision(
     held = (novelty.novelty == "increment" and not (anchor is None and effective_action)) or (
         novelty.novelty == "unlinked" and anchor is not None
     )
-    scores = reader_scores(judgment, held=held, calibration=calibration)
+    scores = reader_scores(judgment, held=held, calibration=supplied, reader_identity=reader_identity)
     pushed = (
         calibration.certification_status == "certified"
-        and scores.e >= KIND_FLOOR
+        and scores.e >= calibration.kind_floor
         and calibration.push_cut is not None
         and scores.p_push >= calibration.push_cut
     )
     key = pushed and calibration.key_cut is not None and scores.p_key >= calibration.key_cut
-    outcome: ReaderOutcome = "feed" if not pushed else ("key" if key else "push")
+    outcome: ReaderOutcome = (
+        "ineligible" if scores.e < calibration.kind_floor else ("feed" if not pushed else ("key" if key else "push"))
+    )
     return ReaderDecision(outcome, "full" if anchor is None else "increment", anchor, scores)
 
 
@@ -363,6 +490,7 @@ READER_REASONS: Final[dict[str, ClaimReason]] = {
     "key": "reader_key",
     "push": "reader_push",
     "feed": "reader_feed",
+    "ineligible": "reader_ineligible",
 }
 
 
@@ -375,6 +503,7 @@ def decide(
     novelty: ReaderNovelty,
     judgment: ReaderJudgment | None,
     message_intents: Sequence[str] = (),
+    reader_identity: str | None = None,
 ) -> tuple[ClaimReason, ReaderDecision | None]:
     """The decision table for one claim, in order. Pure: every input is already read.
 
@@ -414,5 +543,6 @@ def decide(
         first_available_at_ms=claim.first_available_at_ms,
         message_intents=message_intents,
         claim_fields=claim.fields,
+        reader_identity=reader_identity,
     )
     return READER_REASONS[judged.outcome], judged

@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from scripts import reask_news_models as reasks
+from scripts.news_reader_io import write_jsonl
 from tracefold.news.notifications.policy import PUSHABLE_KINDS
 from tracefold.news.notifications.reader import (
     READER_QUESTIONS_IDENTITY,
@@ -23,9 +24,11 @@ from tracefold.news.notifications.reader import (
 from tracefold.news.updates.identity import digest
 
 
+@pytest.mark.parametrize("suffix", [".jsonl", ".jsonl.gz"])
 def test_reader_journal_measures_duration_binds_resume_and_keeps_wrong_backend_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    suffix: str,
 ) -> None:
     frozen = {
         "schema_version": "news_reader_input_v3",
@@ -34,8 +37,8 @@ def test_reader_journal_measures_duration_binds_resume_and_keeps_wrong_backend_f
         "claim": {"statement": "A launch", "fields": {"subject": "project", "action": "launch"}},
         "sources": [{"publisher": "fixture", "quote": "A launch"}],
     }
-    source, output = tmp_path / "cases.jsonl", tmp_path / "journal.jsonl"
-    source.write_text(json.dumps({"case_id": "a", "reader_input": frozen}) + "\n")
+    source, output = tmp_path / f"cases{suffix}", tmp_path / "journal.jsonl"
+    write_jsonl(source, [{"case_id": "a", "reader_input": frozen}])
     supplied = ReaderJudgment(
         status="available",
         backend="generated",
@@ -49,10 +52,13 @@ def test_reader_journal_measures_duration_binds_resume_and_keeps_wrong_backend_f
         interrupt=InterruptEvidence(probabilities=(1, 0), confidence=1),
     )
 
+    calls = []
+
     class Reader:
         identity = "stub-program"
 
         async def judge(self, *_: Any) -> ReaderJudgment:
+            calls.append("asked")
             return supplied
 
     route = SimpleNamespace(lms=None, identity="stub-model")
@@ -92,3 +98,21 @@ def test_reader_journal_measures_duration_binds_resume_and_keeps_wrong_backend_f
     assert failed["judgment"]["backend"] == "native"
     assert failed["error_code"] == "news_offline_requested_backend_unavailable"
     assert failed["duration_ms"] == pytest.approx(100)
+    assert len(calls) == 2
+    args.input = tmp_path / "fixed.jsonl.gz"
+    args.output = tmp_path / "skipped.jsonl"
+    write_jsonl(
+        args.input,
+        [
+            {
+                "case_id": "fixed",
+                "reader_input": frozen,
+                "reader_applicable": False,
+                "original_reason": "protected_listing",
+            }
+        ],
+    )
+    asyncio.run(reasks.reask(args))
+    skipped = json.loads(args.output.read_text())
+    assert skipped["skipped"] is True and skipped["original_reason"] == "protected_listing"
+    assert "judgment" not in skipped and "error_code" not in skipped and len(calls) == 2

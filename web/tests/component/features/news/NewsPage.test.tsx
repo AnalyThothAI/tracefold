@@ -1006,8 +1006,12 @@ describe("NewsPage", () => {
     expect(delivery).toHaveTextContent("【重点】钢铁进口关税上调至 50%");
     const facts = screen.getByRole("region", { name: "每件事与推送原因" });
     expect(facts).toHaveTextContent("报道类型：官方新表态");
-    expect(facts).toHaveTextContent("新增影响 2.80 / 3");
-    expect(facts).toHaveTextContent("已认证推送概率 98% · 重点概率 90%");
+    expect(within(facts).getByLabelText("新增影响程度分布")).toHaveTextContent(
+      "新增影响：可忽略 0% · 有限 0% · 明确 20% · 大盘 80%",
+    );
+    expect(facts).toHaveTextContent(
+      "已认证推送概率 98%（推送线 65%） · 重点概率 90%（重点线 75%）",
+    );
     expect(
       screen
         .getByRole("region", { name: "每件事与推送原因" })
@@ -1036,6 +1040,29 @@ describe("NewsPage", () => {
     const facts = await screen.findByRole("region", { name: "每件事与推送原因" });
     expect(facts).toHaveTextContent("未认证候选推送概率 98%");
     expect(facts).not.toHaveTextContent("已认证推送概率");
+  });
+
+  it("explains an ineligible kind and reads the cut frozen with its decision", async () => {
+    const detail = newsUpdateDetailFixture();
+    const row = detail.processing!.notification!.plan!.claim_decisions![1];
+    row.decision = "not_notified";
+    row.reason = "reader_ineligible";
+    row.reason_zh = "报道类型不符合推送资格";
+    row.push_cut = 0.91;
+    server.use(
+      http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+        HttpResponse.json({ ok: true, data: detail }),
+      ),
+    );
+    renderNews(
+      <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+      "/news/events/evt-global-policy",
+    );
+    const facts = await screen.findByRole("region", { name: "每件事与推送原因" });
+    expect(facts).toHaveTextContent("报道类型不符合推送资格");
+    expect(facts).toHaveTextContent("推送线 91%");
+    expect(facts).not.toHaveTextContent("推送线 65%");
+    expect(document.querySelector("#news-processing")).not.toHaveAttribute("open");
   });
 
   it("focuses cold source URLs and restores citation locations on browser back", async () => {

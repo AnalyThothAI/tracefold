@@ -110,9 +110,10 @@ def test_weighted_type_confusion_counts_a_missed_push_and_ambiguous_materiality(
     assert report["materiality"]["ambiguous_fraction"] == pytest.approx(10 / 11)
     assert report["recall"]["push"] == pytest.approx(1 / 11)
     assert report["recall"]["at_least_paired_v3"] is False
-    assert report["latency"]["paired_current_p90_ms"] == 2350
-    assert report["latency"]["paired_v3_p90_ms"] == 1180
-    assert report["latency"]["within_500ms"] is False
+    # IPW empirical CDF: the fast case represents ten units, the slow one one.
+    assert report["latency"]["paired_current_p90_ms"] == 1000
+    assert report["latency"]["paired_v3_p90_ms"] == 1000
+    assert report["latency"]["within_500ms"] is True
 
 
 def test_no_observed_latencies_or_selected_cut_does_not_claim_quality() -> None:
@@ -121,3 +122,34 @@ def test_no_observed_latencies_or_selected_cut_does_not_claim_quality() -> None:
     report = diagnostic_report([row], {"0": _answer()}, backend="native", calibration=ReaderCalibration())
     assert report["latency"]["within_500ms"] is None
     assert report["recall"]["at_least_paired_v3"] is None
+
+
+def test_failed_new_reader_call_keeps_gold_baseline_and_timeout_in_denominators() -> None:
+    rows = [_row(0), _row(1)]
+    rows[1]["answers"] = {}
+    rows[1]["reask_failures"] = {"native": {"error_code": "timeout", "duration_ms": 12000}}
+    report = diagnostic_report(
+        rows, {"0": _answer()}, backend="native", calibration=ReaderCalibration(), pushed_case_ids={"0"}
+    )
+    assert report["cases"] == 2 and report["available_cases"] == 1
+    assert report["coverage"]["weighted_available_fraction"] == 0.5
+    assert report["recall"]["push"] == 0.5
+    assert report["recall"]["paired_v3"] == 1
+    assert report["recall"]["at_least_paired_v3"] is False
+    assert report["latency"]["paired_current_p90_ms"] == 12000
+    assert report["latency"]["within_500ms"] is False
+    assert report["report_kind"]["five_percent_gate_passed"] is None
+
+
+def test_unattempted_or_missing_duration_cannot_pass_latency_and_fixed_notify_counts() -> None:
+    rows = [_row(0), _row(1), _row(2)]
+    rows[1]["answers"] = {}
+    rows[2].update(reader_applicable=False, deterministic_decision="notify")
+    report = diagnostic_report(
+        rows, {"0": _answer()}, backend="native", calibration=ReaderCalibration(), pushed_case_ids={"0"}
+    )
+    assert report["recall"]["push"] == pytest.approx(2 / 3)
+    assert report["recall"]["paired_v3"] == 1
+    assert report["coverage"]["applicable_cases"] == 2
+    assert report["latency"]["complete"] is False
+    assert report["latency"]["within_500ms"] is None

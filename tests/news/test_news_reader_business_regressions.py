@@ -69,7 +69,7 @@ def test_retained_owner_business_intent_with_synthetic_split_evidence(case: dict
         claim_fields=ClaimFields.model_validate(case["fields"]),
     )
     assert judgment.status == "available" and judgment.backend == "native"
-    assert result.outcome == case["expected_outcome"]
+    assert result.outcome == ("ineligible" if case["expected_outcome"] == "feed" else case["expected_outcome"])
     assert result.anchor_intent_id == case["expected_anchor"]
 
 
@@ -172,9 +172,7 @@ def test_historical_reasons_and_known_receipts_remain_consistent_across_read_pat
     assert view["plan"]["claim_decisions"][1]["earlier"]["body"] == "旧正文"
     assert claim_reasons_zh(view["plan"]["claim_decisions"]) == expected
     assert view["plan"]["claim_decisions"][0]["historical_judgment"] == original["judgment"]
-    assert claim_reasons_zh([{"decision": "not_notified", "reason": "reader_feed"}]) == (
-        "类型资格或推送概率未达要求，只进信息流"
-    )
+    assert claim_reasons_zh([{"decision": "not_notified", "reason": "reader_feed"}]) == ("推送概率未达要求，只进信息流")
 
 
 @pytest.mark.usefixtures("synthetic_reader_calibration")
@@ -190,6 +188,10 @@ def test_split_business_policy(case: dict, backend: str) -> None:
         first_available_at_ms=1,
         message_intents=("earlier",) if anchored else (),
     )
-    assert result.outcome == case["expected_outcome"]
+    assert result.outcome == (
+        "ineligible"
+        if case["kind"] in {"recap_or_old_period", "promotion", "commentary", "background"}
+        else case["expected_outcome"]
+    )
     assert result.anchor_intent_id == ("earlier" if anchored else None)
     assert result.scores is not None and result.scores.certification_status == "certified"

@@ -244,15 +244,33 @@ export function NewsReaderFacts({
                     </p>
                   ) : null}
                   {decision?.report_kind ? (
-                    <small className="news-reader-score">
-                      报道类型：{decision.report_kind_zh || decision.report_kind.value}
-                      {decision.materiality
-                        ? ` · 新增影响 ${decision.materiality.value.toFixed(2)} / 3`
-                        : ""}
-                      {decision.p_push != null && decision.p_key != null
-                        ? ` · ${decision.certification_status === "certified" ? "已认证" : "未认证候选"}推送概率 ${(decision.p_push * 100).toFixed(0)}% · 重点概率 ${(decision.p_key * 100).toFixed(0)}%`
-                        : ""}
-                    </small>
+                    <div className="news-reader-score">
+                      <p>报道类型：{decision.report_kind_zh || decision.report_kind.value}</p>
+                      {decision.materiality_probabilities?.length === 4 ? (
+                        <p aria-label="新增影响程度分布">
+                          新增影响：
+                          {decision.materiality_probabilities
+                            .map(
+                              (probability, index) =>
+                                `${["可忽略", "有限", "明确", "大盘"][index]} ${(probability * 100).toFixed(0)}%`,
+                            )
+                            .join(" · ")}
+                        </p>
+                      ) : null}
+                      {decision.p_push != null && decision.p_key != null ? (
+                        <p>
+                          {decision.certification_status === "certified" ? "已认证" : "未认证候选"}
+                          推送概率 {(decision.p_push * 100).toFixed(0)}%
+                          {decision.push_cut != null
+                            ? `（推送线 ${(decision.push_cut * 100).toFixed(0)}%）`
+                            : "（推送线未记录）"}
+                          {` · 重点概率 ${(decision.p_key * 100).toFixed(0)}%`}
+                          {decision.key_cut != null
+                            ? `（重点线 ${(decision.key_cut * 100).toFixed(0)}%）`
+                            : ""}
+                        </p>
+                      ) : null}
+                    </div>
                   ) : decision?.historical_judgment ? (
                     <small className="news-reader-score">历史判断按原记录保留，仅供查看。</small>
                   ) : null}

@@ -13,23 +13,32 @@ from typing import Any
 import pytest
 
 from scripts.eval_news_reader import (
+    DERIVATION_FIELDS,
+    FIT_CONFIG,
+    PROTOCOL,
     answer_provenance,
     answer_record,
+    applicable,
     assemble,
+    candidate_identity,
     certify,
     certify_sequence,
     clopper_pearson_lower,
     dataset_digest,
     fit,
     fit_cut_sequences,
+    frozen_dataset_digest,
     load,
     probability_report,
     recorded,
+    register_holdout_use,
     render_report,
+    sample_owner,
     split_cases,
+    verify_candidate,
     volume_report,
 )
-from scripts.label_news_reader import GUIDE_VERSION
+from scripts.news_reader_labeling import GUIDE_VERSION
 from tracefold.news.notifications.novelty import ReaderNovelty
 from tracefold.news.notifications.policy import KIND_FLOOR, PUSHABLE_KINDS, ReaderCalibration
 from tracefold.news.notifications.reader import (
@@ -47,6 +56,7 @@ def case(number: int, *, push: str = "push", key: bool = False, day: str | None 
         "case_id": str(number),
         "claim_ref": f"cl:{number}",
         "story_id": f"story-{number}",
+        "split_story_id": f"story-{number}",
         "reader_input": {
             "schema_version": "news_reader_input_v3",
             "as_of": day or f"2026-09-{number + 1:02}",
@@ -70,7 +80,29 @@ def case(number: int, *, push: str = "push", key: bool = False, day: str | None 
         "guide_version": GUIDE_VERSION,
         "sampling_design": "uniform",
         "inclusion_probability": 0.5,
+        "reader_applicable": True,
+        "pre_reader_reason": "reader_unavailable",
+        "deterministic_decision": None,
+        "sampling_unit": "independent_story_representative",
+        "sampling_frame": {
+            "frame_id": "explicit-test-only-story-frame",
+            "unit": "independent_story_representative",
+            "scope": "holdout",
+            "selection_frozen_before_labels": True,
+            "story_grouping_reviewed": True,
+            "units": 10000,
+            "stratum_sizes": {"uniform": 10000},
+            "certification_strata": ["uniform"],
+            "days": [],
+        },
     }
+
+
+def bind_frame(rows: list[dict[str, Any]]) -> None:
+    frame = deepcopy(rows[0]["sampling_frame"])
+    frame["selected_case_ids"] = sorted(row["case_id"] for row in rows)
+    for row in rows:
+        row["sampling_frame"] = deepcopy(frame)
 
 
 def judgment() -> ReaderJudgment:
@@ -101,6 +133,7 @@ def test_clopper_pearson_matches_exact_one_sided_reference_values() -> None:
 
 def test_fixed_sequence_stops_on_first_failed_cut_even_if_later_cut_would_pass() -> None:
     rows = [case(i, push="push" if i != 10 else "feed") for i in range(31)]
+    bind_frame(rows)
     scores = {row["case_id"]: (0.995 if i < 10 else 0.96 if i == 10 else 0.8) for i, row in enumerate(rows)}
     result = certify_sequence(rows, scores, target=0.79, minimum=1, cuts=(0.99, 0.95, 0.7), delta=0.1)
     assert result["selected"]["cut"] == 0.99
@@ -110,6 +143,7 @@ def test_fixed_sequence_stops_on_first_failed_cut_even_if_later_cut_would_pass()
 
 def test_certification_does_not_turn_weights_or_proxy_labels_into_gold_trials() -> None:
     rows = [case(i) for i in range(3)]
+    bind_frame(rows)
     scores = {row["case_id"]: 1.0 for row in rows}
     for row in rows:
         row["inclusion_probability"] = 0.001
@@ -134,11 +168,13 @@ def test_stratified_bounds_allocate_alpha_and_do_not_pool_weighted_counts() -> N
         row.update(
             sampling_design="stratified", stratum="a" if i < 6 else "b", inclusion_probability=0.1 if i < 6 else 0.9
         )
+        row["sampling_frame"].update(units=120, stratum_sizes={"a": 60, "b": 60}, certification_strata=["a", "b"])
+    bind_frame(rows)
     result = certify_sequence(rows, {row["case_id"]: 1 for row in rows}, target=0.1, minimum=1, cuts=(0.99,))
     strata = result["selected"]["strata"]
-    assert [value["delta"] for value in strata] == [0.025, 0.025]
+    assert [value["delta"] for value in strata] == [0.0125, 0.0125]
     assert [value["owner_labels"] for value in strata] == [6, 6]
-    assert result["selected"]["lower_bound"] == pytest.approx(clopper_pearson_lower(6, 6, 0.025))
+    assert result["selected"]["lower_bound"] == pytest.approx(clopper_pearson_lower(6, 6, 0.0125))
     rows[0]["inclusion_probability"] = 0.2
     with pytest.raises(ValueError, match="constant_within_stratum"):
         certify_sequence(rows, {row["case_id"]: 1 for row in rows}, target=0.1, minimum=1)
@@ -155,6 +191,7 @@ def test_unknown_or_difficult_sampling_cannot_certify(design: Any, probability: 
 def test_time_story_split_excludes_boundary_story_and_recent_hard_examples() -> None:
     rows = [case(i) for i in range(10)]
     rows[1]["story_id"] = rows[8]["story_id"] = "boundary-story"
+    rows[1]["split_story_id"] = rows[8]["split_story_id"] = "boundary-story"
     rows[9]["sampling_design"] = "hard_case"
     split = split_cases(rows)
     assert split["fit"] == ["0", "2", "3", "4", "5", "6"]
@@ -244,15 +281,18 @@ def test_cut_candidates_use_fitting_oof_scores_and_holdout_count_without_labels(
     assert fit_cut_sequences(tied, 360)["key"][0] == 0.99
 
 
-def test_frozen_certification_candidate_cannot_change_dataset_or_split() -> None:
+def test_frozen_certification_candidate_cannot_change_dataset_or_split(monkeypatch: pytest.MonkeyPatch) -> None:
     rows = [case(i) for i in range(10)]
     for row in rows:
         row["answers"] = {"native": answer_record(judgment(), row["reader_input"], program_identity="test-only")}
+        row["sampling_frame"]["boundary_ms"] = split_cases(rows)["boundary_ms"]
+    bind_frame(rows[7:])
     predictions = [{"case_id": str(i), "p_push": 0.8, "p_key": 0.7} for i in range(7)]
     artifact = {
         "phase": "fit",
         "backend": "native",
         "dataset_sha256": dataset_digest(rows),
+        "frozen_dataset_sha256": frozen_dataset_digest(rows, split_cases(rows)["certification"]),
         "split": split_cases(rows),
         "questions_identity": READER_QUESTIONS_IDENTITY,
         "eligibility_table_sha256": digest(PUSHABLE_KINDS),
@@ -262,8 +302,18 @@ def test_frozen_certification_candidate_cannot_change_dataset_or_split() -> None
         "answer_provenance": answer_provenance(rows, recorded(rows, "native"), "native"),
         "guide_versions": [GUIDE_VERSION],
         "calibration": {"materiality_floor": 2, "push_coefficients": [0, 0, 0, 0], "key_coefficients": [0, 0, 0]},
+        "protocol": PROTOCOL,
+        "fit_config": FIT_CONFIG,
+        "fit_dataset_sha256": "frozen-fitting-inputs",
+        "holdout_identity": "frozen-holdout",
+        "fit_cases": list(map(str, range(7))),
+        "materiality_candidates": [],
     }
+    artifact["candidate_identity"] = candidate_identity(artifact)
     original = deepcopy(artifact)
+    # Statistical derivation rebuilding has its own research smoke; this pure
+    # protocol test compares against a frozen deterministic derivation.
+    monkeypatch.setattr("scripts.eval_news_reader.fit", lambda rows, backend: deepcopy(original))
     artifact["split"]["certification"].append("0")
     with pytest.raises(ValueError, match="certification_split_changed"):
         certify(rows, artifact)
@@ -275,6 +325,14 @@ def test_frozen_certification_candidate_cannot_change_dataset_or_split() -> None
     uncalibrated = certify(rows, original)
     assert uncalibrated["certification_status"] == "uncalibrated"
     assert uncalibrated["certification_failure"] == "discrimination_or_paired_baseline_unverified"
+    gold_updated = deepcopy(rows)
+    gold_updated[9]["label"]["push"] = "feed"
+    gold_updated[9]["story_id"] = "owner-renamed-story"
+    later = certify(gold_updated, original)
+    assert later["fitting_source_dataset_sha256"] == original["dataset_sha256"]
+    assert later["dataset_sha256"] != original["dataset_sha256"]
+    assert later["release_ready"] is False
+    assert later["release_gates"]["event_card_daily_replay"] is None
 
 
 def test_probability_report_and_volume_are_descriptive_not_cut_selection() -> None:
@@ -326,3 +384,116 @@ def test_missing_research_dependency_has_explicit_install_action(monkeypatch: py
     monkeypatch.setitem(sys.modules, "sklearn.model_selection", None)
     with pytest.raises(ValueError, match="install_research_dependency_group"):
         fit([], "native")
+
+
+def test_zero_selected_stratum_retains_unknown_mass_without_vetoing_precision() -> None:
+    rows = [case(i, push="push" if i < 200 else "feed") for i in range(400)]
+    for i, row in enumerate(rows):
+        row.update(sampling_design="stratified", stratum="push" if i < 200 else "feed")
+        row["sampling_frame"].update(
+            units=800, stratum_sizes={"push": 400, "feed": 400}, certification_strata=["push", "feed"]
+        )
+    bind_frame(rows)
+    scores = {row["case_id"]: float(i < 200) for i, row in enumerate(rows)}
+    result = certify_sequence(rows, scores, target=0.65, minimum=150, cuts=(0.9,))
+    assert result["status"] == "certified"
+    assert result["selected"]["lower_bound"] > 0.95
+    feed = next(item for item in result["selected"]["strata"] if item["stratum"] == "feed")
+    assert feed["owner_labels"] == 0
+    assert feed["selected_mass_upper"] > 0  # Kept in denominator, never skipped.
+    # A large predeclared layer with no observations must still block a claim
+    # about its unknown selected mass; sample quotas are not population weights.
+    for row in rows:
+        row["sampling_frame"].update(
+            units=10800,
+            stratum_sizes={"push": 400, "feed": 400, "unknown": 10000},
+            certification_strata=["push", "feed", "unknown"],
+        )
+    result = certify_sequence(rows, scores, target=0.65, minimum=150, cuts=(0.9,))
+    assert result["status"] == "uncalibrated"
+
+
+def test_claim_sampling_and_incomplete_owner_selection_cannot_certify() -> None:
+    rows = [case(i) for i in range(3)]
+    bind_frame(rows)
+    scores = {row["case_id"]: 1 for row in rows}
+    with pytest.raises(ValueError, match="selected_owner_labels_incomplete"):
+        certify_sequence(rows[:-1], scores, target=0.1, minimum=1)
+    for row in rows:
+        row["sampling_frame"]["unit"] = row["sampling_unit"] = "claim_decision"
+    with pytest.raises(ValueError, match="independent_owner_story_sampling_frame"):
+        certify_sequence(rows, scores, target=0.1, minimum=1)
+
+
+def test_candidate_rebuild_rejects_parameter_edits_even_after_rehash(monkeypatch: pytest.MonkeyPatch) -> None:
+    frozen = {field: None for field in DERIVATION_FIELDS}
+    frozen.update(backend="native", calibration={"materiality_floor": 1, "push_coefficients": [0, 1, 2, 3]})
+    frozen["candidate_identity"] = candidate_identity(frozen)
+    monkeypatch.setattr("scripts.eval_news_reader.fit", lambda rows, backend: deepcopy(frozen))
+    verify_candidate([], frozen)
+    edited = deepcopy(frozen)
+    edited["calibration"]["push_coefficients"][0] = 0.01
+    edited["calibration"]["materiality_floor"] = 3
+    edited["candidate_identity"] = candidate_identity(edited)
+    with pytest.raises(ValueError, match="candidate_derivation_changed"):
+        verify_candidate([], edited)
+
+
+def test_holdout_ledger_allows_replay_but_rejects_another_candidate(tmp_path: Path) -> None:
+    ledger = tmp_path / "holdout.jsonl"
+    candidate = {"holdout_identity": "same-holdout", "candidate_identity": "first-candidate"}
+    register_holdout_use(ledger, candidate, certification_dataset_sha256="same-gold")
+    register_holdout_use(ledger, candidate, certification_dataset_sha256="same-gold")
+    assert len(ledger.read_text().splitlines()) == 1
+    with pytest.raises(ValueError, match="already_used_by_another_candidate"):
+        register_holdout_use(
+            ledger, {**candidate, "candidate_identity": "retuned"}, certification_dataset_sha256="same-gold"
+        )
+    with pytest.raises(ValueError, match="gold_sample_changed_after_use"):
+        register_holdout_use(ledger, candidate, certification_dataset_sha256="new-gold-trial")
+
+
+def test_owner_sampling_requires_census_and_never_sends_proxy_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    rows = [case(i) for i in range(10)]
+    for row in rows:
+        row.update(labeler="claude:proxy-only", inclusion_probability=1, stratum="band-type")
+        row["sampling_frame"].update(unit="claim_decision", units=10, frame_id="complete-claim-census")
+        row["sampling_frame"]["days"] = [f"2026-09-{i:02}" for i in range(1, 12)]
+    candidate = {
+        "phase": "fit",
+        "split": split_cases(rows),
+        "candidate_identity": "frozen-candidate",
+        "holdout_identity": "frozen-holdout",
+    }
+    monkeypatch.setattr("scripts.eval_news_reader.verify_candidate", lambda rows, candidate: None)
+    selected, manifest = sample_owner(rows, candidate, per_stratum=2, seed=42)
+    assert len(selected) == 2
+    assert selected[0]["inclusion_probability"] == pytest.approx(2 / 3)
+    assert manifest["sampling_frame"]["days"] == [f"2026-09-{i:02}" for i in range(8, 12)]
+    sampled_volume = volume_report(selected, {row["case_id"] for row in selected}, set())
+    assert sampled_volume["days"]["2026-09-11"] == {"push": 0, "key": 0}
+    assert set(selected[0]) == {
+        "case_id",
+        "reader_input",
+        "sampling_design",
+        "sampling_unit",
+        "sampling_frame",
+        "stratum",
+        "inclusion_probability",
+    }
+    assert manifest["sampling_frame"]["story_grouping_reviewed"] is False
+    assert manifest["independence_status"] == "proxy_grouping_unverified_cannot_certify"
+    assert selected == sample_owner(rows, candidate, per_stratum=2, seed=42)[0]
+    rows[0]["inclusion_probability"] = 0.1
+    with pytest.raises(ValueError, match="complete_claim_census"):
+        sample_owner(rows, candidate, per_stratum=2, seed=42)
+
+
+def test_production_applicability_is_not_inferred_from_answer_scores() -> None:
+    row = case(0)
+    assert applicable(row)
+    row.update(reader_applicable=False, pre_reader_reason="protected_listing", deterministic_decision="notify")
+    assert not applicable(row)
+    row["reader_applicable"] = True
+    with pytest.raises(ValueError, match="production_applicability_changed"):
+        applicable(row)

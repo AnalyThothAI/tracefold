@@ -312,7 +312,7 @@ def test_a_mixed_feed_page_partitions_into_the_same_tabs_its_rows_report(conn) -
     assert rows["agent-sent"]["update"]["claim_n"] == 2
     assert rows["agent-silent"]["update"]["headline"] == seeded["silent"].claims[0].statement
     assert rows["agent-silent"]["update"]["headline_source"] == "claim"
-    assert rows["agent-silent"]["outcome"]["reason_zh"] == "类型资格或推送概率未达要求，只进信息流"
+    assert rows["agent-silent"]["outcome"]["reason_zh"] == "推送概率未达要求，只进信息流"
     assert rows["agent-pending"]["update"] is None
     assert rows["source-only"]["update"] is None
     assert rows["source-only"]["update"] is None
@@ -536,6 +536,7 @@ def test_reader_earlier_anchor_is_a_sent_receipt_before_the_decision(
     conn, receipt_state, sent_offset, has_earlier, explicit_anchor
 ) -> None:
     from tracefold.news.notifications.contracts import ClaimDecision, ReaderRecord
+    from tracefold.news.notifications.novelty import ClaimLink
 
     repos = repositories_for_connection(conn)
     with repos.transaction():
@@ -564,7 +565,18 @@ def test_reader_earlier_anchor_is_a_sent_receipt_before_the_decision(
                         decision="not_notified",
                         reason="known_to_reader",
                         reader=ReaderRecord(
-                            novelty="known", anchor_intent_id=old_plan.intent_id if explicit_anchor else None
+                            novelty="known",
+                            anchor_intent_id=old_plan.intent_id if explicit_anchor else None,
+                            link_path=()
+                            if explicit_anchor
+                            else (
+                                ClaimLink(
+                                    current_ref=current.claims[0].ref,
+                                    previous_ref=old.claims[0].ref,
+                                    relation="equivalent",
+                                    asserted_at_ms=current.adopted_at_ms,
+                                ),
+                            ),
                         ),
                     ),
                 )
@@ -576,13 +588,13 @@ def test_reader_earlier_anchor_is_a_sent_receipt_before_the_decision(
     if not has_earlier:
         assert "earlier" not in row
         return
-        assert row["earlier"] == {
-            "intent_id": old_plan.intent_id,
-            "event_id": old.event_id,
-            "headline_zh": "已收到的标题",
-            "body": "已收到的标题\n\n已收到的原始正文",
-            "received_at_ms": NOW - 79_500,
-        }
+    assert row["earlier"] == {
+        "intent_id": old_plan.intent_id,
+        "event_id": old.event_id,
+        "headline_zh": "已收到的标题",
+        "body": "已收到的标题\n\n已收到的原始正文",
+        "received_at_ms": NOW - 79_500,
+    }
     assert detail["processing"]["intents"] == []
 
 
@@ -605,3 +617,42 @@ def test_story_window_is_bounded_keeps_current_and_excludes_absent_keys(conn) ->
     with conn.transaction():
         conn.execute("UPDATE news_events SET storyline_key='none' WHERE event_id='story-00'")
     assert repos.news.event_detail("story-00")["story"] is None
+
+
+def test_reader_case_export_reads_original_version_after_head_advance_and_rejects_writes(conn) -> None:
+    from psycopg.errors import ReadOnlySqlTransaction
+
+    from scripts.export_news_reader_cases import export_cases
+    from tracefold.news.notifications.contracts import ClaimDecision, ReaderRecord
+    from tracefold.news.notifications.reader import ReaderInput
+
+    original = first_update("frozen-export")
+    at_ms = original.adopted_at_ms + 20
+    frozen = ReaderInput.of(original.claims[0], original, [])
+    plan = notify_plan(original).model_copy(
+        update={
+            "claim_decisions": (
+                ClaimDecision(
+                    claim_ref=original.claims[0].ref,
+                    decision="notify",
+                    reason="reader_push",
+                    reader=ReaderRecord(novelty="unlinked", input_digest=frozen.digest),
+                ),
+            )
+        }
+    )
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        _event(repos.news, original.event_id, opened_at_ms=original.adopted_at_ms - 10)
+        persist_update(conn, original)
+        persist_plan(conn, original, plan, state="done", now_ms=at_ms)
+        persist_update(conn, raised_update(original, adopted_at_ms=at_ms + 100))
+    with conn.transaction():
+        conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        rows, manifest = export_cases(conn, from_ms=at_ms - 1, to_ms=at_ms + 1)
+        assert len(rows) == 1 and manifest["selected_units"] == 1
+        assert rows[0]["reader_input"] == frozen.model_dump(mode="json")
+        assert rows[0]["recorded_input_sha256"] == frozen.digest
+        assert rows[0]["update_ref"] == original.ref
+        with pytest.raises(ReadOnlySqlTransaction), conn.transaction():
+            conn.execute("UPDATE news_events SET leader_title=leader_title WHERE event_id=%s", (original.event_id,))

@@ -1,6 +1,6 @@
 """Authorized offline News reasks on operator-selected routes; no stores, caches or sends.
 
-Inputs are explicit JSONL: speech has claim/evidence, extraction has source (FrozenInput),
+Inputs are explicit JSONL or JSONL.gz: speech has claim/evidence, extraction has source (FrozenInput),
 reader has reader_input (current version). Output is an append-only research journal.
 Use separate native and generated reader runs. Failed native calls are recorded as failures,
 never silently counted as native evidence after generation fallback.
@@ -15,6 +15,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
+from scripts.news_reader_io import read_jsonl
 from tracefold.app.learning_runtime import compose_news_models
 from tracefold.app.news_updates import NewsJudgmentEndpoint, compose_reader_judge
 from tracefold.news.adapters.extraction import DspyExtractor
@@ -36,6 +37,8 @@ def input_digest(row: dict[str, Any], kind: str) -> str:
 
 
 async def reask(args: argparse.Namespace) -> None:
+    if args.output.suffix == ".gz":
+        raise ValueError("news_offline_append_journal_requires_plain_jsonl")
     settings = load_settings(require_ws_token=False)
     models = compose_news_models(settings)
     if models is None:
@@ -57,7 +60,7 @@ async def reask(args: argparse.Namespace) -> None:
             generated_model_identity=models.judgment.identity,
             reader_judgment=endpoint,
         )
-    rows = [json.loads(line) for line in args.input.read_text().splitlines() if line.strip()]
+    rows = read_jsonl(args.input)
     expected_identity = {"speech": generated.identity, "extraction": extractor.identity, "reader": reader.identity}[
         args.kind
     ]
@@ -68,7 +71,7 @@ async def reask(args: argparse.Namespace) -> None:
     args.output.chmod(0o600)
     completed = set()
     if args.output.exists():
-        journal = {row["case_id"]: row for row in map(json.loads, args.output.read_text().splitlines())}
+        journal = {row["case_id"]: row for row in read_jsonl(args.output)}
         by_id = {row["case_id"]: row for row in rows}
         if set(journal) - set(by_id):
             raise ValueError("news_offline_resume_cases_changed")
@@ -143,6 +146,12 @@ async def reask(args: argparse.Namespace) -> None:
             }
             if args.kind == "reader":
                 result.update(questions_identity=READER_QUESTIONS_IDENTITY, requested_backend=args.backend)
+                if row.get("reader_applicable") is False:
+                    result.update(skipped=True, original_reason=row.get("original_reason"), duration_ms=0)
+                    with args.output.open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps(result, ensure_ascii=False) + "\n")
+                    completed.add(row["case_id"])
+                    return
             started = monotonic()
             try:
                 async with asyncio.timeout(args.timeout):

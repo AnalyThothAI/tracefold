@@ -139,7 +139,8 @@ CLAIM_REASON_ZH: Final[dict[str, str]] = {
     "large_daily_move": "商品/指数当日大幅波动",
     "reader_key": "新增信息重要，标为重点",
     "reader_push": "新增信息值得推送",
-    "reader_feed": "类型资格或推送概率未达要求，只进信息流",
+    "reader_feed": "推送概率未达要求，只进信息流",
+    "reader_ineligible": "报道类型不具备推送资格，只进信息流",
     "reader_unavailable": "读者判断暂不可用，等待重试",
     "reader_unassessed": "读者判断长时间不可用，未评估，不推送",
 }
@@ -218,8 +219,10 @@ def claim_reasons_zh(decisions: Any) -> str:
 
 
 def _importance_era_evidence(evidence: Any) -> bool:
-    return isinstance(evidence, Mapping) and "importance" in evidence and not any(
-        key in evidence for key in ("report_kind", "materiality", "interrupt")
+    return (
+        isinstance(evidence, Mapping)
+        and "importance" in evidence
+        and not any(key in evidence for key in ("report_kind", "materiality", "interrupt"))
     )
 
 
@@ -534,6 +537,9 @@ def _reader_fields(row: ClaimDecision) -> dict[str, Any]:
         "materiality": None
         if judgment is None or judgment.materiality is None
         else judgment.materiality.model_dump(mode="json"),
+        "materiality_probabilities": None
+        if judgment is None or judgment.materiality is None
+        else list(judgment.materiality.probabilities),
         "interrupt": None
         if judgment is None or judgment.interrupt is None
         else judgment.interrupt.model_dump(mode="json"),
@@ -543,6 +549,9 @@ def _reader_fields(row: ClaimDecision) -> dict[str, Any]:
         "i": None if scores is None else scores.i,
         "p_push": None if scores is None else scores.p_push,
         "p_key": None if scores is None else scores.p_key,
+        "push_cut": None if scores is None else scores.push_cut,
+        "key_cut": None if scores is None else scores.key_cut,
+        "calibration_identity": None if scores is None else scores.calibration_identity,
         "held": None if scores is None else scores.held,
         "certification_status": None if scores is None else scores.certification_status,
         "reader_backend": None if judgment is None else judgment.backend,

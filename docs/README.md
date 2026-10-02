@@ -37,6 +37,7 @@
 | 模块 | 读完后能回答 | 主要入口 |
 | :--- | :--- | :--- |
 | [**News**](modules/news.md)<br/>[语义链路入门](modules/news-semantics-guide.md) | 多来源如何形成知识版本？哪些命题被通知？修订和失败如何恢复？入门篇用示意案例走完全链路 | `news/pipeline` · `news/updates` |
+| [**读者标注规范**](modules/news-reader-labeling.md) | 如何独立盲标、冻结故事抽样框、认证切线并保留失败分母？ | `scripts/news_reader_labeling.py` · `scripts/eval_news_reader.py` |
 | [**OI 与市场观察**](modules/oi.md) | 测量如何解析和分组？为什么通知阈值不等于交易过滤？ | `news/oi_signals.py` · `news/market_notifications.py` |
 | [**Wallets**](modules/wallets.md) | 完整回执如何支撑同窗口净买入？首次与当前快照有什么区别？ | `news/chain_tape` |
 | [**Market Review**](modules/market-review.md) | 同名资产如何区分？当前报价和发送时价格补充如何计算？ | `news/market_review` |

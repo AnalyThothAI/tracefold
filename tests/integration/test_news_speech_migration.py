@@ -16,7 +16,12 @@ from tests.support.news_update_pg import EVENT, Sender, adopted_head, notificati
 from tracefold.news.updates.contracts import EventUpdate, Extraction
 from tracefold.platform.postgres.migrations import alembic_config
 
-pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.migration,
+    pytest.mark.usefixtures("postgres_migration_dsn"),
+    pytest.mark.usefixtures("synthetic_reader_calibration"),
+]
 
 
 def test_speech_conversion_preserves_sources_refs_receipts_and_restores_guards(postgres_migration_dsn):

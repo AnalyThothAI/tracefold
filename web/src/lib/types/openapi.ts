@@ -944,6 +944,8 @@ export interface components {
         /** NewsClaimDecisionData */
         NewsClaimDecisionData: {
             anchor?: components["schemas"]["AnchorEvidence"] | null;
+            /** Calibration Identity */
+            calibration_identity?: string | null;
             /** Certification Status */
             certification_status?: ("uncalibrated" | "certified") | null;
             /** Claim Ref */
@@ -972,9 +974,18 @@ export interface components {
             /** I */
             i?: number | null;
             interrupt?: components["schemas"]["InterruptEvidence"] | null;
+            /** Key Cut */
+            key_cut?: number | null;
             /** M */
             m?: number | null;
             materiality?: components["schemas"]["MaterialityEvidence"] | null;
+            /** Materiality Probabilities */
+            materiality_probabilities?: [
+                number,
+                number,
+                number,
+                number
+            ] | null;
             /** Novelty */
             novelty?: ("known" | "increment" | "development" | "in_flight" | "unlinked") | null;
             /**
@@ -986,13 +997,15 @@ export interface components {
             p_key?: number | null;
             /** P Push */
             p_push?: number | null;
+            /** Push Cut */
+            push_cut?: number | null;
             /** Reader Backend */
             reader_backend?: ("native" | "generated") | null;
             /**
              * Reason
              * @enum {string}
              */
-            reason: "retired" | "send_outcome_unresolved" | "send_outcome_ambiguous" | "stale_source" | "stale_occurrence" | "known_to_reader" | "linked_send_in_flight" | "correction_of_sent" | "protected_listing" | "large_daily_move" | "reader_key" | "reader_push" | "reader_feed" | "reader_unavailable" | "reader_unassessed" | "editor_notify" | "editor_key" | "editor_feed_only" | "attention_unavailable_default_notify" | "covered_by_sent_receipt";
+            reason: "retired" | "send_outcome_unresolved" | "send_outcome_ambiguous" | "stale_source" | "stale_occurrence" | "known_to_reader" | "linked_send_in_flight" | "correction_of_sent" | "protected_listing" | "large_daily_move" | "reader_key" | "reader_push" | "reader_feed" | "reader_ineligible" | "reader_unavailable" | "reader_unassessed" | "editor_notify" | "editor_key" | "editor_feed_only" | "attention_unavailable_default_notify" | "covered_by_sent_receipt";
             /**
              * Reason Zh
              * @default

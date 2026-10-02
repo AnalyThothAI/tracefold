@@ -76,6 +76,7 @@ class NotificationPlanner:
                 novelty=novelty[claim.ref],
                 judgment=judgments.get(claim.ref),
                 message_intents=intents,
+                reader_identity=self.judge.identity,
             )
             record = None
             if decided is not None or claim.ref in judgments:

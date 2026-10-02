@@ -1948,6 +1948,17 @@
               }
             ]
           },
+          "calibration_identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calibration Identity"
+          },
           "certification_status": {
             "anyOf": [
               {
@@ -2057,6 +2068,17 @@
               }
             ]
           },
+          "key_cut": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Cut"
+          },
           "m": {
             "anyOf": [
               {
@@ -2077,6 +2099,33 @@
                 "type": "null"
               }
             ]
+          },
+          "materiality_probabilities": {
+            "anyOf": [
+              {
+                "maxItems": 4,
+                "minItems": 4,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Materiality Probabilities"
           },
           "novelty": {
             "anyOf": [
@@ -2123,6 +2172,17 @@
             ],
             "title": "P Push"
           },
+          "push_cut": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Push Cut"
+          },
           "reader_backend": {
             "anyOf": [
               {
@@ -2153,6 +2213,7 @@
               "reader_key",
               "reader_push",
               "reader_feed",
+              "reader_ineligible",
               "reader_unavailable",
               "reader_unassessed",
               "editor_notify",
