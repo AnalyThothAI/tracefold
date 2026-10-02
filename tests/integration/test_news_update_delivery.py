@@ -72,6 +72,7 @@ from tracefold.news.updates.identity import identity
 from tracefold.news.updates.judgment import ProviderUnavailable
 from tracefold.news.updates.ports import SemanticObservation
 from tracefold.news.updates.projection import reading_views
+from tracefold.platform.observability import TelemetryRegistry
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -637,17 +638,20 @@ class _DistinctComposer(Composer):
 class _RepeatAware(FixedReader):
     """Worth a push alone; once a related message is supplied, what the claim adds is not."""
 
+    def __init__(self, *, related: bool) -> None:
+        super().__init__()
+        self.related = related
+
     async def judge(self, reader: Any, budget: Any) -> Any:
-        self.value = 1.0 if reader.messages else 2.6
+        self.value = 1.0 if self.related and reader.messages else 2.6
         return await super().judge(reader, budget)
 
 
 @pytest.mark.parametrize("related", [False, True])
-def test_only_a_related_receipt_settled_meanwhile_invalidates_a_ready_card(related: bool) -> None:
-    """#742 W5. One card is ready while another Event's is in the provider. The reader revision is the
-    waiting Event's own related receipts, not the whole channel: an unrelated receipt leaves its plan valid
-    and it is sent in the same turn, while a related one makes it stale, and its re-plan compares that
-    receipt (here: is covered by it). Before, any send anywhere invalidated every ready card."""
+def test_a_new_sent_generation_invalidates_a_ready_card_and_replanning_preserves_reader_value(related: bool) -> None:
+    """#791: CAS checks the sent-set generation without running recall again. Both receipts
+    invalidate a waiting card. Replanning can still push a new fact; an already covered fact becomes feed.
+    """
 
     clock = Clock()
     _adopt(clock)
@@ -669,7 +673,9 @@ def test_only_a_related_receipt_settled_meanwhile_invalidates_a_ready_card(relat
 
     provider = Provider()
     db = _GatedSettlement()
-    rig = Rig(provider, clock=clock, db=db, composer=_DistinctComposer(), assessor=_RepeatAware())
+    rig = Rig(provider, clock=clock, db=db, composer=_DistinctComposer(), assessor=_RepeatAware(related=related))
+    telemetry = TelemetryRegistry()
+    rig.store.telemetry = telemetry
 
     async def run() -> None:
         task = asyncio.create_task(rig.loop.advance())
@@ -693,17 +699,20 @@ def test_only_a_related_receipt_settled_meanwhile_invalidates_a_ready_card(relat
         }
 
     # The copper card is composed first, so it is in the provider while the tariff card waits ready.
+    # Any newly sent receipt changes the generation. The first tariff card cannot
+    # reach the provider with an earlier reader snapshot.
+    assert len(provider.sent) == 1 and works()[EVENT]["state"] == "pending"
+    assert telemetry.registry.get_sample_value("tracefold_news_reader_changed_total", {"stage": "send"}) == 1
+    clock.now_ms += 1_000
+    assert rig.advance() == 1
+    tariff = works()[EVENT]
+    assert tariff["state"] == "done"
     if not related:
         assert len(provider.sent) == 2
         assert [row["state"] for row in _ledger()] == ["sent", "sent"]
         assert {row["state"] for row in works().values()} == {"done"}
         return
-    # The related receipt made the tariff's ready card stale: nothing of it was sent, and it is planned again.
-    assert len(provider.sent) == 1 and works()[EVENT]["state"] == "pending"
-    clock.now_ms += 1_000
-    assert rig.advance() == 1
-    tariff = works()[EVENT]
-    assert tariff["state"] == "done" and len(provider.sent) == 1
+    assert len(provider.sent) == 1
     assert [row["reason"] for row in tariff["plan"]["claim_decisions"]] == ["reader_feed"]
     assert {row["intent_id"] for row in tariff["plan"]["compared_receipts"]} == {
         row["intent_id"] for row in _ledger() if row["event_id"] == "event-second"

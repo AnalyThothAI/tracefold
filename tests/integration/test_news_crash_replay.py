@@ -662,7 +662,14 @@ class _OneClaimAnalyzer:
         )
 
     async def understand(
-        self, source: Any, extracted: Any, budget: Any, *, rebase_only: bool = False, final_attempt: bool = True
+        self,
+        source: Any,
+        extracted: Any,
+        budget: Any,
+        *,
+        rebase_only: bool = False,
+        final_attempt: bool = True,
+        relation_pairs: frozenset[tuple[str, str]] | None = None,
     ) -> Any:
         return extracted
 

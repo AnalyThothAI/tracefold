@@ -49,6 +49,21 @@ serve-shell: ## open a shell in Serve
 workers-shell: ## open a shell in Workers
 	@python3 scripts/deploy.py workers-shell
 
+embedding-build: ## build only the optional dedicated News embedding image
+	@python3 scripts/deploy.py embedding-build
+
+embedding-download: ## explicitly cache the calibrated model outside the application image
+	@python3 scripts/deploy.py embedding-download
+
+embedding-up: ## start only the optional offline News embedding service
+	@python3 scripts/deploy.py embedding-up
+
+embedding-down: ## stop only the dedicated News embedding service and retain its weights
+	@python3 scripts/deploy.py embedding-down
+
+embedding-status: ## inspect dedicated embedding health and secretless runtime provenance
+	@python3 scripts/deploy.py embedding-status
+
 sync: ## install locked development dependencies (uv manages Python 3.13)
 	@uv sync --locked
 
@@ -70,3 +85,4 @@ dev-executor: ## run the DEMO executor in the foreground against an isolated con
 include make/checks.mk
 
 .PHONY: help sync verify-main-ci dev-serve dev-workers dev-analysis dev-executor init build up config topology deploy-image status status-app logs down db-migrate db-health serve-shell workers-shell
+.PHONY: embedding-build embedding-download embedding-up embedding-down embedding-status

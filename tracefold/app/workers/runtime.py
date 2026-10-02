@@ -18,6 +18,7 @@ WORKERS_RUNTIME_VERSION = "2"
 # must be able to name one without importing the Trading or News composition that runs it.
 NEWS_INGESTION = "news_ingestion"
 NEWS_EDITORIAL = "news_editorial"
+NEWS_CLAIM_RECALL = "news_claim_recall"
 NEWS_DELIVERY = "news_delivery"
 NEWS_INSTRUMENTS = "news_instruments"
 NEWS_QUOTES = "news_quotes"

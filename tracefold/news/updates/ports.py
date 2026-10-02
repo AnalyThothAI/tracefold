@@ -6,11 +6,33 @@ outside it, and the adopted PostgreSQL head remains the authority.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 from pydantic import Field
 
-from .contracts import EventUpdate, Evidence, Exact, Extraction, FrozenInput, PublicUpdate, ReadTarget, SemanticLease
+from .contracts import (
+    EventUpdate,
+    Evidence,
+    Exact,
+    Extraction,
+    FrozenInput,
+    PriorClaim,
+    PublicUpdate,
+    ReadTarget,
+    SemanticLease,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PriorBatch:
+    by_slot: Mapping[str, tuple[PriorClaim, ...]]
+    diagnostics: Mapping[str, Mapping[str, Any]]
+
+
+class PriorRecall(Protocol):
+    async def priors(self, source: FrozenInput, extracted: Extraction) -> PriorBatch: ...
 
 
 class SemanticCheckpoint(Exact):

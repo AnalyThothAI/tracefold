@@ -500,6 +500,8 @@ export function newsUpdateDetailFixture(overrides: Partial<NewsEventDetail> = {}
 
 export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStatus {
   return {
+    recall_dense: "degraded",
+    claim_index_pending: 0,
     primary_asset_markets_24h: {
       total: 200,
       unknown: 25,

@@ -16,7 +16,6 @@ from tracefold.news.updates.contracts import (
     Evidence,
     Extraction,
     FrozenInput,
-    IdentityHint,
     PublicUpdate,
     RelationDraft,
     SupportDraft,
@@ -77,15 +76,6 @@ def test_expected_and_actual_with_identical_number_are_not_equivalent() -> None:
         update={"fields": head.claims[0].fields.model_copy(update={"mode": "forecast"})}
     )
     assert proven_mismatches(current, previous) == ("mode",)
-
-
-def test_known_different_subject_identity_cannot_be_equivalent() -> None:
-    source, extraction, head = update_one()
-    quote = extraction.claims[0].citations[0].quote
-    prior_hint = IdentityHint(key="subject_id", value="BR", evidence_ref=source.evidence[0].ref, surface=quote)
-    prior = head.claims[0].model_copy(update={"known_identity": (prior_hint,)})
-    hints = (IdentityHint(key="subject_id", value="TR", evidence_ref=source.evidence[0].ref, surface=quote),)
-    assert proven_mismatches(extraction.claims[0], prior, hints) == ("subject_id",)
 
 
 def crypto_listing(symbol: str, *, revision: int = 1, phase: str = "announced"):

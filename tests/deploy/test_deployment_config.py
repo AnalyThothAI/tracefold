@@ -47,6 +47,7 @@ def test_init_preserves_config_passwords_and_private_permissions(
         "postgres_database_password",
         "telegram_bot_token",
         "news_reader_judgment_api_key",
+        "news_embedding_api_key",
     )
     before = {name: (home / name).read_bytes() for name in names}
     (home / "config.yaml").chmod(0o644)

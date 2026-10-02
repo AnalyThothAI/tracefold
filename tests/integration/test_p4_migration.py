@@ -322,7 +322,7 @@ def test_populated_chain_preserves_model_inputs_and_all_public_ledgers(source, s
         assert tables == {
             "alembic_version",
             "runtime_processes",
-            *(set(NEWS_TABLES) - {"news_reader_clock"}),
+            *(set(NEWS_TABLES) - {"news_reader_clock", "news_claim_index"}),
             *TRADING_TABLES,
         }
         assert len(tables) == 26 and len(TRADING_TABLES) == 7

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from tracefold.app.claim_embedding import ClaimEmbedder
 from tracefold.app.learning_runtime import (
     NewsModelRoute,
     compose_news_models,
@@ -20,6 +21,7 @@ from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.runtime import (
     MARKET_NOTIFICATIONS,
+    NEWS_CLAIM_RECALL,
     NEWS_DELIVERY,
     NEWS_EDITORIAL,
     NEWS_INGESTION,
@@ -59,6 +61,7 @@ from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.news.pipeline.runtime import NewsDatabasePort
 from tracefold.news.pipeline.semantic import SemanticWorker
 from tracefold.news.pipeline.send_entry import InitialSendEntry
+from tracefold.news.storage.claim_recall import PgClaimRecall
 from tracefold.news.storage.judgment_store import PgJudgmentCache
 from tracefold.news.storage.notification_store import PgNotificationStore
 from tracefold.news.storage.semantic_store import PgSemanticStore, PgSourceReader
@@ -183,7 +186,9 @@ async def _wire_news_pipeline(
         else None
     )
 
-    news_updates = _news_updates_or_fault(settings, news_db=news_db, capabilities=capabilities)
+    news_updates = _news_updates_or_fault(settings, news_db=news_db, capabilities=capabilities, telemetry=telemetry)
+    if news_updates is not None and news_updates.embedder is not None:
+        await news_updates.embedder.self_test()
     pipeline = _compose_news_pipeline(
         settings,
         bus=bus,
@@ -291,6 +296,7 @@ def _news_updates_or_fault(
     *,
     news_db: NewsDatabasePort,
     capabilities: CapabilityStates,
+    telemetry: TelemetryRegistry | None = None,
 ) -> NewsUpdateRuntime | None:
     """Compose the EventUpdate runtime, or confine the failure to the editorial capability.
 
@@ -303,10 +309,40 @@ def _news_updates_or_fault(
         models = compose_news_models(settings)
         if models is None:
             capabilities.disabled(NEWS_EDITORIAL, "news_models_not_configured")
+            capabilities.disabled(NEWS_CLAIM_RECALL, "news_models_not_configured")
             return None
+        embedder = None
+        embedding_route = settings.llm.news_embedding
+        if embedding_route.configured:
+            capabilities.unavailable(NEWS_CLAIM_RECALL, "news_embedding_self_test_pending")
+
+            def embedding_status(available: bool) -> None:
+                if available:
+                    capabilities.running(NEWS_CLAIM_RECALL)
+                else:
+                    capabilities.unavailable(NEWS_CLAIM_RECALL, "news_embedding_unavailable")
+
+            try:
+                embedding_key_file = settings.news_embedding_api_key_file()
+                if embedding_key_file is None:
+                    raise ValueError("news_embedding_key_file_missing")
+                embedder = ClaimEmbedder(
+                    model=str(embedding_route.model),
+                    base_url=str(embedding_route.base_url),
+                    api_key=read_secure_secret_text(embedding_key_file),
+                    max_batch_size=embedding_route.max_batch_size,
+                    on_status=embedding_status,
+                )
+            except SecretFileError as exc:
+                capabilities.unavailable(NEWS_CLAIM_RECALL, f"news_embedding_key_{exc.code}")
+            except ValueError:
+                capabilities.faulted(NEWS_CLAIM_RECALL, "news_embedding_configuration_invalid")
+        else:
+            capabilities.disabled(NEWS_CLAIM_RECALL, "news_embedding_not_configured")
+        recall = PgClaimRecall(news_db, embedder=embedder, embedding_batch_size=embedding_route.max_batch_size)
         runtime = compose_news_updates(
             semantic_store=PgSemanticStore(news_db),
-            notification_store=PgNotificationStore(news_db),
+            notification_store=PgNotificationStore(news_db, embedder=embedder, telemetry=telemetry),
             relation_cache=PgJudgmentCache(news_db),
             extraction_lm_factory=_route_factory(models.extraction),
             card_lm_factory=_route_factory(models.card),
@@ -317,17 +353,22 @@ def _news_updates_or_fault(
             news_judgment=models.news_judgment,
             news_reader_judgment=news_reader_judgment_endpoint(settings),
             source_reader=PgSourceReader(news_db),
+            recall=recall,
         )
+        runtime.embedder = embedder
+        runtime.claim_recall = recall
     except SHARED_RESOURCE_FAILURES:
         raise
     except SecretFileError as exc:
         # A configured notification route whose key file cannot be read is a configuration fact: named,
         # never a silent fall back to the generative route.
         capabilities.faulted(NEWS_EDITORIAL, f"news_reader_judgment_key_{exc.code}")
+        capabilities.unavailable(NEWS_CLAIM_RECALL, "news_editorial_unavailable")
         return None
     except Exception as exc:
         logger.opt(exception=exc).error("News semantic runtime assembly failed; editorial capability faulted")
         capabilities.faulted(NEWS_EDITORIAL, f"{NEWS_EDITORIAL}_assembly_failed:{type(exc).__name__}")
+        capabilities.unavailable(NEWS_CLAIM_RECALL, "news_editorial_unavailable")
         return None
     capabilities.running(NEWS_EDITORIAL)
     return runtime
@@ -539,6 +580,15 @@ def _compose_news_pipeline(
             retention_chain_tape_days=settings.news.chain_tape.retention_days,
             chain_tape_enabled=settings.news.chain_tape.enabled,
             telemetry=telemetry,
+            claim_recall=(
+                None
+                if news_updates is None
+                else PgClaimRecall(
+                    cold_db,
+                    embedder=news_updates.embedder,
+                    embedding_batch_size=settings.llm.news_embedding.max_batch_size,
+                )
+            ),
         ),
         instruments=_instrument_snapshot_loop(settings, db=news_db, telemetry=telemetry),
         quotes=_quote_snapshot_loop(

@@ -108,7 +108,7 @@ class Store:
     async def lookup_card_copy(self, input_digest: str):
         return None
 
-    async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
+    async def atomic_record_plan(self, plan: NotificationPlan, *, recall_diagnostics=None) -> PlanCommit:
         self.calls.append(("record_plan", plan.action))
         if plan.action != "notify":
             return PlanCommit(status="committed", effective_plan=plan)
@@ -257,9 +257,9 @@ def test_the_recorded_plan_carries_where_its_turn_spent_its_time() -> None:
     recorded: list[NotificationPlan] = []
 
     class Recording(Store):
-        async def atomic_record_plan(self, plan: NotificationPlan) -> PlanCommit:
+        async def atomic_record_plan(self, plan: NotificationPlan, *, recall_diagnostics=None) -> PlanCommit:
             recorded.append(plan)
-            return await super().atomic_record_plan(plan)
+            return await super().atomic_record_plan(plan, recall_diagnostics=recall_diagnostics)
 
     _turn(Recording(update), Planner(_plan(update, notify=False)), Composer(), Sender())
 

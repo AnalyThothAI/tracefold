@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from importlib.resources import files
 from typing import Any
 
+from tracefold.app.claim_embedding import ClaimEmbedder
 from tracefold.app.system_one import SystemOneConnection, SystemOneReceipt
 from tracefold.news.adapters.card_copy import DspyCardComposer
 from tracefold.news.adapters.extraction import DspyExtractor
@@ -17,7 +18,7 @@ from tracefold.news.notifications.ports import NotificationStore
 from tracefold.news.notifications.service import Notifications
 from tracefold.news.updates.identity import digest, identity
 from tracefold.news.updates.judgment import NATIVE_OPERATION_SECONDS, JudgmentCache, NewsJudgments
-from tracefold.news.updates.ports import ExistingSourceReader, SemanticStore
+from tracefold.news.updates.ports import ExistingSourceReader, PriorRecall, SemanticStore
 from tracefold.news.updates.semantics import SemanticAnalyzer
 from tracefold.news.updates.service import NewsAgent
 from tracefold.news.updates.topics import CODEBOOK, CODEBOOK_SHA256
@@ -44,8 +45,12 @@ class NewsUpdateRuntime:
     program_identity: str
     judgment_connection: SystemOneConnection | None
     reader_connection: SystemOneConnection | None = None
+    embedder: ClaimEmbedder | None = None
+    claim_recall: Any = None
 
     async def aclose(self) -> None:
+        if self.embedder is not None:
+            await self.embedder.aclose()
         for connection in (self.judgment_connection, self.reader_connection):
             if connection is not None:
                 await connection.aclose()
@@ -90,8 +95,7 @@ def _program_identity(analyzer: SemanticAnalyzer) -> str:
     return identity(
         "news_program",
         _source_identity(),
-        analyzer.extractor.identity,
-        analyzer.judgments.identity,
+        analyzer.identity,
     )
 
 
@@ -192,6 +196,7 @@ def compose_news_updates(
     news_reader_judgment: NewsJudgmentEndpoint | None = None,
     after_native_call: Callable[[SystemOneReceipt], Awaitable[None]] | None = None,
     source_reader: ExistingSourceReader | None = None,
+    recall: PriorRecall | None = None,
 ) -> NewsUpdateRuntime:
     """Construct objects only. Does not query models, PG, exchanges or providers.
 
@@ -239,7 +244,9 @@ def compose_news_updates(
         after_native_call=after_native_call,
     )
     return NewsUpdateRuntime(
-        agent=NewsAgent(semantic_store, analyzer, program_identity=program_identity, source_reader=source_reader),
+        agent=NewsAgent(
+            semantic_store, analyzer, program_identity=program_identity, source_reader=source_reader, recall=recall
+        ),
         judgments=analyzer.judgments,
         # The Deliverer owns the provider side and hands its sender to each notification turn.
         notifications=Notifications(

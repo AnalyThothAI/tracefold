@@ -16,7 +16,7 @@ from tests.support.news_0424_sql import SEMANTIC_JOBS_SQL
 from tests.support.news_update_admission import work
 from tests.support.news_update_pg import EVENT, STAMP, Clock, ThreadedDb, seed_event, sql
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.storage.evidence import EvidenceStorage
+from tracefold.news.storage.semantic_input import SemanticInputStorage
 from tracefold.news.storage.semantic_store import PgSemanticStore
 from tracefold.news.storage.semantic_work import SEMANTIC_ATTEMPTS_MAX, SEMANTIC_RETRY_MS
 from tracefold.news.updates.projection import reading_views
@@ -39,7 +39,7 @@ class StatementTimeoutDb(ThreadedDb):
             conn.close()
 
 
-def _slow_recall(self: EvidenceStorage, query: Any) -> list[dict[str, Any]]:
+def _slow_recall(self: SemanticInputStorage, event_id: str, *, now_ms: int) -> list[dict[str, Any]]:
     self.conn.execute("SELECT pg_sleep(5)")
     return []
 
@@ -48,7 +48,7 @@ def test_input_timeout_spends_the_attempt_backs_off_and_fails_visibly_when_exhau
     seed_event()
     clock = Clock(STAMP + 10)
     store = PgSemanticStore(StatementTimeoutDb(), clock=clock)
-    monkeypatch.setattr(EvidenceStorage, "evidence_candidates", _slow_recall)
+    monkeypatch.setattr(SemanticInputStorage, "semantic_input_material", _slow_recall)
 
     for attempt in range(1, SEMANTIC_ATTEMPTS_MAX + 1):
         assert asyncio.run(store.claim_semantic_work(EVENT, lease_ms=180_000)) is None

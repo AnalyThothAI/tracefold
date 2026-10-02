@@ -1,0 +1,31 @@
+{
+  "version": "claim_recall_v1",
+  "embedder": {
+    "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "dimensions": 384,
+    "revision": "e8f8c211226b894fcb81acc59f3b34ba3efd5f42",
+    "max_tokens": 256,
+    "pooling": "mean",
+    "dtype": "float32",
+    "normalization": "l2",
+    "template": "claim_embed_text_v1"
+  },
+  "lexical_template": "claim_lexical_text_v1",
+  "prior": {
+    "k": 5,
+    "dense_floor": 0.6,
+    "lexical_floor": 0.9,
+    "degraded_lexical_floor": 0.2,
+    "sent_reserved": 2
+  },
+  "receipt": {
+    "k": 16,
+    "dense_floor": 0.4,
+    "lexical_floor": 0.9,
+    "degraded_lexical_floor": 0.2,
+    "sent_reserved": 0
+  },
+  "route_n": 32,
+  "rrf_k": 60,
+  "dataset_sha256": "016269a8bc97f47aa1d89ab91fd56c23cf70f62b4849a14bec87406f20ca743f"
+}

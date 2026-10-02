@@ -251,8 +251,17 @@ def news_runtime_manifest_sha(settings: Any, *, image_digest: str, runtime_revis
     models = compose_news_models(settings)
     return canonical_sha(
         {
-            "identity_schema": "news_runtime_manifest_v2",
+            "identity_schema": "news_runtime_manifest_v3",
             "news_program_identity": None if models is None else models.program_identity,
+            "claim_embedding": (
+                {
+                    "model": settings.llm.news_embedding.model,
+                    "base_url": settings.llm.news_embedding.base_url,
+                    "max_batch_size": settings.llm.news_embedding.max_batch_size,
+                }
+                if settings.llm.news_embedding.configured
+                else None
+            ),
             "image_digest": image_digest,
             "runtime_revision": runtime_revision,
         }

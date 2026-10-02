@@ -115,6 +115,9 @@ def commit_update(
         ).fetchone()
     if inserted is None:
         raise ValueError("news_event_update_revision_exists")
+    from .claim_index import ClaimIndexStorage
+
+    ClaimIndexStorage(conn).index_update(update)
     conn.execute("UPDATE news_events SET current_analysis_id=%s WHERE event_id=%s", (analysis_id, event_id))
     for kind, payload in public_rows:
         if not outbox.enqueue_trade_event(

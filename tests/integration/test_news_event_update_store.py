@@ -25,14 +25,6 @@ from tests.support.news_0424_sql import (
 from tests.support.news_current_delivery import seed_delivery
 from tests.support.news_event_updates import persist_analysis_document
 from tests.support.news_reader import PushAll
-from tests.support.news_recall_window import (
-    PROBE_RECEIPT,
-    PROBE_STATEMENT,
-    PROBE_STATEMENT_ZH,
-    gold_fixture,
-    gold_window_filler,
-    probe_window,
-)
 from tests.support.news_update_pg import (
     EVENT,
     STAMP,
@@ -60,19 +52,10 @@ from tests.support.news_update_pg import (
     trade_rows,
 )
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.entities import asset_retrieval_symbols, commodity_name_patterns
-from tracefold.news.market_review.instruments import COMMODITY_SYMBOLS
 from tracefold.news.notifications.contracts import ClaimDecision, FrozenCard, NotificationPlan
-from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
+from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, reader_novelty
 from tracefold.news.notifications.planner import NotificationPlanner
 from tracefold.news.notifications.ports import SendOutcome
-from tracefold.news.notifications.recall import (
-    RecallCandidate,
-    RouteEvidence,
-    lexical_evidence,
-    query_for_claim,
-    select_for_claim,
-)
 from tracefold.news.notifications.service import Notifications
 from tracefold.news.storage.errors import EventUpdateConflict, IntentLeaseLost
 from tracefold.news.storage.judgment_store import PgJudgmentCache
@@ -134,7 +117,15 @@ def seed_update_version(
 def seed_sent_claim_projection(event_id: str, *, content_revision: str, claim_ref: str, related: bool = True) -> None:
     """Give a synthetic receipt the frozen claim version it actually says it carried."""
 
-    unrelated = {"subject": "Miner", "assets": [{"symbol": "CL", "market_type": "commodity", "role": "primary"}]}
+    unrelated = {
+        "subject": "Miner",
+        "action": "halts",
+        "object": "a Chilean copper pit",
+        "mode": "observation",
+        "phase": "effective",
+        "content_kind": "state_change",
+        "assets": [{"symbol": "CL", "market_type": "commodity", "role": "primary"}],
+    }
     claim = (
         head_claim(claim_ref)
         if related
@@ -783,7 +774,7 @@ def test_the_janitor_holds_an_unsettled_update_send_ambiguous_and_releases_its_r
 
 
 @pytest.mark.parametrize("related", [False, True])
-def test_only_a_related_receipt_settled_after_the_snapshot_races_the_plan(related: bool) -> None:
+def test_any_receipt_settled_after_the_snapshot_races_the_plan(related: bool) -> None:
     """A newly sent receipt for a matching delivered claim changes both snapshot and CAS context."""
 
     pg, _db, clock = store()
@@ -811,9 +802,6 @@ def test_only_a_related_receipt_settled_after_the_snapshot_races_the_plan(relate
     finally:
         conn.close()
     committed = asyncio.run(pg.notifications.atomic_record_plan(notify_plan(head, snapshot.reader.revision)))
-    if not related:
-        assert committed.status == "committed" and committed.lease is not None
-        return
     assert committed.status == "reader_changed"
     work = sql(f"SELECT state, decision_ref FROM ({NOTIFY_JOBS_SQL}) WHERE event_id = %s", (EVENT,))[0]
     assert work == {"state": "pending", "decision_ref": None}
@@ -858,9 +846,9 @@ def test_begin_send_uses_the_same_claim_context_as_the_snapshot(related: bool) -
             )
     finally:
         conn.close()
-    assert asyncio.run(pg.notifications.atomic_begin_send(lease, card)) == ("reader_changed" if related else "begun")
+    assert asyncio.run(pg.notifications.atomic_begin_send(lease, card)) == "reader_changed"
     own_sent = sql(f"SELECT count(*) AS n FROM ({UPDATE_RECEIPTS_SQL}) WHERE event_id = %s", (EVENT,))[0]["n"]
-    assert own_sent == (0 if related else 1)
+    assert own_sent == 0
 
 
 def test_deferred_claims_keep_notification_pending_beside_the_reserved_intent() -> None:
@@ -1313,7 +1301,15 @@ def test_a_later_head_of_the_historical_event_does_not_change_its_receipt() -> N
     pg, db, clock = store()
     adopted_head(pg.semantic, clock)
     related = {"subject": "Agency", "assets": [{"symbol": "X", "market_type": "equity", "role": "primary"}]}
-    unrelated = {"subject": "Miner", "assets": [{"symbol": "CL", "market_type": "commodity", "role": "primary"}]}
+    unrelated = {
+        "subject": "Miner",
+        "action": "halts",
+        "object": "a Chilean copper pit",
+        "mode": "observation",
+        "phase": "effective",
+        "content_kind": "state_change",
+        "assets": [{"symbol": "CL", "market_type": "commodity", "role": "primary"}],
+    }
     sent = head_claim("cl:hist-sent", statement="Agency sets the start date of the steel tariff", **related)
     quiet = head_claim("cl:quiet-sent", statement="Miner halts a Chilean copper pit", **unrelated)
     # Unpushed and structurally related: a sibling in the sent version, and a claim of a later head.
@@ -1340,8 +1336,6 @@ def test_a_later_head_of_the_historical_event_does_not_change_its_receipt() -> N
                 row["intent_id"],
                 row["body"],
                 [claim["ref"] for claim in row["historical_claims"]],
-                row["structure_rank"],
-                row["lexical_rank"],
             )
             for row in material["receipt_rows"]
         ]
@@ -1357,255 +1351,6 @@ def test_a_later_head_of_the_historical_event_does_not_change_its_receipt() -> N
     for event_id, claims in later.items():
         seed_update_version(event_id, content_revision=digest(f"{event_id}:2"), claims=claims, head=True)
     assert seen() == before
-
-
-def test_hot_actor_cannot_exhaust_the_sql_route_before_concrete_matches() -> None:
-    pg, db, clock = store()
-    adopted_head(pg.semantic, clock)
-    current = Claim.model_validate(
-        head_claim(
-            "cl:ct-current",
-            statement="Aster lists CTUSDT perpetual",
-            subject="Aster",
-            action="listed",
-            object="CTUSDT perpetual",
-            assets=[{"symbol": "CTUSDT", "market_type": "crypto", "role": "primary"}],
-        )
-    )
-    historical = [
-        ("body", "Other spelling", "", [], "CTUSDT perpetual announcement", clock() - 6000),
-        ("object", "Other spelling", "CTUSDT perpetual", [], "此前宣布具体合约", clock() - 5000),
-        (
-            "primary",
-            "另一个写法",
-            "",
-            [{"symbol": "CTUSDT", "market_type": "crypto", "role": "primary"}],
-            "同一标的较早推送",
-            clock() - 4000,
-        ),
-        (
-            "mentioned",
-            "Aster",
-            "unrelated product",
-            [{"symbol": "CTUSDT", "market_type": "crypto", "role": "mentioned"}],
-            "仅作为背景提及",
-            clock() - 1,
-        ),
-        *(
-            (
-                f"actor-{index:02}",
-                "Aster",
-                f"other product {index}",
-                [{"symbol": "SIUSDT", "market_type": "crypto", "role": "primary"}],
-                f"不同动作{index}",
-                clock() - 100 - index,
-            )
-            for index in range(40)
-        ),
-    ]
-    candidates = []
-    for key, subject, object_, assets, body, stamp in historical:
-        event_id = f"hot-actor:{key}"
-        historical_claim = head_claim(
-            f"cl:{key}", statement=f"Earlier account {key}", subject=subject, object=object_, assets=assets
-        )
-        seed_event(event_id, title=body, fingerprint=event_id, at_ms=stamp - 100)
-        seed_update_version(event_id, content_revision=digest(event_id), claims=[historical_claim])
-        intent = identity("intent", event_id)
-        seed_sent_receipt(
-            event_id,
-            intent_id=intent,
-            content_revision=digest(event_id),
-            claim_refs=[historical_claim["ref"]],
-            body=body,
-            settled_at_ms=stamp,
-        )
-        candidates.append(RecallCandidate(intent, digest(body), body, stamp, (Claim.model_validate(historical_claim),)))
-    query = query_for_claim(current)
-    routed = asyncio.run(
-        db.read(
-            "test_hot_actor_route",
-            lambda repos: repos.news.notification_context._recall_receipt_rows((query,), now_ms=clock()),
-        )
-    )
-    ranks = {row["intent_id"]: row["structure_rank"] for row in routed}
-    assert ranks[identity("intent", "hot-actor:object")] == 1
-    assert ranks[identity("intent", "hot-actor:primary")] == 2
-    routes = {
-        row["intent_id"]: RouteEvidence(
-            structure_rank=row["structure_rank"],
-            lexical_rank=row["lexical_rank"],
-            lexical_terms=tuple(row["lexical_terms"] or ()),
-        )
-        for row in routed
-    }
-    sql_selected = select_for_claim(
-        query, ReaderNovelty(novelty="unlinked"), tuple(candidates), as_of_ms=clock(), routes=routes
-    )
-    pure_selected = select_for_claim(query, ReaderNovelty(novelty="unlinked"), tuple(candidates), as_of_ms=clock())
-    assert sql_selected.intent_ids == pure_selected.intent_ids
-    assert sql_selected.intent_ids[:3] == (
-        identity("intent", "hot-actor:object"),
-        identity("intent", "hot-actor:body"),
-        identity("intent", "hot-actor:primary"),
-    )
-    assert len(sql_selected.intent_ids) == 16
-
-
-def test_sql_asset_route_reads_legacy_markets_like_claim_validation() -> None:
-    pg, db, clock = store()
-    adopted_head(pg.semantic, clock)
-    currents = {
-        "fx": Claim.model_validate(
-            head_claim(
-                "cl:fx-current",
-                statement="Euro strengthens after the central bank decision",
-                subject="European Central Bank",
-                object="currency decision",
-                assets=[{"symbol": "EURUSD", "market_type": "fx", "role": "primary"}],
-            )
-        ),
-        "fund": Claim.model_validate(
-            head_claim(
-                "cl:fund-current",
-                statement="Portfolio rebalances after a notice",
-                subject="Portfolio",
-                object="rebalancing",
-                assets=[{"symbol": "ABC", "market_type": "unknown", "role": "primary"}],
-            )
-        ),
-    }
-    historical = [
-        ("forex", "forex", "EURUSD", "欧洲央行", "外汇利率", "欧元此前走弱", clock() - 5000),
-        ("actor", "equity", "OTHER", "Portfolio", "different action", "同一主体另一动作", clock() - 2000),
-        ("fund", "fund", "ABC", "基金经理", "组合变更", "基金调仓消息", clock() - 1000),
-    ]
-    candidates = []
-    for key, market, symbol, subject, object_, body, stamp in historical:
-        event_id = f"legacy-market:{key}"
-        historical_claim = head_claim(
-            f"cl:legacy-{key}",
-            statement=body,
-            subject=subject,
-            object=object_,
-            assets=[{"symbol": symbol, "market_type": market, "role": "primary"}],
-        )
-        seed_event(event_id, title=body, fingerprint=event_id, at_ms=stamp - 100)
-        seed_update_version(event_id, content_revision=digest(event_id), claims=[historical_claim])
-        intent = identity("intent", event_id)
-        seed_sent_receipt(
-            event_id,
-            intent_id=intent,
-            content_revision=digest(event_id),
-            claim_refs=[historical_claim["ref"]],
-            body=body,
-            settled_at_ms=stamp,
-        )
-        candidates.append(RecallCandidate(intent, digest(body), body, stamp, (Claim.model_validate(historical_claim),)))
-    queries = {key: query_for_claim(claim) for key, claim in currents.items()}
-    routed = asyncio.run(
-        db.read(
-            "test_legacy_market_route",
-            lambda repos: repos.news.notification_context._recall_receipt_rows(tuple(queries.values()), now_ms=clock()),
-        )
-    )
-    for key, query in queries.items():
-        routes = {
-            row["intent_id"]: RouteEvidence(
-                structure_rank=row["structure_rank"],
-                lexical_rank=row["lexical_rank"],
-                lexical_terms=tuple(row["lexical_terms"] or ()),
-            )
-            for row in routed
-            if row["current_ref"] == query.ref
-        }
-        assert all(route.lexical_rank is None for route in routes.values())
-        sql_selected = select_for_claim(
-            query, ReaderNovelty(novelty="unlinked"), tuple(candidates), as_of_ms=clock(), routes=routes
-        )
-        pure_selected = select_for_claim(query, ReaderNovelty(novelty="unlinked"), tuple(candidates), as_of_ms=clock())
-        assert sql_selected == pure_selected
-        if key == "fx":
-            assert sql_selected.intent_ids == (identity("intent", "legacy-market:forex"),)
-        else:
-            # A legacy fund is unknown, so it shares the weak tier with the actor-only candidate.
-            assert routes[identity("intent", "legacy-market:fund")].structure_rank == 1
-            assert routes[identity("intent", "legacy-market:actor")].structure_rank == 2
-            assert sql_selected.intent_ids == (
-                identity("intent", "legacy-market:fund"),
-                identity("intent", "legacy-market:actor"),
-            )
-    # The canonical read is a projection; adopted legacy JSON remains untouched.
-    assert sql(
-        "SELECT document->'claims'->0->'fields'->'assets'->0->>'market_type' AS market "
-        f"FROM ({ANALYSES_SQL}) WHERE event_id='legacy-market:forex'"
-    ) == [{"market": "forex"}]
-
-
-def test_sql_generic_object_with_other_primary_assets_cannot_exhaust_the_route() -> None:
-    pg, db, clock = store()
-    adopted_head(pg.semantic, clock)
-    current = Claim.model_validate(
-        head_claim(
-            "cl:acme-current",
-            statement="ACME reports earnings",
-            subject="ACME",
-            object="earnings",
-            assets=[{"symbol": "ACME", "market_type": "equity", "role": "primary"}],
-        )
-    )
-    historical = [
-        ("actual", "艾克米", "财报", "ACME", "艾克米此前发布财报", clock() - 5000),
-        *(
-            (f"noise-{index:02}", f"Other issuer {index}", "earnings", "OTHER", "其他公司财报", clock() - index - 1)
-            for index in range(40)
-        ),
-    ]
-    candidates = []
-    for key, subject, object_, symbol, body, stamp in historical:
-        event_id = f"generic-object:{key}"
-        historical_claim = head_claim(
-            f"cl:{event_id}",
-            statement=body,
-            subject=subject,
-            object=object_,
-            assets=[{"symbol": symbol, "market_type": "equity", "role": "primary"}],
-        )
-        seed_event(event_id, title=body, fingerprint=event_id, at_ms=stamp - 100)
-        seed_update_version(event_id, content_revision=digest(event_id), claims=[historical_claim])
-        intent = identity("intent", event_id)
-        seed_sent_receipt(
-            event_id,
-            intent_id=intent,
-            content_revision=digest(event_id),
-            claim_refs=[historical_claim["ref"]],
-            body=body,
-            settled_at_ms=stamp,
-        )
-        candidates.append(RecallCandidate(intent, digest(body), body, stamp, (Claim.model_validate(historical_claim),)))
-    query = query_for_claim(current)
-    routed = asyncio.run(
-        db.read(
-            "test_generic_object_route",
-            lambda repos: repos.news.notification_context._recall_receipt_rows((query,), now_ms=clock()),
-        )
-    )
-    routes = {
-        row["intent_id"]: RouteEvidence(
-            structure_rank=row["structure_rank"],
-            lexical_rank=row["lexical_rank"],
-            lexical_terms=tuple(row["lexical_terms"] or ()),
-        )
-        for row in routed
-    }
-    assert routes[identity("intent", "generic-object:actual")].structure_rank == 1
-    sql_selected = select_for_claim(
-        query, ReaderNovelty(novelty="unlinked"), tuple(candidates), as_of_ms=clock(), routes=routes
-    )
-    pure_selected = select_for_claim(query, ReaderNovelty(novelty="unlinked"), tuple(candidates), as_of_ms=clock())
-    assert sql_selected == pure_selected
-    assert sql_selected.intent_ids[0] == identity("intent", "generic-object:actual")
-    assert len(sql_selected.intent_ids) == 16
 
 
 @pytest.mark.parametrize(
@@ -1709,7 +1454,7 @@ def test_reader_filters_old_listing_links_using_the_receipts_sent_claim_version(
     assert reader_novelty(current_ref, links, receipts).novelty == expected
     if expected == "unlinked":
         assert material["links"] == []  # dropping the latest assertion does not revive the older correction
-        assert material["revision"] != old_material["revision"]
+        assert material["revision"] == old_material["revision"]
     else:
         assert len(material["links"]) == 1 and material["links"][0]["relation"] == relation
         assert material["revision"] == old_material["revision"]
@@ -1723,236 +1468,6 @@ def test_reader_filters_old_listing_links_using_the_receipts_sent_claim_version(
         [] if missing_projection else [previous_ref]
     )
     assert sql(f"SELECT * FROM ({CLAIM_LINKS_SQL}) ORDER BY asserted_at_ms") == ledger_before
-
-
-def test_gold_claim_recalls_its_history_through_the_real_sql_routes() -> None:
-    """#750 gold case over PostgreSQL: the frozen production receipts and links inside a production-shaped
-    48 h window, projected, routed and selected by the same reader state the snapshot and both CAS sites build.
-
-    "prices", "week", "gold" and "low" are as common in the window as in production, so none is rare enough to
-    be lexical evidence: the copper and bitcoin receipts sharing them stay out and every direct antecedent
-    comes back. The pure selector over the same window chooses the same receipts.
-    """
-
-    pg, db, clock = store()
-    adopted_head(pg.semantic, clock)
-    fixture = gold_fixture()
-    carried = {row["intent_id"]: row["claim_refs"] for row in fixture["link_receipts"]}
-    for row in fixture["candidates"]:
-        event_id = f"gold-{row['intent_id'][7:19]}"
-        revision = digest(row["intent_id"])
-        seed_event(event_id, title=row["body"][:40], fingerprint=event_id, at_ms=row["settled_at_ms"] - 60_000)
-        seed_update_version(event_id, content_revision=revision, claims=row["claims"])
-        seed_sent_receipt(
-            event_id,
-            intent_id=row["intent_id"],
-            content_revision=revision,
-            claim_refs=carried.get(row["intent_id"], [claim["ref"] for claim in row["claims"]]),
-            body=row["body"],
-            settled_at_ms=row["settled_at_ms"],
-        )
-    filler = gold_window_filler(fixture)
-    seed_window_receipts(filler)
-    for number, link in enumerate(fixture["links"]):
-        seed_claim_link(
-            f"update:fixture-{number}",
-            link["current_ref"],
-            link["previous_ref"],
-            link["relation"],
-            "gold-links",
-            link["asserted_at_ms"],
-        )
-    head = EventUpdate.model_validate(fixture["update"])
-    state = asyncio.run(
-        db.read(
-            "test_gold_reader_state",
-            lambda repos: repos.news.notification_context.reader_state(
-                event_id=fixture["event_id"],
-                head=head,
-                now_ms=fixture["as_of_ms"],
-            ),
-            repeatable_read=True,
-        )
-    )
-    claims = [Claim.model_validate(item) for item in fixture["claims"]]
-    gold, data = (claim.ref for claim in claims)
-    selected = {intent[7:13] for intent in state["receipt_intents_by_claim"][gold]}
-    labels = fixture["labels"]
-    assert len(state["receipt_intents_by_claim"][gold]) <= 16
-    assert {key for key, label in labels.items() if label == 2} <= selected
-    assert not selected & {key for key, label in labels.items() if label == 0}
-    assert not selected & {"0b4d11", "177218", "641052", "d903d3"}
-    assert state["receipt_intents_by_claim"][data] == ()
-    window = tuple(
-        RecallCandidate(
-            intent_id=row["intent_id"],
-            payload_sha256=row["payload_sha256"],
-            body=row["body"],
-            settled_at_ms=row["settled_at_ms"],
-            claims=tuple(Claim.model_validate(item) for item in row["claims"]),
-        )
-        for row in fixture["candidates"]
-    ) + tuple(RecallCandidate(intent, digest(body), body, at) for intent, body, at in filler)
-    links = tuple(ClaimLink.model_validate(item) for item in fixture["links"])
-    receipts = tuple(LinkedReceipt.model_validate(item) for item in fixture["link_receipts"])
-    for claim in claims:
-        pure = select_for_claim(
-            query_for_claim(claim), reader_novelty(claim.ref, links, receipts), window, as_of_ms=fixture["as_of_ms"]
-        )
-        assert pure.intent_ids == state["receipt_intents_by_claim"][claim.ref]
-
-
-def test_lexical_route_in_sql_counts_only_terms_rare_in_the_window_like_the_python_selector() -> None:
-    """A House probe claim shares "market" and "trading" (市场, 交易) with unrelated receipts; only the receipt
-    sharing rare terms is lexical evidence, in SQL and in the pure selector, term for term."""
-
-    pg, db, clock = store()
-    adopted_head(pg.semantic, clock)
-    window = probe_window(clock())
-    seed_window_receipts([(intent, text, at) for _, intent, text, at in window])
-    keys = {intent: key for key, intent, _, _ in window}
-    claims = {
-        language: Claim.model_validate(head_claim(f"cl:probe-{language}", statement=statement, assets=[]))
-        for language, statement in (("en", PROBE_STATEMENT), ("zh", PROBE_STATEMENT_ZH))
-    }
-    queries = {language: query_for_claim(claim) for language, claim in claims.items()}
-    rows = asyncio.run(
-        db.read(
-            "test_probe_route",
-            lambda repos: repos.news.notification_context._recall_receipt_rows(tuple(queries.values()), now_ms=clock()),
-        )
-    )
-    candidates = tuple(RecallCandidate(intent, digest(text), text, at) for _, intent, text, at in window)
-    routed = {
-        language: {
-            keys[str(row["intent_id"])]: tuple(sorted(row["lexical_terms"]))
-            for row in rows
-            if row["current_ref"] == query.ref and row["lexical_rank"] is not None
-        }
-        for language, query in queries.items()
-    }
-    pure = {
-        language: {keys[intent]: terms for intent, (_, terms) in lexical_evidence(query, candidates).items()}
-        for language, query in queries.items()
-    }
-    assert routed == pure
-    assert set(routed["en"]) == set(routed["zh"]) == {PROBE_RECEIPT}
-    english, chinese = set(routed["en"][PROBE_RECEIPT]), set(routed["zh"][PROBE_RECEIPT])
-    assert {"hyperliquid", "oversight", "probe"} <= english and not {"market", "trading", "the"} & english
-    assert {"监督", "调查"} <= chinese and not {"市场", "交易"} & chinese
-
-
-def test_asset_route_in_sql_canonicalizes_symbols_like_the_python_selector() -> None:
-    pg, db, clock = store()
-    adopted_head(pg.semantic, clock)
-    history = {
-        "xag": ("XAG", "commodity"),
-        "baiyin": ("白银", "commodity"),
-        "spot-silver": ("现货白银", "commodity"),
-        "silver-pair": ("XAG/USD", "commodity"),
-        "silver-miner": ("Silver", "equity"),
-        "gold": ("国际现货黄金", "commodity"),
-        "cashtag": ("$OKLO", "crypto"),
-        "exchange": ("HTX", "unknown"),
-        "wti": ("WTI", "commodity"),
-        "prefixed": (" xyz:CL ", "commodity"),
-        "si-pair": ("SIUSDT", "crypto"),
-        "si-quoted": ("SIUSDC", "crypto"),
-        "si-equity": ("SI", "equity"),
-        "fdusd-pair": ("ABCFDUSD", "crypto"),
-        "busd-pair": ("BTCBUSD", "crypto"),
-        "xaut": ("XAUT", "crypto"),
-        "gold-token": ("GOLD", "crypto"),
-        "skhx": ("SKHX", "equity"),
-        "skhy": ("SKHY", "equity"),
-        "solana": ("solana:AbCdEFGh123456789", "crypto"),
-        "other-solana": ("solana:abcdefgh123456789", "crypto"),
-    }
-    for key, (symbol, market) in history.items():
-        event_id = f"asset-{key}"
-        claim = head_claim(
-            f"cl:{key}",
-            statement=f"Record {key}",
-            subject=f"Holder {key}",
-            assets=[{"symbol": symbol, "market_type": market, "role": "primary"}],
-        )
-        seed_event(event_id, title=key, fingerprint=event_id, at_ms=STAMP - 7_200_000)
-        seed_update_version(event_id, content_revision=digest(event_id), claims=[claim])
-        seed_sent_receipt(
-            event_id,
-            intent_id=identity("intent", event_id),
-            content_revision=digest(event_id),
-            claim_refs=[claim["ref"]],
-            body=key,
-            settled_at_ms=STAMP - 3_600_000,
-        )
-    currents = {
-        "silver": ("Silver", "commodity"),
-        "oklo": ("OKLO", "crypto"),
-        "oil": ("oil", "commodity"),
-        "si": ("$SI", "crypto"),
-        "fdusd-base": ("ABC", "crypto"),
-        "fdusd-partial": ("ABCFD", "crypto"),
-        "busd-base": ("BTC", "crypto"),
-        "busd-partial": ("BTCB", "crypto"),
-        "token": ("XAUT", "crypto"),
-        "issuer": ("SKHY", "equity"),
-        "address": ("solana:AbCdEFGh123456789", "crypto"),
-    }
-    queries = tuple(
-        query_for_claim(
-            Claim.model_validate(
-                head_claim(
-                    f"cl:current-{key}",
-                    statement="Quoted",
-                    subject=f"Reader {key}",
-                    assets=[{"symbol": symbol, "market_type": market, "role": "primary"}],
-                )
-            )
-        )
-        for key, (symbol, market) in currents.items()
-    )
-    rows = asyncio.run(
-        db.read(
-            "test_asset_route",
-            lambda repos: repos.news.notification_context._recall_receipt_rows(queries, now_ms=clock()),
-        )
-    )
-    routed = {
-        key: {
-            str(row["event_id"])[len("asset-") :]
-            for row in rows
-            if row["current_ref"] == f"cl:current-{key}" and row["structure_rank"] is not None
-        }
-        for key in currents
-    }
-    python = {
-        key: {
-            name
-            for name, (symbol, market) in history.items()
-            if market == currents[key][1]
-            and asset_retrieval_symbols(symbol, market) & asset_retrieval_symbols(*currents[key])
-        }
-        for key in currents
-    }
-    assert routed == python
-    assert routed == {
-        "silver": {"xag", "baiyin", "spot-silver", "silver-pair"},
-        "oklo": {"cashtag"},
-        "oil": {"wti", "prefixed"},
-        "si": {"si-pair", "si-quoted"},
-        "fdusd-base": {"fdusd-pair"},
-        "fdusd-partial": set(),
-        "busd-base": {"busd-pair"},
-        "busd-partial": set(),
-        "token": {"xaut", "gold-token"},
-        "issuer": {"skhx", "skhy"},
-        "address": {"solana"},
-    }
-    # Every commodity-name pattern the Python side sends is a valid PostgreSQL regular expression.
-    patterns = sorted({pattern for symbol in COMMODITY_SYMBOLS for pattern in commodity_name_patterns(symbol)})
-    assert len(patterns) > 10
-    assert sql("SELECT count(*) AS n FROM unnest(%s::text[]) p WHERE 'x' ~* p", (patterns,)) == [{"n": 0}]
 
 
 @pytest.mark.parametrize("phase", ["planner", "card"])
@@ -2488,7 +2003,7 @@ def test_slow_reader_permission_releases_event_for_admission(monkeypatch):
     snapshot = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
     plan = notify_plan(head, snapshot.reader.revision)
     started = Event()
-    original = NotificationContextStorage.current_reader_revision
+    original = NotificationContextStorage.read_permission
 
     def slow(self, event_id, *, now_ms):
         if not started.is_set():
@@ -2497,7 +2012,7 @@ def test_slow_reader_permission_releases_event_for_admission(monkeypatch):
             self.conn.execute("SELECT pg_sleep(1)")
         return original(self, event_id, now_ms=now_ms)
 
-    monkeypatch.setattr(NotificationContextStorage, "current_reader_revision", slow)
+    monkeypatch.setattr(NotificationContextStorage, "read_permission", slow)
 
     async def race():
         planning = asyncio.create_task(pg.notifications.atomic_record_plan(plan))
@@ -2570,14 +2085,14 @@ def test_foreign_writes_do_not_invalidate_news_permission(monkeypatch):
     snapshot = asyncio.run(pg.notifications.notification_snapshot(EVENT, "news"))
     plan = notify_plan(head, snapshot.reader.revision)
     started = Event()
-    original = NotificationContextStorage.current_reader_revision
+    original = NotificationContextStorage.read_permission
 
     def slow(self, event_id, *, now_ms):
         started.set()
         self.conn.execute("SELECT pg_sleep(.3)")
         return original(self, event_id, now_ms=now_ms)
 
-    monkeypatch.setattr(NotificationContextStorage, "current_reader_revision", slow)
+    monkeypatch.setattr(NotificationContextStorage, "read_permission", slow)
 
     async def race():
         planned = asyncio.create_task(pg.notifications.atomic_record_plan(plan))
@@ -2606,7 +2121,7 @@ def test_receipt_committing_inside_permission_read_invalidates_its_generation(mo
         "ev-other", content_revision=hashlib.sha256(b"ev-other").hexdigest(), claim_ref="cl:fixture", related=True
     )
     started = Event()
-    original = NotificationContextStorage.current_reader_revision
+    original = NotificationContextStorage.read_permission
 
     def slow(self, event_id, *, now_ms):
         if not started.is_set():
@@ -2614,7 +2129,7 @@ def test_receipt_committing_inside_permission_read_invalidates_its_generation(mo
             self.conn.execute("SELECT pg_sleep(.3)")
         return original(self, event_id, now_ms=now_ms)
 
-    monkeypatch.setattr(NotificationContextStorage, "current_reader_revision", slow)
+    monkeypatch.setattr(NotificationContextStorage, "read_permission", slow)
 
     async def race():
         planned = asyncio.create_task(pg.notifications.atomic_record_plan(plan))
@@ -2701,4 +2216,4 @@ def test_admission_fact_generation_does_not_invert_notification_event_lock(monke
     assert planned.lease is not None
     assert added is True
     assert sql("SELECT count(*) AS n FROM news_event_members WHERE event_id=%s", (EVENT,))[0]["n"] == 2
-    assert sql("SELECT revision FROM news_reader_clock")[0]["revision"] == generation + (2 if metadata_change else 1)
+    assert sql("SELECT revision FROM news_reader_clock")[0]["revision"] == generation

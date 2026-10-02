@@ -46,6 +46,8 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         scope_repair_columns = columns("news_analyses")
         delivery_queue_columns = columns("news_notifications")
         news_ingest_columns = columns("news_collectors")
+        claim_index_columns = columns("news_claim_index")
+        event_asset_columns = columns("news_event_assets")
         news_v3_indexes = {
             str(row["indexname"]): str(row["indexdef"])
             for row in conn.execute(
@@ -163,18 +165,39 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "ix_news_event_members_item",
         "ix_news_event_assets_event",
         "ix_news_event_assets_symbol",
-        "ix_news_event_assets_retrieval_symbol",
-        "ix_news_event_assets_retrieval_pair_base",
-        "ix_news_event_members_fact_trgm",
+        "news_claim_index_lexical",
+        "news_claim_index_source",
+        "news_claim_index_window",
+        "news_claim_index_pending",
         "ix_news_events_leader_item",
         "ix_news_items_canonical_url",
     } <= set(news_v3_indexes)
+    assert {
+        "ix_news_event_assets_retrieval_symbol",
+        "ix_news_event_assets_retrieval_pair_base",
+        "ix_news_event_members_fact_trgm",
+    }.isdisjoint(news_v3_indexes)
+    assert {"retrieval_symbol", "retrieval_pair_base"}.isdisjoint(event_asset_columns)
+    assert {"news_asset_retrieval_symbol", "news_asset_retrieval_pair_base"}.isdisjoint(functions)
+    assert claim_index_columns == {
+        "claim_ref",
+        "text_sha256",
+        "event_id",
+        "first_available_at_ms",
+        "embed_text",
+        "lexical_text",
+        "lexical",
+        "numbers",
+        "structure_keys",
+        "embedder",
+        "vector",
+    }
     assert "sent" in news_v3_indexes["news_notifications_sent"]
     assert "gin" in news_v3_indexes["ix_news_events_search"].lower()
     assert "event_kind, opened_at_ms DESC, event_id DESC" in news_v3_indexes["ix_news_events_kind_opened"]
     # Semantic jobs own rescue selection; published_at_ms is updated by Event primary key.
     assert "ix_news_events_unpublished" not in news_v3_indexes
-    assert version == latest_migration_version() == "20261002_0425"
+    assert version == latest_migration_version() == "20261002_0426"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -199,7 +222,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20261002_0425"
+    assert version == latest_migration_version() == "20261002_0426"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:

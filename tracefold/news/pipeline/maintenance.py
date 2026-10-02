@@ -213,10 +213,12 @@ class JanitorLoop:
         retention_chain_tape_days: int = 90,
         chain_tape_enabled: bool = False,
         telemetry: NewsDurableEventTelemetryPort | None = None,
+        claim_recall: Any = None,
     ) -> None:
         # Two ports, because the retention sweep is a measured heavy transaction and the outbox catch-up is
         # not. Which physical lane each one lands on is the composition root's answer, never the Janitor's.
         self.db = db
+        self.claim_recall = claim_recall
         self.cold_db = cold_db
         self.bus = bus
         self.telemetry = telemetry
@@ -232,9 +234,29 @@ class JanitorLoop:
         self.chain_tape_enabled = bool(chain_tape_enabled)
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
+        # Index work is durable NULL-vector work. A single embedding batch on the
+        # retention period cannot catch up with daily arrivals, so drain bounded
+        # batches independently without rerunning all retention sweeps.
+        async with asyncio.TaskGroup() as group:
+            group.create_task(self._maintenance_loop(stop_event=stop_event))
+            if self.claim_recall is not None:
+                group.create_task(self._claim_index_loop(stop_event=stop_event))
+
+    async def _maintenance_loop(self, *, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():
             await self.turn()
             await _sleep_or_stop(stop_event, self.period)
+
+    async def _claim_index_loop(self, *, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            progressed = False
+            try:
+                progressed = await self.claim_recall.advance()
+            except (TransientError, DeferError) as exc:
+                log.warning("news claim index maintenance deferred error=%s", type(exc).__name__)
+            # Yield between batches; idle and failed routes have a bounded poll
+            # instead of repeatedly hitting the database or external service.
+            await _sleep_or_stop(stop_event, 0.1 if progressed else 30.0)
 
     async def turn(self) -> None:
         stamp = now_ms()

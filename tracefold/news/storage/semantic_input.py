@@ -1,4 +1,4 @@
-"""Frozen source material and bounded semantic prior retrieval on the caller connection.
+"""Frozen local source material and same-source read targets on the caller connection.
 
 Commands use the caller's existing transaction; no external I/O or independent commit.
 """
@@ -9,13 +9,9 @@ import logging
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final
 
-from ..entities import source_mentions_asset
-from ..events.gate import grounded_assets
 from ..events.grounding import commodity_context_present
-from ..evidence import query_for
 from ..market_review.instruments import normalize_symbol
-from ..models import MarketAsset, market_type_of
-from ..similarity import trigram_similarity
+from ..models import market_type_of
 from ..taxonomy import source_authority
 from ..updates.contracts import (
     EstablishedRelation,
@@ -29,16 +25,10 @@ from ..updates.contracts import (
     SourceAssetTag,
 )
 from ..updates.identity import identity
-from ..updates.projection import ReadingView, extraction_scopes, item_text, reading_view, reading_views
+from ..updates.projection import ReadingView, extraction_scopes, item_text, reading_view
 from .errors import EventUpdateConflict
 from .evidence import EvidenceStorage
 from .semantic_jobs import semantic_job
-
-RELATED_PRIOR_EVENTS_MAX: Final = 8
-
-
-RELATED_PRIOR_CLAIMS_MAX: Final = 8
-
 
 READ_TARGETS_MAX: Final = 4
 
@@ -174,44 +164,6 @@ def _source_asset_candidates(
     }
 
 
-def _related_prior(
-    documents: Sequence[Mapping[str, Any]],
-    own: set[str],
-    *,
-    evidence: Sequence[Evidence],
-    preferred_refs: set[str],
-    task_texts: Sequence[str] | None = None,
-) -> tuple[PriorClaim, ...]:
-    """Rank the already recalled current claims before applying the unchanged eight-claim budget."""
-
-    candidates: list[tuple[tuple[Any, ...], PriorClaim]] = []
-    seen = set(own)
-    for event_rank, document in enumerate(documents):
-        try:
-            head = EventUpdate.model_validate(document)
-        except ValueError:
-            # Another Event's unreadable head is that Event's fault; it is no comparison candidate here.
-            log.warning("news_related_head_undecodable", extra={"event_id": document.get("event_id")})
-            continue
-        for claim in head.current_claims:
-            if claim.ref in seen:
-                continue
-            seen.add(claim.ref)
-            score = max(
-                (
-                    trigram_similarity(item_text, text)
-                    for item_text in (task_texts if task_texts is not None else (row.text for row in evidence))
-                    for text in (claim.statement, *(c.quote for c in claim.citations))
-                ),
-                default=0.0,
-            )
-            key = (claim.ref not in preferred_refs, -score, event_rank, claim.ref)
-            candidates.append(
-                (key, PriorClaim(event_id=head.event_id, content_revision=head.content_revision, claim=claim))
-            )
-    return tuple(row for _, row in sorted(candidates, key=lambda pair: pair[0])[:RELATED_PRIOR_CLAIMS_MAX])
-
-
 _VisibleMaterial = tuple[str, tuple[tuple[int, int, str], ...]]
 
 
@@ -253,11 +205,8 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
 
     Evidence contains task reads not yet recorded for this Event: newly joined members, changed task
     scopes, later bodies of an existing Item, or a bounded optional read. The complete snapshot is
-    read consistently before comparing read refs; a copy of material already read or pending is not
-    read again (`_unread`). Prior claims are this Event's adopted head claims plus
-    a bounded set of related Events' head claims recalled by existing candidate retrieval. Assembly carries unaffected
-    head claims, citations and relationships forward. Read targets are related Events' stored leader
-    Items. Cashtags can retrieve candidates but do not resolve the claim's actor identity.
+    read consistently before comparing read refs. Prior claims are this Event's
+    adopted head only. Foreign recall belongs to the post-extraction workflow.
     """
 
     work: Mapping[str, Any] | None = material.get("work")
@@ -312,7 +261,6 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
             raise EventUpdateConflict("news_reanalysis_read_scope_changed")
     selected = {row.ref for row in unique}
     scopes = tuple(scope for scope in all_scopes if scope.evidence_ref in selected)
-    selected_views = tuple(view for view in views if view.evidence_ref in selected)
     prior: tuple[PriorClaim, ...] = ()
     if head_document is not None:
         head = EventUpdate.model_validate(head_document)
@@ -322,18 +270,6 @@ def frozen_input(event_id: str, material: Mapping[str, Any]) -> FrozenInput:
         )
     read_targets: tuple[ReadTarget, ...] = ()
     if not attached:
-        # An optional read's revision re-asks only its focus claims against the attached material.
-        preferred = {ref for row in prior for ref in row.claim.antecedent_refs}
-        prior = (
-            *prior,
-            *_related_prior(
-                material.get("related_heads") or (),
-                {row.claim.ref for row in prior},
-                evidence=unique,
-                preferred_refs=preferred,
-                task_texts=tuple(" ".join(span.text for span in view.spans) for view in selected_views),
-            ),
-        )
         read_targets = tuple(
             ReadTarget(
                 ref=read_target_ref(str(row["item_id"])), action="load_prior_statement", description=str(row["title"])
@@ -490,42 +426,9 @@ class SemanticInputStorage:
             else ()
         )
         material["listed_markets"] = {str(row["symbol"]): tuple(row["markets"]) for row in rows}
-        # Freeze pending reads before prior retrieval. An already processed leader or an unrelated
-        # numbered sibling cannot supply the new task's text/source features.
-        source = frozen_input(event_id, material)
-        views = reading_views(source)
-        task_texts = tuple(" ".join(span.text for span in view.spans) for view in views)
-        source_items = tuple(
-            {"source_artifact_id": row.source.artifact_id, "canonical_url": row.source.url} for row in source.evidence
-        )
-        # Provider tags belong to their immutable source, not the Event's old leader. A numbered
-        # reading scope also needs visible evidence for the tag; source-wide grades cannot assign a
-        # sibling's asset to this task. Whole-item reads retain the established provider grounding.
-        metadata_by_item = _provider_metadata({**material, "items": ()})
-        evidence_by_ref = {row.ref: row for row in source.evidence}
-        assets: list[MarketAsset] = []
-        for view, text in zip(views, task_texts, strict=True):
-            source_item = evidence_by_ref[view.evidence_ref].source.record_id or ""
-            coins = tuple(
-                coin
-                for coin in (metadata_by_item.get(source_item) or {}).get("coins") or ()
-                if isinstance(coin, Mapping)
-            )
-            types = {str(coin.get("symbol")): market_type_of(coin.get("market_type")) for coin in coins}
-            assets.extend(
-                MarketAsset(symbol, types.get(symbol, "unknown"))
-                for symbol in grounded_assets(text, coins)
-                if view.mode != "scoped" or source_mentions_asset(symbol, types.get(symbol, "unknown"), text)
-            )
-        related_ids = (
-            self._related_event_ids(
-                event_id, now_ms=now_ms, task_texts=task_texts, source_items=source_items, assets=assets
-            )
-            if task_texts and not (work or {}).get("attached_evidence")
-            else []
-        )
-        material["related_heads"] = self._related_head_documents(related_ids)
-        material["read_targets"] = self._read_target_rows(related_ids, exclude_item_ids=item_ids)
+        # Only same-source read targets belong to the claim snapshot. Foreign
+        # proposition recall happens after extraction, in its own short read.
+        material["read_targets"] = self._same_source_targets(items, exclude_item_ids=item_ids, now_ms=now_ms)
         return material
 
     def _established_relations(self, event_id: str) -> list[dict[str, str]]:
@@ -543,66 +446,23 @@ class SemanticInputStorage:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def _related_event_ids(
-        self,
-        event_id: str,
-        *,
-        now_ms: int,
-        task_texts: Sequence[str],
-        source_items: Sequence[Mapping[str, Any]],
-        assets: Sequence[MarketAsset],
-    ) -> list[str]:
-        """Related Events by the existing bounded candidate retrieval, in its priority order."""
-
-        query = query_for(
-            event_id=event_id,
-            cutoff=int(now_ms),
-            assets=assets,
-            task_texts=task_texts,
-            source_items=source_items,
-        )
-        rows = self.evidence.evidence_candidates(query)
-        ordered = sorted(
-            rows, key=lambda row: (int(row["priority"]), -float(row["score"] or 0.0), str(row["event_id"]))
-        )
-        return [value for value in dict.fromkeys(str(row["event_id"]) for row in ordered) if value != event_id]
-
-    def _related_head_documents(self, event_ids: Sequence[str]) -> list[dict[str, Any]]:
-        if not event_ids:
-            return []
-        rows = self.conn.execute(
-            """
-            SELECT e.event_id,u.document FROM news_events e
-              JOIN news_analyses u ON u.analysis_id=e.current_analysis_id
-             WHERE e.event_id=ANY(%s)
-            """,
-            (list(event_ids),),
-        ).fetchall()
-        by_event = {str(row["event_id"]): dict(row["document"]) for row in rows}
-        return [by_event[value] for value in event_ids if value in by_event][:RELATED_PRIOR_EVENTS_MAX]
-
-    def _read_target_rows(self, event_ids: Sequence[str], *, exclude_item_ids: Sequence[str]) -> list[dict[str, Any]]:
-        if not event_ids:
-            return []
-        rows = self.conn.execute(
-            """
-            SELECT e.event_id, e.leader_item_id AS item_id, e.leader_title AS title
-              FROM news_events e WHERE e.event_id = ANY(%s)
-            """,
-            (list(event_ids),),
-        ).fetchall()
-        by_event = {str(row["event_id"]): dict(row) for row in rows}
-        excluded = set(exclude_item_ids)
-        targets: list[dict[str, Any]] = []
-        for value in event_ids:
-            row = by_event.get(value)
-            if row is None or str(row["item_id"]) in excluded:
-                continue
-            excluded.add(str(row["item_id"]))
-            targets.append(row)
-            if len(targets) >= READ_TARGETS_MAX:
-                break
-        return targets
+    def _same_source_targets(
+        self, items: Sequence[Mapping[str, Any]], *, exclude_item_ids: Sequence[str], now_ms: int
+    ) -> list[dict[str, Any]]:
+        artifacts = [str(r["source_artifact_id"]) for r in items if r.get("source_artifact_id")]
+        publishers = [str(r["source_id"]) for r in items if r.get("source_artifact_id")]
+        urls = [str(r["canonical_url"]) for r in items if r.get("canonical_url")]
+        return [
+            dict(r)
+            for r in self.conn.execute(
+                """SELECT item_id,title FROM news_items
+                WHERE item_id <> ALL(%s::text[]) AND observed_at_ms <= %s
+                  AND ((source_id,source_artifact_id) IN
+                       (SELECT * FROM unnest(%s::text[],%s::text[])) OR canonical_url=ANY(%s::text[]))
+                ORDER BY observed_at_ms DESC,item_id LIMIT %s""",
+                (list(exclude_item_ids), now_ms, publishers, artifacts, urls, READ_TARGETS_MAX),
+            ).fetchall()
+        ]
 
     def read_target_item(self, item_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(

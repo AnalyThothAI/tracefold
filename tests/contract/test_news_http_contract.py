@@ -82,9 +82,13 @@ class _FakeSemanticWork:
 
 
 class _FakeNewsRepository:
+    def status(self, *, now_ms: int):
+        return {"recall_dense": "degraded", "claim_index_pending": 0}
+
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.semantic_work = _FakeSemanticWork(self.calls)
+        self.claim_index = self
         self.events = [_event()]
         self.event_assets_by_id = {"ev-1": ["COPPER", "SPOT"]}
         self.detail_overrides: dict[str, dict[str, Any]] = {}
@@ -1062,6 +1066,53 @@ def test_status_reports_delivery_from_the_sender_workers_actually_built(
     data = response.json()["data"]
     assert data["workers_state"] == "running"
     assert data["delivery"]["delivery_available"] is available
+
+
+@pytest.mark.parametrize(
+    ("configured", "capability", "stale", "pending", "expected"),
+    [
+        (True, "running", False, 0, "on"),
+        (True, "unavailable", False, 0, "degraded"),
+        (True, "running", True, 0, "degraded"),
+        (False, "running", False, 0, "degraded"),
+        (True, "running", False, 2, "degraded"),
+    ],
+)
+def test_dense_status_requires_a_current_healthy_embedding_route_and_complete_active_index(
+    configured: bool, capability: str, stale: bool, pending: int, expected: str
+) -> None:
+    settings = Settings.model_validate(
+        {
+            "ws_token": TOKEN,
+            "llm": {
+                "base_url": "https://example.test/v1",
+                "api_key": "fixture-key",
+                "news_embedding": {
+                    "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+                    "base_url": "https://embeddings.test/v1",
+                    "api_key_file": "news_embedding_api_key",
+                }
+                if configured
+                else {},
+                "news_triage_model": "fixture-model",
+            },
+        }
+    )
+    news = _FakeNewsRepository()
+    news.status = lambda *, now_ms: {
+        "recall_dense": "on" if not pending else "degraded",
+        "claim_index_pending": pending,
+    }
+    now_ms = int(time.time() * 1000)
+    row = _running_workers_row(now_ms, {"news_claim_recall": {"state": capability, "reason": None}})
+    if stale:
+        row["heartbeat_at_ms"] -= 60_000
+    app = create_app(settings=settings)
+    app.state.service = _FakeRuntime(settings, news, row)
+    response = TestClient(app).get("/api/news/status", params={"token": TOKEN})
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["recall_dense"] == expected and data["claim_index_pending"] == pending
 
 
 def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pytest.MonkeyPatch) -> None:

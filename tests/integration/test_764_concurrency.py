@@ -10,7 +10,7 @@ import pytest
 
 from tests.support.news_update_admission import work
 from tests.support.news_update_pg import EVENT, STAMP, Clock, ThreadedDb, seed_event, sql
-from tracefold.news.storage.evidence import EvidenceStorage
+from tracefold.news.storage.semantic_input import SemanticInputStorage
 from tracefold.news.storage.semantic_store import PgSemanticStore
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
@@ -20,15 +20,15 @@ def test_slow_input_does_not_hold_admission_and_revision_cas_spends_no_attempt(m
     seed_event()
     seed_event("ev-incoming", fingerprint="incoming")
     started = Event()
-    original = EvidenceStorage.evidence_candidates
+    original = SemanticInputStorage.semantic_input_material
 
-    def slow(self, query):
+    def slow(self, event_id, *, now_ms):
         assert self.conn.execute("SHOW transaction_read_only").fetchone()["transaction_read_only"] == "on"
         started.set()
         self.conn.execute("SELECT pg_sleep(1)")
-        return original(self, query)
+        return original(self, event_id, now_ms=now_ms)
 
-    monkeypatch.setattr(EvidenceStorage, "evidence_candidates", slow)
+    monkeypatch.setattr(SemanticInputStorage, "semantic_input_material", slow)
     db = ThreadedDb()
     store = PgSemanticStore(db, clock=Clock(STAMP + 10))
 
@@ -139,6 +139,7 @@ def test_reader_generation_rolls_back_with_its_fact_and_ignores_noop_metadata():
     from contextlib import closing
 
     from tests.postgres_test_utils import connect_postgres_test
+    from tests.support.news_current_delivery import seed_delivery
 
     seed_event()
     before = sql("SELECT revision FROM news_reader_clock")[0]["revision"]
@@ -149,10 +150,7 @@ def test_reader_generation_rolls_back_with_its_fact_and_ignores_noop_metadata():
         pytest.raises(RuntimeError, match="rollback_fact"),
         conn.transaction(),
     ):
-        conn.execute(
-            "UPDATE news_items SET provider_metadata='{\"reader_test\":true}' WHERE item_id=%s",
-            (f"it-{EVENT}",),
-        )
+        seed_delivery(conn, event_id=EVENT, at_ms=STAMP, state="sent", history_context={})
         assert conn.execute("SELECT revision FROM news_reader_clock").fetchone()["revision"] == before
         conn.execute("SET CONSTRAINTS ALL IMMEDIATE")
         assert conn.execute("SELECT revision FROM news_reader_clock").fetchone()["revision"] == before + 1

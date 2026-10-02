@@ -5,14 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Final
+from typing import Any, Final
 
 from ..clock import clock_ms
 from .assembly import assemble_update
 from .contracts import EventUpdate, Extraction, FrozenInput, PriorClaim, ReadTarget, SemanticLease
 from .identity import canonical_json, identity
 from .judgment import Budget, ProviderUnavailable, Question
-from .ports import ExistingSourceReader, SemanticObservation, SemanticStore
+from .ports import ExistingSourceReader, PriorRecall, SemanticObservation, SemanticStore
 from .projection import reading_views
 from .public import public_updates
 from .semantics import SemanticAnalyzer
@@ -36,6 +36,7 @@ class NewsAgent:
         *,
         program_identity: str,
         source_reader: ExistingSourceReader | None = None,
+        recall: PriorRecall | None = None,
         clock: Callable[[], int] = clock_ms,
         stage_seconds: float = SEMANTIC_STAGE_SECONDS,
     ) -> None:
@@ -43,6 +44,7 @@ class NewsAgent:
         self.analyzer = analyzer
         self.program_identity = program_identity
         self.source_reader = source_reader
+        self.recall = recall
         self.clock = clock
         self.stage_seconds = stage_seconds
 
@@ -94,9 +96,25 @@ class NewsAgent:
         if extracted is None:
             extracted = await self.analyzer.extract(source, budget)
             extracted = await self.store.save_extraction(work_id, extracted)
+        relation_pairs: frozenset[tuple[str, str]] | None = None
+        recall_manifest = None
+        if self.recall is not None:
+            async with asyncio.timeout(budget.remaining()):
+                batch = await self.recall.priors(source, extracted)
+            selected = batch.by_slot
+            relation_pairs = frozenset((slot, p.claim.ref) for slot, rows in selected.items() for p in rows)
+            recall_manifest = {
+                "queries": dict(batch.diagnostics),
+                "pair_count": len(relation_pairs),
+            }
+            priors = {p.claim.ref: p for p in source.prior}
+            priors.update((p.claim.ref, p) for rows in selected.values() for p in rows)
+            source = FrozenInput.model_validate({**dict(source), "prior": tuple(priors.values())})
         # Understanding is derived again on every attempt against the priors supplied now; each answer it
         # needs is cached by content, so a retry asks only what changed or failed.
-        understood = await self.analyzer.understand(source, extracted, budget, final_attempt=final_attempt)
+        understood = await self.analyzer.understand(
+            source, extracted, budget, final_attempt=final_attempt, relation_pairs=relation_pairs
+        )
 
         completed_at_ms = self.clock()
         # Persisted checkpoints/cache retain successful work if these retries are exhausted.
@@ -104,7 +122,7 @@ class NewsAgent:
             budget.remaining()
             head = await self.store.head(event_id)
             if head is not None and head.input_revision > source.revision:
-                observation = self._observation(work_id, source, understood, completed_at_ms)
+                observation = self._observation(work_id, source, understood, completed_at_ms, recall=recall_manifest)
                 await self.store.save_observation(observation)
                 await self.store.finish_semantic_work(work_id, lease=lease, reason="newer_head_already_adopted")
                 return "newer_head"
@@ -118,9 +136,14 @@ class NewsAgent:
                     )
                 source = FrozenInput.model_validate({**dict(source), "prior": tuple(priors.values())})
                 understood = await self.analyzer.understand(
-                    source, understood, budget, rebase_only=True, final_attempt=final_attempt
+                    source,
+                    understood,
+                    budget,
+                    rebase_only=True,
+                    final_attempt=final_attempt,
+                    relation_pairs=relation_pairs,
                 )
-            observation = self._observation(work_id, source, understood, completed_at_ms)
+            observation = self._observation(work_id, source, understood, completed_at_ms, recall=recall_manifest)
             observation = await self.store.save_observation(observation)
             update = assemble_update(source, understood, head, adopted_at_ms=self.clock())
             if update is None:
@@ -149,9 +172,11 @@ class NewsAgent:
         source: FrozenInput,
         understood: Extraction,
         completed_at_ms: int,
+        *,
+        recall: dict[str, Any] | None = None,
     ) -> SemanticObservation:
         return SemanticObservation(
-            result_id=identity("semantic_result", self.program_identity, work_id, source.prior, understood),
+            result_id=identity("semantic_result", self.program_identity, work_id, source.prior, understood, recall),
             work_id=work_id,
             event_id=source.event_id,
             input_revision=source.revision,
@@ -164,6 +189,17 @@ class NewsAgent:
                 "evidence": [{"ref": e.ref, "source": e.source.model_dump(mode="json")} for e in source.evidence],
                 "read_refs": [view.read_ref for view in reading_views(source)],
                 "prior_claim_refs": [row.claim.ref for row in source.prior],
+                **(
+                    {}
+                    if recall is None
+                    else {
+                        "recall": {
+                            **recall,
+                            "pair_count": recall["pair_count"]
+                            + len(understood.claims) * sum(p.event_id == source.event_id for p in source.prior),
+                        }
+                    }
+                ),
             },
             read_refs=tuple(view.read_ref for view in reading_views(source)),
             reanalysis_reason=source.reanalysis_reason,

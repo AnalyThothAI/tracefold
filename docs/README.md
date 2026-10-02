@@ -74,7 +74,7 @@
 
 AI 开发入口由[共享指引](agents/shared-router.md)同步至 [AGENTS.md](../AGENTS.md) 与 [CLAUDE.md](../CLAUDE.md)。[Issue / PR](agents/issue-tracker.md)负责协作范围，[worktree](agents/worktrees.md)负责隔离；它们不另造一套业务规则。
 
-[本轮视觉审阅样张](design/handbook-visual-review.md) · [复核术语](../CONTEXT.md) · [News 详情设计记录](design/news-event-detail.md) · [Issue 717 固定窗口报告](reports/issue-717-hourly-comparison-2026-09-27.md) · [Issue 736 实施处置](reports/issue-736-disposition-2026-09-28.md) · [离线研究工作区](../notebooks/README.md)
+[本轮视觉审阅样张](design/handbook-visual-review.md) · [复核术语](../CONTEXT.md) · [News 详情设计记录](design/news-event-detail.md) · [Issue 717 固定窗口报告](reports/issue-717-hourly-comparison-2026-09-27.md) · [Issue 725 编辑判断历史对照](reports/issue-725-attention-2026-09-27.md) · [Issue 736 实施处置](reports/issue-736-disposition-2026-09-28.md) · [Issue 791 命题召回评测](reports/issue-791-claim-recall-2026-10-02.md) · [离线研究工作区](../notebooks/README.md)
 
 设计截图和报告保留其时间、来源与验证限制。冻结数据、已应用迁移、原始回执不能因清理文档被改写；过时方案从 Git / Issue 历史检索，不继续作为当前操作步骤堆放。
 

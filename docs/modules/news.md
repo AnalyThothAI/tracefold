@@ -184,30 +184,18 @@ flowchart TB
 
 *数据流 · 候选是原始来源经商品正文过滤、附交易目录类别的冻结投影；原始标签独立保留阅读身份，报价仍使用既有目录。*
 
-[entities.py](../../tracefold/news/entities.py)提供有依据的候选检索特征。`EntityKey(namespace, identifier)` 与 `EntityFeature(key, kind, basis_ref, surface)` 分开：出处和原始写法不会改变 key 的比较结果，但 key 的相同也不会替代命题关系判断。
-
-精确资产 key 保留市场类型和 venue 限定；没有 chain 依据时保留地址大小写，特别是 Solana 地址。目录中的共同发行主体、商品 underlying、venue 基础符号和加密报价对后缀，分别是相关检索特征。例如 XAUT/GOLD 的 underlying、SIUSDT/SI 的候选基础符号，只用于扩大候选，不能证明两个代币合约或新闻事实相同。`subject_id/object_id` 保留代码所给身份，来源中的主体/对象文字只作相关检索。
-
-这套纯特征同时进入抽取前的 [evidence.py](../../tracefold/news/evidence.py) 与 [storage/evidence.py](../../tracefold/news/storage/evidence.py) 查询，以及通知侧 [notifications/recall.py](../../tracefold/news/notifications/recall.py) 与 [storage/notification_context.py](../../tracefold/news/storage/notification_context.py)。扩大召回后仍逐对比较实际命题，不能凭特征交集直接判 equivalent/known，也不能让相关背景自动提高新动作的推送门槛。
+[entities.py](../../tracefold/news/entities.py)保留资产证据与准入所需的规范化。检索命中仅决定比较候选，不证明主体、对象或事实相同；模型关系与剩余的可证冲突否决拥有同一性裁决。
 
 <a id="related-recall"></a>
-#### 抽取前的关联召回：有界、由索引驱动
+#### 抽取后的共享命题召回
 
-语义领取在同一事务里组装冻结输入，其中关联召回从待处理任务的文本、来源与资产出发，在 30 天窗口内找相关 Event。三个通道各自先经索引取出有界的 Event id，只对这批候选计算分数、按来源与事实去重、截断，从不对窗口内每个 Event 逐行求值：
+领取只冻结本 Event 当前命题、未处理证据与 artifact / URL 相同的补读目标。抽取后在事务外分批调用独立 `llm.news_embedding` 路由，再做短只读查询；逐命题选择跨 Event prior，只有选中命题对进入关系判断，本 Event 仍全对比较。
 
-| 通道 | 候选来源 | 上限与排序 |
-| --- | --- | --- |
-| explicit（优先级 0） | 来源 artifact id 与 URL → `news_items` 的 artifact / `canonical_url` 索引 → Event leader 索引 | 最新 64 个，去重后按分数取 8 |
-| entity（优先级 1） | 资产检索符号 → `news_event_assets` 的生成列 `retrieval_symbol` / `retrieval_pair_base` 索引；按创建时间从新到旧逐个核对 leader 与 Event 词项，够 64 个即停 | 去重后按分数取 24 |
-| similarity（优先级 2） | 成员事实（含 leader 事实）GIN 三元组索引，用前两段不超过 600 字的任务文本探测；命中只是候选，通道条件仍按截止时可见的标题与成员事实精确判定 | 按分数取 64，去重后取 32 |
+[claim_recall.py](../../tracefold/news/claim_recall.py)是语义、回执与离线重放的唯一排序器：7 天 prior / 48 小时回执窗口内，精确稠密路线、PostgreSQL FTS 与同源候选以 RRF 融合。各消费方的预算、下限与已送保留名额在 [校准文件](../../tracefold/news/claim_recall_calibration.json)，策略身份带校准摘要。类型化资产与数字是记录的特征，不是硬性实体过滤。稠密输入只用 statement；FTS 的唯一投影 `claim_lexical_text_v1` 依次拼接 statement、subject、action、object、speaker 和 quantities 的 name、unit、value、period。候选与查询都使用这一投影，冻结回执按冻结字段生成；不补写别名或推断字段。
 
-`retrieval_symbol` 与 `retrieval_pair_base` 由数据库按 #761 的逐行规则写入时生成（去首尾空白与 `$`、地址保持原样、大写、去 `XYZ-` 与 venue `前缀:`；crypto / unknown 标签按 USDT、USDC、FDUSD、TUSD、BUSD、USD 取第一个报价后缀的基础符号）。目录别名不落列，由查询侧展开（`stored_asset_codes`），改种子不需要回填。分数仍是任一任务文本与标题或任一成员事实的最大三元组相似度；长文本只在其上界可能超过短文本最好分时才计算，结果与逐个计算相同。
+每个采用命题版本写入 `news_claim_index`，主键 `(claim_ref,text_sha256)`，向量以带嵌入器身份的 fp16 `bytea` 保存。缺失向量是持久待办；Janitor 按已送 48 小时、7 天、30 天优先级有界回填，网络调用在事务外。无需 pgvector、超级用户或应用镜像内模型权重。
 
-similarity 的探测文本有界：一次 GIN 探测在生产副本上约 20–150 ms，而相似度达到 0.3 要求两段文本三元组数量相近，超过 600 字的任务文本几乎不可能与事实相近，因此只探测前两段短文本，所有文本仍完整参与评分。对 131 个真实召回输入，explicit 与 entity 的候选集合与 #761 的窗口全扫完全一致，similarity 保留其 207 行中的 203 行、没有新增；召回 p50 约 90 ms、p95 约 0.27 s、最大约 0.45 s（4 路并发同样），远低于 News lane 默认 3 s 的 statement timeout，领取事务同样使用该默认预算。该语句不在服务端预编译（`prepare=False`）：最佳计划取决于绑定的数组，缓存的通用计划实测慢 10–20 倍。[召回规模测试](../../tests/integration/test_news_recall_bounds.py)按生产规模播种窗口，用 EXPLAIN ANALYZE 约束计划不扫全表、Event 读取数不随窗口增长，并以 #761 的逐行规则为基准核对生成列。
-
-读取输入时若仍遇 statement timeout 或取消，领取在 savepoint 里只回滚这次读取：尝试照常计数并按 15 s / 60 s / 300 s 退避、释放租约、记录 `news_semantic_input_timeout`，耗尽后进入可见失败；领取、输入与所记录的阅读范围仍同笔提交，一次尝试只读到一份一致输入。排查见[语义失败](../OPERATIONS.md#语义失败)。
-
-原始市场报告走单独的 `admit_market_item`：由 `insert_market_observation` 保存不可变的 `news_market_observations` 与解析状态，不写编辑型 `news_items`，不创建伪 Event，不走编辑型 Gate / MinHash / 语义链路。
+嵌入器由独立模型路由提供；启动时将固定英文、中文、俄文和长文本截断探针与包内真实模型向量逐项比较，要求 cosine ≥0.998 且最大分量误差 ≤0.01。自检失败时关闭稠密路线，FTS 与同源继续工作，采用和发送继续。每批响应核对模型名与完整嵌入身份，防止同一端点切换模型后保存错配向量。状态提供 `recall_dense` 和 `claim_index_pending`；`on` 同时要求当前 Workers 心跳、路由可用与活动回填窗口内无缺失。运行中批次失败会降级，下次成功后恢复。每次召回记录路线命中、最高分、降级与耗时；采用观察的 `input_manifest` 与通知决定的 `input_snapshot` 记录稳定的召回诊断。更换模型、维度、归一化或文本模板必须重新校准。
 
 <a id="agent"></a>
 <a id="section-newsagent-到底做了什么"></a>
@@ -429,9 +417,9 @@ stateDiagram-v2
 
 **读者判断**是一次请求两道题（[reader.py](../../tracefold/news/notifications/reader.py)），每条命题有自己的冻结 `ReaderInput`：命题字段与可读主题、来源，以及至多 16 条实际已送正文。输入不含未指向某条已送消息的单个 `change` 类型；`EventUpdate.changes` 和持久命题链接仍决定更正、增量与新颖度。
 
-回执召回（[recall.py](../../tracefold/news/notifications/recall.py)）从已送 `news_notifications` 出发，普通窗口按 `settled_at_ms` 连续覆盖过去 48 小时。发送时将该回执的 `claim_refs` 对应 Claim 冻结到 `news_notifications.sent_claims`；每条当前命题独立查询这份已送投影：有效语义代表优先，结构与同语言实义词项两路各取最多 32 个候选，确定性融合后可返回 0–16 条。结构路线在截断前按有证身份/明确对象、已知市场的 primary、仅共享主体/背景角色排序；最终融合也让合格正文线索优先于弱背景，组内沿用 RRF 与新近度。弱背景仍可填剩余名额，召回策略版本为 claim_receipts_v3；相关候选不能证明已覆盖。资产保留 `market_type` 和 primary / mentioned 角色，相关检索按 [entities.py](../../tracefold/news/entities.py) 同一组目录/商品/venue/报价对特征扩展；精确 key 与 related 特征分开，SQL 路线和纯函数采用相同规则。地址保持大小写，检索重合不证明同一合约或同一事实。词项路线没有停用词表：英文按同一正则取词，中文取相邻汉字 bigram，一个共享词项只有在同一 48 小时窗口里至多 1% 的已送回执（`LEXICAL_DF_MAX`，至少 1 条）出现时才算证据，同一语言至少 2 个这样的词项才入选，按词项数与新近度排序。文档频率由 SQL 在同一次查询的窗口上计算，并把每条命题的合格词项随路线排名返回；纯函数以传入的候选池为窗口，按同一规则计算。二者不提供无共同实体的通用跨语言语义匹配。共享 SQL 批次和正文缓存，但兄弟命题不共享截断后的列表。缺少历史投影时只可使用真实已送正文的合法词项路径，不借当前 head 补造历史。
+回执召回只检索 48 小时内已送回执的冻结 `sent_claims`，正文不参与检索。使用上面的共享 rank，回执得分取其命题得分最大值，已链接回执排在前面，可返回 0–16 条。缺少历史投影时不借当前 head 补造历史。
 
-同一 reader context 同时生成模型正文与 revision，由快照、记录计划、开始发送前两处校验复用。正文必须与已送 payload digest 一致；`sending` 不当作已读，`ambiguous` 保留去重保护。召回依据仅选上下文，是否已覆盖仍由持久关系、新颖度和 reader 判断决定。等价比较只用可证明的身份、枚举、同口径数量及少数可解析绝对时段冲突否决模型的 equivalent；同口径数量指同一指标与单位（忽略大小写与首尾空白）、周期可对齐，不要求主体或对象文本一致，主体不同须由 `subject_id` / `object_id` 证明。自由文本差异返回未知，不代表已经证明等价。
+reader context 在快照中计算一次；计划记录与开始发送只校验已送集合和链接图的数据库世代，并在写事务里锁定世代。向量回填、候选排序与无关系变化的外国 head 不改变发送 CAS 键。自身 head / 工作仍由 Event 锁和现有所有权条件校验；`reader_changed` 记录冲突计数。正文必须与已送 payload digest 一致；`sending` 不当作已读，`ambiguous` 保留去重保护。
 
 - 锚点题（`Choice` m1…mN / none）：哪条已送消息已经报过本命题的核心事实（同一主体、动作、对象，允许本命题多出细节）。未链接的命题有锚点时，推送门槛提高到 KEY_CUT。卡片的“补充”写法也看锚点：进展（development）对所链接的已送命题写“补充”；其余命题只有锚点指向某条已送消息时才写“补充”，并引用那条消息。链接为 increment 而锚点为 none 时按完整渲染，因为一条链接可能把同一故事里的不同事实连在一起。
 - 增量重要性题（5 档 `Score`）：本命题相对已送消息新增的信息值不值得推送；没有已送消息时评价命题本身。完全重复自然落在低档。档位按“有用的新事实”定义（#742 PR-5）；每日推送与重点数量是运行观察，不是配额：
@@ -452,7 +440,7 @@ stateDiagram-v2
 
 每条决定记录新颖度、所用链接或锚点回执、渲染方式（完整 / 补充 / 更正）、分值分布与作答后端；控制台显示模板化原因，原因后面的 `×N` 统计具有该原因的命题数，不是报道数。`key` 是重点展示标记，不是另一轮发送审批或仓位权重。`editorial_v1` 历史决定按旧原因显示表只读展示。
 
-离线重放使用 [eval_news_reader.py](../../scripts/eval_news_reader.py)：在 2026-09-28 归档的 `news_reader_input_v1` 输入与独立标注上，用已记录的回答经现行 `reader_decision` 与切点评分，钉住决策层质量线；它不调用模型，归档输入也不进入现行模型或缓存。已记录的回答是 #742 PR-5 档位在这些归档输入上的回答（在 `news_reader_input_v1` 仍是现行契约时提问），标注按 PR-5 的产品定义重标（改动的行带 `label.relabel`）；决策表同时给出推送切点与重点切点两张表。修改切点或新颖度规则时重跑它；修改档位文本、指令或模型时，须在现行输入契约上重新提问评测（样本不进仓库），并把结果写进 PR。召回由 [回执召回测试](../../tests/news/test_news_receipt_recall.py) 与真实 PostgreSQL 上的黄金案例覆盖。#725 编辑器的有限对照见 [#725 对照报告](../reports/issue-725-attention-2026-09-27.md)。
+离线重放使用 [eval_news_reader.py](../../scripts/eval_news_reader.py)：在 2026-09-28 归档的 `news_reader_input_v1` 输入与独立标注上，用已记录的回答经现行 `reader_decision` 与切点评分，钉住决策层质量线；它不调用模型，归档输入也不进入现行模型或缓存。已记录的回答是 #742 PR-5 档位在这些归档输入上的回答（在 `news_reader_input_v1` 仍是现行契约时提问），标注按 PR-5 的产品定义重标（改动的行带 `label.relabel`）；决策表同时给出推送切点与重点切点两张表。修改切点或新颖度规则时重跑它；修改档位文本、指令或模型时，须在现行输入契约上重新提问评测（样本不进仓库），并把结果写进 PR。召回由 [共享召回测试](../../tests/news/test_news_claim_recall.py) 的冻结黄金案例和 [PostgreSQL 索引边界测试](../../tests/integration/test_news_claim_index.py) 覆盖。#725 编辑器的有限对照见 [#725 对照报告](../reports/issue-725-attention-2026-09-27.md)。
 
 #759 对 397 条已有独立标签的归档回答做了定向规则前后回放：
 
@@ -551,7 +539,7 @@ CardComposer 只收到选中 Claim 的 ref、statement、结构化 fields、精�
 
 “选中了某条 Claim”不证明卡片正文完整表达了它。后续读者判断读的是 `update` 回执的**实际发送正文**，不是来源全文、计划选择集合或某个抽象“已推送 Event”标记；发送正文与摘要必须来自可核验的冻结卡片。
 
-计划提交和发送前分别在 Event 锁下核对 head 与 reader revision。同一 `NotificationContextStorage.reader_state` 构造普通召回、语义链接状态、每命题有序正文选择与上下文 revision；两处 CAS 复用它。revision 包含实际选择的 intent/body hash、新颖度及其相关送达状态、本 Event 发送中/结果不明、跨 Event 失效和上币保护，连同召回策略版本；无消费的 watchlist 不参与摘要。无关历史不会使卡片无故失效，实际影响选择或保护状态的变化必须被发现。
+计划快照只运行一次 `NotificationContextStorage.reader_state`，构造回执、两跳链接、新颖度与每命题有序正文。计划提交和发送前在 Event 锁下核对 head 与持久世代，并锁住 `news_reader_clock` 复核；这两处只检查发送权限，不重新运行召回。任何新的已送回执或链接变化使旧计划失效，下一轮按新的上下文规划；向量补算不推进世代。冲突按 plan / send 两个阶段写入 `tracefold_news_reader_changed_total`。
 
 判断先于 reader 检查写入不可变决策与判断缓存，输家计划下一轮复用 exact-input 回答；相同计划就是同一决策行。新的 policy 身份影响计划输入摘要，不改判断器身份；同一选中集合的 intent 保持稳定。重新领取意图时改绑当前持久决定，发送之后不能重新解释或改写已送正文。
 
@@ -656,4 +644,4 @@ P1 将 OI、清算、大户报告、钱包触发和无法结构化的市场记�
 编辑发送清扫以实际 `lease_until_ms` 到期为所有权丢失，并按候选 lease token 与 attempted time CAS；在途 owned intent 排除。市场发送结算按当前 attempts CAS，失败不推进组 anchor。collector 的无变化 mutation 不写行；正常成功帧五秒最多记录一次，broker 事故后的首个成功帧在同一 mutation 中关闭事故并刷新时钟。
 
 
-`news_reader_clock` 只保存一个可 HOT 更新的版本数，作为 RR 输入的 CAS 围栏；它不存知识或发送事实。短写事务在 Event 和 job/intent 后锁住此行；有界 sending sweep 在结算前先按顺序锁住全部候选 Event，避免跨 Event 的锁环。相关事实的 AFTER constraint 触发器默认延迟至提交时推进版本，事实与版本对其他事务原子可见；admission 先写 Item/member 再锁 Event 时不会提前持有 clock，避免反向锁序。Trading、collector 时钟与其他数据库的写入不改变该版本。新增这一张元数据表后 News 为 18 表、全库 27 表；这是为并发证明增加的唯一表，而非恢复旧投影或双写路径。
+`news_reader_clock` 只保存一个可 HOT 更新的版本数，作为 RR 输入的 CAS 围栏；它不存知识或发送事实。短写事务在 Event 和 job/intent 后锁住此行；有界 sending sweep 在结算前先按顺序锁住全部候选 Event，避免跨 Event 的锁环。链接图与已送集合的 AFTER constraint 触发器默认延迟至提交时推进版本，事实与版本对其他事务原子可见。Trading、collector 时钟与向量补算不改变该版本。加上命题索引后 News 为 19 表、全库 28 表；索引向量保存带模型与模板身份的检索事实，缺失向量行承担持久回填工作。

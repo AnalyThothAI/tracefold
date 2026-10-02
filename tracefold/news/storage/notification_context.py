@@ -7,32 +7,20 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import replace
 from typing import Any, Final
 
-from ..entities import ADDRESS_PATTERN, CRYPTO_QUOTE_SUFFIXES, RELATED_ASSET_ALIASES, commodity_name_patterns
+from ..claim_recall import RECEIPT_WINDOW_MS, Probe, embed_text, lexical_text, prepare_rank, rank
 from ..notifications.contracts import NEWS_CHANNEL, DeliveredText
 from ..notifications.novelty import ClaimLink, LinkedReceipt, current_links, reader_novelty
-from ..notifications.recall import (
-    LEXICAL_DF_MAX,
-    LEXICAL_SHARED_MIN,
-    LINKED_RECEIPT_WINDOW_MS,
-    RECALL_WINDOW_MS,
-    ROUTE_CANDIDATES_MAX,
-    WORD_PATTERN,
-    ClaimRecallQuery,
-    RecallCandidate,
-    RouteEvidence,
-    query_for_claim,
-    reader_context_revision,
-    select_for_claim,
-)
+from ..notifications.recall import select_for_claim
 from ..source_contracts import classify_source_contracts
 from ..updates.assembly import different_listing_assets
 from ..updates.contracts import Claim, EventUpdate
 from ..updates.identity import digest
+from .claim_index import ClaimIndexStorage, source_keys
 from .reader_check import ReaderCheck
 from .semantic_updates import SemanticUpdateStorage
-from .sql_values import _dumps
 
 _RECEIPT_COLUMNS: Final = (
     "d.intent_id, d.event_id, d.kind, d.card->>'body' AS body, d.card->>'payload_sha256' AS "
@@ -133,214 +121,32 @@ class NotificationContextStorage:
             sorted({str(ref) for row in rows if row["state"] == "ambiguous" for ref in row["claim_refs"] or ()}),
         )
 
-    def _recall_receipt_rows(self, queries: Sequence[ClaimRecallQuery], *, now_ms: int) -> list[dict[str, Any]]:
-        """Batch both bounded routes over the 48 h receipt window; keep the querying claim ref."""
-
-        if not queries:
-            return []
-        query_rows = [
-            {
-                "ref": query.ref,
-                # Retrieval spellings plus commodity name patterns; SQL uses the same owned features
-                # as asset_retrieval_symbols, without promoting overlap to exact identity.
-                "assets": [
-                    {
-                        "symbol": symbol,
-                        "market_type": market,
-                        "role": role,
-                        "patterns": list(commodity_name_patterns(symbol)) if market == "commodity" else [],
-                    }
-                    for role, values in (("primary", query.primary_assets), ("mentioned", query.mentioned_assets))
-                    for symbol, market in sorted(values)
-                ],
-                "subject": query.subject,
-                "object": query.object,
-                "known_identity": [{"key": key, "value": value} for key, value in sorted(query.known_identity)],
-                "words": sorted(query.words),
-                "han_bigrams": sorted(query.han_bigrams),
-            }
-            for query in queries
+    def _recall_receipt_rows(self, *, now_ms: int) -> list[dict[str, Any]]:
+        return [
+            dict(r)
+            for r in self.conn.execute(
+                """SELECT d.intent_id,d.event_id,d.kind,d.settled_at_ms,d.state,
+                       d.sent_claims IS NULL AS missing_projection
+                  FROM news_notifications d
+                 WHERE d.kind='update' AND d.state='sent'
+                   AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
+                 ORDER BY d.intent_id""",
+                (now_ms - RECEIPT_WINDOW_MS, now_ms),
+                binary=True,
+            ).fetchall()
         ]
-        # jsonb claim projection gives PostgreSQL a high estimated plan cost and otherwise
-        # triggers JIT compilation on every short reader transaction. The plan takes much
-        # longer to compile than to execute for the bounded 48 h receipt window.
-        self.conn.execute("SET LOCAL jit = off")
+
+    def _complete_receipt_rows(self, intents: Sequence[str]) -> list[dict[str, Any]]:
+        if not intents:
+            return []
         return [
             dict(row)
             for row in self.conn.execute(
-                f"""
-                WITH queries AS MATERIALIZED (
-                    SELECT q.*
-                      FROM jsonb_to_recordset(%s::jsonb) AS q(
-                        ref text, assets jsonb, subject text, object text, known_identity jsonb,
-                        words jsonb, han_bigrams jsonb)
-                ), window_receipts AS MATERIALIZED (
-                    SELECT {_RECEIPT_COLUMNS},
-                           COALESCE(d.sent_claims, '[]'::jsonb) AS historical_claims,
-                           (d.sent_claims IS NULL) AS missing_projection,
-                           (d.card->>'body') || ' ' || array_to_string(ARRAY(
-                               SELECT claim ->> 'statement'
-                               FROM jsonb_array_elements(COALESCE(d.sent_claims, '[]'::jsonb)) claim
-                           ), ' ') AS search_text
-                      FROM news_notifications d
-                     WHERE d.kind = 'update' AND d.state = 'sent'
-                       AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
-                       AND (d.card->>'body') IS NOT NULL AND (d.card->>'payload_sha256') IS NOT NULL
-                ), structured AS (
-                    SELECT q.ref AS current_ref, b.*, 'structure' AS route, matched.priority::real AS route_score,
-                           NULL::text[] AS lexical_terms,
-                           row_number() OVER (
-                               PARTITION BY q.ref ORDER BY matched.priority DESC, b.settled_at_ms DESC, b.intent_id
-                           ) AS rn
-                      FROM queries q CROSS JOIN window_receipts b
-                     CROSS JOIN LATERAL (
-                          -- The same preference as select_for_claim, before this route's 32-row cap:
-                          -- object/grounded identity, then typed primary, then actor/role-cross background.
-                          SELECT CASE WHEN bool_or(names.identity_match OR (
-                                               names.object_match AND NOT COALESCE(assets.typed_primary_disjoint, FALSE)
-                                           )) THEN 2 + CASE WHEN bool_or(assets.primary_match) THEN 1 ELSE 0 END
-                                      WHEN bool_or(assets.primary_match) THEN 1
-                                      WHEN count(*) > 0 THEN 0 END AS priority
-                            FROM jsonb_array_elements(b.historical_claims) hc
-                           CROSS JOIN LATERAL (
-                               SELECT (q.subject <> '' AND lower(btrim(hc -> 'fields' ->> 'subject')) = q.subject)
-                                          AS subject_match,
-                                      (q.object <> '' AND lower(btrim(hc -> 'fields' ->> 'object')) = q.object)
-                                          AS object_match,
-                                      EXISTS (
-                                  SELECT 1
-                                    FROM jsonb_array_elements(COALESCE(hc -> 'known_identity', '[]'::jsonb)) hi
-                                    JOIN jsonb_array_elements(q.known_identity) qi
-                                      ON hi ->> 'key' = qi ->> 'key'
-                                     AND btrim(hi ->> 'value') = qi ->> 'value'
-                                      ) AS identity_match
-                           ) names
-                            LEFT JOIN LATERAL (
-                                  -- The shared entity features widen candidates only. Exact address spelling
-                                  -- stays case-sensitive; catalogue/venue/quote-base features prove no identity.
-                                  SELECT bool_or(qa IS NOT NULL) AS asset_match,
-                                         bool_or(ha ->> 'role' = 'primary' AND qa ->> 'role' = 'primary'
-                                                 AND hn.market_type <> 'unknown') FILTER (WHERE qa IS NOT NULL)
-                                             AS primary_match,
-                                         bool_or(ha ->> 'role' = 'primary' AND hn.market_type <> 'unknown')
-                                         AND EXISTS (
-                                             SELECT 1 FROM jsonb_array_elements(q.assets) current_asset
-                                              WHERE current_asset ->> 'role' = 'primary'
-                                                AND current_asset ->> 'market_type' <> 'unknown'
-                                         ) AND NOT COALESCE(
-                                             bool_or(ha ->> 'role' = 'primary' AND qa ->> 'role' = 'primary'
-                                                     AND hn.market_type <> 'unknown') FILTER (WHERE qa IS NOT NULL),
-                                             FALSE
-                                         ) AS typed_primary_disjoint
-                                    FROM jsonb_array_elements(
-                                        COALESCE(hc -> 'fields' -> 'assets', '[]'::jsonb)
-                                    ) ha
-                                   CROSS JOIN LATERAL (
-                                       SELECT regexp_replace(
-                                                  ha ->> 'symbol', '^[[:space:]$]+|[[:space:]]+$', '', 'g'
-                                              ) AS text
-                                   ) ht
-                                   CROSS JOIN LATERAL (
-                                       SELECT CASE WHEN ht.text ~ %s THEN ht.text ELSE regexp_replace(
-                                                  regexp_replace(upper(ht.text), '^XYZ-', ''), '^[^:]*:', ''
-                                              ) END AS symbol,
-                                              CASE ha ->> 'market_type'
-                                                  WHEN 'forex' THEN 'fx' WHEN 'fund' THEN 'unknown'
-                                                  ELSE ha ->> 'market_type' END AS market_type
-                                   ) hn
-                                   LEFT JOIN jsonb_array_elements(q.assets) qa
-                                     ON hn.market_type = qa ->> 'market_type'
-                                    AND (ha ->> 'role' = 'primary' OR qa ->> 'role' = 'primary')
-                                    AND (
-                                        hn.symbol = qa ->> 'symbol'
-                                        OR COALESCE(%s::jsonb ->> hn.symbol, hn.symbol) = qa ->> 'symbol'
-                                        OR (hn.market_type IN ('crypto','unknown') AND ht.text !~ %s
-                                            AND (
-                                                SELECT left(hn.symbol, length(hn.symbol)-length(quote))
-                                                  FROM unnest(%s::text[]) WITH ORDINALITY quotes(quote, rank)
-                                                 WHERE right(hn.symbol, length(quote)) = quote
-                                                   AND length(hn.symbol) > length(quote)+1
-                                                 ORDER BY rank LIMIT 1
-                                            ) = qa ->> 'symbol')
-                                        OR EXISTS (
-                                            SELECT 1 FROM jsonb_array_elements_text(qa -> 'patterns') pattern
-                                             WHERE ht.text ~* pattern
-                                        )
-                                    )
-                            ) assets ON TRUE
-                           WHERE names.subject_match OR names.object_match OR names.identity_match
-                              OR assets.asset_match
-                      ) matched
-                     WHERE matched.priority IS NOT NULL
-                ), query_terms AS MATERIALIZED (
-                    SELECT q.ref, 'word' AS kind, term
-                      FROM queries q CROSS JOIN LATERAL jsonb_array_elements_text(q.words) term
-                    UNION ALL
-                    SELECT q.ref, 'han' AS kind, term
-                      FROM queries q CROSS JOIN LATERAL jsonb_array_elements_text(q.han_bigrams) term
-                ), receipt_terms AS MATERIALIZED (
-                    -- `lexical_evidence`: which query terms each window receipt's body and sent statements
-                    -- carry, as `_words` (same pattern, lower-cased) and `_han_bigrams` (adjacent Han) read them.
-                    SELECT DISTINCT b.intent_id, 'word' AS kind, lower(m[1]) AS term
-                      FROM window_receipts b CROSS JOIN LATERAL regexp_matches(b.search_text, %s, 'g') m
-                     WHERE lower(m[1]) IN (SELECT term FROM query_terms WHERE kind = 'word')
-                    UNION ALL
-                    SELECT DISTINCT b.intent_id, 'han' AS kind, t.term
-                      FROM (SELECT DISTINCT term FROM query_terms WHERE kind = 'han') t
-                      JOIN window_receipts b ON strpos(b.search_text, t.term) > 0
-                ), rare_terms AS (
-                    -- Document frequency over the same window: a term too many receipts carry is no evidence.
-                    SELECT kind, term FROM receipt_terms GROUP BY kind, term
-                    HAVING count(*) <= greatest(1, %s * (SELECT count(*) FROM window_receipts))
-                ), shared_terms AS (
-                    SELECT qt.ref AS current_ref, rt.intent_id, qt.term,
-                           count(*) OVER (PARTITION BY qt.ref, rt.intent_id, qt.kind) AS kind_shared
-                      FROM query_terms qt
-                      JOIN rare_terms r ON r.kind = qt.kind AND r.term = qt.term
-                      JOIN receipt_terms rt ON rt.kind = qt.kind AND rt.term = qt.term
-                ), lexical_evidence AS (
-                    SELECT current_ref, intent_id, max(kind_shared) AS shared, array_agg(term) AS terms
-                      FROM shared_terms WHERE kind_shared >= %s
-                     GROUP BY current_ref, intent_id
-                ), lexical AS (
-                    SELECT e.current_ref, b.*, 'lexical' AS route, e.shared::real AS route_score,
-                           e.terms AS lexical_terms,
-                           row_number() OVER (
-                               PARTITION BY e.current_ref ORDER BY e.shared DESC, b.settled_at_ms DESC, b.intent_id
-                           ) AS rn
-                      FROM lexical_evidence e JOIN window_receipts b ON b.intent_id = e.intent_id
-                )
-                SELECT DISTINCT ON (current_ref, intent_id)
-                       current_ref, intent_id, event_id, kind, body, payload_sha256,
-                       settled_at_ms, receipt, card, history_context, claim_refs,
-                       historical_claims, missing_projection,
-                       min(rn) FILTER (WHERE route = 'structure')
-                           OVER (PARTITION BY current_ref, intent_id) AS structure_rank,
-                       min(rn) FILTER (WHERE route = 'lexical')
-                           OVER (PARTITION BY current_ref, intent_id) AS lexical_rank,
-                       max(lexical_terms) FILTER (WHERE route = 'lexical')
-                           OVER (PARTITION BY current_ref, intent_id) AS lexical_terms
-                  FROM (
-                      SELECT * FROM structured WHERE rn <= %s
-                      UNION ALL
-                      SELECT * FROM lexical WHERE rn <= %s
-                  ) routed
-                 ORDER BY current_ref, intent_id, route
-                """,  # noqa: S608 - a module-owned column list
-                (
-                    _dumps(query_rows),
-                    int(now_ms) - RECALL_WINDOW_MS,
-                    int(now_ms),
-                    ADDRESS_PATTERN,
-                    _dumps(RELATED_ASSET_ALIASES),
-                    ADDRESS_PATTERN,
-                    list(CRYPTO_QUOTE_SUFFIXES),
-                    WORD_PATTERN,
-                    LEXICAL_DF_MAX,
-                    LEXICAL_SHARED_MIN,
-                    ROUTE_CANDIDATES_MAX,
-                    ROUTE_CANDIDATES_MAX,
-                ),
+                f"""SELECT {_RECEIPT_COLUMNS},d.state,
+                           COALESCE(d.sent_claims,'[]'::jsonb) AS historical_claims
+                      FROM news_notifications d WHERE d.intent_id=ANY(%s::text[])""",  # noqa: S608
+                (list(intents),),
+                binary=True,
             ).fetchall()
         ]
 
@@ -398,16 +204,18 @@ class NotificationContextStorage:
                 """,  # noqa: S608 - a module-owned column list
                 (
                     list(refs),
-                    int(now_ms) - LINKED_RECEIPT_WINDOW_MS,
+                    int(now_ms) - RECEIPT_WINDOW_MS,
                     int(now_ms),
-                    int(now_ms) - LINKED_RECEIPT_WINDOW_MS,
+                    int(now_ms) - RECEIPT_WINDOW_MS,
                     until_ms,
                     until_ms,
                 ),
             ).fetchall()
         ]
 
-    def reader_state(self, *, event_id: str, head: EventUpdate, now_ms: int) -> dict[str, Any]:
+    def reader_state(
+        self, *, event_id: str, head: EventUpdate, now_ms: int, probes: Mapping[str, Probe] | None = None
+    ) -> dict[str, Any]:
         """Build the exact claim-scoped reader context for snapshot and both CAS sites."""
 
         sending, ambiguous = self._unsettled_claim_refs(event_id)
@@ -446,18 +254,18 @@ class NotificationContextStorage:
             )
         )
         inactive = set(head.retired_claim_refs) | set(head.superseded_claim_refs) | set(invalidated)
-        queries = {claim.ref: query_for_claim(claim) for claim in head.claims if claim.ref not in inactive}
-        ordinary = self._recall_receipt_rows(tuple(queries.values()), now_ms=now_ms)
+        queries = {claim.ref: claim for claim in head.claims if claim.ref not in inactive}
+        ordinary = self._recall_receipt_rows(now_ms=now_ms) if queries else []
         active = linked_refs(head, invalidated)
         links = self._claim_links(sorted(active), as_of_ms=now_ms)
         reached = active | {str(row[key]) for row in links for key in ("current_ref", "previous_ref")}
         linked = self._link_receipt_rows(sorted(reached), now_ms=now_ms, until_ms=now_ms)
-        original_claims = {
-            claim.ref: claim
-            for row in (*ordinary, *linked)
-            for value in row.get("historical_claims") or ()
-            for claim in (Claim.model_validate(value),)
+        rows = {str(row["intent_id"]): row for row in linked}
+        frozen_by_intent = {
+            intent: tuple(Claim.model_validate(value) for value in row.get("historical_claims") or ())
+            for intent, row in rows.items()
         }
+        original_claims = {claim.ref: claim for claims in frozen_by_intent.values() for claim in claims}
         original_claims.update((claim.ref, claim) for claim in head.claims)
         link_models = listing_compatible_links(
             (
@@ -488,15 +296,8 @@ class NotificationContextStorage:
             )
             for row in linked
         )
-        rows = {str(row["intent_id"]): row for row in (*linked, *ordinary)}
-        candidates = tuple(
-            RecallCandidate(
-                intent_id=intent,
-                payload_sha256=text.payload_sha256,
-                body=text.body,
-                settled_at_ms=int(text.received_at_ms),
-                claims=tuple(Claim.model_validate(claim) for claim in row.get("historical_claims") or ()),
-            )
+        available = frozenset(
+            intent
             for intent, row in rows.items()
             if (text := delivered_text(row)) is not None
             and text.state == "sent"
@@ -510,36 +311,63 @@ class NotificationContextStorage:
             for claim in head.claims
             if claim.ref not in inactive
         }
-        ordinary_ids = {
-            ref: {str(row["intent_id"]) for row in ordinary if row["current_ref"] == ref} for ref in queries
-        }
-        routes = {
-            ref: {
-                str(row["intent_id"]): RouteEvidence(
-                    structure_rank=row["structure_rank"],
-                    lexical_rank=row["lexical_rank"],
-                    lexical_terms=tuple(sorted(row["lexical_terms"] or ())),
-                )
-                for row in ordinary
-                if row["current_ref"] == ref
-            }
-            for ref in queries
-        }
-        selections = {
-            ref: select_for_claim(
-                query,
-                novelties[ref],
-                tuple(
-                    candidate
-                    for candidate in candidates
-                    if candidate.intent_id in ordinary_ids[ref] or candidate.intent_id in novelties[ref].linked_intents
-                ),
-                as_of_ms=now_ms,
-                routes=routes[ref],
+        index = ClaimIndexStorage(self.conn)
+        selections = {}
+        recall_diagnostics = {}
+        ordinary_intents = sorted(str(row["intent_id"]) for row in ordinary)
+        for ref, claim in queries.items():
+            probe = (probes or {}).get(ref, Probe(embed_text(claim)))
+            if probe.text != embed_text(claim):
+                probe = Probe(embed_text(claim))
+            sources = tuple(
+                key
+                for citation in claim.citations
+                if citation.evidence_ref in evidence_items
+                for key in source_keys(evidence_items[citation.evidence_ref].source)
             )
-            for ref, query in queries.items()
-        }
+            projected = index.receipt_candidates(ordinary_intents, sources=sources)
+            candidates = tuple(candidate for candidate, _ in projected)
+            prepared = prepare_rank(probe, candidates, "receipt")
+            eligible_intents = {
+                str(candidate.group) for candidate in candidates if candidate.key in prepared.eligible_keys
+            }
+            rows.update(
+                (str(row["intent_id"]), row)
+                for row in self._complete_receipt_rows(sorted(eligible_intents - rows.keys()))
+            )
+            eligible_claims = {
+                (intent, claim.ref, embed_text(claim)): claim
+                for intent in eligible_intents
+                for value in rows[intent].get("historical_claims") or ()
+                for claim in (Claim.model_validate(value),)
+            }
+            available = available | frozenset(
+                intent
+                for intent in eligible_intents
+                if (text := delivered_text(rows[intent])) is not None
+                and text.state == "sent"
+                and text.received_at_ms is not None
+                and text.received_at_ms < now_ms
+            )
+            verified = {
+                candidate.key: eligible_claims[occurrence]
+                for candidate, occurrence in projected
+                if candidate.key in prepared.eligible_keys
+                and occurrence[0] in available
+                and occurrence in eligible_claims
+            }
+            lexical = index.lexical_scores(
+                lexical_text(claim),
+                [(key, claim) for key, claim in verified.items() if key in prepared.fts_eligible_keys],
+            )
+            ranking = rank(
+                prepared,
+                tuple(replace(c, lexical=lexical.get(c.key, 0.0)) for c in candidates if c.key in verified),
+            )
+            selections[ref] = select_for_claim(novelties[ref], ranking, available=available)
+            recall_diagnostics[ref] = ranking.diagnostics()
         selected_ids = {intent for selection in selections.values() for intent in selection.intent_ids}
+        selected_rows = [rows[intent] for intent in sorted(selected_ids)]
         return {
             "event": None if event is None else dict(event),
             "sending": sending,
@@ -547,39 +375,23 @@ class NotificationContextStorage:
             "invalidated": invalidated,
             "protected_listing": protected_listing,
             "receipt_intents_by_claim": {ref: selection.intent_ids for ref, selection in selections.items()},
-            "receipts": list(
-                {
-                    str(row["intent_id"]): row for row in (*[rows[intent] for intent in sorted(selected_ids)], *linked)
-                }.values()
-            ),
+            "receipts": list({str(row["intent_id"]): row for row in (*selected_rows, *linked)}.values()),
             "links": links,
             "linked": linked,
-            "revision": reader_context_revision(
-                head.ref,
-                selections,
-                novelties,
-                candidates,
-                receipt_models,
-                blocked=tuple(sending),
-                ambiguous=tuple(ambiguous),
-                invalidated=tuple(invalidated),
-                protected_listing=protected_listing,
-            ),
+            "revision": self._generation_revision(),
+            "recall_diagnostics": recall_diagnostics,
         }
 
-    def current_reader_revision(self, event_id: str, *, now_ms: int) -> str | None:
-        document = self.updates.event_update_head_document(event_id)
-        if document is None:
-            return None
-        head = EventUpdate.model_validate(document)
-        state = self.reader_state(event_id=event_id, head=head, now_ms=now_ms)
-        return str(state["revision"])
+    def _generation_revision(self) -> str:
+        generation = self.conn.execute("SELECT revision FROM news_reader_clock WHERE singleton").fetchone()["revision"]
+        return f"reader_generation:{generation}"
 
     def read_permission(self, event_id: str, *, now_ms: int) -> ReaderCheck:
+        del now_ms
         generation = int(
             self.conn.execute("SELECT revision FROM news_reader_clock WHERE singleton").fetchone()["revision"]
         )
-        return ReaderCheck(event_id, self.current_reader_revision(event_id, now_ms=now_ms), generation)
+        return ReaderCheck(event_id, f"reader_generation:{generation}", generation)
 
     def read_plan_permission(self, update_ref: str, *, now_ms: int) -> ReaderCheck | None:
         row = self.conn.execute("SELECT event_id FROM news_analyses WHERE update_ref=%s", (update_ref,)).fetchone()
@@ -589,8 +401,10 @@ class NotificationContextStorage:
         row = self.conn.execute("SELECT event_id FROM news_notifications WHERE intent_id=%s", (intent_id,)).fetchone()
         return None if row is None else self.read_permission(str(row["event_id"]), now_ms=now_ms)
 
-    def notification_snapshot_material(self, *, event_id: str, channel: str, now_ms: int) -> dict[str, Any] | None:
-        """The pending head, the receipts the planner may compare, and the related-receipt reader revision."""
+    def notification_snapshot_material(
+        self, *, event_id: str, channel: str, now_ms: int, probes: Mapping[str, Probe] | None = None
+    ) -> dict[str, Any] | None:
+        """The pending head, one selected reader context, and the sent-set/link generation."""
 
         # The port starts a repeatable-read transaction before session configuration or any query.
         # Several reads below must see one MVCC view for the model input and revision.
@@ -605,7 +419,9 @@ class NotificationContextStorage:
         head = self.updates.event_update_head_document(event_id)
         if head is None or head.get("content_revision") != work["content_revision"]:
             return None
-        reader = self.reader_state(event_id=event_id, head=EventUpdate.model_validate(head), now_ms=now_ms)
+        reader = self.reader_state(
+            event_id=event_id, head=EventUpdate.model_validate(head), now_ms=now_ms, probes=probes
+        )
         return {
             "work_updated_at_ms": int(work["updated_at_ms"]),
             "work_due_at_ms": int(work["next_attempt_at_ms"]),
@@ -619,4 +435,5 @@ class NotificationContextStorage:
             "links": reader["links"],
             "link_receipts": reader["linked"],
             "protected_listing": reader["protected_listing"],
+            "recall_diagnostics": reader["recall_diagnostics"],
         }

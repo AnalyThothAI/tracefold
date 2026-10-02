@@ -28,6 +28,7 @@ from tests.support.news_update_pg import (
 from tests.support.news_update_semantic import prior_of
 from tracefold.news.notifications.card import freeze_card
 from tracefold.news.pipeline.admission import DeduperConsumer
+from tracefold.news.storage.claim_recall import PgClaimRecall
 from tracefold.news.storage.errors import SemanticLeaseLost
 from tracefold.news.storage.notification_store import PgNotificationStore
 from tracefold.news.storage.semantic_store import PgSemanticStore
@@ -190,12 +191,13 @@ class FailsFirstUnderstanding(StubAnalyzer):
         return extracted
 
 
-def test_retry_re_extracts_when_a_new_related_event_adds_a_read_target():
+def test_retry_re_extracts_when_a_new_same_source_event_adds_a_read_target(monkeypatch):
     seed_event()
     clock = Clock(STAMP + 60_000)
     pg = PgSemanticStore(ThreadedDb(), clock=clock)
+    monkeypatch.setattr("tracefold.news.storage.claim_recall.clock_ms", clock)
     analyzer = FailsFirstUnderstanding()
-    agent = NewsAgent(pg, analyzer, program_identity="p", clock=clock)
+    agent = NewsAgent(pg, analyzer, program_identity="p", clock=clock, recall=PgClaimRecall(pg.db))
     old = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
     assert old is not None and not old.source.prior
     with pytest.raises(ProviderUnavailable):
@@ -203,33 +205,38 @@ def test_retry_re_extracts_when_a_new_related_event_adds_a_read_target():
     assert analyzer.extract_calls == 1
     asyncio.run(pg.defer_semantic_event(old, reason="retry"))
     seed_event("ev-other", text="Agency orders a 25% tariff on steel.", fingerprint="fp-other")
-    asyncio.run(adopt_other_event(pg))
+    related = asyncio.run(adopt_other_event(pg))
     sql("UPDATE news_items SET provider_params_available_at_ms=%s WHERE item_id='it-ev-other'", (STAMP,))
     clock.now_ms += 60_000
     new = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
-    assert new is not None and new.source.prior and new.source.read_targets != old.source.read_targets
+    assert new is not None and new.source.prior == old.source.prior == ()
+    assert new.source.read_targets != old.source.read_targets
+    assert [target.ref for target in new.source.read_targets] == ["news_item:it-ev-other"]
     assert old.source.evidence == new.source.evidence
     assert old.source.revision == new.source.revision
     assert asyncio.run(agent.process(new)) == "adopted"
     # A new read target is extraction input, so this input is new.
     assert analyzer.extract_calls == 2
+    assert analyzer.understood == [(), (related.claim.ref,)]
 
 
-def test_retry_reuses_the_extraction_when_only_a_related_head_changes():
+def test_retry_reuses_the_extraction_when_only_a_related_head_changes(monkeypatch):
     # #742 W6: related Events' claims are comparison candidates, not extraction input. One of them adopting
     # again between two attempts changes the comparisons, not the stored extraction.
     seed_event("ev-other", text="Agency orders a 25% tariff on steel.", fingerprint="fp-other")
     clock = Clock(STAMP + 60_000)
     pg = PgSemanticStore(ThreadedDb(), clock=clock)
+    monkeypatch.setattr("tracefold.news.storage.claim_recall.clock_ms", clock)
     related = asyncio.run(adopt_other_event(pg))
     sql("UPDATE news_items SET provider_params_available_at_ms=%s WHERE item_id='it-ev-other'", (STAMP,))
     seed_event()
     analyzer = FailsFirstUnderstanding()
-    agent = NewsAgent(pg, analyzer, program_identity="p", clock=clock)
+    agent = NewsAgent(pg, analyzer, program_identity="p", clock=clock, recall=PgClaimRecall(pg.db))
     old = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
-    assert old is not None and [row.claim.ref for row in old.source.prior] == [related.claim.ref]
+    assert old is not None and old.source.prior == ()
     with pytest.raises(ProviderUnavailable):
         asyncio.run(agent.process(old))
+    assert analyzer.understood == [(related.claim.ref,)]
     asyncio.run(pg.defer_semantic_event(old, reason="retry"))
 
     head = asyncio.run(pg.head("ev-other"))
@@ -246,13 +253,16 @@ def test_retry_reuses_the_extraction_when_only_a_related_head_changes():
         ),
     )
     assert asyncio.run(adopt_next(pg, head, source, extraction, work_id="work-other-2"))[0]
+    replacement = asyncio.run(pg.head("ev-other"))
+    assert replacement is not None
     clock.now_ms += 60_000
     new = asyncio.run(pg.claim_semantic_work(EVENT, lease_ms=180_000))
     assert new is not None and new.source.input_sha == old.source.input_sha
-    assert new.source.prior != old.source.prior
+    assert new.source.prior == old.source.prior == ()
     assert asyncio.run(agent.process(new)) == "adopted"
     assert analyzer.extract_calls == 1
-    assert analyzer.understood[-1] == tuple(row.claim.ref for row in new.source.prior)
+    assert analyzer.understood[-1] == tuple(claim.ref for claim in replacement.current_claims)
+    assert analyzer.understood[-1] != analyzer.understood[0]
 
 
 def test_a_crashed_final_attempt_quarantines_exactly_the_reads_it_was_given():

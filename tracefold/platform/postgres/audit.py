@@ -85,6 +85,7 @@ class QueryAuditCatalog:
 
 NEWS_TABLES = (
     "news_analyses",
+    "news_claim_index",
     "news_collectors",
     "news_reader_clock",
     "news_market_observations",

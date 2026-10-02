@@ -20,10 +20,6 @@ from typing import Any
 
 from tests.support.news_update_cards import adopted, draft, source
 from tracefold.news.delivery import update_card_assets
-from tracefold.news.events.storyline import (
-    same_storyline_key,
-    storyline_asset,
-)
 from tracefold.news.market_review.pricing import QuoteRequest
 from tracefold.news.models import MarketAsset, market_type_of
 from tracefold.news.updates.contracts import Asset
@@ -97,16 +93,3 @@ def _card_assets(*assets: dict[str, Any]) -> list[MarketAsset]:
 
 
 # ---------------------------------------------------------- (e) storyline: two SEIs are two stories
-
-
-def test_two_sei_markets_are_two_storylines_and_two_untyped_ones_are_still_one() -> None:
-    crypto, equity, unknown = "asset:crypto:SEI", "asset:equity:SEI", "asset:SEI"
-
-    assert crypto == "asset:crypto:SEI" and equity == "asset:equity:SEI" and unknown == "asset:SEI"
-    assert not same_storyline_key(crypto, equity)
-    # Every card written before #651 carries the untyped key, and it must keep meeting both: an untyped
-    # key cannot claim to be a different story.
-    assert same_storyline_key(unknown, crypto) and same_storyline_key(unknown, equity)
-    assert same_storyline_key(unknown, unknown)
-    assert storyline_asset(crypto) == MarketAsset("SEI", "crypto")
-    assert storyline_asset("conflict:mideast_2026") is None
