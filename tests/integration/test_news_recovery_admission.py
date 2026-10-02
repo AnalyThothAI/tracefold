@@ -10,6 +10,7 @@ import pytest
 from tests.support.news_update_admission import RecordingBus, event_of, raw, work
 from tests.support.news_update_pg import STAMP, ThreadedDb, sql
 from tracefold.news.pipeline.admission import DeduperConsumer
+from tracefold.news.storage.semantic_store import PgSemanticStore
 
 pytestmark = pytest.mark.integration
 TITLE = "Agency orders 25% tariff on steel imports from Canada"
@@ -28,6 +29,9 @@ def test_recovery_event_admission_and_live_twin_grouping(postgres_clone_dsn: str
 
     async def scenario() -> None:
         await consumer.handle(_frame(79101, age=age))
+        if age <= 30 * 60_000:
+            source = await PgSemanticStore(ThreadedDb()).input_for(event_of(79101))
+            assert source.evidence[0].source.first_available_at_ms == STAMP - age
         await consumer.handle(_frame(79102, age=0, recovery=False))
 
     asyncio.run(scenario())
