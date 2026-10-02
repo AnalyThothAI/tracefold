@@ -427,7 +427,21 @@
     }
     .news-detail-notification-decisions button,
     .news-detail-delivery-summary button {
-      min-height: 36px;
+      min-width: var(--tap-target);
+      min-height: var(--tap-target);
+    }
+    .news-detail-record > summary {
+      width: 100%;
+      min-height: var(--tap-target);
+      padding-block: 12px;
+    }
+    .news-detail-record a {
+      min-width: var(--tap-target);
+      min-height: var(--tap-target);
+    }
+    .news-detail-document > .news-technical > summary,
+    .news-detail-related select {
+      min-height: var(--tap-target);
     }
   }
 }
