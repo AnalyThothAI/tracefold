@@ -22,6 +22,8 @@ Owner 已批准离线模型重问、标注与校准，并授权业务完成后�
 
 已从持久审计日志恢复原 150 条查询及全部 10,394 单元，并逐一绑定冻结事实，0 缺失、0 歧义。原审计明确约定默认 U；该约定只适用于全部读过的原候选池，池外新候选保持 unknown。重新导出的原 A 窗口与 B 的业务窗口分开记录；完整 snapshots 保留 query-time head、mask、来源与冻结 sent_claims，禁止以 claim ref 最早版本或今天的 head 代替当时事实。
 
+原审计单元的命题和卡片摘要存在固定长度截断；恢复的是原来实际读过的候选池，不能替代对新增完整消息的独立盲评。150 条读者输入已全部绑定，prior / receipt SF 查询分母为 65 / 32，缺失 0。回执主指标现在统计实际链接优先后的最终 m1..m16，raw rank 只作诊断；总关系对的减量同时计入本 Event 和跨 Event。历史 prior 没有独立调用时间，分析完成时间是重放上界，可能包括比较期间才采用的 head；回执的原决策开始时间可精确恢复。报告明确区分这两种时间证明。
+
 此前候选均未满足联合约束：
 
 | 失败候选或重问 | 已观察结果 | 结论 |
@@ -37,7 +39,7 @@ A 的合并前剩余业务证明为：最终配置联合召回验收、#750/#755
 
 ## 已执行工程检查
 
-提交 `4ca84d5c8` 的 [CI 36994911255](https://github.com/AnalyThothAI/tracefold/actions/runs/36994911255) 七项全部成功：static、hermetic、PostgreSQL、broker、frontend、deploy-e2e、ci-gate。后续 FTS / 身份 / 数值自检改动仍需其自身最终 HEAD 的 CI；不把前一提交结果外推。
+提交 `4ca84d5c8` 的 [CI 36994911255](https://github.com/AnalyThothAI/tracefold/actions/runs/36994911255) 七项全部成功。提交 `3bcf17fdf` 的 [CI 36997937247](https://github.com/AnalyThothAI/tracefold/actions/runs/36997937247) static、hermetic、broker、frontend、deploy-e2e 成功；PostgreSQL 580 passed / 2 failed。两处合成矿山消息只替换 statement 和 subject，却仍继承关税 action，新 canonical FTS 如实召回了错误字段。修复样本的 action / object / 类别后该完整文件 66 passed，排除无关消息和冻结版本断言均保留。新提交仍须其自身最终 HEAD 的 CI，不把本地修复或前一提交结果外推。
 
 | 本地检查 | 实际结果 | 范围 |
 | --- | --- | --- |
@@ -46,6 +48,7 @@ A 的合并前剩余业务证明为：最终配置联合召回验收、#750/#755
 | News / app 嵌入器类型检查 | 150 文件通过 | 生产接口与字段投影 |
 | 相关 PostgreSQL 集合 | 44 passed，1 slow deselected | 精确版本、冻结 FTS、迁移 head、schema、模型 deadline / 降级；固定向量替换后的 deadline 另 1 passed，1 slow deselected |
 | 服务与补算 focused 集合 | 54 passed | 真 HTTP 协议、故障、取消、顺序、维护独立性 |
+| 严格离线评测 focused 集合 | 13 passed | 完整身份与摘要、当时 head / mask / 冻结版本、池外 unknown、缺失输入、实际最终消息与总关系对；包含真实 TEMP PostgreSQL FTS |
 | 独立 CPU 容器 | 固定 revision 实际加载；应用黄金自检与 EN / ZH / RU 请求通过 | 真实镜像、0600 密钥、非 root / read-only；自检 0.564 s 只作观察，非正式选型验收 |
 
 各集合有重叠，不相加。两个本地部署 shell 用例因用户保留的 PostgreSQL 初始化脚本 CRLF 失败；使用 Git HEAD 原脚本在隔离目录中复测通过。该用户文件没有修改或提交。

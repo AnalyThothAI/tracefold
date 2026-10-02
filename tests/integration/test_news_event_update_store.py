@@ -117,7 +117,15 @@ def seed_update_version(
 def seed_sent_claim_projection(event_id: str, *, content_revision: str, claim_ref: str, related: bool = True) -> None:
     """Give a synthetic receipt the frozen claim version it actually says it carried."""
 
-    unrelated = {"subject": "Miner", "assets": [{"symbol": "CL", "market_type": "commodity", "role": "primary"}]}
+    unrelated = {
+        "subject": "Miner",
+        "action": "halts",
+        "object": "a Chilean copper pit",
+        "mode": "observation",
+        "phase": "effective",
+        "content_kind": "state_change",
+        "assets": [{"symbol": "CL", "market_type": "commodity", "role": "primary"}],
+    }
     claim = (
         head_claim(claim_ref)
         if related
@@ -1293,7 +1301,15 @@ def test_a_later_head_of_the_historical_event_does_not_change_its_receipt() -> N
     pg, db, clock = store()
     adopted_head(pg.semantic, clock)
     related = {"subject": "Agency", "assets": [{"symbol": "X", "market_type": "equity", "role": "primary"}]}
-    unrelated = {"subject": "Miner", "assets": [{"symbol": "CL", "market_type": "commodity", "role": "primary"}]}
+    unrelated = {
+        "subject": "Miner",
+        "action": "halts",
+        "object": "a Chilean copper pit",
+        "mode": "observation",
+        "phase": "effective",
+        "content_kind": "state_change",
+        "assets": [{"symbol": "CL", "market_type": "commodity", "role": "primary"}],
+    }
     sent = head_claim("cl:hist-sent", statement="Agency sets the start date of the steel tariff", **related)
     quiet = head_claim("cl:quiet-sent", statement="Miner halts a Chilean copper pit", **unrelated)
     # Unpushed and structurally related: a sibling in the sent version, and a claim of a later head.
