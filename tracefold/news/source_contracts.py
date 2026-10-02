@@ -29,8 +29,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal, NamedTuple
 
-from .models import Admission
-
 SourceContractFamily = Literal[
     "news_v1",
     "listing_v1",
@@ -210,24 +208,6 @@ def market_route(contracts: tuple[SourceContract, ...]) -> tuple[MarketKind, str
     return _FAMILY_MARKET_KIND[contracts[0].source_contract_family], None
 
 
-def source_contract_admission(
-    contract: SourceContract,
-    *,
-    generic_admission: Admission,
-    ingest_mode: str,
-) -> Admission:
-    """Compose the source contract with the unchanged generic Gate result.
-
-    Market frames never reach this function: they do not open an Event, so they have no admission.
-    """
-
-    if ingest_mode == "recovery":
-        return "recovery"
-    if contract.source_contract_family == "listing_v1":
-        return "listing_deterministic"
-    return generic_admission
-
-
 __all__ = [
     "EVENT_KINDS",
     "EVENT_SOURCE_CONTRACT_FAMILIES",
@@ -252,6 +232,5 @@ __all__ = [
     "classify_source_contract",
     "classify_source_contracts",
     "market_route",
-    "source_contract_admission",
     "source_identity",
 ]

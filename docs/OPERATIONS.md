@@ -122,6 +122,12 @@ docker compose exec -T serve tracefold news repair-head-scopes --limit 50
 
 每个执行命令只在一个 Event 事务中锁定并重审当前 head 与证明；不匹配或无法判定时拒绝该 Event。修复可与 News 发送进程并行：发送许可先取得时，其旧 intent 仍由旧 head 的回执结算；修复先提交时，旧 intent 不能再取得发送许可。成功后逐页复查越界活跃 Claim，核对 `news_analyses` 中 `origin=scope_repair` 的 repair 证明、document 的新旧链和 `news_trade_events` 的 `source_update`。已完成的通知工作不重新打开；仍待处理或已 `failed` 的工作改为指向修复后 head（状态、尝试数和错误码不变），失败工作之后按新 head 的 content revision 定向重试。已送回执作为实际外部结果保留。
 
+### 断线后的新闻没有被分析
+
+先查恢复窗口对应的 Item：比较 `observed_at_ms` 与 provider `params.ts`。不超过 30 分钟的新鲜补抄应是 `candidate`（上币为 `listing_deterministic`），新证据应有持久 semantic 工作；超过窗口或缺有效时间戳的稿件保持 `recovery`，不唤醒。已有历史 recovery Event 不回补。归组后应检查成员所属 Event 的工作，不能只按 Event 的 `ingest_mode` 推断是否分析。
+
+接收日志里的 `news_ingest_frame_deferred` 表示帧已确认发布、辅助 DB 记账暂缓，后续帧会幂等重试；它本身不应触发进程重启。连接、断开或事故开启写入失败仍可能由根监督重启。验收新一次断线时，分别核对窗口内外的 admission 与 semantic 工作，并检索 warning；实时延迟百分位不包含补抄 Event。
+
 ### 通知计划失败
 
 ```bash

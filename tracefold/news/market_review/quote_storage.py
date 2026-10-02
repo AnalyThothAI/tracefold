@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 # S608 exemptions below interpolate only the module-owned venue-priority expression; all values stay bound.
+from ..models import ADMITTED_ADMISSIONS
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from ..row_values import optional_float, optional_int
 from .instruments import REFERENCE_VENUES, normalize_symbol
@@ -127,7 +128,7 @@ class QuoteStorage:
         return result, frozenset(directory_only)
 
     def quote_target_symbols(self, *, since_ms: int, limit: int = 1000) -> list[str]:
-        """Code-verified assets on recent live Events, most recently observed first.
+        """Code-verified assets on recent admitted Events, most recently observed first.
 
         One symbol per row however many Events carried it: a hundred BTC Events are one Quote target, and the
         provider work that follows is `O(source groups)`, never `O(Events x assets)` (#88 §13). OI rows join
@@ -140,7 +141,7 @@ class QuoteStorage:
             WITH candidates AS (
               SELECT a.symbol, a.opened_at_ms AS observed_at_ms
                 FROM news_event_assets a
-                JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
+                JOIN news_events e ON e.event_id = a.event_id AND e.admission = ANY(%s)
                WHERE a.opened_at_ms >= %s
               UNION ALL
               SELECT o.symbol, o.event_at_ms
@@ -154,7 +155,7 @@ class QuoteStorage:
              ORDER BY last_ms DESC
              LIMIT %s
             """,
-            (int(since_ms), int(since_ms), OI_METRIC_VERSION, int(limit)),
+            (sorted(ADMITTED_ADMISSIONS), int(since_ms), int(since_ms), OI_METRIC_VERSION, int(limit)),
         ).fetchall()
         return [str(row["symbol"]) for row in rows]
 

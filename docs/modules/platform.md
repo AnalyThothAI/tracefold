@@ -104,6 +104,8 @@ class Request,Permit,Native,Wait,Timeout,Release,Result store;
 
 [task_contract.py](../../tracefold/app/workers/task_contract.py)是任务名、能力与 foundational 属性的唯一声明，`NewsPipeline.runners()`只提供本模块 runner，不决定其他业务域是否健康。
 
+DB 槽位暂时不可用与有界操作超时分别是 `DeferError` / `TransientError`，不是程序错误。业务 owner 决定是否推迟：News 接收端已发布帧的辅助记账失败只记 warning，下一帧重试；连接、断开、事故开启等状态迁移仍保留根级失败语义。未预期异常不得被这个例外吞掉。
+
 | 分类 | 当前任务 | 未预期程序错误的处理 |
 | --- | --- | --- |
 | 基础入口 | `news-receiver`、`news-recovery`、`news-deduper`、`news-janitor` | 保留根级失败语义，不能让入口永久停止却持续报告绿色 |
