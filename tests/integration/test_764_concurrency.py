@@ -167,3 +167,57 @@ def test_leader_swap_preserves_native_job_detail_bytes():
     before = sql("SELECT job_kind,subject_id,detail::text FROM news_jobs ORDER BY job_kind,subject_id")
     sql("UPDATE news_events SET leader_item_id='it-ev-other' WHERE event_id=%s", (EVENT,))
     assert sql("SELECT job_kind,subject_id,detail::text FROM news_jobs ORDER BY job_kind,subject_id") == before
+
+
+def test_multi_event_send_sweep_takes_all_event_locks_before_reader_clock(monkeypatch):
+    from contextlib import closing
+
+    import tracefold.news.storage.notification_delivery as delivery
+    from tests.postgres_test_utils import connect_postgres_test
+
+    seed_event()
+    seed_event("ev-z", fingerprint="z")
+    for event_id in (EVENT, "ev-z"):
+        with closing(connect_postgres_test()) as conn, conn.transaction():
+            conn.execute(
+                """INSERT INTO news_notifications(notification_id,kind,origin,event_id,state,intent_id,
+                   content_revision,claim_refs,plan_key,card,history_context,attempted_at_ms,
+                   lease_token,lease_until_ms,created_at_ms,updated_at_ms)
+                   VALUES (%s,'update','legacy_delivery',%s,'sending',%s,%s,'["cl:fixture"]',false,
+                   jsonb_build_object('body','Fixture','payload_sha256',news_text_digest('Fixture')),
+                   '{}',%s,'expired',%s,%s,%s)""",
+                ("sweep:" + event_id, event_id, "sweep:" + event_id, "0" * 64, STAMP, STAMP, STAMP, STAMP),
+            )
+    held = Event()
+    needs_z = Event()
+    original = delivery.lock_event
+
+    def lock(conn, event_id):
+        if event_id == "ev-z":
+            needs_z.set()
+        original(conn, event_id)
+
+    monkeypatch.setattr(delivery, "lock_event", lock)
+
+    def writer():
+        with closing(connect_postgres_test()) as conn, conn.transaction():
+            conn.execute("SELECT event_id FROM news_events WHERE event_id='ev-z' FOR NO KEY UPDATE")
+            held.set()
+            assert needs_z.wait(3)
+            conn.execute("SET LOCAL lock_timeout='250ms'")
+            conn.execute("UPDATE news_items SET provider_metadata='{\"changed\":true}' WHERE item_id='it-ev-z'")
+
+    async def race():
+        writing = asyncio.create_task(asyncio.to_thread(writer))
+        assert await asyncio.to_thread(held.wait, 3)
+        sweeping = asyncio.create_task(
+            ThreadedDb().tx(
+                "sweep_two_events",
+                lambda r: r.news.notification_delivery.terminalize_interrupted_deliveries(now_ms=STAMP + 1),
+            )
+        )
+        await writing
+        assert await sweeping == 2
+
+    asyncio.run(race())
+    assert {row["state"] for row in sql("SELECT state FROM news_notifications")} == {"ambiguous"}

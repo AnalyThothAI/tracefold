@@ -257,9 +257,12 @@ class NotificationDeliveryStorage:
             """,
             (int(now_ms), list(exclude_intent_ids), int(limit)),
         ).fetchall()
+        # Acquire the whole bounded Event set before any receipt trigger takes reader clock.
+        # Otherwise A's settlement can hold clock while waiting for B, whose writer awaits clock.
+        for event_id in sorted({str(row["event_id"]) for row in rows}):
+            lock_event(self.conn, event_id)
         settled = 0
         for candidate in rows:
-            lock_event(self.conn, str(candidate["event_id"]))
             row = self.conn.execute(
                 """
                 UPDATE news_notifications SET state = 'ambiguous', error_code = 'ambiguous_after_crash',

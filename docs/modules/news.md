@@ -640,4 +640,4 @@ P1 将 OI、清算、大户报告、钱包触发和无法结构化的市场记�
 编辑发送清扫以实际 `lease_until_ms` 到期为所有权丢失，并按候选 lease token 与 attempted time CAS；在途 owned intent 排除。市场发送结算按当前 attempts CAS，失败不推进组 anchor。collector 的无变化 mutation 不写行；正常成功帧五秒最多记录一次，broker 事故后的首个成功帧在同一 mutation 中关闭事故并刷新时钟。
 
 
-`news_reader_clock` 只保存一个可 HOT 更新的版本数，作为 RR 输入的 CAS 围栏；它不存知识或发送事实。短写事务在 Event 和 job/intent 后锁住此行，相关 writer 的触发器在同一事务推进版本。Trading、collector 时钟与其他数据库的写入不改变该版本。新增这一张元数据表后 News 为 18 表、全库 27 表；这是为并发证明增加的唯一表，而非恢复旧投影或双写路径。
+`news_reader_clock` 只保存一个可 HOT 更新的版本数，作为 RR 输入的 CAS 围栏；它不存知识或发送事实。短写事务在 Event 和 job/intent 后锁住此行；有界 sending sweep 在结算前先按顺序锁住全部候选 Event，避免跨 Event 的锁环。相关 writer 的触发器在同一事务推进版本。Trading、collector 时钟与其他数据库的写入不改变该版本。新增这一张元数据表后 News 为 18 表、全库 27 表；这是为并发证明增加的唯一表，而非恢复旧投影或双写路径。
