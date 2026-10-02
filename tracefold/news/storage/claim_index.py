@@ -366,13 +366,15 @@ class ClaimIndexStorage:
                 filled += 1
                 if filled >= limit:
                     return filled
+        # Keep the correlated existence check an indexed claim lookup; an anti-join
+        # can otherwise scan the complete claim index for every adopted document.
         rows = self.conn.execute(
             """SELECT u.event_id,u.document FROM news_analyses u
                 WHERE u.adopted_at_ms >= %s AND u.document IS NOT NULL
                   AND EXISTS (SELECT 1 FROM jsonb_array_elements(u.document->'claims') c
                        WHERE NOT EXISTS (SELECT 1 FROM news_claim_index ci
                                           WHERE ci.claim_ref=c->>'ref'
-                                            AND ci.embed_text=c->>'statement'))
+                                            AND ci.embed_text=c->>'statement' OFFSET 0))
                 ORDER BY u.adopted_at_ms DESC,u.analysis_id LIMIT %s""",
             (now_ms - 30 * 86400_000, limit - filled),
         ).fetchall()
