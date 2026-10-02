@@ -39,9 +39,9 @@ def provider_data(texts, fallback):
 def test_one_rank_fuses_routes_deterministically_and_groups_receipts_by_best_claim() -> None:
     probe = Probe("A policy decision", vector(1), CALIBRATION.embedder.key)
     rows = (
-        Candidate("a1", vector(1), probe.embedder, lexical=0.8, group="a"),
-        Candidate("a2", vector(0.9, 0.1), probe.embedder, lexical=0.7, group="a"),
-        Candidate("b1", vector(0.8, 0.2), probe.embedder, lexical=0.6, group="b"),
+        Candidate("a1", vector(1), probe.embedder, lexical=0.98, group="a"),
+        Candidate("a2", vector(0.9, 0.1), probe.embedder, lexical=0.96, group="a"),
+        Candidate("b1", vector(0.8, 0.2), probe.embedder, lexical=0.94, group="b"),
         Candidate("c1", vector(-1), probe.embedder, group="c"),
     )
     result = rank(prepare_rank(probe, rows, "receipt"), rows)
@@ -94,7 +94,7 @@ def test_missing_vectors_use_the_calibrated_degraded_lexical_floor_per_candidate
         Candidate("ready", vector(1), probe.embedder, lexical=0.8),
         Candidate("pending", lexical=0.8),
     )
-    calibrated = replace(CALIBRATION, prior=replace(CALIBRATION.prior, lexical_floor=0.9, degraded_lexical_floor=0.2))
+    calibrated = replace(CALIBRATION, prior=replace(CALIBRATION.prior, lexical_floor=0.95, degraded_lexical_floor=0.25))
     ranking = rank(prepare_rank(probe, rows, "prior", calibration=calibrated), rows)
     assert ranking.degraded
     assert {hit.key: hit.routes for hit in ranking.hits} == {"ready": ("dense",), "pending": ("fts",)}

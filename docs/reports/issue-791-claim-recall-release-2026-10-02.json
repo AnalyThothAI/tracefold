@@ -1,0 +1,101 @@
+{
+  "version": "issue_791_owner_accepted_release_v1",
+  "acceptance": "Owner accepts reasonable error; necessary functionality, real bug regressions and exact-head CI remain required. Original numerical research gates are observations, not all passed.",
+  "calibration": {
+    "version": "claim_recall_v1",
+    "embedder": {
+      "model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "dimensions": 384,
+      "revision": "e8f8c211226b894fcb81acc59f3b34ba3efd5f42",
+      "max_tokens": 256,
+      "pooling": "mean",
+      "dtype": "float32",
+      "normalization": "l2",
+      "template": "claim_embed_text_v1"
+    },
+    "lexical_template": "claim_lexical_text_v1",
+    "prior": {
+      "k": 5,
+      "dense_floor": 0.6,
+      "lexical_floor": 0.9,
+      "degraded_lexical_floor": 0.2,
+      "sent_reserved": 2
+    },
+    "receipt": {
+      "k": 16,
+      "dense_floor": 0.4,
+      "lexical_floor": 0.9,
+      "degraded_lexical_floor": 0.2,
+      "sent_reserved": 0
+    },
+    "route_n": 32,
+    "rrf_k": 60,
+    "dataset_sha256": "016269a8bc97f47aa1d89ab91fd56c23cf70f62b4849a14bec87406f20ca743f"
+  },
+  "calibration_digest": "56fc296b85c47a8cad3af09392d2eecf8b74a95bd90a61c1578c408eba8c583b",
+  "source_sha256": {
+    "scripts/eval_news_recall.py": "d8e5122b446f3ebf088528bacadc497f629bb4068185165f35eb68421a915055",
+    "tracefold/news/claim_recall.py": "426443ffafc55c5123338ffe0e272a31d538e15e748d588e1541b56f7cab9677",
+    "tracefold/news/storage/claim_index.py": "189134220cf213c524a69f715c09f65670430e406f3c1f2b794f9094f1ed512e",
+    "tracefold/news/storage/notification_context.py": "f48b1a58967d6f736e713240b525fb2ccfdc1b797e9c9daa99bbcf00ca157749"
+  },
+  "cache_sha256": "35330d080f6b63e3037fad5fa005c2e0c1d6f35186e4e8fc6ab5427439ea5af5",
+  "fixed_comparison_report_sha256": "ec9df81a0a8b27bd418bc23cdb3fb0f33b6c8f41c649b026aba0ab1c0bc66806",
+  "receipt_prefix_report_sha256": "2a03b7d752ae3604db4164e64d3695fea70293ec8a3c51b8ebeb903a91cafeed",
+  "final_selection_sha256": "8427a1b62154c97f96b849891946dc7c95804177c3a293c4cf76f57a840268d6",
+  "scope": "150 reviewed exact reader inputs plus 20 reviewed duplicate pushes; not a complete 24h measurement.",
+  "prior": {
+    "sf_success": 59,
+    "sf_queries": 65,
+    "strata": {
+      "other": {
+        "total": 44,
+        "success": 38
+      },
+      "zh": {
+        "total": 18,
+        "success": 18
+      },
+      "ru": {
+        "total": 3,
+        "success": 3
+      }
+    },
+    "total_comparisons": 483,
+    "total_baseline": 771,
+    "baseline_sf_preserved_queries": 25,
+    "baseline_sf_known_queries": 28,
+    "baseline_sf_unknown_queries": 8
+  },
+  "receipt": {
+    "k": 16,
+    "receipt_sf": 31,
+    "receipt_sf_queries": 32,
+    "receipt_sf_missed_queries": [
+      "Q002"
+    ],
+    "chain_hits": 19,
+    "chain_pushes": 20,
+    "reviewed_final_messages": 1204
+  },
+  "baseline_receipt_messages": 605,
+  "complete_message_audit_before_k_reduction": {
+    "sample": 50,
+    "SF": 3,
+    "SD": 2,
+    "TO": 31,
+    "U": 14,
+    "unrelated_fraction": 0.9,
+    "meaning": "Independent full-body audit of k12 contexts, not a final reader false-anchor or false-push estimate."
+  },
+  "limitations": [
+    "Prior timestamp is analysis-completion upper bound, not the missing original separate call time.",
+    "Original audit summaries are truncated; external candidates stay unknown.",
+    "Prior preserves 25/28 baseline-known SF queries and misses six of 65 overall SF queries.",
+    "Final receipt misses one of 32 SF queries and one of 20 duplicate chains.",
+    "Reader regression and error evidence belongs to PR-B; no claim that every old research gate passed.",
+    "No full24h reduction or long-duration production result is claimed before deployment.",
+    "The k12 audit is not a fresh k16 estimate; retaining k16 does not claim improved context precision."
+  ],
+  "selection_reason": "k5/9/12 retain only 1/2/3 of Issue750 four exact real gold receipts; existing k16 retains all four and no known unrelated receipt. Preserve this known business regression without a new algorithm."
+}
