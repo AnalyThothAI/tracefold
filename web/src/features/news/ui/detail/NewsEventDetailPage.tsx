@@ -160,7 +160,18 @@ function EventDocument({ detail, token }: { detail: NewsEventDetail; token: stri
         node = node.parentElement;
       }
       target.focus({ preventScroll: true });
-    } else if (document.activeElement?.closest('[role="tabpanel"][hidden]')) {
+      const viewport = target.closest(".center-column")?.getBoundingClientRect();
+      const top = viewport?.top ?? 0;
+      const bottom = viewport?.bottom ?? window.innerHeight;
+      const bounds = target.getBoundingClientRect();
+      const oversized = bounds.height > bottom - top;
+      if (bounds.top < top || (oversized ? bounds.top >= bottom : bounds.bottom > bottom)) {
+        target.scrollIntoView({ block: oversized ? "start" : "nearest", inline: "nearest" });
+      }
+    } else if (
+      document.activeElement?.closest('[role="tabpanel"][hidden]') ||
+      (document.activeElement && tabs.current?.contains(document.activeElement))
+    ) {
       tabs.current?.querySelector<HTMLButtonElement>(`#tab-${tab}`)?.focus({ preventScroll: true });
     }
     reserveHeight();

@@ -49,6 +49,22 @@ test("switches shared-card tabs without moving the reading position or losing ex
   await expect(page).toHaveURL(/\?tab=content&focus=news-claim-1$/);
   await expect(page.locator("#news-claim-1")).toBeFocused();
   await expect(raisedClaim.getByText(/此前：Agency announces 25% tariff/)).toBeVisible();
+
+  await tablist.getByRole("tab", { name: "来源证据" }).click();
+  await page
+    .locator(".news-detail-notification-summary")
+    .getByRole("button", { name: "命题 01" })
+    .click();
+  await expect(page.locator("#news-claim-1")).toBeFocused();
+  await expect
+    .poll(() =>
+      page.locator("#news-claim-1").evaluate((claim) => {
+        const bounds = claim.getBoundingClientRect();
+        const viewport = claim.closest(".center-column")!.getBoundingClientRect();
+        return bounds.top >= viewport.top - 1 && bounds.bottom <= viewport.bottom + 1;
+      }),
+    )
+    .toBe(true);
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoUnhandledApiRequests(page);
 });
@@ -71,20 +87,31 @@ test("restores query reading locations on cold load, reload and back with keyboa
   await expect(page.locator("#delivery-record")).toBeFocused();
 
   const tabs = page.getByRole("tablist", { name: "事件详情" });
+  const source = tabs.getByRole("tab", { name: "来源证据" });
   const processing = tabs.getByRole("tab", { name: "处理记录" });
   await processing.focus();
   await processing.press("Home");
   await expect(tabs.getByRole("tab", { name: "事件内容" })).toBeFocused();
   await expect(page).toHaveURL(/\?tab=content$/);
   await page.keyboard.press("ArrowRight");
-  await expect(tabs.getByRole("tab", { name: "来源证据" })).toBeFocused();
+  await expect(source).toBeFocused();
   await expect(page).toHaveURL(/\?tab=source$/);
   await page.keyboard.press("End");
   await expect(processing).toBeFocused();
   await expect(page).toHaveURL(/\?tab=processing$/);
+  const beforeHistory = await readingPosition(page);
   await page.goBack();
   await expect(page).toHaveURL(/\?tab=source$/);
   await expect(page.getByRole("tabpanel", { name: "来源证据" })).toBeVisible();
+  await expect(source).toBeFocused();
+  expect(await readingPosition(page)).toEqual(beforeHistory);
+  await page.goForward();
+  await expect(page).toHaveURL(/\?tab=processing$/);
+  await expect(page.getByRole("tabpanel", { name: "处理记录" })).toBeVisible();
+  await expect(processing).toBeFocused();
+  expect(await readingPosition(page)).toEqual(beforeHistory);
+  await page.goBack();
+  await expect(source).toBeFocused();
   await page.reload();
   await expect(page.getByRole("tabpanel", { name: "来源证据" })).toBeVisible();
   await expect(page.getByRole("tabpanel")).toHaveCount(1);
