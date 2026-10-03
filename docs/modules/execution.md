@@ -119,6 +119,8 @@ Signal 的 `accept_entry` 路径只更新 pending 行。手动入场则锁定尚
 
 ## 操作与恢复
 
+当前资金、生命周期、故障与迁移回归见 [#760 验证报告](../reports/trading-760-correctness.md)。
+
 `trading_accounts.execution_faults` 按 entry 或 command/symbol 保存有限未解决责任，包含代码、相关 client IDs、首次／最近观察时间和实际仓位证据。退出尝试耗尽后不再无限新建订单。故障统一阻断自动与手动新增风险，保护、查询、撤单和退出仍继续；heartbeat、重启和普通 resume 不清除故障。只有新鲜证据证明该责任解决才清除自身故障，不改变用户 pause/halt。
 
 `tracefold trading issue` 可提交暂停、恢复、紧急停止、手动入场或账户 flatten。命令入账表示请求已保存；平仓与撤单须以签名账户读回为准。
