@@ -41,6 +41,7 @@
 
 | 页面 | 桌面 | 手机 |
 | --- | --- | --- |
+| 未推送事件流 | [截图](../design/news-817-feed-desktop.jpg) | [截图](../design/news-817-feed-mobile.jpg) |
 | 重复原条 | [截图](../design/news-817-duplicate-desktop.jpg) | [截图](../design/news-817-duplicate-mobile.jpg) |
 | 未推送后新增来源 | [截图](../design/news-817-silent-desktop.jpg) | [截图](../design/news-817-silent-mobile.jpg) |
 | 已推送后新增来源 | [截图](../design/news-817-sent-desktop.jpg) | [截图](../design/news-817-sent-mobile.jpg) |

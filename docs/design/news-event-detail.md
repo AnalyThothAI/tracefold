@@ -1,6 +1,6 @@
 # News 详情页：读者文档
 
-[文档中心](../README.md) · [前端架构](../FRONTEND.md) · [News 模块](../modules/news.md)
+[文档中心](../README.md) · [前端架构](../FRONTEND.md) · [News 模块](../modules/news.md) · [#817 验收报告](../reports/news-817.md)
 
 2026-10-03，按 [#817 参考稿](https://claude.ai/artifact/NeQk8qick4NwKSfYeLcrVB)更新重复、沿用决定和未推送原因。页面先回答读者收到了什么，再解释每件事与推送原因，随后核对原文与同一个故事。此记录描述当前源码与预览验证；上线状态由对应发布回执决定。
 

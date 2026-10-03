@@ -21,7 +21,7 @@ const ROW_ASSET_CHIPS = 3;
 /**
  * One Event in the feed: when · what · one outcome, tiered by that outcome.
  *
- * The row is `54 / 1fr / 150` with a 3px left rail. The pipeline's own state lives
+ * The row is `54 / 1fr / 190` with a 3px left rail. The pipeline's own state lives
  * in the right column as a word, because a coloured pill on every row draws a vertical band the reader stops
  * seeing. A held Event steps back rather than disappearing: smaller headline, secondary ink, grey state word,
  * and the server's `reason_zh` under it.

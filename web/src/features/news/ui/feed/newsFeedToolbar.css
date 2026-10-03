@@ -229,23 +229,24 @@
     }
 
     .news-segmented {
-      gap: 6px;
-      max-width: 100%;
-      padding: 0;
-      overflow-x: auto;
-      background: transparent;
-      scrollbar-width: none;
-    }
-
-    .news-segmented::-webkit-scrollbar {
-      display: none;
+      display: flex;
+      gap: 2px;
+      width: 100%;
+      padding: 3px;
+      border-radius: 6px;
     }
 
     .news-segmented-option {
-      flex: 0 0 auto;
-      min-height: 36px;
-      background: var(--surface-panel);
-      box-shadow: inset 0 0 0 1px var(--border-subtle);
+      flex: 1;
+      justify-content: center;
+      min-width: 0;
+      min-height: 44px;
+      padding: 0;
+    }
+
+    .news-segmented-count,
+    .news-segmented-dot {
+      display: none;
     }
 
     .news-filter-total {
