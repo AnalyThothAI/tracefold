@@ -359,7 +359,7 @@ Claim 身份材料不包含 statement 措辞或 content_kind 读法。适用的�
 
 native / generated 独立校准，由 [reader_calibration.json](../../tracefold/news/notifications/reader_calibration.json) 和 `ReaderPolicy.load()` 加载。文件保存系数、m*、固定资格下限、切线、数据集摘要、认证标签的规范版本与报告摘要；文件字节摘要和资格表进入策略身份。可执行认证还须匹配当前问题、生产组合判断器、实际作答适配器及 served model，并有 owner 发布审阅（外部证据及未通过门槛的书面豁免）。身份不匹配或 `release_ready=false` 时按未认证处理。认证可以只覆盖推送：`push_cut` 有值而 `key_cut` 为空时照常推送，但没有任何命题成为重点。
 
-当前 native 推送已由[认证批 1](../reports/news-805-certification.md)认证：切线 0.372，单侧精度下界 0.783，`key_cut` 为空；文件在 owner 发布审阅写入前仍是 `release_ready=false`，此时模型评分只进信息流。generated 回退后端未认证（零系数占位），它的回答始终只进信息流。确定性更正、上币、大涨跌等前置规则保持原行为。交易范围规则（农产品、非美宏观、非美地缘）只在标注规范中，运行时不执行，下一轮写进读者问题后重新认证。#791 的[旧读者评测](../reports/news-791-b.md)保留历史证明范围，不能认证新四题。
+当前 native 推送已由[认证批 1](../reports/news-805-certification.md)认证：切线 0.372，单侧精度下界 0.783，`key_cut` 为空；owner 发布审阅已写入（`release_ready=true`）；身份不匹配时仍按未认证处理，模型评分只进信息流。generated 回退后端未认证（零系数占位），它的回答始终只进信息流。确定性更正、上币、大涨跌等前置规则保持原行为。交易范围规则（农产品、非美宏观、非美地缘）只在标注规范中，运行时不执行，下一轮写进读者问题后重新认证。#791 的[旧读者评测](../reports/news-791-b.md)保留历史证明范围，不能认证新四题。
 
 计划逐命题冻结四组分布、confidence 与 `e / m / i / p_push / p_key / held / certification_status / push_cut / key_cut / calibration_identity`。资格质量低于 0.3 的原因是 `reader_ineligible`，与概率不足、未认证分别展示。HTTP 和详情页读取记录的分布、分数和当时切线，不按当前资格表或当前校准重算历史；旧记录没有切线则返回 null。普通详情展示影响四档分布、概率及冻结切线。旧 importance 结构只在 `historical_judgment` 中只读显示，当前运行时拒绝旧判断；模型题目身份随拆题改变，输入保持 v3，改资格表和校准参数不改变模型缓存身份。
 

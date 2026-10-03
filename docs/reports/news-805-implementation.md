@@ -3,13 +3,13 @@
 [Issue #805](https://github.com/AnalyThothAI/tracefold/issues/805) · [PR #808](https://github.com/AnalyThothAI/tracefold/pull/808) · [推送认证批 1](news-805-certification.md) · [News](../modules/news.md) · [标注规范](../modules/news-reader-labeling.md) · [契约](../CONTRACTS.md)
 
 本页说明读者判断的代码、离线流程和运行时接缝。真实认证的数字见[推送认证批 1](news-805-certification.md)。
-本 PR 不合并、不部署；运行时文件在 owner 发布审阅写入前保持 `release_ready=false`。
+owner 发布审阅已写入运行时文件（`release_ready=true`，审阅与豁免证据见 #805）；部署按[切换与回滚](../OPERATIONS.md#news-reader-switch)执行。
 
 ## 当前状态
 
 | 后端 | 数据 / 系数 | 推送切线 / 重点切线 | 状态 |
 | --- | --- | --- | --- |
-| native | 2,500 条 guide v5 代理样本拟合，m* = 2 | 0.372 / null | `certified`（仅推送），待 owner 发布审阅 |
+| native | 2,500 条 guide v5 代理样本拟合，m* = 2 | 0.372 / null | `certified`（仅推送），owner 发布审阅已写入 |
 | generated | 未重问，零系数占位 | null / null | `uncalibrated`，回答只进信息流 |
 
 - 资格表：`recap_or_old_period` 可推（owner 决定：附在当期公司报道后的最新财报行推送，纯回顾由低影响留在信息流）。

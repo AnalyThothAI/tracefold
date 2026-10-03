@@ -30,11 +30,11 @@
       "guide_version": "news_reader_owner_guide_v5:d7aeb8783ad604167e29ba1c63115b6c896c4d3388f26f4320a924052b2da307",
       "report_ref": "docs/reports/news-805-certification.md",
       "report_sha256": "fe698f990d473238f731e110bbefd999bbbfdadc815775026c4309dde31d57b6",
-      "release_ready": false,
-      "review_ref": null,
-      "review_sha256": null,
-      "reviewed_by": null,
-      "reviewed_at": null
+      "release_ready": true,
+      "review_ref": "https://github.com/AnalyThothAI/tracefold/issues/805#issuecomment-5968047636",
+      "review_sha256": "9e9f15a43074db40145087e295f7702bfe19f8535798daf2da9a79e592cff0bf",
+      "reviewed_by": "aaurix",
+      "reviewed_at": "2026-10-03T10:02:54+00:00"
     },
     "generated": {
       "calibration": {
