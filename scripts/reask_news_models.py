@@ -18,7 +18,7 @@ from typing import Any
 from scripts.news_reader_io import read_jsonl
 from tracefold.app.learning_runtime import compose_news_models
 from tracefold.app.news_updates import NewsJudgmentEndpoint, compose_reader_judge
-from tracefold.news.adapters.extraction import DspyExtractor
+from tracefold.news.adapters.extraction import EXTRACTION_INSTRUCTION, DspyExtractor
 from tracefold.news.adapters.reader_judge import DspyReaderJudge
 from tracefold.news.adapters.semantic_judgments import GeneratedJudgments
 from tracefold.news.notifications.reader import READER_QUESTIONS_IDENTITY, ReaderInput
@@ -26,14 +26,84 @@ from tracefold.news.updates.contracts import FrozenInput
 from tracefold.news.updates.extraction import ground_extraction, validate_extraction
 from tracefold.news.updates.identity import canonical_json, digest
 from tracefold.news.updates.judgment import OPTIONS, Budget, Question, error_code
+from tracefold.news.updates.projection import PROJECTION_VERSION, extraction_input
 from tracefold.news.updates.topics import CODEBOOK
 from tracefold.platform.config.loader import load_settings
 from tracefold.platform.config.secret_file import read_secure_secret_text
+
+# DSPy's lazy OpenAI module must be initialized after the application imports.
+# Importing its callback first makes a fresh CLI process circularly load openai._models.
+# isort: off
+from dspy.utils.callback import BaseCallback  # type: ignore[import-untyped]
+# isort: on
 
 
 def input_digest(row: dict[str, Any], kind: str) -> str:
     """Reader hashes its exact model input; source tasks bind the complete supplied case."""
     return digest(row["reader_input"]) if kind == "reader" else digest(row)
+
+
+class ExtractionCalls(BaseCallback):
+    """Observe this offline extraction's LMs, including failed primary requests.
+
+    Never copy prompts, endpoint URLs, request kwargs or exception messages.
+    Provider token usage is unknown for a request without response metadata.
+    """
+
+    def __init__(self, factory: Any) -> None:
+        self.factory = factory
+        self.calls: list[dict[str, Any]] = []
+        self.lms: list[Any] = []
+
+    def route(self) -> Any:
+        route = self.factory()
+        for lm in route if isinstance(route, (tuple, list)) else (route,):
+            lm.callbacks = [*getattr(lm, "callbacks", ()), self]
+            self.lms.append(lm)
+        return route
+
+    def on_lm_start(self, call_id: str, instance: Any, inputs: dict[str, Any]) -> None:
+        self.calls.append({"call_id": call_id, "requested_model": str(instance.model)})
+
+    def on_lm_end(self, call_id: str, outputs: Any, exception: BaseException | None = None) -> None:
+        call = next(row for row in self.calls if row["call_id"] == call_id)
+        call["status"] = "response" if exception is None else "failed"
+        if exception is not None:
+            call["error_class"] = type(exception).__name__
+
+    def report(self, *, include_outputs: bool = False) -> dict[str, Any]:
+        responses = []
+        for lm in self.lms:
+            for entry in getattr(lm, "history", ()):
+                response = entry.get("response")
+                usage = entry.get("usage") or {}
+                served = response.get("model") if isinstance(response, dict) else getattr(response, "model", None)
+                record = {
+                    "requested_model": str(lm.model),
+                    "served_model": None if served is None else str(served),
+                    "usage": {key: value for key, value in usage.items() if isinstance(value, (int, float))},
+                }
+                if include_outputs:
+                    choices = (
+                        response.get("choices", ()) if isinstance(response, dict) else getattr(response, "choices", ())
+                    )
+                    output_text = []
+                    for choice in choices or ():
+                        message = (
+                            choice.get("message") if isinstance(choice, dict) else getattr(choice, "message", None)
+                        )
+                        content = (
+                            message.get("content") if isinstance(message, dict) else getattr(message, "content", None)
+                        )
+                        if isinstance(content, str):
+                            output_text.append(content)
+                    record["output_text"] = output_text
+                responses.append(record)
+        return {
+            "lm_requests": len(self.calls),
+            "requests": [{key: value for key, value in row.items() if key != "call_id"} for row in self.calls],
+            "responses": responses,
+        }
 
 
 async def reask(args: argparse.Namespace) -> None:
@@ -44,7 +114,18 @@ async def reask(args: argparse.Namespace) -> None:
     if models is None:
         raise ValueError("news_offline_configured_models_required")
     generated = GeneratedJudgments(models.judgment.lms, model_identity=models.judgment.identity)
-    extractor = DspyExtractor(models.extraction.lms, model_identity=models.extraction.identity, topics=dict(CODEBOOK))
+    instruction_file = getattr(args, "extraction_instruction", None)
+    if instruction_file is not None and args.kind != "extraction":
+        raise ValueError("news_offline_instruction_requires_extraction")
+    instruction = EXTRACTION_INSTRUCTION if instruction_file is None else instruction_file.read_text(encoding="utf-8")
+    if not instruction.strip():
+        raise ValueError("news_offline_extraction_instruction_empty")
+    extractor = DspyExtractor(
+        models.extraction.lms,
+        model_identity=models.extraction.identity,
+        topics=dict(CODEBOOK),
+        instruction=instruction,
+    )
     reader = DspyReaderJudge(models.judgment.lms, generated_model_identity=models.judgment.identity)
     connection = None
     if args.kind == "reader" and args.backend == "native":
@@ -153,11 +234,27 @@ async def reask(args: argparse.Namespace) -> None:
                     completed.add(row["case_id"])
                     return
             started = monotonic()
+            calls = None
             try:
                 async with asyncio.timeout(args.timeout):
                     if args.kind == "extraction":
                         source = FrozenInput.model_validate(row["source"])
-                        extracted = ground_extraction(source, await extractor.extract(source))
+                        calls = ExtractionCalls(models.extraction.lms)
+                        measured = DspyExtractor(
+                            calls.route,
+                            model_identity=models.extraction.identity,
+                            topics=dict(CODEBOOK),
+                            instruction=instruction,
+                        )
+                        result.update(
+                            model_identity=models.extraction.identity,
+                            projection_version=PROJECTION_VERSION,
+                            extraction_input=extraction_input(source),
+                            extraction_input_sha256=digest(extraction_input(source)),
+                        )
+                        decoded = await measured.extract(source)
+                        result["decoded_extraction"] = decoded.model_dump(mode="json")
+                        extracted = ground_extraction(source, decoded)
                         validate_extraction(source, extracted)
                         result.update(program_identity=extractor.identity, extraction=extracted.model_dump(mode="json"))
                     else:
@@ -170,6 +267,8 @@ async def reask(args: argparse.Namespace) -> None:
                 # Provider exception strings can contain URLs or credentials. Keep a bounded class only.
                 result["error_class"] = type(exc).__name__
                 result["error_code"] = error_code(exc, default="news_offline_call_failed")
+            if calls is not None:
+                result["calls"] = calls.report(include_outputs=True)
             result["duration_ms"] = round((monotonic() - started) * 1000, 3)
             with args.output.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(result, ensure_ascii=False) + "\n")
@@ -202,6 +301,11 @@ def main() -> None:
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--timeout", type=float, default=60)
     parser.add_argument("--retry-failed", action="store_true", help="Retry only explicitly failed journal cases.")
+    parser.add_argument(
+        "--extraction-instruction",
+        type=Path,
+        help="Frozen instruction text for a same-route extraction comparison; its text binds the program identity.",
+    )
     parser.add_argument("--batch-size", type=int, default=16)
     args = parser.parse_args()
     if not 1 <= args.concurrency <= 16 or not 1 <= args.batch_size <= 32 or args.timeout <= 0:

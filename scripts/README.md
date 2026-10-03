@@ -45,6 +45,8 @@ uv run --locked python scripts/eval_news_recall.py \
 
 `uv run --locked python -m scripts.reask_news_models speech|extraction|reader --input /private/sample.jsonl --output /private/journal.jsonl` 直接使用操作者选定的 News 模型路由，不构造数据库、判断缓存或发送器。reader 分别选择 `--backend native|generated`；回退生成的结果不能计为 native 证据。日志保存精确输入摘要、问题与程序身份、实际后端、判断器与服务模型身份，以及调用耗时；恢复时拒绝输入、程序、问题、后端或 case 集合改变。抽取重问保留真实引用校验，模型异常内容不会进入日志。
 
+extraction 可用 `--extraction-instruction /private/frozen-instruction.txt` 冻结同路由对照的指令；指令文字进入抽取身份，恢复时拒绝改变。此参数只替换指令，不还原旧传输 schema；若旧版本的 schema 说明也改变，需在隔离研究环境执行对应提交的原抽取器。日志保留本轮 `extraction_input`、投影身份、解码后但 grounding 前的 `decoded_extraction`、保存后的 `extraction`、LM dispatch 数、服务模型、provider token 计数和原始生成输出。解码结果不是未经修复的 provider 原文；原文另在 `calls.responses[].output_text` 中保存。异常只保存有界类别和错误码，缺失的 provider usage 不推断为零；`--retry-failed` 追加重试，保留原失败记录。日志可能包含私有原文，应按既有授权和私有 manifest 管理。
+
 `uv run --locked python -m scripts.label_news_reader annotate --input /private/cases.jsonl.gz --output /private/claude-labels.jsonl` 使用当前独立 owner 规范；`guide_version` 绑定规范正文、共享报道类型定义及资格表的摘要。Claude 只见命题、来源、被引用原文、日期与随机排序的已推消息；模型读数与生产结果不传入，返回锚点映射回原序，并给出判重 `repeat`。Claude 标签是代理，`report --owner … --proxy … --candidate … --output …` 输出 owner 与代理在推送/重点上的 κ、混淆矩阵、判重确认数和折外预测复核队列，不自动改标签。
 
 重问和 `annotate` 会发出真实模型调用，需另获授权。历史 [#791 报告](../docs/reports/news-791-b.md)保存原问题的证据，旧 importance 分布不能进入当前读者校准。

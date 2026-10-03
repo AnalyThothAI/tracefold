@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from tests.support.news_extraction_809 import boundary_case, extraction_case
 from tests.support.news_reader import PushAll
 from tests.support.news_update_semantic import (
     MemoryCache,
@@ -52,6 +53,43 @@ def extraction_source() -> tuple[FrozenInput, dict[str, Any]]:
     claim = draft(evidence).model_dump(mode="json")
     claim["citations"][0]["evidence_ref"] = "e1"
     return source, {"claims": [claim]}
+
+
+@pytest.mark.parametrize("case_id", [f"R{i}" for i in range(1, 8)])
+def test_809_manual_complete_claims_survive_one_extraction_and_exact_grounding(monkeypatch, case_id) -> None:
+    # Manual replies prove the transport, not that the real model follows the instruction.
+    source, manual = extraction_case(case_id)
+    reply = manual.model_dump(mode="json")
+    for quote in reply["claims"][0]["citations"]:
+        quote["evidence_ref"] = "e1"
+    calls = generated(monkeypatch, reply)
+    analyzer = _analyzer()
+    result = asyncio.run(analyzer.extract(source, Budget.start(5)))
+    assert result.claims == manual.claims
+    assert len(calls) == 1
+    assert json.loads(calls[0]["evidence_json"])["evidence"][0]["segments"][0]["text"] == source.evidence[0].text
+    assert all(c.quote in source.evidence[0].text for c in result.claims[0].citations)
+    if case_id == "R6":
+        assert result.claims[0].fields.actor_role == "unknown"
+        assert "SpaceX" not in result.claims[0].statement
+
+
+@pytest.mark.parametrize("case_id", ["B1", "B2", "B3"])
+def test_809_different_project_conditional_month_and_unknown_actor_preserve_source(monkeypatch, case_id):
+    source, manual = boundary_case(case_id)
+    reply = manual.model_dump(mode="json")
+    reply["claims"][0]["citations"][0]["evidence_ref"] = "e1"
+    calls = generated(monkeypatch, reply)
+    result = asyncio.run(_analyzer().extract(source, Budget.start(5)))
+    assert result.claims == manual.claims and len(calls) == 1
+    fields = result.claims[0].fields
+    if case_id == "B1":
+        assert fields.subject == "Project Cedar" and "Blast" not in result.claims[0].statement
+    elif case_id == "B2":
+        assert fields.effective_at == "October" and fields.phase == "announced"
+        assert fields.conditions == ("unless the exports stop", "may")
+    else:
+        assert fields.subject == "unidentified attackers" and fields.actor_role == "unknown"
 
 
 @pytest.mark.parametrize(

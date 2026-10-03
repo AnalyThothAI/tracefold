@@ -9,18 +9,174 @@ import time
 import pytest
 
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
-from tests.support.news_update_pg import EVENT, adopted_head, agent, extraction_for, run_agent, seed_event, sql, store
+from tests.support.news_extraction_809 import extraction_case
+from tests.support.news_reader import FixedReader
+from tests.support.news_update_pg import (
+    EVENT,
+    adopt_next,
+    adopted_head,
+    agent,
+    extraction_for,
+    run_agent,
+    seed_event,
+    sql,
+    store,
+)
+from tests.support.news_update_semantic import MemoryCache
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.news.claim_recall import CALIBRATION, Probe, lexical_text, text_sha, vector_bytes
+from tracefold.news.notifications.contracts import CardCopy, CardLine
+from tracefold.news.notifications.planner import NotificationPlanner
+from tracefold.news.notifications.service import Notifications
 from tracefold.news.storage.claim_index import ClaimIndexStorage
 from tracefold.news.storage.claim_recall import PgClaimRecall
 from tracefold.news.updates.contracts import FrozenInput, content_revision_for
 from tracefold.news.updates.identity import digest
+from tracefold.news.updates.judgment import Budget
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.client import create_pool
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
+
+
+def _receipt_809(head, claim, body, clock):
+    """Synthetic receipt with explicitly frozen wording, never a cleaned production receipt."""
+    intent = f"receipt-{head.event_id}"
+    sql(
+        """INSERT INTO news_notifications(notification_id,intent_id,event_id,kind,origin,state,
+             content_revision,claim_refs,plan_key,card,receipt,history_context,sent_claims,
+             attempted_at_ms,settled_at_ms,created_at_ms,updated_at_ms)
+           VALUES (%s,%s,%s,'update','legacy_delivery','sent',%s,%s::jsonb,false,%s::jsonb,'{}','{}',
+                   %s::jsonb,%s,%s,%s,%s)""",
+        (
+            intent,
+            intent,
+            head.event_id,
+            head.content_revision,
+            json.dumps([claim.ref]),
+            json.dumps({"body": body, "payload_sha256": digest(body)}),
+            json.dumps([claim.model_dump(mode="json")]),
+            *([clock.now_ms - 1] * 4),
+        ),
+    )
+    return intent
+
+
+@pytest.mark.parametrize("case_id", ["R1", "R2"])
+@pytest.mark.usefixtures("synthetic_reader_calibration")
+def test_809_complete_query_selects_exact_old_receipt_before_duplicate_policy(case_id):
+    pg, db, clock = store()
+    source, extracted = extraction_case(case_id)
+    seed_event(source.event_id, text=source.evidence[0].text, fingerprint=case_id)
+    adopted, head = asyncio.run(adopt_next(pg.semantic, None, source, extracted, work_id=case_id))
+    assert adopted
+    frozen = head.claims[0].model_copy(update={"ref": f"original-{case_id}"})
+    history = head.model_copy(update={"event_id": f"history-{case_id}"})
+    seed_event(history.event_id, fingerprint=f"history-{case_id}")
+    intent = _receipt_809(history, frozen, frozen.statement, clock)
+    # The current index also has a different wording under the same ref. Only the
+    # frozen exact version has the matching vector; controlled vectors prove SQL
+    # and selection seams, not actual model similarity or business certification.
+    newer = frozen.model_copy(update={"statement": "The previous measure was cancelled."})
+    matching = vector_bytes([1.0, *([0.0] * 383)], CALIBRATION.embedder)
+    other = vector_bytes([0.0, 1.0, *([0.0] * 382)], CALIBRATION.embedder)
+
+    async def run():
+        await db.tx(
+            "809-versions",
+            lambda r: [
+                r.news.claim_index.index_claim(
+                    history.event_id, frozen, probe=Probe(frozen.statement, matching, CALIBRATION.embedder.key)
+                ),
+                r.news.claim_index.index_claim(
+                    history.event_id, newer, probe=Probe(newer.statement, other, CALIBRATION.embedder.key)
+                ),
+                r.news.claim_index.index_claim(
+                    head.event_id,
+                    head.claims[0],
+                    probe=Probe(head.claims[0].statement, matching, CALIBRATION.embedder.key),
+                ),
+            ],
+        )
+        snapshot = await pg.notifications.notification_snapshot(head.event_id, "news")
+        assert snapshot is not None
+        assert snapshot.reader.receipt_intents_by_claim[head.claims[0].ref] == (intent,)
+        judge = FixedReader(0, anchor="m1")
+        plan = await NotificationPlanner(judge, MemoryCache()).plan(
+            head, snapshot.reader, Budget.start(5), now_ms=clock()
+        )
+        assert judge.asked[0].messages == (frozen.statement,)
+        assert plan.selected_claim_refs == () and plan.action == "no_notification"
+        assert plan.claim_decisions[0].reason == "reader_feed"
+        return await db.read(
+            "809-original",
+            lambda r: r.conn.execute(
+                "SELECT sent_claims,card FROM news_notifications WHERE intent_id=%s", (intent,)
+            ).fetchone(),
+        )
+
+    saved = asyncio.run(run())
+    assert saved["sent_claims"][0]["statement"] == frozen.statement
+    assert saved["card"]["body"] == frozen.statement
+
+
+@pytest.mark.usefixtures("synthetic_reader_calibration")
+def test_809_mixed_duplicate_and_increment_keeps_only_new_claim_in_frozen_card():
+    pg, db, clock = store()
+    first_source, first = extraction_case("R1")
+    second_source, second = extraction_case("R2")
+    source = first_source.model_copy(update={"evidence": first_source.evidence + second_source.evidence})
+    extracted = first.model_copy(update={"claims": first.claims + second.claims})
+    seed_event(source.event_id, fingerprint="mixed-809")
+    adopted, head = asyncio.run(adopt_next(pg.semantic, None, source, extracted, work_id="mixed-809"))
+    assert adopted
+    history = head.model_copy(update={"event_id": "history-mixed-809"})
+    seed_event(history.event_id, fingerprint=history.event_id)
+    frozen = head.claims[0].model_copy(update={"ref": "old-809"})
+    _receipt_809(history, frozen, frozen.statement, clock)
+    vector = vector_bytes([1.0, *([0.0] * 383)], CALIBRATION.embedder)
+
+    class Reader:
+        identity = "synthetic-809-mixed"
+
+        async def judge(self, reader, budget):
+            return await FixedReader(0 if reader.claim.statement == frozen.statement else 3).judge(reader, budget)
+
+    class Copy:
+        identity = "synthetic-809-copy"
+
+        async def compose(self, claims, **kwargs):
+            return CardCopy(
+                headline_zh="Blast 用户提现安排",
+                lines=tuple(
+                    CardLine(
+                        claim_ref=c.ref,
+                        text_zh="Blast 用户须于十月二十六日前将资产提现至以太坊主网，延迟缩短为二十四小时",
+                    )
+                    for c in claims
+                ),
+            )
+
+    async def run():
+        await db.tx(
+            "809-vectors",
+            lambda r: [
+                r.news.claim_index.index_claim(
+                    event, claim, probe=Probe(claim.statement, vector, CALIBRATION.embedder.key)
+                )
+                for event, claim in [(history.event_id, frozen), *((head.event_id, c) for c in head.claims)]
+            ],
+        )
+        return await Notifications(
+            pg.notifications, NotificationPlanner(Reader(), MemoryCache()), Copy(), clock=clock
+        ).prepare(head.event_id, "news")
+
+    turn = asyncio.run(run())
+    assert turn.status == "ready" and turn.card is not None, turn.error_code
+    assert turn.card.claim_refs == (head.claims[1].ref,)
+    assert first.claims[0].statement not in turn.card.body
+    assert "Blast" in turn.card.body and "提现" in turn.card.body
 
 
 def test_degraded_fts_filters_stale_versions_before_route_budget(monkeypatch) -> None:
