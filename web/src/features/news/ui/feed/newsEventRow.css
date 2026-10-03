@@ -168,7 +168,7 @@
     }
 
     .news-event-headline {
-      font-size: 14px;
+      font-size: var(--font-size-body);
     }
 
     .news-event-headline a {
@@ -178,7 +178,7 @@
     }
 
     .news-event-reason {
-      font-size: 12px;
+      font-size: var(--font-size-meta);
       text-align: left;
     }
   }
