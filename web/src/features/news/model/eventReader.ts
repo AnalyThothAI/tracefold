@@ -28,12 +28,21 @@ export function eventReader(detail: NewsEventDetail) {
   const sent = intents
     .filter((intent) => intent.state === "sent")
     .sort((a, b) => (b.settled_at_ms ?? 0) - (a.settled_at_ms ?? 0));
-  const currentSent = sent.filter(
-    (intent) => revision != null && intent.content_revision === revision,
-  );
   const notification = detail.processing?.notification;
   const plan =
-    notification && notification.content_revision === revision ? notification.plan : null;
+    notification &&
+    (notification.content_revision === revision ||
+      (notification.state === "done" && notification.carried))
+      ? notification.plan
+      : null;
+  const currentSent = sent.filter(
+    (intent) =>
+      revision != null &&
+      (intent.content_revision === revision ||
+        (notification?.carried &&
+          notification.state === "done" &&
+          intent.content_revision === notification.decided_revision)),
+  );
   const decisions = new Map((plan?.claim_decisions ?? []).map((row) => [row.claim_ref, row]));
   const lines = new Map(
     [...currentSent]
@@ -42,12 +51,14 @@ export function eventReader(detail: NewsEventDetail) {
       .map((line) => [line.claim_ref, line.text_zh]),
   );
   const sentRefs = new Set(currentSent.flatMap((intent) => intent.claim_refs ?? []));
+  const duplicates = new Map((update?.duplicates ?? []).map((row) => [row.claim_ref, row]));
   const facts = (update?.claims ?? []).map((claim, index) => ({
     claim,
     number: index + 1,
     decision: decisions.get(claim.ref),
     text: lines.get(claim.ref),
     sent: sentRefs.has(claim.ref),
+    duplicate: detail.outcome.kind === "duplicate" ? duplicates.get(claim.ref) : undefined,
   }));
   // Preserve adopted numbering while making the delivered information the first reading group.
   facts.sort((a, b) => Number(b.sent) - Number(a.sent) || a.number - b.number);
@@ -100,7 +111,9 @@ export function eventTiming(detail: NewsEventDetail) {
   const notification = detail.processing?.notification;
   const end =
     latestSent?.settled_at_ms ??
-    (plan && notification?.state === "done" ? notification.updated_at_ms : null);
+    (plan && notification?.state === "done"
+      ? (notification.decided_at_ms ?? notification.updated_at_ms)
+      : null);
   const received =
     detail.timeline?.find((step) => step.stage === "received")?.at_ms ?? detail.event.opened_at_ms;
   const elapsed = end != null && end >= received ? end - received : null;

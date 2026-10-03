@@ -27,7 +27,13 @@ import {
   sourceDisplayName,
   sourcePlatform,
 } from "../../model/eventReader";
-import { absoluteTime, clockTime, optionalTime, validExternalUrl } from "../../model/newsLabels";
+import {
+  absoluteTime,
+  clockTime,
+  optionalTime,
+  validExternalUrl,
+  outcomeReason,
+} from "../../model/newsLabels";
 import { useNewsDetailStart } from "../../state/useNewsReadingPosition";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsTechnical } from "../chrome/NewsChrome";
@@ -177,6 +183,9 @@ function EventDocument({ detail, token }: { detail: NewsEventDetail; token: stri
   const url = validExternalUrl(source?.url || event.leader_url);
   const sentCount = reader.facts.filter((fact) => fact.sent).length;
   const headline = reader.latestSent?.headline_zh || event.leader_title;
+  const notification = detail.processing?.notification;
+  const original = update?.duplicates?.[0];
+  const originalAt = original?.received_at_ms ?? original?.first_available_at_ms;
   return (
     <div className="news-detail-document" ref={root}>
       <article className="news-detail-hero">
@@ -191,12 +200,32 @@ function EventDocument({ detail, token }: { detail: NewsEventDetail; token: stri
             ) : null}
             <NewsKindBadge kind={event.event_kind} />
           </span>
+          <ActionButton onClick={() => void copyEventLink()}>
+            <Copy aria-hidden />
+            复制事件链接
+          </ActionButton>
         </div>
         <h1 className="news-detail-headline">{headline}</h1>
         <p className="news-detail-update-summary">
           {update
-            ? `${reader.facts.length} 件事 · ${sentCount ? `本次推送 ${sentCount} 件` : "本次尚无确认送达"}`
-            : outcome.reason_zh}
+            ? `${reader.facts.length} 件事 · ${
+                sentCount
+                  ? `推送了 ${sentCount} 件${reader.latestSent?.settled_at_ms != null ? ` · ${clockTime(reader.latestSent.settled_at_ms)} 送达` : ""}`
+                  : outcome.kind === "duplicate"
+                    ? `与${originalAt != null ? ` ${clockTime(originalAt)} 的` : "更早的"}事件内容相同，不单独推送`
+                    : outcome.kind === "not_notified"
+                      ? `未推送${notification?.carried && notification.decided_at_ms != null ? ` · ${clockTime(notification.decided_at_ms)} 判断` : ""}`
+                      : "本次尚无确认送达"
+              }${
+                detail.processing?.notification?.carried
+                  ? `${sentCount ? " · " : "，"}${
+                      detail.processing.notification.added_sources?.length
+                        ? `之后新增 ${detail.processing.notification.added_sources.length} 个来源${sentCount ? "，内容未变" : ""}`
+                        : "之后仅非通知变化"
+                    }`
+                  : ""
+              }`
+            : outcomeReason(outcome)}
         </p>
         <div className="news-reader-meta">
           <b>
@@ -218,6 +247,7 @@ function EventDocument({ detail, token }: { detail: NewsEventDetail; token: stri
               原文 <ExternalLink aria-hidden />
             </a>
           ) : null}
+          {assets.length ? <NewsAssetChips assets={assets} /> : null}
           {event.ingest_mode === "recovery" ? <span>断线补抄进入</span> : null}
         </div>
         {latestFailed || hasNewInput ? (
@@ -232,20 +262,11 @@ function EventDocument({ detail, token }: { detail: NewsEventDetail; token: stri
             部分已记录内容暂不可读，请查看工程细节中的错误记录。
           </p>
         ) : null}
-        <div className="news-detail-hero-footer">
-          <div className="news-detail-hero-facts">
-            {assets.length ? <NewsAssetChips assets={assets} /> : null}
-          </div>
-          <ActionButton onClick={() => void copyEventLink()}>
-            <Copy aria-hidden />
-            复制事件链接
-          </ActionButton>
-          {copyState !== "idle" ? (
-            <span className="news-detail-copy-status" role="status">
-              {copyState === "copied" ? "事件链接已复制" : "复制失败，请复制浏览器地址"}
-            </span>
-          ) : null}
-        </div>
+        {copyState !== "idle" ? (
+          <span className="news-detail-copy-status" role="status">
+            {copyState === "copied" ? "事件链接已复制" : "复制失败，请复制浏览器地址"}
+          </span>
+        ) : null}
       </article>
       <div className="news-reader-layout">
         <div className="news-reader-main">

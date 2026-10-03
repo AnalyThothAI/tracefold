@@ -818,6 +818,7 @@ export interface components {
              * @default
              */
             kind_zh: string;
+            original?: components["schemas"]["NewsDuplicateData"] | null;
             /** Previous Content Ref */
             previous_content_ref?: string | null;
             /** Previous Event Id */
@@ -1107,6 +1108,31 @@ export interface components {
             /** State */
             state: string;
         };
+        /**
+         * NewsDuplicateData
+         * @description The adopted restatement's original fact and its independently recorded receipt/decision.
+         */
+        NewsDuplicateData: {
+            /** Claim Ref */
+            claim_ref: string;
+            /** Decided At Ms */
+            decided_at_ms?: number | null;
+            /** Event Id */
+            event_id?: string | null;
+            /** First Available At Ms */
+            first_available_at_ms?: number | null;
+            /** Headline */
+            headline?: string | null;
+            /**
+             * Reason Zh
+             * @default
+             */
+            reason_zh: string;
+            /** Received At Ms */
+            received_at_ms?: number | null;
+            /** Reporting Origin */
+            reporting_origin?: string | null;
+        };
         /** NewsDuplicatesWithheld24hData */
         NewsDuplicatesWithheld24hData: {
             /**
@@ -1312,6 +1338,8 @@ export interface components {
             content_revision: string;
             /** Disputed Claim Refs */
             disputed_claim_refs?: string[];
+            /** Duplicates */
+            duplicates?: components["schemas"]["NewsDuplicateData"][];
             /** Headline */
             headline?: string | null;
             /** Headline Source */
@@ -1541,8 +1569,8 @@ export interface components {
          * NewsFeedUpdateData
          * @description The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.
          *
-         *     ``headline`` is the card headline only when its sent revision is this head; otherwise
-         *     it names a current active claim. A historical card keeps its own revision in ``delivery``.
+         *     ``headline`` uses a sent card from this head or its carried effective decision; otherwise
+         *     it names a current active claim. The card keeps its true revision in ``delivery``.
          */
         NewsFeedUpdateData: {
             /** Adopted At Ms */
@@ -2142,13 +2170,26 @@ export interface components {
         };
         /** NewsNotificationWorkData */
         NewsNotificationWorkData: {
+            /** Added Sources */
+            added_sources?: string[];
             /**
              * Attempts
              * @default 0
              */
             attempts: number;
+            /**
+             * Carried
+             * @default false
+             */
+            carried: boolean;
+            /** Carried At Ms */
+            carried_at_ms?: number | null;
             /** Content Revision */
             content_revision: string;
+            /** Decided At Ms */
+            decided_at_ms?: number | null;
+            /** Decided Revision */
+            decided_revision?: string | null;
             /** Last Error Code */
             last_error_code?: string | null;
             /** Next Attempt At Ms */
@@ -2192,7 +2233,19 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "held_recovery" | "held_gate" | "pending_delivery" | "delivered" | "delivery_failed" | "queued_semantic" | "semantic_failed" | "no_update" | "queued_notification" | "notification_deferred" | "notification_failed" | "not_notified" | "delivery_ambiguous";
+            kind: "held_recovery" | "held_gate" | "pending_delivery" | "delivered" | "delivery_failed" | "queued_semantic" | "semantic_failed" | "no_update" | "queued_notification" | "notification_deferred" | "notification_failed" | "not_notified" | "delivery_ambiguous" | "duplicate";
+            /**
+             * Reason After Time Zh
+             * @default
+             */
+            reason_after_time_zh: string;
+            /** Reason At Ms */
+            reason_at_ms?: number | null;
+            /**
+             * Reason Before Time Zh
+             * @default
+             */
+            reason_before_time_zh: string;
             /**
              * Reason Zh
              * @default

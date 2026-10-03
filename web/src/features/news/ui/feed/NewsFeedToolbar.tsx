@@ -14,7 +14,7 @@ import { eventKindLabel, formatCount, hoursLabel, outcomeTabLabel } from "../../
 
 import "./newsFeedToolbar.css";
 
-const OUTCOME_TABS: Array<NewsFeedOutcome | null> = ["pushed", "held", "pending", null];
+const OUTCOME_TABS: Array<NewsFeedOutcome | null> = [null, "pushed", "held", "pending"];
 /** The Event-feed controls in the approved order: task, count, window, then two bounded filter axes. */
 export function NewsFeedToolbar({
   counts,

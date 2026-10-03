@@ -4,7 +4,12 @@ import {
   expectNoUnhandledApiRequests,
 } from "@tests/e2e/support/layoutAssertions";
 import { installMockApi } from "@tests/e2e/support/mockApi";
-import { newsUpdateDetailFixture, newsOutcomeFixture } from "@tests/fixtures/newsFixture";
+import {
+  newsUpdateDetailFixture,
+  newsOutcomeFixture,
+  newsCarriedDetailFixture,
+  newsDuplicateDetailFixture,
+} from "@tests/fixtures/newsFixture";
 
 /** Continuous reading, real scroll and keyboard links at every configured viewport. */
 test("reads sent content, all facts and original without opening engineering", async ({
@@ -134,3 +139,62 @@ test("copies a shareable focused link and leaves refresh polling at the reading 
   await expectNoDocumentHorizontalOverflow(page);
   await expectNoUnhandledApiRequests(page);
 });
+
+for (const sent of [true, false]) {
+  test(`keeps the ${sent ? "sent card" : "silent decision"} after another source`, async ({
+    page,
+  }, testInfo) => {
+    await installMockApi(page);
+    const detail = newsCarriedDetailFixture(sent);
+    await page.route("**/api/news/events/evt-agent-tariff", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, data: detail }),
+      }),
+    );
+    await page.goto("/news/events/evt-agent-tariff");
+    const delivery = page.getByRole("region", { name: "读者收到的推送" });
+    await expect(delivery).toContainText("追加通讯社");
+    await expect(delivery).toContainText(sent ? "不再推送" : "不重新判断");
+    if (sent) {
+      await expect(delivery).toContainText("【重点】钢铁进口关税上调至 50%");
+      await expect(delivery.getByText("此前版本已送达")).toHaveCount(0);
+      await expect(page.locator(".news-reader-fact[data-sent]")).toHaveCount(1);
+    } else {
+      await expect(delivery).toContainText("本次未推送");
+      await expect(page.getByRole("region", { name: "每件事与推送原因" })).toContainText(
+        "推送概率 26%（推送线 37%）",
+      );
+    }
+    await page.screenshot({ path: testInfo.outputPath(`carried-${sent}.png`) });
+    await expectNoDocumentHorizontalOverflow(page);
+    await expectNoUnhandledApiRequests(page);
+  });
+}
+
+for (const received of [true, false]) {
+  test(`links duplicate to the ${received ? "received" : "unreceived"} original`, async ({
+    page,
+  }, testInfo) => {
+    await installMockApi(page);
+    const detail = newsDuplicateDetailFixture(received);
+    await page.route("**/api/news/events/evt-agent-tariff", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, data: detail }),
+      }),
+    );
+    await page.goto("/news/events/evt-agent-tariff");
+    const delivery = page.getByRole("region", { name: "读者收到的推送" });
+    await expect(delivery).toContainText("本条不单独推送");
+    await expect(delivery).toContainText(received ? "已推送" : "旧版模型判断：只进信息流");
+    await expect(page.locator(".news-reader-fact").first()).toContainText("重复");
+    const original = delivery.getByRole("link", { name: "原始关税报道" }).first();
+    await expect(original).toHaveAttribute("href", "/news/events/evt-original");
+    await page.screenshot({ path: testInfo.outputPath(`duplicate-${received}.png`) });
+    await original.click();
+    await expect(page).toHaveURL(/\/news\/events\/evt-original$/);
+    await expectNoDocumentHorizontalOverflow(page);
+    await expectNoUnhandledApiRequests(page);
+  });
+}

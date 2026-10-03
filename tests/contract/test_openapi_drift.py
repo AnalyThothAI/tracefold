@@ -216,7 +216,15 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "story",
         # #88: the event-level aggregate and every per-asset Reaction with the closes behind it.
     }
-    assert set(components["NewsOutcomeData"]["properties"]) == {"kind", "text_zh", "reason_zh", "group"}
+    assert set(components["NewsOutcomeData"]["properties"]) == {
+        "kind",
+        "text_zh",
+        "reason_zh",
+        "group",
+        "reason_at_ms",
+        "reason_before_time_zh",
+        "reason_after_time_zh",
+    }
     assert set(components["NewsStatusData"]["properties"]) == {
         "state",
         "workers_state",
@@ -456,6 +464,7 @@ def test_news_event_update_contract_is_exact_and_types_the_core_vocabulary() -> 
         "sources",
         "implications",
         "open_questions",
+        "duplicates",
     }
     assert set(components["NewsProcessingData"]["properties"]) == {
         "semantic",

@@ -14,6 +14,8 @@ import {
   newsStatusFixture,
   newsTimelineFixture,
   newsUpdateDetailFixture,
+  newsCarriedDetailFixture,
+  newsDuplicateDetailFixture,
 } from "@tests/fixtures/newsFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
@@ -84,7 +86,7 @@ describe("NewsPage", () => {
         .getAllByRole("tab")
         .map((tab) => tab.textContent),
       // Label plus the server's count for that group under the current filter, in the approved tab name.
-    ).toEqual(["已推送41", "被拦截271", "处理中8", "全部320"]);
+    ).toEqual(["全部320", "已推送41", "未推送271", "处理中8"]);
     expect(within(tabs).getByRole("tab", { name: "已推送 41" })).toHaveAttribute(
       "aria-selected",
       "true",
@@ -545,7 +547,7 @@ describe("NewsPage", () => {
       outcome: "held",
       q: "bitcoin",
     });
-    expect(screen.getByRole("tab", { name: "被拦截 271" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "未推送 271" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -1023,6 +1025,53 @@ describe("NewsPage", () => {
     expect(container.querySelector("#news-market")).not.toHaveAttribute("open");
     expect(screen.queryByRole("button", { name: "中文释义" })).toBeNull();
   });
+
+  it.each([true, false])(
+    "reads the effective decision after new evidence (sent=%s)",
+    async (sent) => {
+      server.use(
+        http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+          HttpResponse.json({ ok: true, data: newsCarriedDetailFixture(sent) }),
+        ),
+      );
+      renderNews(
+        <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+        "/news/events/evt-global-policy",
+      );
+      const delivery = await screen.findByRole("region", { name: "读者收到的推送" });
+      expect(delivery).toHaveTextContent("追加通讯社");
+      expect(delivery).toHaveTextContent(sent ? "不再推送" : "不重新判断");
+      expect(delivery).not.toHaveTextContent("此前版本已送达");
+      expect(screen.getByRole("region", { name: "每件事与推送原因" })).toHaveTextContent(
+        sent ? "已推送" : "推送概率 26%",
+      );
+    },
+  );
+
+  it.each([true, false])(
+    "explains duplicate provenance without a new decision (received=%s)",
+    async (received) => {
+      server.use(
+        http.get(/.*\/api\/news\/events\/evt-global-policy$/, () =>
+          HttpResponse.json({ ok: true, data: newsDuplicateDetailFixture(received) }),
+        ),
+      );
+      renderNews(
+        <NewsPage eventId="evt-global-policy" token="test-token" view="event" />,
+        "/news/events/evt-global-policy",
+      );
+      const delivery = await screen.findByRole("region", { name: "读者收到的推送" });
+      expect(delivery).toHaveTextContent("本条不单独推送");
+      expect(delivery).toHaveTextContent(received ? "已推送" : "旧版模型判断：只进信息流");
+      expect(within(delivery).getAllByRole("link", { name: "原始关税报道" })[0]).toHaveAttribute(
+        "href",
+        "/news/events/evt-original",
+      );
+      expect(screen.getByRole("region", { name: "每件事与推送原因" })).not.toHaveTextContent(
+        "尚未记录这件事的推送判断",
+      );
+    },
+  );
 
   it("identifies uncertified candidate probabilities without implying a release certificate", async () => {
     const detail = newsUpdateDetailFixture();

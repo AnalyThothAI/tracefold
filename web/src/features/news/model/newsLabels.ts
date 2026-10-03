@@ -52,6 +52,7 @@ const OUTCOME_TONE: Record<NewsOutcomeKind, Tone> = {
   semantic_failed: "alert",
   no_update: "neutral",
   not_notified: "neutral",
+  duplicate: "neutral",
   delivery_ambiguous: "alert",
 };
 
@@ -68,7 +69,7 @@ const HEALTH_TONE: Record<NewsHealthLevel, Tone> = {
 
 const OUTCOME_TAB_LABELS: Record<NewsFeedOutcome, string> = {
   pushed: "已推送",
-  held: "被拦截",
+  held: "未推送",
   pending: "处理中",
 };
 
@@ -197,6 +198,13 @@ export function absoluteTime(value: number): string {
 /** `HH:MM` for feed rows; the full timestamp lives in the title attribute. */
 export function clockTime(value: number): string {
   return absoluteTime(value).slice(11, 16);
+}
+
+/** The backend owns the sentence; only its explicitly structured clock is localized here. */
+export function outcomeReason(outcome: NewsFeedEvent["outcome"]): string {
+  return outcome.reason_at_ms == null
+    ? outcome.reason_zh
+    : `${outcome.reason_before_time_zh ?? ""}${clockTime(outcome.reason_at_ms)}${outcome.reason_after_time_zh ?? ""}`;
 }
 
 export function displayTime(value: number): string {

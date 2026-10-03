@@ -17,8 +17,8 @@
   }
   .news-detail-hero {
     display: grid;
-    gap: 14px;
-    padding: 24px;
+    gap: 10px;
+    padding: 22px 24px;
     border-radius: var(--radius-lg);
     background: var(--surface-panel);
     box-shadow: var(--ring-panel);
@@ -68,24 +68,6 @@
     color: var(--text-primary);
     font: var(--type-meta);
     overflow-wrap: anywhere;
-  }
-  .news-detail-hero-footer {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 12px 18px;
-    align-items: center;
-    justify-content: space-between;
-    padding-top: 14px;
-    border-top: 1px solid var(--border-faint);
-  }
-  .news-detail-hero-facts {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 9px 16px;
-    align-items: center;
-    min-width: 0;
-    color: var(--text-muted);
-    font: var(--type-meta);
   }
   .news-detail-hero-actions {
     display: flex;
@@ -254,7 +236,7 @@
   }
   .news-reader-section {
     min-width: 0;
-    padding: 22px;
+    padding: 22px 24px;
     background: var(--surface-panel);
     border-radius: var(--radius-lg);
     box-shadow: var(--ring-panel);
@@ -262,8 +244,8 @@
     scroll-margin-top: 18px;
   }
   .news-reader-section h2 {
-    margin: 0 0 16px;
-    font: 650 var(--font-size-item-title)/1.6 var(--font-sans);
+    margin: 0 0 14px;
+    font: 700 var(--font-size-item-title)/1.6 var(--font-sans);
     color: var(--text-primary);
   }
   .news-reader-section h3 {
@@ -364,13 +346,15 @@
     font-weight: 600;
   }
   .news-reader-earlier {
-    margin-top: 16px;
-    padding: 16px;
+    display: grid;
+    gap: 6px;
+    margin-top: 12px;
+    padding: 14px 16px;
     background: var(--surface-raised);
     border-radius: var(--radius-sm);
   }
   .news-reader-earlier > p:first-child {
-    margin: 0 0 8px;
+    margin: 0;
     color: var(--text-muted);
     font: var(--type-meta);
   }
@@ -403,8 +387,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 32px;
-    height: 32px;
+    width: 28px;
+    height: 28px;
     background: var(--surface-slot);
     border-radius: var(--radius-sm);
     color: var(--text-muted);

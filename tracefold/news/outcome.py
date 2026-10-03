@@ -10,11 +10,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Final, Literal
 
 from .events.storyline import NO_STORYLINE_KEY, storyline_entry
 from .models import ADMITTED_ADMISSIONS
-from .update_view import claim_reasons_zh, semantic_state
+from .update_view import claim_reasons_zh, effective_notification, semantic_state
 
 OUTCOME_VERSION: Final = "news_outcome_v1"
 
@@ -32,9 +33,10 @@ OutcomeKind = Literal[
     "notification_failed",
     "not_notified",
     "delivery_ambiguous",
+    "duplicate",
 ]
 
-# Grouping the console uses for the task tabs: 已推送 / 被拦截 / 处理中. Kept here so CLI and HTTP agree.
+# Grouping the console uses for the task tabs: 已推送 / 未推送 / 处理中.
 OUTCOME_GROUP: Final[dict[str, str]] = {
     "held_recovery": "held",
     "held_gate": "held",
@@ -49,6 +51,7 @@ OUTCOME_GROUP: Final[dict[str, str]] = {
     "notification_failed": "held",
     "not_notified": "held",
     "delivery_ambiguous": "held",
+    "duplicate": "held",
 }
 
 
@@ -58,9 +61,33 @@ class Outcome:
     text_zh: str
     reason_zh: str
     group: str  # pushed | held | pending
+    reason_at_ms: int | None = None
+    reason_before_time_zh: str = ""
+    reason_after_time_zh: str = ""
 
-    def as_dict(self) -> dict[str, str]:
-        return {"kind": self.kind, "text_zh": self.text_zh, "reason_zh": self.reason_zh, "group": self.group}
+    def as_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "kind": self.kind,
+            "text_zh": self.text_zh,
+            "reason_zh": self.reason_zh,
+            "group": self.group,
+        }
+        if self.reason_at_ms is not None:
+            result.update(
+                reason_at_ms=self.reason_at_ms,
+                reason_before_time_zh=self.reason_before_time_zh,
+                reason_after_time_zh=self.reason_after_time_zh,
+            )
+        return result
+
+
+def decision_clock(at_ms: int) -> str:
+    """CLI copy uses UTC; HTTP carries the clock separately for browser-local rendering."""
+    return datetime.fromtimestamp(at_ms / 1000, tz=UTC).strftime("%H:%M UTC")
+
+
+def _timed_outcome(kind: OutcomeKind, text: str, before: str, at_ms: int, after: str) -> Outcome:
+    return Outcome(kind, text, before + decision_clock(at_ms) + after, OUTCOME_GROUP[kind], at_ms, before, after)
 
 
 # ------------------------------------------------------------------------------------------------ vocabulary
@@ -170,6 +197,10 @@ def event_outcome(
     semantic: Mapping[str, Any] | None = None,
     adopted: bool = False,
     notification: Mapping[str, Any] | None = None,
+    head: Mapping[str, Any] | None = None,
+    duplicate: Mapping[str, Any] | None = None,
+    has_restatement: bool = False,
+    headline_ref: str | None = None,
 ) -> Outcome:
     """Project current work first; a historical receipt remains a separate delivery fact."""
 
@@ -197,6 +228,24 @@ def event_outcome(
             return _outcome("delivered", "已推送", "")
         return _outcome("no_update", "无可采用内容", "语义处理完成，未形成可采用的事件更新")
 
+    had_work = notification is not None
+    stored_work = notification
+    notification = effective_notification(head, stored_work)
+    # Owed old work remains pending/failed responsibility, without presenting its old plan as carried.
+    if notification is None and stored_work is not None:
+        notification = stored_work
+    if (notification or {}).get("projection_error"):
+        return _outcome("delivery_failed", "通知状态异常", "已完成的通知决定版本与当前事实变化不一致")
+    has_notification_changes = (head or {}).get("has_notification_changes")
+    if not had_work and has_restatement and has_notification_changes is False:
+        original = duplicate or {}
+        received = original.get("received_at_ms")
+        appeared = original.get("first_available_at_ms")
+        if received is not None:
+            return _timed_outcome("duplicate", "重复", "读者 ", int(received), " 已收到同一事实")
+        if appeared is not None:
+            return _timed_outcome("duplicate", "重复", "同一事实 ", int(appeared), " 已出现 · 原条未推送")
+        return _outcome("duplicate", "重复", "与更早事件重复")
     work_state = str((notification or {}).get("state") or "")
     action = str((notification or {}).get("action") or "")
     target = str((notification or {}).get("content_revision") or "")
@@ -225,7 +274,7 @@ def event_outcome(
             return _outcome("pending_delivery", "待推送", "仍有未完成的通知任务")
         if queue_state == "dead":
             return _outcome("delivery_failed", "未送达", delivery_error_zh((delivery_queue or {}).get("error_code")))
-        return _outcome("not_notified", "没有待执行通知", "当前没有未完成通知责任")
+        return _outcome("not_notified", "未通知", "本版本没有新增可通知的事实")
     if work_state == "pending":
         if action == "unresolved":
             return _outcome("notification_deferred", "等待前序发送", "本事件仍有发送进行中")
@@ -240,14 +289,40 @@ def event_outcome(
         return _outcome("queued_notification", "待决定通知", "已采用事件更新，等待通知选择")
 
     if action == "no_notification":
+        reason = claim_reasons_zh((notification or {}).get("claim_decisions"), headline_ref=headline_ref)
+        if (notification or {}).get("carried") and (notification or {}).get("decided_at_ms") is not None:
+            suffix = " 判断，之后仅新增来源" if notification.get("added_sources") else " 判断，之后仅非通知变化"
+            return _timed_outcome(
+                "not_notified",
+                "未通知",
+                (reason or "没有未覆盖且可通知的命题") + " · ",
+                int(notification["decided_at_ms"]),
+                suffix,
+            )
         return _outcome(
             "not_notified",
             "未通知",
-            claim_reasons_zh((notification or {}).get("claim_decisions")) or "没有未覆盖且可通知的命题",
+            reason or "没有未覆盖且可通知的命题",
         )
     if action == "notify" and queue_current and queue_state == "pending":
         return _outcome("pending_delivery", "待推送", "已决定通知，等待发送")
     if state == "sent":
+        if (
+            notification
+            and notification.get("carried")
+            and delivery_current
+            and delivery
+            and delivery.get("settled_at_ms")
+        ):
+            n = len(notification.get("added_sources") or [])
+            suffix = f" · 之后新增 {n} 个来源" if n else " · 之后仅非通知变化"
+            return _timed_outcome(
+                "delivered",
+                "已推送（重点）" if delivery.get("plan_key") else "已推送",
+                "推送于 ",
+                int(delivery["settled_at_ms"]),
+                suffix,
+            )
         return _outcome("delivered", "已推送（重点）" if (delivery or {}).get("plan_key") else "已推送", "")
     if state == "ambiguous":
         return _outcome("delivery_ambiguous", "发送结果不确定", "发送后未能确认是否送达，不重发，等待对账")
@@ -258,7 +333,7 @@ def event_outcome(
         return _outcome("pending_delivery", "推送中", "通知已获发送许可，等待实际结果")
     if action == "notify":
         return _outcome("delivery_failed", "通知状态异常", "已完成的通知责任缺少可核验的发送结果")
-    return _outcome("not_notified", "未通知", "当前没有未完成通知责任")
+    return _outcome("not_notified", "未通知", "本版本没有新增可通知的事实")
 
 
 def _outcome(kind: OutcomeKind, text_zh: str, reason_zh: str) -> Outcome:

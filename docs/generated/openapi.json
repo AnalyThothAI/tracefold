@@ -1589,6 +1589,16 @@
             "title": "Kind Zh",
             "type": "string"
           },
+          "original": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsDuplicateData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "previous_content_ref": {
             "anyOf": [
               {
@@ -2565,6 +2575,92 @@
         "title": "NewsDeliverySummaryData",
         "type": "object"
       },
+      "NewsDuplicateData": {
+        "additionalProperties": false,
+        "description": "The adopted restatement's original fact and its independently recorded receipt/decision.",
+        "properties": {
+          "claim_ref": {
+            "title": "Claim Ref",
+            "type": "string"
+          },
+          "decided_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At Ms"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "first_available_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Available At Ms"
+          },
+          "headline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Headline"
+          },
+          "reason_zh": {
+            "default": "",
+            "title": "Reason Zh",
+            "type": "string"
+          },
+          "received_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At Ms"
+          },
+          "reporting_origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reporting Origin"
+          }
+        },
+        "required": [
+          "claim_ref"
+        ],
+        "title": "NewsDuplicateData",
+        "type": "object"
+      },
       "NewsDuplicatesWithheld24hData": {
         "additionalProperties": false,
         "properties": {
@@ -3030,6 +3126,13 @@
               "type": "string"
             },
             "title": "Disputed Claim Refs",
+            "type": "array"
+          },
+          "duplicates": {
+            "items": {
+              "$ref": "#/components/schemas/NewsDuplicateData"
+            },
+            "title": "Duplicates",
             "type": "array"
           },
           "headline": {
@@ -3648,7 +3751,7 @@
       },
       "NewsFeedUpdateData": {
         "additionalProperties": false,
-        "description": "The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.\n\n``headline`` is the card headline only when its sent revision is this head; otherwise\nit names a current active claim. A historical card keeps its own revision in ``delivery``.",
+        "description": "The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.\n\n``headline`` uses a sent card from this head or its carried effective decision; otherwise\nit names a current active claim. The card keeps its true revision in ``delivery``.",
         "properties": {
           "adopted_at_ms": {
             "title": "Adopted At Ms",
@@ -5245,14 +5348,59 @@
       "NewsNotificationWorkData": {
         "additionalProperties": false,
         "properties": {
+          "added_sources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Added Sources",
+            "type": "array"
+          },
           "attempts": {
             "default": 0,
             "title": "Attempts",
             "type": "integer"
           },
+          "carried": {
+            "default": false,
+            "title": "Carried",
+            "type": "boolean"
+          },
+          "carried_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Carried At Ms"
+          },
           "content_revision": {
             "title": "Content Revision",
             "type": "string"
+          },
+          "decided_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At Ms"
+          },
+          "decided_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided Revision"
           },
           "last_error_code": {
             "anyOf": [
@@ -5384,9 +5532,31 @@
               "notification_deferred",
               "notification_failed",
               "not_notified",
-              "delivery_ambiguous"
+              "delivery_ambiguous",
+              "duplicate"
             ],
             "title": "Kind",
+            "type": "string"
+          },
+          "reason_after_time_zh": {
+            "default": "",
+            "title": "Reason After Time Zh",
+            "type": "string"
+          },
+          "reason_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason At Ms"
+          },
+          "reason_before_time_zh": {
+            "default": "",
+            "title": "Reason Before Time Zh",
             "type": "string"
           },
           "reason_zh": {

@@ -201,6 +201,19 @@ class NewsClaimData(ExactApiSchema):
     disputed: bool = False
 
 
+class NewsDuplicateData(ExactApiSchema):
+    """The adopted restatement's original fact and its independently recorded receipt/decision."""
+
+    claim_ref: str
+    event_id: str | None = None
+    headline: str | None = None
+    first_available_at_ms: int | None = None
+    reporting_origin: str | None = None
+    received_at_ms: int | None = None
+    reason_zh: str = ""
+    decided_at_ms: int | None = None
+
+
 class NewsClaimChangeData(ExactApiSchema):
     """What this revision changed relative to an earlier claim. An unfound earlier claim stays unknown."""
 
@@ -212,6 +225,7 @@ class NewsClaimChangeData(ExactApiSchema):
     previous_content_ref: str | None = None
     previous_statement: str | None = None
     previous_event_id: str | None = None
+    original: NewsDuplicateData | None = None
     relation: Relation | None = None
     relation_zh: str = ""
 
@@ -274,6 +288,7 @@ class NewsEventUpdateData(ExactApiSchema):
     retired_claim_refs: list[str] = Field(default_factory=list)
     disputed_claim_refs: list[str] = Field(default_factory=list)
     changes: list[NewsClaimChangeData] = Field(default_factory=list)
+    duplicates: list[NewsDuplicateData] = Field(default_factory=list)
     sources: list[NewsUpdateEvidenceData] = Field(default_factory=list)
     implications: list[NewsImplicationData] = Field(default_factory=list)
     open_questions: list[NewsOpenQuestionData] = Field(default_factory=list)
@@ -364,6 +379,11 @@ class NewsNotificationWorkData(ExactApiSchema):
     state: Literal["pending", "done", "failed"]
     state_zh: str = ""
     content_revision: str
+    carried: bool = False
+    decided_revision: str | None = None
+    decided_at_ms: int | None = None
+    carried_at_ms: int | None = None
+    added_sources: list[str] = Field(default_factory=list)
     attempts: int = 0
     # Present on failed work: the error that ended it, kept until the work completes.
     last_error_code: str | None = None

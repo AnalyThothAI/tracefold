@@ -2,7 +2,13 @@ import { newsEventPath } from "@shared/routing/paths";
 import { Link } from "react-router-dom";
 
 import type { NewsFeedEvent, NewsQuote } from "../../api/newsQueries";
-import { absoluteTime, clockTime, eventHeadline, relativeTime } from "../../model/newsLabels";
+import {
+  absoluteTime,
+  clockTime,
+  eventHeadline,
+  relativeTime,
+  outcomeReason,
+} from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
@@ -15,7 +21,7 @@ const ROW_ASSET_CHIPS = 3;
 /**
  * One Event in the feed: when · what · one outcome, tiered by that outcome.
  *
- * The row is `54 / 1fr / 150` with a 3px left rail. The pipeline's own state lives
+ * The row is `54 / 1fr / 190` with a 3px left rail. The pipeline's own state lives
  * in the right column as a word, because a coloured pill on every row draws a vertical band the reader stops
  * seeing. A held Event steps back rather than disappearing: smaller headline, secondary ink, grey state word,
  * and the server's `reason_zh` under it.
@@ -91,7 +97,7 @@ export function NewsEventRow({
       {/* One line under the badge, never two: a sent row wants the time it went out, everything else wants
           the server's reason. */}
       {event.outcome.reason_zh ? (
-        <span className="news-event-reason">{event.outcome.reason_zh}</span>
+        <span className="news-event-reason">{outcomeReason(event.outcome)}</span>
       ) : sentAt ? (
         <span className="news-event-reason">推送于 {clockTime(sentAt)}</span>
       ) : null}

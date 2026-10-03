@@ -170,7 +170,11 @@ def test_scope_repair_cas_keeps_observation_separate_and_dispatches_retirement(n
             detail = repositories_for_connection(reader).news.event_detail(event_id)
         finally:
             reader.close()
-        assert detail is not None and detail["processing"]["notification"] is None
+        assert detail is not None
+        notification = detail["processing"]["notification"]
+        assert notification["carried"] is True
+        assert notification["decided_revision"] == head.content_revision
+        assert notification["content_revision"] != revision
     assert sql(f"SELECT count(*) AS n FROM ({UPDATE_RECEIPTS_SQL})")[0]["n"] == 0
 
 

@@ -265,7 +265,7 @@ describe("news route", () => {
 
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "news search" })).toHaveValue("tariff");
-    expect(screen.getByRole("tab", { name: "被拦截 271" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "未推送 271" })).toHaveAttribute(
       "aria-selected",
       "true",
     );

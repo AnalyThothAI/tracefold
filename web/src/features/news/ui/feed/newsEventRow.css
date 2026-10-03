@@ -7,7 +7,7 @@
     grid-template-areas:
       "time main badge"
       "time main reason";
-    grid-template-columns: 54px minmax(0, 1fr) 150px;
+    grid-template-columns: 54px minmax(0, 1fr) 190px;
     grid-template-rows: auto 1fr;
     gap: 3px 14px;
     align-items: start;
@@ -24,6 +24,10 @@
 
   .news-event-row[data-outcome-group="held"] {
     --rail: var(--border-subtle);
+  }
+
+  .news-event-row[data-outcome-group="held"] .news-event-headline {
+    font-weight: 600;
   }
 
   .news-event-row:hover {
@@ -74,6 +78,10 @@
     position: absolute;
     inset: 0;
     content: "";
+  }
+
+  .news-event-row[data-outcome-group="held"] .news-event-headline a {
+    color: var(--text-strong);
   }
 
   .news-event-original {
@@ -143,6 +151,7 @@
         "main main"
         "reason reason";
       grid-template-columns: minmax(0, 1fr) auto;
+      gap: 4px 10px;
       min-height: 0;
       padding: 10px 11px 11px;
       border: 0;
@@ -154,11 +163,22 @@
       justify-self: end;
     }
 
-    .news-event-row[data-outcome-group="held"] .news-event-badge {
+    .news-event-original {
       display: none;
     }
 
+    .news-event-headline {
+      font-size: var(--font-size-body);
+    }
+
+    .news-event-headline a {
+      display: block;
+      overflow: visible;
+      -webkit-line-clamp: unset;
+    }
+
     .news-event-reason {
+      font-size: var(--font-size-meta);
       text-align: left;
     }
   }

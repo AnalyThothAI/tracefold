@@ -16,14 +16,14 @@ test("Event feed controls preserve the approved disclosure and URL contract", as
   await page.goto("/news");
 
   const tabs = page.getByRole("tablist", { name: "按结局筛选" });
-  await expect(tabs.getByRole("tab")).toHaveText(["已推送41", "被拦截271", "处理中8", "全部320"]);
+  await expect(tabs.getByRole("tab")).toHaveText(["全部320", "已推送41", "未推送271", "处理中8"]);
   await expect(tabs.getByRole("tab", { name: "已推送 41" })).toHaveAttribute(
     "aria-selected",
     "true",
   );
 
   const outcomes = [
-    ["被拦截 271", "held"],
+    ["未推送 271", "held"],
     ["处理中 8", "pending"],
     ["全部 320", "all"],
     ["已推送 41", "pushed"],

@@ -19,13 +19,17 @@ from ..source_contracts import (
 from ..timeline import event_timeline, reader_delivery
 from ..update_view import (
     UPDATE_DECODE_ERROR,
+    decode_update,
+    effective_notification,
     event_update_view,
+    headline_claim_ref,
     intent_views,
     notification_view,
     previous_content_refs,
     semantic_view,
     sent_headline,
 )
+from ..updates.contracts import NOTIFICATION_CHANGES
 from . import update_reads
 from .collectors import STATUS_INGEST_SQL
 from .feed_sql import (
@@ -214,6 +218,19 @@ class FeedStorage:
         revisions = update_reads.event_update_revisions(self.conn, event_id) if on_update_path else []
         observations = update_reads.semantic_observations(self.conn, event_id) if on_update_path else []
         notification = update_reads.notification_work(self.conn, event_id) if on_update_path else None
+        effective = effective_notification(head, notification)
+        decoded = decode_update(head["document"]) if head is not None else None
+        head_info = (
+            {
+                "content_revision": head["content_revision"],
+                "has_notification_changes": any(change.kind in NOTIFICATION_CHANGES for change in decoded.changes)
+                if decoded is not None
+                else None,
+            }
+            if head is not None
+            else None
+        )
+        duplicates = update_reads.duplicate_claims(self.conn, event_id) if head is not None else []
         snapshots = [
             {
                 "event_id": row["event_id"],
@@ -260,9 +277,23 @@ class FeedStorage:
         if head is not None:
             prior = update_reads.previous_claims(self.conn, event_id, previous_content_refs(head["document"]))
             current_intents = [
-                intent for intent in intents if intent.get("content_revision") == head["content_revision"]
+                intent
+                for intent in intents
+                if intent.get("content_revision")
+                in {
+                    head["content_revision"],
+                    (effective or {}).get("content_revision")
+                    if (effective or {}).get("carried")
+                    else head["content_revision"],
+                }
             ]
             event_update = event_update_view(head, previous_claims=prior, sent_headline=sent_headline(current_intents))
+            if event_update is not None:
+                event_update["duplicates"] = duplicates
+                by_ref = {row["claim_ref"]: row for row in duplicates}
+                for change in event_update["changes"]:
+                    if change["kind"] == "restatement":
+                        change["original"] = by_ref.get(change["current_ref"])
             update_error_code = UPDATE_DECODE_ERROR if event_update is None else None
             # Once an adopted head exists its current primary assets own the reader projection. An
             # empty or undecodable head never falls back to unrelated provider tags.
@@ -274,13 +305,8 @@ class FeedStorage:
                 if asset["role"] == "primary"
             ]
         statements = {str(claim["ref"]): str(claim["statement"]) for claim in (event_update or {}).get("claims", [])}
-        current_notification = (
-            notification
-            if head is None or notification is None or notification["content_revision"] == head["content_revision"]
-            else None
-        )
-        notification_public = notification_view(current_notification, statements=statements)
-        update_reads.attach_earlier_receipts(self.conn, current_notification, notification_public)
+        notification_public = notification_view(effective, statements=statements)
+        update_reads.attach_earlier_receipts(self.conn, effective, notification_public)
         processing = (
             {
                 "semantic": semantic_view(work),
@@ -309,7 +335,11 @@ class FeedStorage:
             delivery_queue=_owed_intent(queue, deliveries),
             semantic=work,
             adopted=head is not None,
-            notification=_notification_outcome_input(current_notification),
+            notification=_notification_outcome_input(effective or notification),
+            head=head_info,
+            duplicate=duplicates[0] if duplicates else None,
+            has_restatement=bool(duplicates),
+            headline_ref=headline_claim_ref(decoded) if decoded is not None else None,
             evidence_snapshots=snapshots if on_update_path else [],
             revisions=revisions,
             observations=observations,
@@ -337,7 +367,9 @@ class FeedStorage:
             return None
         center = int(event["opened_at_ms"])
         start, end = center - STORY_HALF_WINDOW_MS, center + STORY_HALF_WINDOW_MS
-        raw = self.conn.execute(EVENT_STORY_SQL, (key, start, end, event["event_id"], STORY_EVENT_LIMIT + 1)).fetchall()
+        raw = self.conn.execute(
+            EVENT_STORY_SQL, (key, start, end, event["event_id"], STORY_EVENT_LIMIT + 1, event["event_id"])
+        ).fetchall()
         rows = [_feed_row(row, now_ms=center) for row in raw[:STORY_EVENT_LIMIT]]
         return {
             "storyline_key": key,
@@ -581,6 +613,7 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
         if row.get("delivery_state")
         else None
     )
+    original = row.get("duplicate_info")
     outcome = event_outcome(
         admission=row.get("admission"),
         delivery=delivery | {"plan_key": row.get("delivery_plan_key")} if delivery is not None else None,
@@ -609,11 +642,19 @@ def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
                 "content_revision": row.get("notification_content_revision"),
                 "action": row.get("notification_action"),
                 "claim_decisions": row.get("notification_claim_decisions"),
+                "decided_at_ms": row.get("notification_decided_at_ms"),
+                "added_sources": row.get("notification_added_sources"),
             }
             if row.get("notification_state")
-            and row.get("notification_content_revision") == row.get("update_content_revision")
             else None
         ),
+        head={
+            "content_revision": row.get("update_content_revision"),
+            "has_notification_changes": row.get("head_has_notification_changes"),
+        },
+        duplicate=update_reads.duplicate_view(original) if original else None,
+        has_restatement=original is not None,
+        headline_ref=row.get("update_headline_claim_ref"),
     )
     sent_update = row.get("sent_update_headline")
     headline = sent_update or row.get("update_claim_headline")
@@ -671,6 +712,7 @@ def _notification_outcome_input(work: Mapping[str, Any] | None) -> dict[str, Any
     stored = work.get("plan")
     plan: Mapping[str, Any] = stored if isinstance(stored, Mapping) else {}
     return {
+        **dict(work),
         "state": work["state"],
         "attempts": work.get("attempts"),
         "last_error_code": work.get("last_error_code"),
