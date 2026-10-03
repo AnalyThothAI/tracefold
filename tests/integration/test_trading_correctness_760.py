@@ -757,3 +757,33 @@ def test_new_flatten_does_not_replace_unknown_command_or_reset_attempts() -> Non
         second = next(row for row in request if row["command_id"] == "b" * 64)
         assert second["disposition"] == "refused" and second["disposition_reason"] == "flatten_in_progress"
         assert db.external_flatten_orders("a" * 64, "BTCUSDT")[0]["status"] == "unknown"
+
+
+def test_quote_expiry_after_acceptance_prevents_a_new_market_post() -> None:
+    from psycopg.types.json import Jsonb
+
+    now = time.time_ns()
+    with closing(connect_postgres_test()) as conn:
+        db = prepare(conn, now)
+        with conn.transaction():
+            conn.execute(
+                "UPDATE trading_entries SET admission=%s WHERE entry_id=%s",
+                (Jsonb({"facts": {"quote_at_ns": now - 10_000_000_000, "quote_max_age_ns": 5_000_000_000}}), "a" * 64),
+            )
+        venue = FakeDemo(now)
+        runner = ExecutorRunner(settings=settings(), conn=conn, venue=venue)
+        asyncio.run(
+            runner._send_market(
+                entry_id="a" * 64,
+                symbol="BTCUSDT",
+                side="BUY",
+                quantity=Decimal(1),
+                client_id="entry-a",
+                reduce_only=False,
+                now=now,
+            )
+        )
+        order = db.entry_orders("a" * 64)[0]
+        assert order["status"] == "not_submitted" and order["request"] is None
+        assert order["resolution"]["reason"] == "quote_stale_before_send"
+        assert not venue.market_calls

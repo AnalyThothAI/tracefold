@@ -382,6 +382,10 @@ class ExecutorRunner:
                 if plan["source"] == "signal":
                     blocked = blocked or self.db.entry_source_reason(case_id=plan["case_id"], now_ns=now)
                 now = _now_ns()
+                if blocked is None and plan["admission"] is not None:
+                    snapshot = plan["admission"]["facts"]
+                    if now - int(snapshot["quote_at_ns"]) > int(snapshot["quote_max_age_ns"]):
+                        blocked = "quote_stale_before_send"
                 if blocked is not None or now >= plan["expires_at_ns"]:
                     self.db.update_order(client_id=client_id, status="not_submitted", now_ns=now)
                     self.db.resolve_order(

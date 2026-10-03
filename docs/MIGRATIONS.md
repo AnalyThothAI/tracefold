@@ -2,7 +2,7 @@
 
 [手册](README.md) · [运维备份](OPERATIONS.md#backup) · [结构参考](generated/db-schema.md)
 
-当前 schema 使用 [Alembic 单链](../tracefold/platform/postgres/alembic/versions/)，基线为 `20260831_0340`，本版本 head 为 `20261002_0429`。当前账本共 28 张表：19 张 News、7 张 Trading，以及 `runtime_processes`、`alembic_version`。已应用的迁移是升级与恢复证据，文档清理不删除或重写这些文件。
+当前 schema 使用 [Alembic 单链](../tracefold/platform/postgres/alembic/versions/)，基线为 `20260831_0340`，本版本 head 为 `20261003_0430`。当前账本共 28 张表：19 张 News、7 张 Trading，以及 `runtime_processes`、`alembic_version`。已应用的迁移是升级与恢复证据，文档清理不删除或重写这些文件。
 
 本页只维护版本兼容、维护顺序、必要导出和回退边界。具体业务行为由模块手册维护，部署回执与历史性能结果从对应 Git / Issue 记录检索。
 

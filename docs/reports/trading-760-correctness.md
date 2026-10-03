@@ -6,7 +6,7 @@
 ## 树与资源
 
 开始 checkout / 当时 main：034b55f82621a8b038472c8a26ed8fd9ca88fdaa。提交前重新 fetch，
-main 新增独立 News #814，更新后的基线为 0ac479fa6。分支 codex/760-trading-correctness，没有 cherry-pick #762。
+main 新增独立 News #814，更新后的基线为 666c80290（含独立 News #814 / #815）。分支 codex/760-trading-correctness，没有 cherry-pick #762。
 单链 schema 为 20261002_0429 → 20261003_0430，仍使用七张 Trading 表及平台进程表。
 
 本地 Python 3.13.13；PostgreSQL 18、RabbitMQ 4.3.5。隔离容器 tracefold-760-test-pg（55544）、
@@ -17,7 +17,7 @@ tracefold-760-test-rabbitmq（45680 / 45681）；PG harness 克隆/迁移库及 
 
 | 范围 | 实际模块与证明 |
 | --- | --- |
-| R1 | USDT equity / available / initial margin、实际杠杆、crossed / isolated、mark、费率、filters 的 Decimal 三约束；部分成交余量保留；两个 PG 连接的旧快照不受理；真实约束失败整批回滚且不 POST；受理后来源过期阻止发送。 |
+| R1 | USDT equity / available / initial margin、实际杠杆、crossed / isolated、mark、费率、filters 的 Decimal 三约束；部分成交余量保留；两个 PG 连接的旧快照不受理；真实约束失败整批回滚且不 POST；受理后来源或准入盘口过期阻止发送。 |
 | R2 | unknown / working / filled 的可归属部分敞口由真实 runner 发 SL；首次观测时钟只写一次；外来反向/超量/无执行证明仓位不认领；撤单 ACK 与最后成交竞争；closePosition 覆盖增长、数量不足降风险；unknown 保护保留原身份，不重发。 |
 | R3 | 风险动作先于 active / terminal 待补成交；即时错误与 10s 慢读取被 2s 预算局部延期；批次最多三个 symbol；fill 约束失败时 fill/归属/cursor 整批回滚；external flatten 撤单失败局部隔离。 |
 | R4 | 实际 AnalysisRunner / TradingAssessor 的 8 Case / 2 slots / 虚拟 55s 调用：最多两份领取，全部合法完成；真实 PG 锁等待后租约失权、换 token 后旧 finish 被拒；取消及重复取消等待物理 DB 操作回滚后才归还容量。 |
@@ -50,7 +50,11 @@ tracefold-760-test-rabbitmq（45680 / 45681）；PG harness 克隆/迁移库及 
 News 认证报告及前端的 CRLF 工作副本曾造成字节/格式失败；规范化不改变其 Git 内容、证书或测试断言。
 没有删除反例、跳过必需检查或把 pending CI 当作成功。
 
-发送/撤单证据复核后，专用 PG、adapter 和重启 E2E 三文件合计 31 passed。最终 HEAD 的全量 CI 仍由本 PR Checks 提供。
+发送/撤单证据复核后，专用 PG、adapter 和重启 E2E 三文件合计 32 passed。最终 HEAD 的全量 CI 仍由本 PR Checks 提供。
+
+完整 PG 行为轮次已通过 643 项；迁移轮次暴露六处历史 head / 当前投影 fixture 漂移，已修正。
+随后实际迁移树、P4 历史等价、当前 schema 与 0430 数据/回退四文件 50 passed；结构/adapter 28 passed。
+历史等价仍核验 0424 表、身份和控制，再升级当前 head 比较全部公开投影与新增 NULL 证据，没有增加生产旧 schema 兼容路径。
 
 ## 未执行
 
