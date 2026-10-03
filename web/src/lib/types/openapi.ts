@@ -1569,8 +1569,8 @@ export interface components {
          * NewsFeedUpdateData
          * @description The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.
          *
-         *     ``headline`` is the card headline only when its sent revision is this head; otherwise
-         *     it names a current active claim. A historical card keeps its own revision in ``delivery``.
+         *     ``headline`` uses a sent card from this head or its carried effective decision; otherwise
+         *     it names a current active claim. The card keeps its true revision in ``delivery``.
          */
         NewsFeedUpdateData: {
             /** Adopted At Ms */

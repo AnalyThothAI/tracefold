@@ -3751,7 +3751,7 @@
       },
       "NewsFeedUpdateData": {
         "additionalProperties": false,
-        "description": "The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.\n\n``headline`` is the card headline only when its sent revision is this head; otherwise\nit names a current active claim. A historical card keeps its own revision in ``delivery``.",
+        "description": "The adopted EventUpdate head of one feed row (#706), in the slim shape a list needs.\n\n``headline`` uses a sent card from this head or its carried effective decision; otherwise\nit names a current active claim. The card keeps its true revision in ``delivery``.",
         "properties": {
           "adopted_at_ms": {
             "title": "Adopted At Ms",
