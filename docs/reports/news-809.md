@@ -144,7 +144,7 @@ Owner 对三个新增细节授权按合理业务标准裁决。本次建议：G7
 
 ## 检查、发布与剩余责任
 
-本地最终已通过 `make ci-python-hermetic`（2,170 项）和 `make ci-quality-static`（357 项、ruff、format、mypy 394 文件、生成物与文档检查）。隔离 PostgreSQL 的索引、bounded recall、relation scope 三个文件 26 项通过。早期失败的运行仍保留：callback 初始化、fixture 漏 unknown actor_role、报告文件尚不存在导致文档检查失败，均未被记为通过。完整 CI 以最终 PR HEAD 的回执为准，不把 pending 写成成功。
+本地最终已通过 `make ci-python-hermetic`（2,170 项）和 `make ci-quality-static`（357 项、ruff、format、mypy 394 文件、生成物与文档检查）。隔离 PostgreSQL 的索引、bounded recall、relation scope 及更新生成测试共 77 项通过。早期失败的运行仍保留：callback 初始化、fixture 漏 unknown actor_role、报告文件尚不存在导致文档检查失败，均未被记为通过。完整 CI 以最终 PR HEAD 的回执为准，不把 pending 写成成功。
 
 复现入口（研究文件需要私有工件访问权，所有模型调用仍需 owner 授权）：
 
@@ -156,7 +156,7 @@ PYTHONPATH="$PWD" python /private/implementation/replay_counterexamples_v8.py
 PYTHONPATH="$PWD" python /private/implementation/replay_mixed_incident.py
 make ci-python-hermetic
 make ci-quality-static
-python -m pytest tests/integration/test_news_claim_index.py tests/integration/test_news_claim_recall_bounded.py tests/integration/test_news_relation_scope.py
+python -m pytest tests/integration/test_news_claim_index.py tests/integration/test_news_claim_recall_bounded.py tests/integration/test_news_relation_scope.py tests/news/test_news_update_generation.py
 ```
 
 `/private/implementation` 表示上文已记录的私有工件目录；PostgreSQL 测试要求显式隔离 `TRACEFOLD_TEST_POSTGRES_DSN`，不使用生产 DSN。机器报告保存程序身份、各轮失败/空输出、费用缺失和工件摘要。

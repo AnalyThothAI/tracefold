@@ -43,7 +43,9 @@
     "final_unseen_holdout_seed": 8098,
     "final_read_ref_matches": 47,
     "current_candidate_evaluated_on_final_holdout": true,
-    "total_reconstructed_inputs": 307
+    "total_reconstructed_inputs": 307,
+    "original_read_ref_matches_scope": "initial 207 reconstructed inputs",
+    "total_original_read_ref_matches": 131
   },
   "quality": {
     "human_unreadable_numerator": null,
@@ -1118,9 +1120,15 @@
       "scope": "before latest boundary tests"
     },
     "postgres": {
-      "passed": 26,
+      "passed": 77,
       "failed": 0,
-      "junit": "artifacts/test-results/junit-news-809-pg.xml"
+      "junit": "artifacts/test-results/junit-news-809-final-pg.xml",
+      "scope": [
+        "tests/integration/test_news_claim_index.py",
+        "tests/integration/test_news_claim_recall_bounded.py",
+        "tests/integration/test_news_relation_scope.py",
+        "tests/news/test_news_update_generation.py"
+      ]
     },
     "mypy": {
       "files": 394,
@@ -1140,11 +1148,11 @@
       "generated_drift_and_docs": true,
       "junit": "artifacts/test-results/junit-quality-static.xml"
     },
-    "ci": "not_run"
+    "ci": "Final PR HEAD check receipts are tracked in the implementation PR; this file records local verification."
   },
   "private_artifacts": {
     "directory": "tracefold-research-data/2026-10-03-issue-809/implementation",
-    "manifest_sha256": "f8a3cd3d643709cd4aaced5060b54b3385651afdea73465e2d7e9ab88d1c2e3c",
+    "manifest_sha256": "204384633b2649f4283edaf176a9327d10c900aac88f80e7cab286e91f41d107",
     "files": {
       "export-query-008.sql": {
         "sha256": "0c22bf1c05e01fa73e305e88c2bce6e79eb373e34d4d69e0e7509af4d9550f0d",
@@ -1673,6 +1681,22 @@
       "final-export-query-000.sql": {
         "sha256": "055e127d3e16c4579f478621cbc4050872d610838e713f9753e82fa9981ac107",
         "bytes": 3623
+      },
+      "blind-input-v8.json": {
+        "sha256": "f8eb7f1d34f095124392887161ce1fe90c71b8350e413a1c29723b259e0d6d08",
+        "bytes": 530028
+      },
+      "blind-map-private-v8.json": {
+        "sha256": "b3a39c92ac08d02c54b97cfbefe986a8fbf491aa6a59e0ede9cece329d7508ab",
+        "bytes": 92204
+      },
+      "owner-blind-review-v8.html": {
+        "sha256": "beb0ce018d87d26f10d8002c9e29710de79281bb110b3e1a471110e6558aafa2",
+        "bytes": 432624
+      },
+      "prepare_blind_v8.py": {
+        "sha256": "162164c73da92305efe551cf9017d0686fb23a0b257ea2a5d5b6877253d2ce81",
+        "bytes": 6010
       }
     }
   },

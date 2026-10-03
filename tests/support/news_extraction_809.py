@@ -1,4 +1,4 @@
-"""Recovered source snapshots and explicitly manual claims for #809 seam tests."""
+"""Constructed source examples and explicitly manual claims for #809 seam tests."""
 
 from __future__ import annotations
 
