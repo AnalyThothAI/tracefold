@@ -32,15 +32,18 @@ from tracefold.news.notifications.policy import (
     LOGIT_EPSILON,
     PUSHABLE_KINDS,
     ReaderCalibration,
+    _logit,
+    logistic,
     novelty_outcome,
-    reader_decision,
+    reader_anchor_held,
     reader_scores,
+    reader_vectors,
 )
 from tracefold.news.notifications.reader import READER_QUESTIONS_IDENTITY, ReaderBackend, ReaderInput, ReaderJudgment
 from tracefold.news.updates.contracts import ClaimFields
 from tracefold.news.updates.identity import digest, identity
 
-PROTOCOL = "news_reader_calibration_v3"
+PROTOCOL = "news_reader_calibration_v4"
 FIT_CONFIG: dict[str, Any] = {
     "C": 1.0,
     "solver": "lbfgs",
@@ -365,32 +368,20 @@ def applicable(row: Mapping[str, Any]) -> bool:
     return expected
 
 
-def _logit(probability: float) -> float:
-    p = min(1 - LOGIT_EPSILON, max(LOGIT_EPSILON, probability))
-    return math.log(p) - math.log1p(-p)
-
-
-def _sigmoid(value: float) -> float:
-    if value >= 0:
-        return 1 / (1 + math.exp(-value))
-    exp = math.exp(value)
-    return exp / (1 + exp)
-
-
 def features(row: Mapping[str, Any], judgment: ReaderJudgment, floor: int) -> tuple[list[float], list[float]]:
     # Reuse the production held definition, including effective-action bypass.
-    result = reader_decision(
+    if novelty_outcome(row["reader_novelty"], first_available_at_ms=_time(row)) is not None:
+        raise ValueError("news_reader_eval_deterministic_exception_not_calibration_case")
+    if judgment.status != "available":
+        raise ValueError("news_reader_judgment_unavailable")
+    _, held = reader_anchor_held(
         row["reader_novelty"],
         judgment,
-        first_available_at_ms=_time(row),
         message_intents=row["message_intents"],
         calibration=ReaderCalibration(materiality_floor=floor),
         claim_fields=ClaimFields.model_validate(row["reader_input"]["claim"]["fields"]),
     )
-    if result.scores is None:
-        raise ValueError("news_reader_eval_deterministic_exception_not_calibration_case")
-    scores = result.scores
-    return [_logit(scores.e), _logit(scores.m), float(scores.held)], [_logit(scores.i), _logit(scores.e)]
+    return reader_vectors(judgment, held=held, materiality_floor=floor)
 
 
 def _fit_logistic(x: list[list[float]], y: list[int], weights: list[float]) -> tuple[float, ...]:
@@ -406,10 +397,6 @@ def _fit_logistic(x: list[list[float]], y: list[int], weights: list[float]) -> t
     normalized = [value * len(weights) / sum(weights) for value in weights]
     model.fit(x, y, sample_weight=normalized)
     return (float(model.intercept_[0]), *(float(value) for value in model.coef_[0]))
-
-
-def _predict(coefficients: Sequence[float], x: Sequence[Sequence[float]]) -> list[float]:
-    return [_sigmoid(coefficients[0] + sum(a * b for a, b in zip(coefficients[1:], row, strict=True))) for row in x]
 
 
 def _weight(row: Mapping[str, Any]) -> float:
@@ -513,8 +500,8 @@ def fit(rows: Sequence[Mapping[str, Any]], backend: ReaderBackend) -> dict[str, 
         ):
             for x, y, oof in ((push_x, push_y, push_oof), (key_x, key_y, key_oof)):
                 coefficients = _fit_logistic([x[i] for i in train], [y[i] for i in train], [weights[i] for i in train])
-                for index, p in zip(validate, _predict(coefficients, [x[i] for i in validate]), strict=True):
-                    oof[index] = p
+                for index in validate:
+                    oof[index] = logistic(coefficients, x[index])
         candidates.append(
             {
                 "floor": floor,
@@ -822,8 +809,8 @@ def score_representatives(
             "scored": True,
             "e": e,
             "eligible": e >= KIND_FLOOR,
-            "p_push": _predict(calibration.push_coefficients, [push_x])[0],
-            "p_key": _predict(calibration.key_coefficients, [key_x])[0],
+            "p_push": logistic(calibration.push_coefficients, push_x),
+            "p_key": logistic(calibration.key_coefficients, key_x),
         }
     return scores
 

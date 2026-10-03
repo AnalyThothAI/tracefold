@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 from dataclasses import asdict, replace
 from hashlib import sha256
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +16,9 @@ import pytest
 from tracefold.news.notifications.novelty import ClaimLink, ReaderNovelty
 from tracefold.news.notifications.policy import (
     KIND_FLOOR,
+    LOGIT_EPSILON,
     PUSHABLE_KINDS,
+    READER_POLICIES,
     ReaderCalibration,
     ReaderPolicy,
     reader_decision,
@@ -213,6 +217,55 @@ def test_probability_extremes_and_calibration_validation() -> None:
     with pytest.raises(ValueError, match="certification_invalid"):
         replace(CALIBRATION, push_cut=None)
     assert replace(CALIBRATION, key_cut=None).certification_status == "certified"
+
+
+def test_reader_scores_preserve_the_runtime_formula_bit_for_bit_on_a_fixed_grid() -> None:
+    def logit(p: float) -> float:
+        clipped = min(1 - LOGIT_EPSILON, max(LOGIT_EPSILON, p))
+        return math.log(clipped) - math.log1p(-clipped)
+
+    def sigmoid(value: float) -> float:
+        if value >= 0:
+            return 1 / (1 + math.exp(-value))
+        exponential = math.exp(value)
+        return exponential / (1 + exponential)
+
+    grid = (0.0, LOGIT_EPSILON / 2, 0.3, 0.8227253701530348, 1 - LOGIT_EPSILON / 2, 1.0)
+    for original, floor, held in product(
+        (CALIBRATION, *(policy.calibration for policy in READER_POLICIES.values())), (1, 2, 3), (False, True)
+    ):
+        calibration = replace(original, materiality_floor=floor)
+        a, b1, b2, b3 = calibration.push_coefficients
+        c, d, f = calibration.key_coefficients
+        for e, m, i in product(grid, repeat=3):
+            answer = judgment(m, e=e, i=i).model_copy(
+                update={
+                    "materiality": MaterialityEvidence(
+                        value=2.5 * m, probabilities=(1 - m, 0, m / 2, m / 2), confidence=0.8
+                    )
+                }
+            )
+            mass = min(1.0, sum(answer.materiality.probabilities[floor:]))
+            scores = reader_scores(answer, held=held, calibration=calibration)
+            assert (scores.e, scores.m, scores.i, scores.held) == (e, mass, i, held)
+            assert scores.p_push == sigmoid(a + b1 * logit(e) + b2 * logit(mass) + b3 * held)
+            assert scores.p_key == sigmoid(c + d * logit(i) + f * logit(e))
+
+
+def test_native_cut_boundary_preserves_the_runtime_push() -> None:
+    policy = READER_POLICIES["native"]
+    answer = judgment(0.8227253701530348, e=0.3).model_copy(
+        update={"identity": policy.answer_identity, "served_model": policy.served_model}
+    )
+    result = reader_decision(
+        ReaderNovelty(novelty="unlinked"),
+        answer,
+        first_available_at_ms=20,
+        message_intents=(),
+        reader_identity=policy.reader_identity,
+    )
+    assert result.outcome == "push"
+    assert result.scores is not None and result.scores.p_push == 0.37200000000000005
 
 
 def test_push_only_certificate_pushes_but_never_marks_a_claim_key() -> None:
