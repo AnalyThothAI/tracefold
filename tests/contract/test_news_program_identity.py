@@ -2,7 +2,8 @@
 
 #791 moves extraction and speech questions to English v5, adds actor_role without
 changing claim material identity, and moves reader inputs to v3 with a fixed as_of.
-The card composer and relation signature shape remain stable.
+#809 changes the extraction instruction, transport descriptions and field order.
+The card composer, relation and reader signatures remain stable.
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ def test_program_and_signature_schema_identities_are_pinned() -> None:
         ).identity,
     }
     assert actual == {
-        "extractor": "extractor:e3637ba24ee21d2ecd50cdf600a7f6e838edd03a5e5faaeeab8194446c4f77ec",
+        "extractor": "extractor:845ea0eaa1bb8294f61f41bde8c8f4ec6043a0fae295bf927eb24928be87f981",
         "copy": "news_card_copy:410f061c5d2ead4ecb1011ed64d4895d831266aceb836a446cf5225fc8125876",
         "generated": "generated_judgment:59a8be20d63b8ba3c8b29aff590486774ce2c56bff75de22b8fd1f47f4cf4c7f",
         "native": "native_judgment:0b0c7a11510f5d0f22095b42810311a0fa5f30b23e17ce7cf433395c7b1627c8",
@@ -70,7 +71,7 @@ def test_program_and_signature_schema_identities_are_pinned() -> None:
         "native": digest(native_signature("relation", 2, True, QUESTION_VERSION).model_json_schema()),
         "reader": digest(reader_signature(2).model_json_schema()),
     } == {
-        "extract": "4e4844d2bcabcb60186152f86157f297c02b58d4a1f98d6f27fb008f6960b1d5",
+        "extract": "6793edc2cbdc949af282a6dfda7b80aedb86330dda5443abaf13db6e48e01cc5",
         "copy": "27c46b662ab3832abc75669acea346cc3a4dbecbed1a7675cfcddad287e5b64e",
         "judge": "a0878d7aef415b4f4dfe64a0ff99adc03a86bfb3aa3e0448b2efa5e9d038e42e",
         "native": "f3a475e9ce2ee597e078d877cdbefa79acc41550caaf7180cd48534e6fc6abd6",

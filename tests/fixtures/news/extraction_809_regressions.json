@@ -1,0 +1,420 @@
+{
+  "schema_version": 1,
+  "purpose": "Constructed transport/grounding contract examples based on the seven known #809 cases. source_text is authored example text, not an original production input. Manual claims are never real new-prompt outputs or proof of production visibility. Exact recovered sources and outputs remain private.",
+  "cases": [
+    {
+      "id": "R1",
+      "provenance": {
+        "kind": "constructed_contract_example_with_private_production_case_reference",
+        "issue_url": "https://github.com/AnalyThothAI/tracefold/issues/809",
+        "case_id": "case_93e6fdac3450711a31d8b6d0",
+        "event_id": "86986ef78891cf88672ed75e78d9119d1da753d989ae52e024b750cdf85671cc",
+        "update_ref": "update:9082346e1f2bb85d655ad245c9704d1270b7d53bc2295284de0dcd64f80361a4",
+        "claim_ref": "cl:b0ddd49e16c61e0e6af289dac8ab534fb392f8b27fbfbf55fd508d379587b33e",
+        "original_extraction_input": "read_refs_verified_full_input_digest_not_reproduced",
+        "export_limit_chars": 2500,
+        "production_replay": "exact_receipts_recovered_current_index_keys_rebuilt_original_head_and_vector_readiness_unknown",
+        "original_source_sha256": "c2d868077ba324c1a7009ea333d1f0520ca253f1a0d892531c3ba735d9097edf"
+      },
+      "source_text": "French President Macron says the G7 decided to release diesel and crude oil inventories within four months, up to 100 million barrels.",
+      "historical_statement": "The inventory release will occur within 4 months.",
+      "manual_contract_claim": {
+        "slot": "R1",
+        "statement": "According to French President Emmanuel Macron, G7 decided to release diesel and crude oil inventories within four months.",
+        "fields": {
+          "action": "release",
+          "actor_role": "head_of_state_or_government",
+          "assets": [
+            {
+              "market_type": "commodity",
+              "role": "primary",
+              "symbol": "CL"
+            }
+          ],
+          "conditions": [],
+          "content_kind": "schedule",
+          "effective_at": "within 4 months",
+          "mode": "assertion",
+          "object": "diesel and crude oil inventories",
+          "occurred_at": null,
+          "phase": "announced",
+          "polarity": "affirmative",
+          "quantities": [],
+          "speaker": "Emmanuel Macron",
+          "statistical_period": null,
+          "subject": "G7"
+        },
+        "quotes": [
+          "French President Macron says the G7 decided to release diesel and crude oil inventories within four months, up to 100 million barrels."
+        ]
+      },
+      "unresolved_identity": false,
+      "production_replay": "pending_candidate_snapshot_recovery"
+    },
+    {
+      "id": "R2",
+      "provenance": {
+        "kind": "constructed_contract_example_with_private_production_case_reference",
+        "issue_url": "https://github.com/AnalyThothAI/tracefold/issues/809",
+        "case_id": "case_dd9d6bb7283e043f7483c6da",
+        "event_id": "2b6eb6e4e3fb30f319eed18b512ee6800ece3bf93ee62bf3320bf85278f9bc71",
+        "update_ref": "update:83cd45838ad5c7477ae69bbf1bb4579ed98c1d940db28c504072430c74505ce2",
+        "claim_ref": "cl:190f2db6148bab542a5989f9cc385a7836b7ea6a81f6ee6654b10e75d1bbcad8",
+        "original_extraction_input": "read_refs_verified_full_input_digest_not_reproduced",
+        "export_limit_chars": 2500,
+        "production_replay": "exact_receipts_recovered_current_index_keys_rebuilt_original_head_and_vector_readiness_unknown",
+        "original_source_sha256": "bb37655515db902e56e45c7539ada1a8a5274b08b3ec00576f47d9a87fda700a"
+      },
+      "source_text": "Blast announced that it will shut down.\n\nUsers are being asked to withdraw assets to Ethereum mainnet by October 26.",
+      "historical_statement": "Users are being asked to withdraw assets to Ethereum mainnet by October 26, with the withdrawal delay set to be reduced to 24 hours.",
+      "manual_contract_claim": {
+        "slot": "R2",
+        "statement": "Blast asks its users to withdraw their assets to Ethereum mainnet by October 26, with the withdrawal delay to be reduced to 24 hours.",
+        "fields": {
+          "action": "asks users to withdraw",
+          "actor_role": "company_or_project",
+          "assets": [
+            {
+              "market_type": "crypto",
+              "role": "primary",
+              "symbol": "ETH"
+            },
+            {
+              "market_type": "crypto",
+              "role": "mentioned",
+              "symbol": "BLAST"
+            }
+          ],
+          "conditions": [],
+          "content_kind": "schedule",
+          "effective_at": "October 26",
+          "mode": "demand",
+          "object": "users’ assets to Ethereum mainnet",
+          "occurred_at": null,
+          "phase": "announced",
+          "polarity": "affirmative",
+          "quantities": [
+            {
+              "name": "withdrawal delay",
+              "period": null,
+              "unit": "hours",
+              "value": "24"
+            }
+          ],
+          "speaker": "Blast",
+          "statistical_period": null,
+          "subject": "Blast"
+        },
+        "quotes": [
+          "Blast announced that it will shut down.",
+          "Users are being asked to withdraw assets to Ethereum mainnet by October 26."
+        ]
+      },
+      "unresolved_identity": false,
+      "production_replay": "pending_candidate_snapshot_recovery"
+    },
+    {
+      "id": "R3",
+      "provenance": {
+        "kind": "constructed_contract_example_with_private_production_case_reference",
+        "issue_url": "https://github.com/AnalyThothAI/tracefold/issues/809",
+        "case_id": "case_d83c69537161dc667223db14",
+        "event_id": "70f59b16ac46cb1d4524b1b45f70848959c336fcb1b78a2d876f23520c35fd9e",
+        "update_ref": "update:1bb28cf67f7abf91826d122958fecb9472331af8d7e80a94af740883920e8963",
+        "claim_ref": "cl:42fe67b1d0d3d703087c78501b8866b44cf6cecef1e5d6841c5429d30f320a67",
+        "original_extraction_input": "read_refs_verified_full_input_digest_not_reproduced",
+        "export_limit_chars": 2500,
+        "production_replay": "exact_receipts_recovered_current_index_keys_rebuilt_original_head_and_vector_readiness_unknown",
+        "original_source_sha256": "86299b4ca5d7bf793d6697178be35094265ac3bea21f91700484773e87fd16c2"
+      },
+      "source_text": "Lumia says LGP-01 has passed.\n\nBuyback claims will open within the next 30 days.",
+      "historical_statement": "Buyback claims will be open within the next 30 days.",
+      "manual_contract_claim": {
+        "slot": "R3",
+        "statement": "Buyback claims under Lumia’s LGP-01 will open within the next 30 days.",
+        "fields": {
+          "action": "open buyback claims",
+          "actor_role": "company_or_project",
+          "assets": [
+            {
+              "market_type": "crypto",
+              "role": "primary",
+              "symbol": "LUMIA"
+            }
+          ],
+          "conditions": [],
+          "content_kind": "schedule",
+          "effective_at": "within the next 30 days",
+          "mode": "commitment",
+          "object": "LGP-01 buyback claims",
+          "occurred_at": null,
+          "phase": "announced",
+          "polarity": "affirmative",
+          "quantities": [
+            {
+              "name": "window duration",
+              "period": null,
+              "unit": "days",
+              "value": "30"
+            }
+          ],
+          "speaker": null,
+          "statistical_period": null,
+          "subject": "Lumia"
+        },
+        "quotes": [
+          "Lumia says LGP-01 has passed.",
+          "Buyback claims will open within the next 30 days."
+        ]
+      },
+      "unresolved_identity": false,
+      "production_replay": "pending_candidate_snapshot_recovery"
+    },
+    {
+      "id": "R4",
+      "provenance": {
+        "kind": "constructed_contract_example_with_private_production_case_reference",
+        "issue_url": "https://github.com/AnalyThothAI/tracefold/issues/809",
+        "case_id": "case_2fb7e1ee5becb5f0c73adff1",
+        "event_id": "209ff4981d43cc13f13d5bb0ffbe5310f4e6f0e1c830bcc9f0df231fb67b7e5b",
+        "update_ref": "update:9854431a59ce4f5a16bf47f9af2d402ceff05e16527cf25d4486259e808261d8",
+        "claim_ref": "cl:0f1ceff38ff284878928ed4ce8035288c869f99b292db51c8d200adc66b67fe8",
+        "original_extraction_input": "read_refs_verified_full_input_digest_not_reproduced",
+        "export_limit_chars": 2500,
+        "production_replay": "exact_receipts_recovered_current_index_keys_rebuilt_original_head_and_vector_readiness_unknown",
+        "original_source_sha256": "6b38de7ca311fb9a2fe3329937e9f532480ad20920e56618fcc4805e5ef2e8b1"
+      },
+      "source_text": "Iran launched ship attacks to disrupt traffic.\n\nSix confirmed hits occurred this week.",
+      "historical_statement": "There have been six confirmed hits this week.",
+      "manual_contract_claim": {
+        "slot": "R4",
+        "statement": "The source reports six confirmed hits this week in Iran’s ship attacks intended to disrupt traffic.",
+        "fields": {
+          "action": "record confirmed hits",
+          "actor_role": "analyst_or_media",
+          "assets": [],
+          "conditions": [],
+          "content_kind": "new_quantity",
+          "effective_at": null,
+          "mode": "assertion",
+          "object": "ships",
+          "occurred_at": null,
+          "phase": "completed",
+          "polarity": "affirmative",
+          "quantities": [
+            {
+              "name": "confirmed hits",
+              "period": "this week",
+              "unit": "count",
+              "value": "6"
+            }
+          ],
+          "speaker": null,
+          "statistical_period": "this week",
+          "subject": "Iran’s ship attacks"
+        },
+        "quotes": [
+          "Iran launched ship attacks to disrupt traffic.",
+          "Six confirmed hits occurred this week."
+        ]
+      },
+      "unresolved_identity": false,
+      "production_replay": "pending_candidate_snapshot_recovery"
+    },
+    {
+      "id": "R5",
+      "provenance": {
+        "kind": "constructed_contract_example_with_private_production_case_reference",
+        "issue_url": "https://github.com/AnalyThothAI/tracefold/issues/809",
+        "case_id": "case_79cc30c64335b884a5001571",
+        "event_id": "2a439e0d17a1a797a79c65d3503cfeb06961251e478250d482e99a33106b397d",
+        "update_ref": "update:ec4327a1ad2e7238b5ef36c7fa4b8b0f0ec943a3e0738c5b9990b3f667a04bd1",
+        "claim_ref": "cl:3a5c973d250dfdaccea01bb24081802e71722c3b27df0c97acecfb84aeab2a13",
+        "original_extraction_input": "read_refs_verified_full_input_digest_not_reproduced",
+        "export_limit_chars": 2500,
+        "production_replay": "exact_receipts_recovered_current_index_keys_rebuilt_original_head_and_vector_readiness_unknown",
+        "original_source_sha256": "ee3ce452217953b3a790e8a6a5b99746915b9705dc7559011ecb23321ee57127"
+      },
+      "source_text": "Europe agreed to release a large amount of diesel oil.\n\nThe release process will begin immediately, according to President DJT.",
+      "historical_statement": "The process will begin immediately.",
+      "manual_contract_claim": {
+        "slot": "R5",
+        "statement": "President DJT says Europe’s agreed release of diesel oil will begin immediately.",
+        "fields": {
+          "action": "begin releasing",
+          "actor_role": "unknown",
+          "assets": [
+            {
+              "market_type": "commodity",
+              "role": "mentioned",
+              "symbol": "CL"
+            }
+          ],
+          "conditions": [],
+          "content_kind": "schedule",
+          "effective_at": "immediately",
+          "mode": "commitment",
+          "object": "diesel oil",
+          "occurred_at": null,
+          "phase": "announced",
+          "polarity": "affirmative",
+          "quantities": [],
+          "speaker": "President DJT",
+          "statistical_period": null,
+          "subject": "Europe"
+        },
+        "quotes": [
+          "Europe agreed to release a large amount of diesel oil.",
+          "The release process will begin immediately, according to President DJT."
+        ]
+      },
+      "unresolved_identity": false,
+      "production_replay": "pending_candidate_snapshot_recovery"
+    },
+    {
+      "id": "R6",
+      "provenance": {
+        "kind": "constructed_contract_example_with_private_production_case_reference",
+        "issue_url": "https://github.com/AnalyThothAI/tracefold/issues/809",
+        "case_id": "case_49cda3849f99b7974d0d7a42",
+        "event_id": "3bfc16412b83c42f72a71875d30c8b57d521adae3f2d6afc1d4dd9f17b00b326",
+        "update_ref": "update:fe03c502fe8cd5b621f0ebec32b67237e6950f10faa23450494b53dba0599873",
+        "claim_ref": "cl:03901f3b05a6349ec6cb793edc36c40da85bf771e491a91d48a7b4a9edba2b0a",
+        "original_extraction_input": "read_refs_verified_full_input_digest_not_reproduced",
+        "export_limit_chars": 2500,
+        "production_replay": "exact_receipts_recovered_current_index_keys_rebuilt_original_head_and_vector_readiness_unknown",
+        "original_source_sha256": "406a6aaea8d1b6b9df72ad04e00c030d6efa2f4e8707a07a54698354fbd1b2fc"
+      },
+      "source_text": "Four boosters were re-landed; their operator is unidentified.",
+      "historical_statement": "Four boosters were re-landed.",
+      "manual_contract_claim": {
+        "slot": "R6",
+        "statement": "Four boosters were re-landed.",
+        "fields": {
+          "action": "were re-landed",
+          "actor_role": "unknown",
+          "assets": [],
+          "conditions": [],
+          "content_kind": "state_change",
+          "effective_at": null,
+          "mode": "observation",
+          "object": "",
+          "occurred_at": null,
+          "phase": "completed",
+          "polarity": "affirmative",
+          "quantities": [
+            {
+              "name": "boosters re-landed",
+              "period": null,
+              "unit": "count",
+              "value": "4"
+            }
+          ],
+          "speaker": null,
+          "statistical_period": null,
+          "subject": "four boosters"
+        },
+        "quotes": [
+          "Four boosters were re-landed; their operator is unidentified."
+        ]
+      },
+      "unresolved_identity": true,
+      "production_replay": "pending_candidate_snapshot_recovery"
+    },
+    {
+      "id": "R7",
+      "provenance": {
+        "kind": "constructed_contract_example_with_private_production_case_reference",
+        "issue_url": "https://github.com/AnalyThothAI/tracefold/issues/809",
+        "case_id": "case_25ea930ace97e4002aed7412",
+        "event_id": "db8e5d96dd2ffa6a6c672db4f63d1db3486c75878028bbaa3a616766117a7653",
+        "update_ref": "update:91ff693791619cc03f124843d5fae2d219a6134213304b711121c2685e91c98a",
+        "claim_ref": "cl:f34e8b70bc3cd3bc85dfd3bae97fb3ecd41daf1c25a390b1274d07c82a9ffa6c",
+        "original_extraction_input": "read_refs_verified_full_input_digest_not_reproduced",
+        "export_limit_chars": 2500,
+        "production_replay": "exact_receipts_recovered_current_index_keys_rebuilt_original_head_and_vector_readiness_unknown",
+        "original_source_sha256": "02f48e93b43d586c84f01618ed3f1e9491ea3ccfb917333cc5dd86e562118a81"
+      },
+      "source_text": "The IMF approved financing for El Salvador.\n\nThe IMF expects no further Bitcoin accumulation by El Salvador beyond documented donations.",
+      "historical_statement": "The IMF still expects no further Bitcoin accumulation beyond documented donations.",
+      "manual_contract_claim": {
+        "slot": "R7",
+        "statement": "The IMF still expects El Salvador to make no further Bitcoin accumulation beyond documented donations.",
+        "fields": {
+          "action": "accumulate no further",
+          "actor_role": "economic_policy_official",
+          "assets": [
+            {
+              "market_type": "crypto",
+              "role": "primary",
+              "symbol": "BTC"
+            }
+          ],
+          "conditions": [],
+          "content_kind": "other",
+          "effective_at": null,
+          "mode": "forecast",
+          "object": "Bitcoin beyond documented donations",
+          "occurred_at": null,
+          "phase": "unknown",
+          "polarity": "negative",
+          "quantities": [],
+          "speaker": "IMF",
+          "statistical_period": null,
+          "subject": "El Salvador"
+        },
+        "quotes": [
+          "The IMF approved financing for El Salvador.",
+          "The IMF expects no further Bitcoin accumulation by El Salvador beyond documented donations."
+        ]
+      },
+      "unresolved_identity": false,
+      "production_replay": "pending_candidate_snapshot_recovery"
+    }
+  ],
+  "boundary_cases": [
+    {
+      "id": "B1",
+      "source_text": "Project Cedar asks users to withdraw assets to Ethereum mainnet by October 26.",
+      "statement": "Project Cedar asks its users to withdraw assets to Ethereum mainnet by October 26.",
+      "fields": {
+        "subject": "Project Cedar",
+        "action": "asks users to withdraw",
+        "object": "users’ assets to Ethereum mainnet",
+        "effective_at": "October 26",
+        "mode": "demand",
+        "phase": "announced"
+      }
+    },
+    {
+      "id": "B2",
+      "source_text": "Minister Lee: Unless the exports stop, we may ban diesel imports in October.",
+      "statement": "Minister Lee says diesel imports may be banned in October unless the exports stop.",
+      "fields": {
+        "subject": "diesel imports",
+        "action": "may be banned",
+        "speaker": "Minister Lee",
+        "conditions": [
+          "unless the exports stop",
+          "may"
+        ],
+        "effective_at": "October",
+        "mode": "threat",
+        "phase": "announced"
+      }
+    },
+    {
+      "id": "B3",
+      "source_text": "Unidentified attackers struck the port of Alia.",
+      "statement": "Unidentified attackers struck the port of Alia.",
+      "fields": {
+        "subject": "unidentified attackers",
+        "action": "struck",
+        "object": "port of Alia",
+        "mode": "observation",
+        "actor_role": "unknown",
+        "phase": "completed"
+      }
+    }
+  ]
+}

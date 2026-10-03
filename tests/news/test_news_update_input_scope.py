@@ -15,13 +15,68 @@ from tracefold.news.events.gate import grounded_assets
 from tracefold.news.storage.errors import EventUpdateConflict
 from tracefold.news.storage.semantic_input import frozen_input
 from tracefold.news.updates.assembly import assemble_update
-from tracefold.news.updates.contracts import Citation, Extraction, FrozenInput, SourceAssetCandidate
-from tracefold.news.updates.extraction import validate_extraction
+from tracefold.news.updates.contracts import Citation, Extraction, ExtractionScope, FrozenInput, SourceAssetCandidate
+from tracefold.news.updates.extraction import ground_extraction, validate_extraction
 from tracefold.news.updates.identity import canonical_json
 from tracefold.news.updates.judgment import ContractFault
-from tracefold.news.updates.projection import extraction_input, reading_view, reading_views
+from tracefold.news.updates.projection import extraction_input, item_text, reading_view, reading_views
 
 BODY = "1. Exchange suspends $NEAR withdrawals.\n2. Beta announces earnings.\n3. Gamma launches a product."
+
+
+def test_809_saved_evidence_has_precedence_over_a_newer_display_title() -> None:
+    row = {"title": "Blast shuts down", "description": "Current description", "evidence_text": "Users must withdraw."}
+    assert item_text(row) == "Users must withdraw."
+    assert item_text({**row, "evidence_text": ""}) == "Blast shuts down\nCurrent description"
+    # A title on the Item cannot silently supplement its immutable earlier Evidence.
+    source = frozen_input(
+        "visibility",
+        {
+            "item_ids": ["a"],
+            "items": [{"item_id": "a", "source_id": "wire", "source_item_key": "a", **row, "observed_at_ms": 100}],
+        },
+    )
+    visible = json.dumps(extraction_input(source)["evidence"])
+    assert "Users must withdraw." in visible and "Blast" not in visible
+
+
+def test_809_scoped_identity_and_qualifier_use_separate_real_spans_without_sibling_leakage() -> None:
+    text = "Blast service announcement\n1. Users must withdraw assets by October 26.\n2. Cedar raises $20 million."
+    evidence = material(text)
+    scope = ExtractionScope(
+        evidence_ref=evidence.ref,
+        fact_id="withdrawal",
+        fact_text="Users must withdraw assets by October 26.",
+        context="Blast service announcement",
+        method="explicit_numbered",
+    )
+    source = FrozenInput(
+        event_id="scope809", revision=1, lineage_id="scope809", evidence=(evidence,), extraction_scopes=(scope,)
+    )
+    statement = "Blast asks its users to withdraw assets by October 26."
+    claim = draft(evidence).model_copy(
+        update={
+            "statement": statement,
+            "citations": (
+                Citation(evidence_ref=evidence.ref, quote="Blast service announcement"),
+                Citation(evidence_ref=evidence.ref, quote="Users must withdraw assets by October 26."),
+            ),
+        }
+    )
+    result = ground_extraction(source, Extraction(claims=(claim,)))
+    validate_extraction(source, result)
+    assert result.claims == (claim,)
+    visible = json.dumps(extraction_input(source)["evidence"])
+    assert "Blast" in visible and "Cedar" not in visible
+    for quote in (
+        "Cedar raises $20 million.",
+        "Blast service announcement Users must withdraw assets by October 26.",
+    ):
+        bad = claim.model_copy(update={"citations": (Citation(evidence_ref=evidence.ref, quote=quote),)})
+        grounded = ground_extraction(source, Extraction(claims=(bad, claim.model_copy(update={"slot": "valid"}))))
+        assert [row.slot for row in grounded.claims] == ["valid"]
+        assert len(grounded.discarded_claims) == 1
+    assert source.evidence[0].text == text
 
 
 def input_material() -> dict[str, Any]:
