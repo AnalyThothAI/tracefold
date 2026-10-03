@@ -614,6 +614,15 @@ class ExecutorStorage:
         ).fetchone()
         return Decimal(str(row["quantity"]))
 
+    def confirmed_exit_quantities(self, entry_id: str) -> dict[str, Decimal]:
+        rows = self.conn.execute(
+            "SELECT o.client_order_id,COALESCE(SUM(f.quantity),0) AS quantity FROM trading_orders o "
+            "LEFT JOIN trading_fills f USING(client_order_id) WHERE o.entry_id=%s AND o.leg<>'entry' "
+            "GROUP BY o.client_order_id",
+            (entry_id,),
+        ).fetchall()
+        return {row["client_order_id"]: Decimal(str(row["quantity"])) for row in rows}
+
     def trade_cursor(self, symbol: str, *, account_slot: str) -> int | None:
         row = self.conn.execute(
             "SELECT trade_cursors->%s AS cursor FROM trading_accounts WHERE account_slot=%s", (symbol, account_slot)
@@ -736,7 +745,7 @@ class ExecutorStorage:
         entry_qty = sum(row["quantity"] for row in rows if row["leg"] == "entry")
         exit_qty = sum(row["quantity"] for row in rows if row["leg"] != "entry")
         entry_order = self.conn.execute(
-            "SELECT status,evidence FROM trading_orders WHERE entry_id=%s AND leg='entry'",
+            "SELECT client_order_id,status,evidence FROM trading_orders WHERE entry_id=%s AND leg='entry'",
             (plan["entry_id"],),
         ).fetchone()
         entry_evidence = {} if entry_order is None else entry_order["evidence"] or {}
@@ -765,6 +774,11 @@ class ExecutorStorage:
         if not complete and now_ns < plan["pnl_deadline_ns"]:
             return "pending"
         status = "complete" if complete else "evidence_incomplete"
+        if complete and expected_entry == 0 and zero_consistent and not proof:
+            self.resolve_order(
+                client_id=entry_order["client_order_id"],
+                resolution={"definitely_not_executed": True, "reason": "venue_zero_executed_terminal"},
+            )
         realized = sum(row["realized_pnl"] for row in rows)
         fees = sum(row["fee"] for row in rows)
         self.conn.execute(

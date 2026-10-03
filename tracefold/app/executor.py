@@ -282,7 +282,8 @@ class ExecutorRunner:
         account_positions = {row["symbol"]: row for row in account.get("positions", ())}
         for plan in active:
             quantity = Decimal(str(plan["quantity"]))
-            entry = next((o for o in self.db.entry_orders(plan["entry_id"]) if o["leg"] == "entry"), None)
+            own_orders = self.db.entry_orders(plan["entry_id"])
+            entry = next((o for o in own_orders if o["leg"] == "entry"), None)
             reflected = Decimal(0)
             evidence = {} if entry is None else entry["evidence"] or {}
             venue_position = position_by_symbol.get(plan["native_symbol"], {})
@@ -292,7 +293,9 @@ class ExecutorRunner:
                 and evidence.get("clientOrderId") == entry["client_order_id"]
                 and evidence.get("executedQty") is not None
                 and entry["updated_at_ns"] <= quote_requested_at_ns
-                and self._position_owned(plan, entry, venue_position)
+                and self._position_owned(
+                    plan, entry, venue_position, closed_quantity=self._closed_quantity(plan, own_orders)
+                )
                 and (Decimal(str(cash_position.get("positionAmt", 0))) > 0) == (plan["side"] == "long")
                 and cash_position.get("positionSide", "BOTH") == "BOTH"
             ):
@@ -615,7 +618,13 @@ class ExecutorRunner:
             for row in positions
             if (plan := plan_by_symbol.get(str(row["symbol"]))) is not None
             and (entry := entry_evidence.get(str(row["symbol"]))) is not None
-            and self._position_owned(plan, entry, row, self.db.confirmed_entry_quantity(plan["entry_id"]))
+            and self._position_owned(
+                plan,
+                entry,
+                row,
+                self.db.confirmed_entry_quantity(plan["entry_id"]),
+                self._closed_quantity(plan, self.db.entry_orders(plan["entry_id"])),
+            )
         }
         incompatible_positions = {
             str(row["symbol"])
@@ -994,6 +1003,45 @@ class ExecutorRunner:
                         else "rejected"
                     )
                     venue_id = evidence.get("actualOrderId") or None
+                    if status == "filled":
+                        actual = (
+                            await self.venue.query_order_id(plan["native_symbol"], str(venue_id))
+                            if venue_id is not None
+                            else None
+                        )
+                        if actual is None:
+                            with self.conn.transaction():
+                                self.db.update_order(
+                                    client_id=client_id, status="unknown", now_ns=_now_ns(), evidence=evidence
+                                )
+                                self.db.record_fault(
+                                    account_slot=self.account_slot,
+                                    responsibility=plan["entry_id"],
+                                    code="order_resolution_unknown",
+                                    symbol=plan["native_symbol"],
+                                    client_ids=[client_id],
+                                    amount=position_amount,
+                                    now_ns=_now_ns(),
+                                )
+                            raise BinanceFailure(200, None, "algo_execution_not_resolved")
+                        else:
+                            if (
+                                actual.get("symbol") != plan["native_symbol"]
+                                or str(actual.get("orderId")) != str(venue_id)
+                                or actual.get("side") != ("SELL" if plan["side"] == "long" else "BUY")
+                                or actual.get("executedQty") is None
+                                or actual.get("status")
+                                not in ("NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "REJECTED")
+                            ):
+                                raise BinanceFailure(200, None, "invalid_algo_execution_evidence")
+                            evidence = {**evidence, "actual_order_evidence": actual}
+                            status = (
+                                "filled"
+                                if actual["status"] == "FILLED"
+                                else "cancelled"
+                                if actual["status"] in ("CANCELED", "EXPIRED", "REJECTED")
+                                else "unknown"
+                            )
             else:
                 evidence = await self.venue.query_order(plan["native_symbol"], client_id)
                 if evidence is None:
@@ -1047,15 +1095,20 @@ class ExecutorRunner:
 
     @staticmethod
     def _position_owned(
-        plan: dict[str, Any], entry: dict[str, Any], position: dict[str, Any], confirmed_quantity: Decimal = Decimal(0)
+        plan: dict[str, Any],
+        entry: dict[str, Any],
+        position: dict[str, Any],
+        confirmed_quantity: Decimal = Decimal(0),
+        closed_quantity: Decimal = Decimal(0),
     ) -> bool:
         amount = Decimal(str(position.get("positionAmt", 0)))
         evidence = entry["evidence"] or {}
         native_qty = Decimal(str(evidence.get("executedQty", 0)))
-        proven_qty = max(native_qty, confirmed_quantity)
+        proven_qty = max(native_qty, confirmed_quantity) - closed_quantity
         return bool(
             amount
             and proven_qty > 0
+            and max(native_qty, confirmed_quantity) <= Decimal(str(plan["quantity"]))
             and abs(amount) <= proven_qty
             and abs(amount) <= Decimal(str(plan["quantity"]))
             and (amount > 0) == (plan["side"] == "long")
@@ -1064,6 +1117,29 @@ class ExecutorRunner:
             and evidence.get("symbol") == plan["native_symbol"]
             and evidence.get("side") == ("BUY" if plan["side"] == "long" else "SELL")
         )
+
+    def _closed_quantity(self, plan: dict[str, Any], orders: list[dict[str, Any]]) -> Decimal:
+        fills = self.db.confirmed_exit_quantities(plan["entry_id"])
+        total = Decimal(0)
+        for order in orders:
+            if order["leg"] == "entry":
+                continue
+            raw = order["evidence"] or {}
+            proof = raw.get("actual_order_evidence", {}) if order["leg"] in ("sl", "tp") else raw
+            identity_matches = (
+                str(proof.get("orderId")) == str(raw.get("actualOrderId"))
+                if order["leg"] in ("sl", "tp")
+                else proof.get("clientOrderId") == order["client_order_id"]
+            )
+            native = Decimal(0)
+            if (
+                identity_matches
+                and proof.get("symbol") == plan["native_symbol"]
+                and proof.get("side") == ("SELL" if plan["side"] == "long" else "BUY")
+            ):
+                native = Decimal(str(proof.get("executedQty", 0)))
+            total += max(native, fills.get(order["client_order_id"], Decimal(0)))
+        return total
 
     async def _step_plan(
         self,
@@ -1083,7 +1159,11 @@ class ExecutorRunner:
             raise ValueError("plan_entry_order_missing")
         amount = Decimal(str(position["positionAmt"])) if position is not None else Decimal(0)
         if amount and not self._position_owned(
-            current, entry, position or {}, self.db.confirmed_entry_quantity(plan["entry_id"])
+            current,
+            entry,
+            position or {},
+            self.db.confirmed_entry_quantity(plan["entry_id"]),
+            self._closed_quantity(current, orders),
         ):
             with self.conn.transaction():
                 self.db.record_fault(
@@ -1147,6 +1227,14 @@ class ExecutorRunner:
             await self._flatten(current, amount, reason="operator_flatten", now=now)
             return
         last_flatten = latest.get("safety_flatten") or latest.get("time_exit")
+        if amount and any(
+            (order["evidence"] or {}).get("actual_order_evidence", {}).get("status") in ("NEW", "PARTIALLY_FILLED")
+            for leg, order in latest.items()
+            if leg in ("sl", "tp")
+        ):
+            if entry["status"] in ("working", "submitted"):
+                await self._cancel_entry(current, entry, now)
+            return  # The triggered market order already owns the exit responsibility.
         uncertain_protection = [
             order
             for leg, order in latest.items()

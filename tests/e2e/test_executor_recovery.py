@@ -123,6 +123,19 @@ class FakeDemo:
             }
         return None
 
+    async def query_order_id(self, symbol: str, order_id: str) -> dict[str, Any] | None:
+        trades = [row for row in self.trades if str(row["orderId"]) == order_id]
+        if not trades:
+            return None
+        return {
+            "symbol": symbol,
+            "orderId": int(order_id),
+            "clientOrderId": "underlying-" + order_id,
+            "side": "SELL",
+            "status": "FILLED",
+            "executedQty": str(sum(Decimal(row["qty"]) for row in trades)),
+        }
+
     async def protection_order(
         self,
         *,

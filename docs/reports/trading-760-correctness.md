@@ -56,6 +56,12 @@ News 认证报告及前端的 CRLF 工作副本曾造成字节/格式失败；�
 随后实际迁移树、P4 历史等价、当前 schema 与 0430 数据/回退四文件 50 passed；结构/adapter 28 passed。
 历史等价仍核验 0424 表、身份和控制，再升级当前 head 比较全部公开投影与新增 NULL 证据，没有增加生产旧 schema 兼容路径。
 
+归属复核补齐逐订单的真实退出量上界：完整退出后同 symbol 外来仓位不认领，
+部分退出且剩余量仍有证明时继续降风险。Algo 触发后查询其 actualOrderId 的真实执行结果；
+查询不到则保留原始证据并延期该 entry，成交回补不成为全局前置。
+相关 PG、adapter 和重启 E2E 37 passed，包含入场原生数量超过计划的拒绝归属。
+可靠原生零成交的应用解释独立持久化，原生回包保持原样，并验证公开投影及成交统计。
+
 ## 未执行
 
 真实 DEMO 的 symbolConfig / multiAssetsMargin / commission 返回形状及订单生命周期：NOT_RUN。

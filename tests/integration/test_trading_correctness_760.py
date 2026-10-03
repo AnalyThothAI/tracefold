@@ -114,7 +114,9 @@ def test_runner_protects_attributable_partial_without_resetting_clock(status: st
         asyncio.run(run())
 
 
-@pytest.mark.parametrize("amount,side,proof_qty", [("0.4", "SELL", "0.4"), ("1.1", "BUY", "1"), ("0.4", "BUY", "0")])
+@pytest.mark.parametrize(
+    "amount,side,proof_qty", [("0.4", "SELL", "0.4"), ("1.1", "BUY", "1"), ("0.4", "BUY", "0"), ("0.4", "BUY", "1.1")]
+)
 def test_same_symbol_is_not_ownership(amount: str, side: str, proof_qty: str) -> None:
     now = time.time_ns()
     with closing(connect_postgres_test()) as conn:
@@ -787,3 +789,90 @@ def test_quote_expiry_after_acceptance_prevents_a_new_market_post() -> None:
         assert order["status"] == "not_submitted" and order["request"] is None
         assert order["resolution"]["reason"] == "quote_stale_before_send"
         assert not venue.market_calls
+
+
+@pytest.mark.parametrize("entry_quantity,owned", [("0.4", False), ("0.8", True)])
+def test_exit_quantity_limits_attribution_of_same_symbol_residual(entry_quantity, owned) -> None:
+    class Venue(FakeDemo):
+        async def market_order(self, **request):
+            assert request["reduce_only"] and request["quantity"] == Decimal("0.4")
+            self.market_calls.append(request["client_id"])
+            return {
+                "orderId": 456,
+                "clientOrderId": request["client_id"],
+                "symbol": "BTCUSDT",
+                "side": "SELL",
+                "status": "FILLED",
+                "executedQty": "0.4",
+            }
+
+    now = time.time_ns()
+    with closing(connect_postgres_test()) as conn:
+        db = prepare(conn, now)
+        with conn.transaction():
+            db.update_order(
+                client_id="entry-a",
+                status="filled",
+                now_ns=now,
+                evidence={
+                    "clientOrderId": "entry-a",
+                    "symbol": "BTCUSDT",
+                    "side": "BUY",
+                    "executedQty": entry_quantity,
+                },
+            )
+            db.reserve_order(
+                client_id="prior-exit",
+                entry_id="a" * 64,
+                native_symbol="BTCUSDT",
+                leg="safety_flatten",
+                attempt=1,
+                now_ns=now,
+            )
+            db.update_order(
+                client_id="prior-exit",
+                status="filled",
+                now_ns=now,
+                evidence={"clientOrderId": "prior-exit", "symbol": "BTCUSDT", "side": "SELL", "executedQty": "0.4"},
+            )
+        venue = Venue(now)
+        venue.amount = Decimal("0.4")
+        runner = ExecutorRunner(settings=settings(), conn=conn, venue=venue)
+        asyncio.run(
+            runner._step_plan(
+                plan=db.entry("a" * 64),
+                position=(asyncio.run(venue.positions()))[0],
+                open_algos={},
+                force_flatten=False,
+                now=now,
+            )
+        )
+        assert bool(venue.market_calls) is owned
+        if not owned:
+            assert db.account(SLOT)["execution_faults"]["a" * 64]["code"] == "unattributed_position"
+
+
+def test_reliable_native_zero_retains_raw_evidence_and_shows_zero_resolution() -> None:
+    now = time.time_ns()
+    with closing(connect_postgres_test()) as conn:
+        db = prepare(conn, now)
+        native = {
+            "clientOrderId": "entry-a",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "status": "CANCELED",
+            "executedQty": "0",
+        }
+        with conn.transaction():
+            db.update_order(client_id="entry-a", status="cancelled", now_ns=now, evidence=native)
+            db.set_entry_state(entry_id="a" * 64, status="terminal", now_ns=now, terminal_reason="not_submitted")
+            assert db.settle_pnl(plan=db.entry("a" * 64), now_ns=now) == "complete"
+        order = db.entry_orders("a" * 64)[0]
+        assert order["evidence"] == native
+        assert order["resolution"]["reason"] == "venue_zero_executed_terminal"
+        row = db.console_executions(since_ns=0, limit=10)[0]
+        assert row["entry_resolution"]["definitely_not_executed"]
+        assert row["fill_quantity"] is None and row["net_pnl_usd"] == 0
+        assert (
+            db.console_realized_totals(account_slot=SLOT, day_start_ns=0, day_end_ns=now + 10**9)["closed_total"] == 0
+        )

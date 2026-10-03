@@ -167,6 +167,14 @@ class DemoBinance:
                 return None
             raise
 
+    async def query_order_id(self, symbol: str, order_id: str) -> dict[str, Any] | None:
+        try:
+            return await self._signed("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
+        except BinanceFailure as exc:
+            if exc.code == -2013:
+                return None
+            raise
+
     async def market_order(
         self, *, symbol: str, side: Literal["BUY", "SELL"], quantity: Decimal, client_id: str, reduce_only: bool
     ) -> dict[str, Any]:
