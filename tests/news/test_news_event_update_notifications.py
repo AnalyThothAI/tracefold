@@ -19,7 +19,7 @@ from tracefold.news.notifications.card import card_copy_material
 from tracefold.news.notifications.contracts import ClaimDecision, DeliveredText, NotificationPlan, ReaderSnapshot
 from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt
 from tracefold.news.notifications.planner import NotificationPlanner
-from tracefold.news.notifications.policy import READER_CUTS, READER_WAIT_MAX_MS, large_daily_move, stale_occurrence
+from tracefold.news.notifications.policy import READER_WAIT_MAX_MS, large_daily_move, stale_occurrence
 from tracefold.news.updates.assembly import assemble_update
 from tracefold.news.updates.contracts import (
     Asset,
@@ -35,6 +35,8 @@ from tracefold.news.updates.contracts import (
 )
 from tracefold.news.updates.identity import digest, identity
 from tracefold.news.updates.judgment import Budget
+
+pytestmark = pytest.mark.usefixtures("synthetic_reader_calibration")
 
 STAMP = 1_790_405_000_000
 HOUR_MS = 60 * 60_000
@@ -164,22 +166,25 @@ def delivered(intent: str, *refs: str, state: str = "sent", at: int = STAMP - 60
     )
 
 
-def test_incremental_importance_decides_push_key_and_feed_against_the_backend_cuts() -> None:
-    cuts = READER_CUTS["native"]
-    for value, reason, key in (
-        (3.5, "reader_key", True),
-        (cuts.push, "reader_push", False),
-        (1.0, "reader_feed", False),
+def test_independent_evidence_decides_push_key_and_feed_and_freezes_policy_scores() -> None:
+    for value, interrupt, reason, key in (
+        (2.6, 0.95, "reader_key", True),
+        (1.66, 0.05, "reader_push", False),
+        (1.0, 0.95, "reader_feed", False),
     ):
-        plan = run_plan(single(), judge=FixedReader(value))
+        plan = run_plan(single(), judge=FixedReader(value, interrupt=interrupt))
         assert only_reason(plan) == reason and plan.key is key
         record = plan.claim_decisions[0].reader
         assert record is not None and record.novelty == "unlinked" and record.judgment is not None
         assert record.input_digest is not None and plan.reader_identity == FixedReader.identity
+        assert record.scores is not None and record.scores.certification_status == "certified"
+        assert record.scores.e == 1.0 and record.scores.i == interrupt
+        assert record.judgment.report_kind is not None and record.judgment.materiality is not None
+        assert record.judgment.interrupt is not None
 
 
 def test_rules_before_the_judgment_are_ordered_and_ask_nothing() -> None:
-    judge = FixedReader(3.5)
+    judge = FixedReader(3.0)
     update = single()
     ref = update.claims[0].ref
     assert only_reason(run_plan(update, reader(invalidated_claim_refs=(ref,)), judge=judge)) == "retired"
@@ -192,8 +197,25 @@ def test_rules_before_the_judgment_are_ordered_and_ask_nothing() -> None:
     assert judge.asked == []
 
 
+def test_read_projection_uses_frozen_scores_when_current_eligibility_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tracefold.news.notifications.policy import PUSHABLE_KINDS
+    from tracefold.news.update_view import plan_view
+
+    plan = run_plan(single(), judge=FixedReader(2.6))
+    serialized = plan.model_dump(mode="json")
+    row = plan_view(plan, statements={})["claim_decisions"][0]
+    monkeypatch.setitem(PUSHABLE_KINDS, "new_action", False)
+    reloaded = NotificationPlan.model_validate(serialized)
+    assert plan_view(reloaded, statements={})["claim_decisions"][0] == row
+    assert row["e"] == 1.0 and row["p_push"] > 0.99
+    assert row["report_kind"]["confidence"] == 0.8
+    assert len(row["materiality"]["probabilities"]) == 4
+    assert len(row["interrupt"]["probabilities"]) == 2
+    assert "importance" not in row
+
+
 def test_novelty_from_persisted_links_decides_known_in_flight_and_corrections() -> None:
-    judge = FixedReader(3.5)
+    judge = FixedReader(3.0)
     update = single()
     ref = update.claims[0].ref
     known = reader(links=(link(ref, "old", "equivalent"),), link_receipts=(delivered("r-old", "old"),))
@@ -227,8 +249,7 @@ def test_an_increment_is_scored_on_what_it_adds_with_the_linked_message_first() 
         links=(link(ref, "old", "adds_information"),),
         link_receipts=(delivered("r-old", "old"),),
     )
-    cuts = READER_CUTS["native"]
-    judge = FixedReader(cuts.held, anchor="m1")
+    judge = FixedReader(1.9, anchor="m1")
     plan = run_plan(update, snapshot, judge=judge)
     assert only_reason(plan) == "reader_push"
     assert judge.asked[0].messages == ("英伟达宣布1500亿美元回购",)
@@ -240,10 +261,10 @@ def test_an_increment_is_scored_on_what_it_adds_with_the_linked_message_first() 
         update.claims, {item.ref: item.source for item in update.evidence}, {ref: record.earlier}
     )
     assert material[0]["earlier"] == {"render": "increment", "delivered_text": "英伟达宣布1500亿美元回购"}
-    # The reader already has the core fact: what the increment adds needs the key cut.
-    assert only_reason(run_plan(update, snapshot, judge=FixedReader(cuts.held - 0.01, anchor="m1"))) == "reader_feed"
+    # Held is a calibration feature, so moderate incremental materiality can stay in the feed.
+    assert only_reason(run_plan(update, snapshot, judge=FixedReader(1.8, anchor="m1"))) == "reader_feed"
     # P014 (2026-09-29): a link to an unrelated earlier push that the anchor does not confirm is no "补充".
-    plan = run_plan(update, snapshot, judge=FixedReader(cuts.held))
+    plan = run_plan(update, snapshot, judge=FixedReader(1.9))
     record = plan.claim_decisions[0].reader
     assert only_reason(plan) == "reader_push" and record is not None
     assert (record.novelty, record.render, record.earlier, plan.earlier(ref)) == ("increment", "full", None, None)
@@ -289,7 +310,7 @@ def test_a_claim_reporting_an_old_occurrence_is_not_notified(update: EventUpdate
     """#742 PR-4: freshness is the claim's first visibility; the day it reports must be recent as well."""
 
     assert stale_occurrence(update.claims[0]) is stale
-    reason = only_reason(run_plan(update, judge=FixedReader(3.5)))
+    reason = only_reason(run_plan(update, judge=FixedReader(3.0, interrupt=0.95)))
     assert reason == ("stale_occurrence" if stale else "reader_key")
 
 

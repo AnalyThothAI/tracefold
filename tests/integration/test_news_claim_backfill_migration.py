@@ -13,7 +13,12 @@ from tests.support.news_update_pg import EVENT, Sender, adopted_head, notificati
 from tracefold.news.claim_recall import CALIBRATION, text_sha, vector_bytes
 from tracefold.platform.postgres.migrations import alembic_config
 
-pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.migration,
+    pytest.mark.usefixtures("postgres_migration_dsn"),
+    pytest.mark.usefixtures("synthetic_reader_calibration"),
+]
 
 FACT_TABLES = (
     "news_events",

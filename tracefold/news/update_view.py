@@ -14,13 +14,24 @@ from typing import Any, Final, Literal
 from pydantic import ValidationError
 
 from .notifications.contracts import ClaimDecision, FrozenCard, NotificationPlan, PlanTimings
-from .notifications.policy import anchor_index, cuts_for
 from .notifications.ports import DeliveryTimings
 from .taxonomy import IPTC_SUBJECT_LABELS_ZH, source_authority_zh
 from .updates.contracts import Claim, EventUpdate, Evidence
 
 UPDATE_DECODE_ERROR: Final = "news_event_update_undecodable"
 PLAN_DECODE_ERROR: Final = "news_notification_plan_undecodable"
+REPORT_KIND_ZH: Final[dict[str, str]] = {
+    "new_action": "新动作",
+    "official_communication": "官方新表态",
+    "market_move": "市场变动",
+    "scheduled_data": "日程数据发布",
+    "self_reported_metric": "项目自报里程碑",
+    "unconfirmed_incident": "单一来源事件报道",
+    "recap_or_old_period": "回顾或旧期次",
+    "promotion": "推广",
+    "commentary": "评论或预测",
+    "background": "背景或例行更新",
+}
 # The evidence text is the whole provider body. The citations carry the exact quotes a claim rests on,
 # so the source list shows the head of the text and says when it stopped.
 EVIDENCE_TEXT_MAX: Final = 1200
@@ -128,7 +139,8 @@ CLAIM_REASON_ZH: Final[dict[str, str]] = {
     "large_daily_move": "商品/指数当日大幅波动",
     "reader_key": "新增信息重要，标为重点",
     "reader_push": "新增信息值得推送",
-    "reader_feed": "重要性未达推送线，只进信息流",
+    "reader_feed": "推送概率未达要求，只进信息流",
+    "reader_ineligible": "报道类型不具备推送资格，只进信息流",
     "reader_unavailable": "读者判断暂不可用，等待重试",
     "reader_unassessed": "读者判断长时间不可用，未评估，不推送",
 }
@@ -197,10 +209,27 @@ def claim_reasons_zh(decisions: Any) -> str:
     for row in decisions if isinstance(decisions, Sequence) and not isinstance(decisions, str) else ():
         if isinstance(row, Mapping) and row.get("decision") != "notify":
             code = str(row.get("reason") or "")
-            reason = CLAIM_REASON_ZH.get(code) or LEGACY_CLAIM_REASON_ZH.get(code) or code
+            evidence = row.get("historical_judgment")
+            if evidence is None and isinstance(record := row.get("reader"), Mapping):
+                evidence = record.get("judgment")
+            reason = _claim_reason_text(code, historical=_importance_era_evidence(evidence))
             if reason:
                 counts[reason] = counts.get(reason, 0) + 1
     return " · ".join(f"{reason} ×{n}" if n > 1 else reason for reason, n in counts.items())
+
+
+def _importance_era_evidence(evidence: Any) -> bool:
+    return (
+        isinstance(evidence, Mapping)
+        and "importance" in evidence
+        and not any(key in evidence for key in ("report_kind", "materiality", "interrupt"))
+    )
+
+
+def _claim_reason_text(code: str, *, historical: bool = False) -> str:
+    if historical and code == "reader_feed":
+        return "历史读者判断，仅进入信息流"
+    return CLAIM_REASON_ZH.get(code) or LEGACY_CLAIM_REASON_ZH.get(code) or code
 
 
 def decode_update(document: Any) -> EventUpdate | None:
@@ -449,10 +478,10 @@ def semantic_view(work: Mapping[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def _claim_reason_zh(row: ClaimDecision) -> str:
+def _claim_reason_zh(row: ClaimDecision, *, historical: bool = False) -> str:
     """Reader copy names the reason; numeric evidence remains in separate fields."""
 
-    text = _zh(CLAIM_REASON_ZH, row.reason)
+    text = _claim_reason_text(row.reason, historical=historical)
     if row.reader is not None and row.reader.earlier is not None:
         text += f"；{_zh(RENDER_ZH, row.reader.render)}此前已推送的一条"
     return text
@@ -492,24 +521,39 @@ def _reader_fields(row: ClaimDecision) -> dict[str, Any]:
     if reader is None:
         return {}
     judgment = reader.judgment
-    importance = None if judgment is None else judgment.importance
     earlier_id = reader.anchor_intent_id or (None if reader.earlier is None else reader.earlier.intent_id)
-    if earlier_id is None and judgment is not None and judgment.backend is not None and judgment.anchor is not None:
-        index = anchor_index(judgment.anchor, cuts_for(judgment))
-        if index is not None and index < len(reader.message_intents):
-            earlier_id = reader.message_intents[index]
-    threshold = None
-    if judgment is not None and judgment.backend is not None:
-        cuts = cuts_for(judgment)
-        threshold = cuts.held if reader.render == "increment" else cuts.push
+    scores = reader.scores
     return {
         "novelty": reader.novelty,
         "novelty_zh": _zh(NOVELTY_ZH, reader.novelty),
         "render": reader.render,
         "earlier_intent_id": earlier_id,
-        "importance_threshold": threshold,
-        "importance": None if importance is None else round(importance.value, 2),
-        "importance_probabilities": None if importance is None else [round(p, 3) for p in importance.probabilities],
+        "report_kind": None
+        if judgment is None or judgment.report_kind is None
+        else judgment.report_kind.model_dump(mode="json"),
+        "report_kind_zh": ""
+        if judgment is None or judgment.report_kind is None
+        else _zh(REPORT_KIND_ZH, judgment.report_kind.value),
+        "materiality": None
+        if judgment is None or judgment.materiality is None
+        else judgment.materiality.model_dump(mode="json"),
+        "materiality_probabilities": None
+        if judgment is None or judgment.materiality is None
+        else list(judgment.materiality.probabilities),
+        "interrupt": None
+        if judgment is None or judgment.interrupt is None
+        else judgment.interrupt.model_dump(mode="json"),
+        "anchor": None if judgment is None or judgment.anchor is None else judgment.anchor.model_dump(mode="json"),
+        "e": None if scores is None else scores.e,
+        "m": None if scores is None else scores.m,
+        "i": None if scores is None else scores.i,
+        "p_push": None if scores is None else scores.p_push,
+        "p_key": None if scores is None else scores.p_key,
+        "push_cut": None if scores is None else scores.push_cut,
+        "key_cut": None if scores is None else scores.key_cut,
+        "calibration_identity": None if scores is None else scores.calibration_identity,
+        "held": None if scores is None else scores.held,
+        "certification_status": None if scores is None else scores.certification_status,
         "reader_backend": None if judgment is None else judgment.backend,
     }
 
@@ -547,6 +591,39 @@ def legacy_plan_view(plan: Mapping[str, Any], *, statements: Mapping[str, str]) 
     }
 
 
+def historical_reader_plan_view(plan: Mapping[str, Any], *, statements: Mapping[str, str]) -> dict[str, Any] | None:
+    """Display recorded importance-era evidence without admitting it to the current judgment contract."""
+
+    rows = plan.get("claim_decisions")
+    if not isinstance(rows, list) or not all(isinstance(row, Mapping) for row in rows):
+        return None
+    historical: dict[str, Mapping[str, Any]] = {}
+    copied = []
+    for row in rows:
+        record = row.get("reader")
+        if not isinstance(record, Mapping):
+            copied.append(dict(row))
+            continue
+        evidence = record.get("judgment")
+        if isinstance(evidence, Mapping):
+            if not _importance_era_evidence(evidence):
+                return None
+            historical[str(row.get("claim_ref"))] = evidence
+        copied.append(dict(row) | {"reader": dict(record) | {"judgment": None, "scores": None}})
+    if not historical:
+        return None
+    clean = decode_plan(dict(plan) | {"claim_decisions": copied})
+    if clean is None:
+        return None
+    view = plan_view(clean, statements=statements)
+    for row, record in zip(view["claim_decisions"], clean.claim_decisions, strict=True):
+        if evidence := historical.get(row["claim_ref"]):
+            row["historical_judgment"] = dict(evidence)
+            row["reader_backend"] = evidence.get("backend")
+            row["reason_zh"] = _claim_reason_zh(record, historical=True)
+    return view
+
+
 def notification_view(work: Mapping[str, Any] | None, *, statements: Mapping[str, str]) -> dict[str, Any] | None:
     if work is None:
         return None
@@ -557,6 +634,8 @@ def notification_view(work: Mapping[str, Any] | None, *, statements: Mapping[str
         if plan is not None
         else legacy_plan_view(raw, statements=statements)
         if work.get("origin") == "editorial_v1" and isinstance(raw, Mapping)
+        else historical_reader_plan_view(raw, statements=statements)
+        if isinstance(raw, Mapping)
         else None
     )
     state = str(work["state"])

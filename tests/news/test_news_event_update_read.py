@@ -126,7 +126,7 @@ def test_outcome_texts_name_the_key_card_and_the_reasons_nothing_was_sent() -> N
             ],
         },
     )
-    assert silent.reason_zh == "重要性未达推送线，只进信息流 ×2 · 读者已收到同一事实"
+    assert silent.reason_zh == "推送概率未达要求，只进信息流 ×2 · 读者已收到同一事实"
     # editorial_v1 history keeps its own reasons, marked as the old editor's.
     legacy = _outcome(
         semantic=_DONE,
@@ -238,7 +238,7 @@ def test_notification_view_names_every_claim_decision_and_flags_an_undecodable_p
     assert view is not None and view["plan"] is not None
     assert view["plan"]["action_zh"] == "不通知"
     assert [(row["decision_zh"], row["reason_zh"]) for row in view["plan"]["claim_decisions"]] == [
-        ("不通知", "重要性未达推送线，只进信息流")
+        ("不通知", "推送概率未达要求，只进信息流")
     ]
     assert view["plan"]["claim_decisions"][0]["statement"] == head.claims[0].statement
     assert broken is not None and broken["plan"] is None

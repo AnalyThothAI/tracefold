@@ -28,6 +28,7 @@ dependencies = [
 ]
 
 [dependency-groups]
+research = ["scikit-learn==1.9.1"]
 dev = [
     # Exactly pinned (#373): coverage's measured numbers are only comparable across exact-main runs
     # if the measuring tool cannot move underneath them. 7.16 is also the floor for the official

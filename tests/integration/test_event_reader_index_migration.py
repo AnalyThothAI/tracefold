@@ -12,7 +12,12 @@ from tests.postgres_test_utils import connect_postgres_test, postgres_migration_
 from tests.support.news_update_pg import EVENT, Sender, adopted_head, notifications, store
 from tracefold.platform.postgres.migrations import alembic_config
 
-pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.migration,
+    pytest.mark.usefixtures("postgres_migration_dsn"),
+    pytest.mark.usefixtures("synthetic_reader_calibration"),
+]
 READER_INDEXES = {"news_events_story_window", "news_notifications_sent_claims"}
 
 

@@ -507,10 +507,40 @@ export function NewsProcessingState({
                           {row.novelty_zh}
                         </span>
                       ) : null}
-                      {row.importance != null ? <small>增量重要性 {row.importance}</small> : null}
+                      {row.report_kind ? (
+                        <small>报道类型：{row.report_kind_zh || row.report_kind.value}</small>
+                      ) : null}
                     </div>
                     <p>{row.reason_zh || row.reason}</p>
                     <small>{row.statement ?? row.claim_ref}</small>
+                    {row.report_kind || row.historical_judgment ? (
+                      <details>
+                        <summary>
+                          {row.historical_judgment
+                            ? "历史模型证据（只读）"
+                            : "模型证据与冻结策略概率"}
+                        </summary>
+                        <pre className="news-update-json">
+                          {JSON.stringify(
+                            row.historical_judgment ?? {
+                              report_kind: row.report_kind,
+                              materiality: row.materiality,
+                              interrupt: row.interrupt,
+                              anchor: row.anchor,
+                              e: row.e,
+                              m: row.m,
+                              i: row.i,
+                              p_push: row.p_push,
+                              p_key: row.p_key,
+                              held: row.held,
+                              certification_status: row.certification_status,
+                            },
+                            null,
+                            2,
+                          )}
+                        </pre>
+                      </details>
+                    ) : null}
                     {earlierIntent !== undefined ? (
                       <button
                         className="news-update-text-button"

@@ -74,7 +74,7 @@ from tracefold.news.updates.ports import SemanticObservation
 from tracefold.news.updates.projection import reading_views
 from tracefold.platform.observability import TelemetryRegistry
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn", "synthetic_reader_calibration")]
 
 TELEGRAM_TARGET = "a" * 64
 

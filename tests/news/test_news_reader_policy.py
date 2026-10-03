@@ -1,0 +1,521 @@
+"""Policy proofs use explicitly synthetic calibration, never archived model scores."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import asdict, replace
+from hashlib import sha256
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from tracefold.news.notifications.novelty import ClaimLink, ReaderNovelty
+from tracefold.news.notifications.policy import (
+    KIND_FLOOR,
+    PUSHABLE_KINDS,
+    ReaderCalibration,
+    ReaderPolicy,
+    reader_decision,
+    reader_scores,
+)
+from tracefold.news.notifications.reader import (
+    REPORT_KIND_OPTIONS,
+    AnchorEvidence,
+    InterruptEvidence,
+    MaterialityEvidence,
+    ReaderJudgment,
+    ReportKind,
+    ReportKindEvidence,
+)
+from tracefold.news.updates.contracts import ClaimFields
+
+# Synthetic arithmetic fixture: not a fitted production calibration.
+CALIBRATION = ReaderCalibration(
+    push_coefficients=(0, 0, 1, -1),
+    key_coefficients=(0, 1, 0),
+    push_cut=0.6,
+    key_cut=0.75,
+    certification_status="certified",
+)
+
+
+def judgment(
+    m: float = 0.7,
+    *,
+    e: float = 1,
+    i: float = 0.2,
+    kind: ReportKind = "new_action",
+    anchor: dict[str, float] | None = None,
+    backend: str = "native",
+) -> ReaderJudgment:
+    probabilities: dict[str, float] = dict.fromkeys((key for key, _ in REPORT_KIND_OPTIONS), 0)
+    probabilities[kind] = e
+    probabilities["background"] += 1 - e
+    return ReaderJudgment.model_validate(
+        {
+            "status": "available",
+            "backend": backend,
+            "identity": "synthetic-policy-proof",
+            "report_kind": ReportKindEvidence(
+                value=max(probabilities, key=probabilities.__getitem__), probabilities=probabilities, confidence=0.8
+            ),
+            "materiality": MaterialityEvidence(value=1 + m, probabilities=(0, 1 - m, m, 0), confidence=0.8),
+            "interrupt": InterruptEvidence(probabilities=(1 - i, i), confidence=0.8),
+            "anchor": None if anchor is None else AnchorEvidence(probabilities=anchor, confidence=0.8),
+        }
+    )
+
+
+def decide(novelty: ReaderNovelty, answer: ReaderJudgment, **options: Any):
+    return reader_decision(
+        novelty,
+        answer,
+        first_available_at_ms=20,
+        message_intents=("ra", "rb"),
+        calibration=options.pop("calibration", CALIBRATION),
+        **options,
+    )
+
+
+def test_reader_rows_keep_known_inflight_and_later_correction_precedence() -> None:
+    weak = judgment(0.01, e=0.01)
+    assert decide(ReaderNovelty(novelty="known", intent_id="ra"), weak).outcome == "known"
+    assert decide(ReaderNovelty(novelty="in_flight", intent_id="ra"), weak).outcome == "in_flight"
+    correction = ReaderNovelty(
+        novelty="development",
+        intent_id="ra",
+        settled_at_ms=10,
+        path=(ClaimLink(current_ref="c", previous_ref="a", relation="corrects", asserted_at_ms=1),),
+    )
+    result = decide(correction, weak)
+    assert (result.outcome, result.render, result.anchor_intent_id, result.scores) == (
+        "correction",
+        "correction",
+        "ra",
+        None,
+    )
+    older = correction.model_copy(update={"settled_at_ms": 30})
+    result = decide(older, weak)
+    assert (result.outcome, result.render, result.anchor_intent_id) == ("ineligible", "increment", "ra")
+
+
+@pytest.mark.parametrize("backend", ["native", "generated"])
+def test_uncertified_backend_cannot_authorize_a_model_push(backend: str) -> None:
+    result = reader_decision(
+        ReaderNovelty(novelty="unlinked"),
+        judgment(1, i=1, backend=backend),
+        first_available_at_ms=20,
+        message_intents=(),
+    )
+    assert result.outcome == "feed"
+    assert result.scores is not None and result.scores.certification_status == "uncalibrated"
+
+
+@pytest.mark.parametrize("kind,pushable", list(PUSHABLE_KINDS.items()))
+def test_qualification_table_gates_every_category(kind: ReportKind, pushable: bool) -> None:
+    result = decide(ReaderNovelty(novelty="unlinked"), judgment(0.9, kind=kind))
+    assert result.outcome == ("push" if pushable else "ineligible")
+
+
+def test_eligible_mass_floor_is_inclusive_and_key_requires_push() -> None:
+    novelty = ReaderNovelty(novelty="unlinked")
+    assert decide(novelty, judgment(0.8, e=KIND_FLOOR - 0.001, i=1)).outcome == "ineligible"
+    assert decide(novelty, judgment(0.8, e=KIND_FLOOR, i=1)).outcome == "key"
+    assert decide(novelty, judgment(0.2, i=1)).outcome == "feed"
+    assert decide(novelty, judgment(0.8, i=0.74)).outcome == "push"
+    at_cut = judgment(0.8, i=0.75)
+    exact_cut = replace(CALIBRATION, key_cut=reader_scores(at_cut, calibration=CALIBRATION).p_key)
+    assert decide(novelty, at_cut, calibration=exact_cut).outcome == "key"
+
+
+def test_held_is_one_calibration_input_and_anchoring_controls_render_only() -> None:
+    anchored = {"m1": 0.1, "m2": 0.8, "none": 0.1}
+    unlinked = ReaderNovelty(novelty="unlinked")
+    unheld = decide(unlinked, judgment(0.7))
+    held = decide(unlinked, judgment(0.7, anchor=anchored))
+    strong = decide(unlinked, judgment(0.95, anchor=anchored))
+    assert unheld.outcome == "push" and held.outcome == "feed"
+    assert (strong.outcome, strong.render, strong.anchor_intent_id) == ("push", "increment", "rb")
+    assert held.scores is not None and held.scores.held and held.scores.p_push < unheld.scores.p_push
+    # Anchored details can still push on their new information, without a separate held cut.
+    assert strong.scores is not None and strong.scores.p_push >= CALIBRATION.push_cut
+
+
+@pytest.mark.parametrize(
+    "kind,mode,phase,effective",
+    [
+        ("state_change", "observation", "executing", True),
+        ("state_change", "observation", "completed", True),
+        ("official_measure", "decision", "ordered", True),
+        ("official_measure", "decision", "effective", True),
+        ("state_change", "observation", "cancelled", True),
+        ("state_change", "observation", None, False),
+        ("state_change", "observation", "unknown", False),
+        ("state_change", "commitment", "announced", False),
+        ("state_change", "forecast", "completed", False),
+        ("new_quantity", "observation", "completed", False),
+    ],
+)
+def test_actual_unanchored_state_change_preserves_the_existing_held_exception(
+    kind: str,
+    mode: str,
+    phase: str | None,
+    effective: bool,
+) -> None:
+    fields = ClaimFields.model_validate(
+        {"subject": "Venue", "action": "resumed withdrawals", "content_kind": kind, "mode": mode, "phase": phase}
+    )
+    result = decide(
+        ReaderNovelty(novelty="increment", intent_id="ra"),
+        judgment(0.7, anchor={"m1": 0.1, "m2": 0.1, "none": 0.8}),
+        claim_fields=fields,
+    )
+    assert (result.outcome, result.render) == ("push" if effective else "feed", "full")
+    assert result.scores is not None and result.scores.held is not effective
+
+
+def test_expectation_and_anchor_probability_do_not_change_push_score() -> None:
+    answer = judgment(0.8, e=0.7)
+    other = answer.model_copy(
+        update={
+            "materiality": MaterialityEvidence(
+                value=2.6,
+                probabilities=(0.2, 0, 0, 0.8),
+                confidence=0.1,
+            ),
+            "anchor": AnchorEvidence(probabilities={"m1": 0.9, "none": 0.1}, confidence=0.1),
+        }
+    )
+    assert reader_scores(answer, calibration=CALIBRATION) == reader_scores(other, calibration=CALIBRATION)
+
+
+def test_rule_changes_replay_saved_distributions_without_changing_question_identity(monkeypatch) -> None:
+    from tracefold.news.notifications.reader import READER_QUESTIONS_IDENTITY
+
+    identity = READER_QUESTIONS_IDENTITY
+    answer = judgment(0.8, kind="self_reported_metric")
+    assert reader_scores(answer, calibration=CALIBRATION).e == 1
+    monkeypatch.setitem(PUSHABLE_KINDS, "self_reported_metric", False)
+    assert reader_scores(answer, calibration=CALIBRATION).e == 0
+    assert identity == READER_QUESTIONS_IDENTITY
+
+
+def test_probability_extremes_and_calibration_validation() -> None:
+    for p in (0, 1):
+        scores = reader_scores(judgment(p, e=p, i=p), calibration=CALIBRATION)
+        assert 0 <= scores.p_push <= 1 and 0 <= scores.p_key <= 1
+    with pytest.raises(ValueError, match="materiality_floor_invalid"):
+        replace(CALIBRATION, materiality_floor=4)
+    with pytest.raises(ValueError, match="coefficients_invalid"):
+        replace(CALIBRATION, push_coefficients=(float("nan"), 0, 0, 0))
+    with pytest.raises(ValueError, match="certification_invalid"):
+        replace(CALIBRATION, push_cut=None)
+    assert replace(CALIBRATION, key_cut=None).certification_status == "certified"
+
+
+def test_push_only_certificate_pushes_but_never_marks_a_claim_key() -> None:
+    push_only = replace(CALIBRATION, key_cut=None)
+    novelty = ReaderNovelty(novelty="unlinked")
+    urgent = judgment(0.9, i=1)
+    assert decide(novelty, urgent).outcome == "key"
+    result = decide(novelty, urgent, calibration=push_only)
+    assert result.outcome == "push" and result.scores.key_cut is None
+    assert result.scores.p_key > CALIBRATION.key_cut
+    assert decide(novelty, judgment(0.2, i=1), calibration=push_only).outcome == "feed"
+
+
+def test_provider_rounding_does_not_make_derived_mass_exceed_one() -> None:
+    answer = judgment(1)
+    probabilities = dict(answer.report_kind.probabilities)
+    probabilities["market_move"] = 0.0000005
+    rounded = answer.model_copy(
+        update={
+            "report_kind": ReportKindEvidence(value="new_action", probabilities=probabilities, confidence=0.8),
+            "materiality": MaterialityEvidence(value=2.5, probabilities=(0, 0, 0.5, 0.5000005), confidence=0.8),
+        }
+    )
+    scores = reader_scores(rounded, calibration=CALIBRATION)
+    assert scores.e == scores.m == 1
+    assert rounded.materiality.probabilities == (0, 0, 0.5, 0.5000005)
+
+
+def reviewed_document() -> dict[str, Any]:
+    from tracefold.news.notifications.reader import READER_QUESTIONS_IDENTITY
+    from tracefold.news.updates.identity import digest
+
+    entry = {
+        "calibration": asdict(CALIBRATION),
+        "questions_identity": READER_QUESTIONS_IDENTITY,
+        "eligibility_table_sha256": digest(PUSHABLE_KINDS),
+        "reader_identity": "synthetic-reader-program",
+        "answer_identity": "synthetic-policy-proof",
+        "served_model": None,
+        "dataset_sha256": "a" * 64,
+        "guide_version": "synthetic-owner-guide",
+        "report_ref": "synthetic-release-report.json",
+        "report_sha256": "b" * 64,
+        "release_ready": True,
+        "review_ref": "synthetic-release-review.json",
+        "review_sha256": "c" * 64,
+        "reviewed_by": "synthetic-reviewer",
+        "reviewed_at": "2026-10-02T18:00:00Z",
+    }
+    return {"version": "news_reader_calibration_v1", "backends": {"native": entry, "generated": entry.copy()}}
+
+
+def install_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, document: dict[str, Any]) -> ReaderPolicy:
+    from tracefold.news.notifications.policy import READER_CALIBRATIONS, READER_POLICIES
+
+    path = tmp_path / "reader_calibration.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    policies = ReaderPolicy.load(path)
+    for backend, policy in policies.items():
+        monkeypatch.setitem(READER_POLICIES, backend, policy)
+        monkeypatch.setitem(READER_CALIBRATIONS, backend, policy.calibration)
+    return policies["native"]
+
+
+def test_bundled_artifact_binds_the_push_only_native_certificate_and_its_report() -> None:
+    from tracefold.news.notifications.policy import NOTIFICATION_POLICY_IDENTITY, READER_POLICIES
+    from tracefold.news.notifications.reader import READER_QUESTIONS_IDENTITY
+    from tracefold.news.updates.identity import digest
+
+    root = Path(__file__).parents[2]
+    path = root / "tracefold/news/notifications/reader_calibration.json"
+    policies = ReaderPolicy.load()
+    assert set(policies) == {"native", "generated"}
+    for backend, policy in policies.items():
+        assert policy.artifact_sha256 == sha256(path.read_bytes()).hexdigest()
+        assert policy == READER_POLICIES[backend]
+        assert policy.questions_identity == READER_QUESTIONS_IDENTITY
+        assert policy.eligibility_table_sha256 == digest(PUSHABLE_KINDS)
+    native, generated = policies["native"], policies["generated"]
+    assert native.calibration.certification_status == "certified"
+    assert (native.calibration.push_cut, native.calibration.key_cut) == (0.372, None)
+    assert native.guide_version is not None and native.guide_version.startswith("news_reader_owner_guide_v5:")
+    # The bound report is the committed certification report, byte for byte.
+    assert native.report_ref == "docs/reports/news-805-certification.md"
+    assert native.report_sha256 == sha256((root / native.report_ref).read_bytes()).hexdigest()
+    if native.release_ready:
+        assert native.review_ref and native.review_sha256 and native.reviewed_by and native.reviewed_at
+    else:
+        assert native.review_ref is native.review_sha256 is native.reviewed_by is None
+    assert generated.calibration == ReaderCalibration() and not generated.release_ready
+    assert generated.dataset_sha256 is generated.report_ref is generated.reader_identity is None
+    assert NOTIFICATION_POLICY_IDENTITY.startswith("news_notification_policy:")
+
+
+def test_released_push_only_native_certificate_pushes_and_never_marks_key(tmp_path, monkeypatch) -> None:
+    bundled = json.loads(
+        (Path(__file__).parents[2] / "tracefold/news/notifications/reader_calibration.json").read_text()
+    )
+    native = bundled["backends"]["native"] | {
+        "release_ready": True,
+        "review_ref": "synthetic-release-review.json",
+        "review_sha256": "c" * 64,
+        "reviewed_by": "synthetic-reviewer",
+        "reviewed_at": "2026-10-03T12:00:00Z",
+    }
+    install_document(tmp_path, monkeypatch, {**bundled, "backends": {**bundled["backends"], "native": native}})
+    answer = judgment(1, i=1).model_copy(
+        update={"identity": native["answer_identity"], "served_model": native["served_model"]}
+    )
+    options = {"first_available_at_ms": 20, "message_intents": (), "reader_identity": native["reader_identity"]}
+    result = reader_decision(ReaderNovelty(novelty="unlinked"), answer, **options)
+    assert result.outcome == "push" and result.scores.certification_status == "certified"
+    assert result.scores.p_push >= 0.372 and result.scores.key_cut is None
+    weak = judgment(0.01, i=1).model_copy(
+        update={"identity": native["answer_identity"], "served_model": native["served_model"]}
+    )
+    assert reader_decision(ReaderNovelty(novelty="unlinked"), weak, **options).outcome == "feed"
+    generated = judgment(1, i=1, backend="generated")
+    assert reader_decision(ReaderNovelty(novelty="unlinked"), generated, **options).outcome == "feed"
+
+
+def test_runtime_requires_release_review_and_both_actual_reader_identities(tmp_path, monkeypatch) -> None:
+    policy = install_document(tmp_path, monkeypatch, reviewed_document())
+    options = {"first_available_at_ms": 20, "message_intents": (), "reader_identity": "synthetic-reader-program"}
+    answer = judgment(0.9)
+    result = reader_decision(ReaderNovelty(novelty="unlinked"), answer, **options)
+    assert result.outcome == "push"
+    assert result.scores.calibration_identity == policy.identity
+    assert result.scores.push_cut == CALIBRATION.push_cut and result.scores.key_cut == CALIBRATION.key_cut
+    for actual in (None, "different-reader-program"):
+        result = reader_decision(ReaderNovelty(novelty="unlinked"), answer, **(options | {"reader_identity": actual}))
+        assert result.outcome == "feed" and result.scores.certification_status == "uncalibrated"
+    for other in (
+        answer.model_copy(update={"identity": "different-answer-adapter"}),
+        answer.model_copy(update={"served_model": "different-serving-model"}),
+    ):
+        result = reader_decision(ReaderNovelty(novelty="unlinked"), other, **options)
+        assert result.outcome == "feed" and result.scores.certification_status == "uncalibrated"
+
+
+@pytest.mark.parametrize("changed", ["release", "questions", "eligibility"])
+def test_precision_certificate_and_stale_question_or_rule_artifacts_cannot_activate(tmp_path, monkeypatch, changed):
+    document = reviewed_document()
+    row = document["backends"]["native"]
+    if changed == "release":
+        row["release_ready"] = False
+    elif changed == "questions":
+        row["questions_identity"] = "previous-reader-questions"
+    else:
+        row["eligibility_table_sha256"] = "0" * 64
+    install_document(tmp_path, monkeypatch, document)
+    result = reader_decision(
+        ReaderNovelty(novelty="unlinked"),
+        judgment(0.9),
+        first_available_at_ms=20,
+        message_intents=(),
+        reader_identity="synthetic-reader-program",
+    )
+    assert result.outcome == "feed" and result.scores.certification_status == "uncalibrated"
+
+
+def test_editing_qualification_table_invalidates_loaded_certificate_without_reasking(tmp_path, monkeypatch):
+    install_document(tmp_path, monkeypatch, reviewed_document())
+    answer = judgment(0.9, kind="self_reported_metric")
+    options = {"first_available_at_ms": 20, "message_intents": (), "reader_identity": "synthetic-reader-program"}
+    assert reader_decision(ReaderNovelty(novelty="unlinked"), answer, **options).outcome == "push"
+    monkeypatch.setitem(PUSHABLE_KINDS, "self_reported_metric", False)
+    result = reader_decision(ReaderNovelty(novelty="unlinked"), answer, **options)
+    assert result.outcome == "ineligible" and result.scores.certification_status == "uncalibrated"
+    assert answer.report_kind.probabilities["self_reported_metric"] == 1
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("materiality_floor", 0),
+        ("kind_floor", 0.4),
+        ("anchor_none_below", 0.3),
+        ("push_coefficients", [0, 1, 2]),
+        ("key_coefficients", [0, float("nan"), 1]),
+        ("push_cut", 1.1),
+        ("unknown", 1),
+    ],
+)
+def test_artifact_rejects_invalid_parameters(tmp_path, field, value):
+    document = reviewed_document()
+    document["backends"]["native"]["calibration"][field] = value
+    path = tmp_path / "reader_calibration.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError):
+        ReaderPolicy.load(path)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "dataset_sha256",
+        "guide_version",
+        "report_ref",
+        "report_sha256",
+        "reader_identity",
+        "answer_identity",
+        "review_ref",
+        "review_sha256",
+        "reviewed_by",
+        "reviewed_at",
+    ],
+)
+def test_certified_artifact_rejects_missing_release_provenance(tmp_path, field):
+    document = reviewed_document()
+    document["backends"]["native"][field] = None
+    path = tmp_path / "reader_calibration.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError):
+        ReaderPolicy.load(path)
+
+
+def test_file_digest_covers_report_provenance_and_backend_set_is_exact(tmp_path):
+    document = reviewed_document()
+    path = tmp_path / "reader_calibration.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    first = ReaderPolicy.load(path)["native"]
+    document["backends"]["native"]["report_sha256"] = "c" * 64
+    path.write_text(json.dumps(document), encoding="utf-8")
+    second = ReaderPolicy.load(path)["native"]
+    assert second.identity != first.identity
+    document["backends"]["native"]["review_sha256"] = "d" * 64
+    path.write_text(json.dumps(document), encoding="utf-8")
+    assert ReaderPolicy.load(path)["native"].identity != second.identity
+    del document["backends"]["generated"]
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="backends_invalid"):
+        ReaderPolicy.load(path)
+
+
+def test_planner_binds_actual_program_and_read_views_keep_frozen_cut_provenance(tmp_path, monkeypatch):
+    from tests.support.news_update_semantic import MemoryCache, update_one
+    from tracefold.app.http.schemas.events import NewsClaimDecisionData
+    from tracefold.news.notifications.contracts import ReaderSnapshot
+    from tracefold.news.notifications.planner import NotificationPlanner
+    from tracefold.news.notifications.policy import READER_CALIBRATIONS
+    from tracefold.news.update_view import notification_view
+    from tracefold.news.updates.judgment import Budget
+
+    policy = install_document(tmp_path, monkeypatch, reviewed_document())
+    _, _, update = update_one()
+    snapshot = ReaderSnapshot(channel="news", revision="synthetic-reader", receipts=())
+
+    class Provider:
+        identity = "synthetic-reader-program"
+
+        async def judge(self, _reader, _budget):
+            return judgment(0.9)
+
+    provider = Provider()
+    planner = NotificationPlanner(provider, MemoryCache())
+    plan = asyncio.run(planner.plan(update, snapshot, Budget.start(5), now_ms=update.adopted_at_ms))
+    assert plan.claim_decisions[0].reason == "reader_push"
+    assert plan.claim_decisions[0].reader.scores.calibration_identity == policy.identity
+    provider.identity = "changed-reader-program"
+    changed = asyncio.run(planner.plan(update, snapshot, Budget.start(5), now_ms=update.adopted_at_ms))
+    assert changed.claim_decisions[0].reason == "reader_feed"
+
+    # Reading a recorded decision does not substitute the latest cuts or rescore its evidence.
+    monkeypatch.setitem(READER_CALIBRATIONS, "native", replace(CALIBRATION, push_cut=0.95))
+    document = plan.model_dump(mode="json")
+    work = {"state": "done", "content_revision": update.content_revision, "plan": document, "updated_at_ms": 1}
+    view = notification_view(work, statements={update.claims[0].ref: update.claims[0].statement})
+    row = view["plan"]["claim_decisions"][0]
+    assert row["materiality_probabilities"] == list(plan.claim_decisions[0].reader.judgment.materiality.probabilities)
+    assert row["push_cut"] == 0.6 and row["key_cut"] == 0.75 and row["calibration_identity"] == policy.identity
+    assert NewsClaimDecisionData.model_validate(row).push_cut == 0.6
+    for field in ("push_cut", "key_cut", "calibration_identity"):
+        del document["claim_decisions"][0]["reader"]["scores"][field]
+    old = notification_view(work, statements={})["plan"]["claim_decisions"][0]
+    assert old["push_cut"] is old["key_cut"] is old["calibration_identity"] is None
+
+
+def test_reader_ineligible_is_a_distinct_recorded_reason():
+    from tests.support.news_update_semantic import update_one
+    from tracefold.news.notifications.contracts import REASON_DECISIONS, ReaderSnapshot
+    from tracefold.news.notifications.policy import decide as decide_claim
+    from tracefold.news.update_view import claim_reasons_zh
+
+    _, _, update = update_one()
+    reason, decision = decide_claim(
+        update.claims[0],
+        update,
+        ReaderSnapshot(channel="news", revision="reader", receipts=()),
+        now_ms=update.adopted_at_ms,
+        novelty=ReaderNovelty(novelty="unlinked"),
+        judgment=judgment(0.9, kind="promotion"),
+    )
+    assert reason == "reader_ineligible" and decision.outcome == "ineligible"
+    assert REASON_DECISIONS[reason] == "not_notified"
+    assert claim_reasons_zh([{"decision": "not_notified", "reason": reason}]) == "报道类型不具备推送资格，只进信息流"
+
+
+@pytest.mark.parametrize("field,value", [("review_ref", " "), ("review_sha256", "invalid-review-digest")])
+def test_release_artifact_rejects_invalid_review_source(tmp_path, field, value):
+    document = reviewed_document()
+    document["backends"]["native"][field] = value
+    path = tmp_path / "reader_calibration.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError):
+        ReaderPolicy.load(path)

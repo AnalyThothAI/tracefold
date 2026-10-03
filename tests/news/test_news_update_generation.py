@@ -38,6 +38,8 @@ from tracefold.news.updates.contracts import (
 from tracefold.news.updates.judgment import Budget, ContractFault, NewsJudgments, Question
 from tracefold.news.updates.semantics import SemanticAnalyzer
 
+pytestmark = pytest.mark.usefixtures("synthetic_reader_calibration")
+
 STAMP = 1_790_405_000_000
 
 

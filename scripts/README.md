@@ -13,7 +13,8 @@
 | 开发检查 | `require_test_reports.py`、`check_mandatory_docs_links.py`、`sync_agent_router.py` | Make / CI / pre-commit；不参与服务启动 |
 | Hooks | `install_hooks.py`、`run_web_hook.py` | 显式安装 hook，以及暂存前端文件的检查 |
 | 生成契约 | `regen_cli_help.py`、`regen_db_schema.py`、`regen_openapi.py`、`regen_rabbitmq_definitions.py` | 文档约定的生成目标；不是启动迁移 |
-| 离线评测 | `eval_news_reader.py`、`eval_news_recall.py` | 显式运行；前者评分已记录的读者判断，后者在仓库外的 #791 盲标语料上校准共享召回，只写隔离连接的临时表；均不调用模型或发送通知 |
+| 读者冻结导出与校准桥接 | `export_news_reader_cases.py`、`export_news_reader_calibration.py`、`news_reader_io.py` | 显式只读冻结原输入，输出 JSONL.gz/manifest；证书转成待审阅运行时文件，默认不激活，不覆盖生产文件 |
+| 离线评测 | `eval_news_reader.py`、`news_reader_diagnostics.py`、`eval_news_recall.py` | 显式运行；读者工具连接冻结输入与标签，分别拟合、认证和只读报告；召回工具在仓库外的 #791 盲标语料上校准共享召回，只写隔离连接的临时表；均不调用模型或发送通知 |
 | 本地嵌入验收 | `verify_news_embedding.py`、`benchmark_news_embedding_runtime.py`、`benchmark_news_embedding_backfill.py` | 使用已准备的固定模型缓存；分别验证冻结新旧向量及业务选择、应用镜像内资源、隔离测试库的真实全量回填；不调用 LLM 或发送通知，回填基准只创建自己的测试 clone |
 | 每日召回回执 | `news_recall_receipts.py`、`news_recall_receipts.sql` | 读取最近 24 小时的关系对数、产出率与逐调用降级占比，以及 48 小时已送精确版本的高相似、无链接且无锚点代理；短只读快照后在事务外用共享核心算余弦，不调用模型或写库 |
 
@@ -40,10 +41,18 @@ uv run --locked python scripts/eval_news_recall.py \
 不留下转发 alias。当前 ReviewDesk 写入使用维护中的 `tracefold news review` CLI，
 不再将一次性历史批次脚本作为常用运维入口。
 
-## #791 offline speech and reader evaluation
+## News 离线重问、标注与读者校准
 
-`reask_news_models.py speech|extraction|reader --input /private/sample.jsonl --output /private/journal.jsonl` uses the operator-selected News route directly. It constructs no store, judgment cache or sender. Reader runs choose `--backend native|generated` separately; native fallback is recorded as unavailable native proof. Extraction reasks run the real source-span grounding and reference validation. Journals carry exact input digests and program identities and reject changed inputs, programs or case sets on resume. Model exception strings are never logged.
+`uv run --locked python -m scripts.reask_news_models speech|extraction|reader --input /private/sample.jsonl --output /private/journal.jsonl` 直接使用操作者选定的 News 模型路由，不构造数据库、判断缓存或发送器。reader 分别选择 `--backend native|generated`；回退生成的结果不能计为 native 证据。日志保存精确输入摘要、问题与程序身份、实际后端、判断器与服务模型身份，以及调用耗时；恢复时拒绝输入、程序、问题、后端或 case 集合改变。抽取重问保留真实引用校验，模型异常内容不会进入日志。
 
-`label_news_reader.py` accepts only public statement, quotes, fixed date and case ID; Claude runs with tools disabled and without session persistence. Scores, roles and production outcomes are rejected from annotation input. The owner audit is a separate gate. `eval_news_reader.py --input <current-v3-labelled-fixture> --fit` emits a cut grid and selects no passing triple when measured gates fail. Sequential story simulation and same-input repeat noise require real model reasks beyond aggregate fitting. See `docs/reports/news-791-b.md`.
+`uv run --locked python -m scripts.label_news_reader annotate --input /private/cases.jsonl.gz --output /private/claude-labels.jsonl` 使用当前独立 owner 规范；`guide_version` 绑定规范正文、共享报道类型定义及资格表的摘要。Claude 只见命题、来源、被引用原文、日期与随机排序的已推消息；模型读数与生产结果不传入，返回锚点映射回原序，并给出判重 `repeat`。Claude 标签是代理，`report --owner … --proxy … --candidate … --output …` 输出 owner 与代理在推送/重点上的 κ、混淆矩阵、判重确认数和折外预测复核队列，不自动改标签。
 
-`eval_news_reader.py --fit` requires a separate complete day `--input` and relabelled 397-row `--regression-input`. The extended P(4) grid covers generated distributions; `--anchor-none-below` supplies a separately measured anchor cut. Partial inputs cannot yield an accepted cut. The report separates rule-specific regression relabel counts and compares nonofficial keep recall with the recorded production baseline.
+重问和 `annotate` 会发出真实模型调用，需另获授权。历史 [#791 报告](../docs/reports/news-791-b.md)保存原问题的证据，旧 importance 分布不能进入当前读者校准。
+
+冻结导出（`--census` 保留窗口内全部决定）、代理组装、fit → owner-sample → prepare-owner → import-owner → certify → report → 运行时导出的流程见 [#805 实现记录](../docs/reports/news-805-implementation.md)，真实认证的命令与数字见 [推送认证批 1](../docs/reports/news-805-certification.md)。JSONL 与 JSONL.gz 输入由共享 IO 读取；reask/annotate 追加日志输出必须是普通 JSONL。
+
+`assemble` 可重复提供 `--labels`，所有标签须属同一规范版本；候选记录该版本，认证的 owner 标签须同版。`owner-sample` 在完整 census 上建立候选时间边界之后的独立故事框，用冻结候选给每个代表打分，看标签前按分数分层抽样，或用 `--frozen-selection` 校验别处冻结的选择。owner 只回答推送和重点，`import-owner --proxy …` 从代理标签补齐类型、锚点和判重。
+
+`fit` 冻结较早标签、全部输入/回答/拆分、配置、m*、系数、折外预测与切线序列。`certify` 重建候选、故事框、分数和选择，并要求持久 `--holdout-ledger` 绑定一个候选及其 owner 标签；不能重哈希改参数或换样本反复尝试。每条切线选中的故事由分数精确已知，分层 Clopper–Pearson 只对 owner 推送比例取界；owner 标注的独立故事至少 150/60 才能通过。
+
+失败和缺失调用保留在完整流程召回、覆盖及延迟分母，成功回答上的条件指标另报。精度认证与完整 release gates 分开，卡片日量、owner 取舍与 holdout 使用审阅仍需外部证据，未通过的测得门槛需 owner 书面豁免。导出默认 release_ready=false，没有证书的后端保持零系数占位。运行时加载、历史切线与公开原因见 [News](../docs/modules/news.md#notification)，标签语义见 [标注规范](../docs/modules/news-reader-labeling.md)，生产切换见 [排空和对称回滚](../docs/OPERATIONS.md#news-reader-switch)。研究组精确锁定 scikit-learn==1.9.1；默认应用依赖和测试不安装它。

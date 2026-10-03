@@ -9,7 +9,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime
-from typing import Any, Final, Literal, Protocol
+from math import isclose
+from typing import Annotated, Any, Final, Literal, Protocol
 
 from pydantic import Field, model_validator
 
@@ -26,22 +27,16 @@ READER_MESSAGES_MAX: Final = 16
 READER_QUOTE_CHARS_MAX: Final = 600
 NONE: Final = "none"
 
-# #791: the English rubric includes newly attributed official policy communications.
-# Instructions and levels exist once here. Any rubric change requires independent
-# real reasks and native/generated calibration; archived scores cannot prove it.
+# Questions describe independent evidence; policy.py owns push eligibility and calibration.
+# Any question change requires independent real reasks and native/generated calibration.
 READER_INSTRUCTIONS: Final = (
     "You judge one adopted news claim for a professional trader of crypto assets (large and small "
     "caps), US and Hong Kong equities, and global macro instruments (rates, FX, commodities, "
-    "monetary policy). Every claim is already stored in the reader's feed; the question is how "
-    "much it deserves a push notification now. The reader wants a push for every concrete new "
-    "action, launch, listing, measure or market milestone concerning something they can trade, "
-    "small crypto projects included, and for every new policy communication by officials whose "
-    "words move these markets: what a head of state or government, a central-bank policymaker, or "
-    "a finance, trade, energy, foreign or defence official newly says they will do, demand, "
-    "threaten, expect or criticise on interest rates and central-bank policy, currencies, tariffs "
-    "or trade, sanctions, military action between states, energy or shipping supply, or fiscal "
-    "policy is news before anything is carried out. No push for promotion, opinions of people "
-    "without such a role, an official repeating a position already reported, or routine updates. "
+    "monetary policy). Every claim is already stored in the reader's feed. Independently identify "
+    "its kind of report, its added material impact and whether that added information deserves "
+    "the reader's attention within minutes, ahead of other notifications. Do not make a push "
+    "eligibility decision: that is determined separately from your evidence. Small crypto "
+    "projects are part of this reader's trading scope. "
     "`as_of` is the date the claim first became visible. `claim.mode` and `claim.actor_role` are "
     "extraction readings of the claim's speech act and of the role of the party speaking or "
     "acting; trust the statement and sources where they disagree. `messages` are notifications "
@@ -57,69 +52,123 @@ READER_INSTRUCTIONS: Final = (
     "action's announcement. For the anchor, compare the underlying occurrence or attributed "
     "proposition across languages, paraphrases, aliases and broader or more specific descriptions. "
     "New details about the same occurrence do not themselves prevent an anchor; judge their "
-    "importance separately. A different statistical comparison period or a transition from an "
+    "materiality separately. A different statistical comparison period or a transition from an "
     "announced action to a later or conditional outcome is a different core fact. A mentioned "
     "actor or the same broad story alone does not establish an anchor."
 )
-IMPORTANCE_QUESTION: Final = (
-    "How strongly does the information this claim adds beyond `messages` deserve a push notification to this "
-    "reader now? Compare all material clauses. A shared story or previously announced core action does not "
-    "erase a substantive new official policy amount, horizon, recipient, target or attribution of "
-    "cross-border responsibility; judge that newly communicated information using the levels. Information "
-    "a message already reported adds nothing; with no messages, judge the claim itself."
+ReportKind = Literal[
+    "new_action",
+    "official_communication",
+    "market_move",
+    "scheduled_data",
+    "self_reported_metric",
+    "unconfirmed_incident",
+    "recap_or_old_period",
+    "promotion",
+    "commentary",
+    "background",
+]
+REPORT_KIND_OPTIONS: Final[tuple[tuple[ReportKind, str], ...]] = (
+    (
+        "new_action",
+        "A concrete action that occurred or was decided: a launch, listing or delisting, integration, "
+        "partnership, transaction, regulatory or enforcement measure, hack, outage or insolvency. "
+        "Use scheduled_data for a scheduled statistical or company data release.",
+    ),
+    (
+        "official_communication",
+        "A new attributed policy communication by a head of state or government, central-bank "
+        "policymaker, or finance, trade, energy, foreign or defence official about rates, monetary "
+        "policy, currencies, trade, sanctions, military action between states, energy, shipping or "
+        "fiscal policy: intent, demand, threat, expectation, decision or criticism. A conditional "
+        "statement can qualify; carrying out the action is not required.",
+    ),
+    (
+        "market_move",
+        "An observed price, yield, index or fund-flow move with explanatory context, or a market "
+        "milestone with its comparison period or record. Use background for a routine isolated quote.",
+    ),
+    (
+        "scheduled_data",
+        "A newly released macroeconomic statistic or company data from a scheduled reporting period, "
+        "including employment, inflation, policy decisions, output, deliveries and results. A stated "
+        "surprise is not required. A release reminder is background; a restated old period is "
+        "recap_or_old_period.",
+    ),
+    (
+        "self_reported_metric",
+        "A project reporting its own usage, total value locked, deposits, users, holders or other "
+        "operating metric or milestone. Classify the reported figure independently of its materiality.",
+    ),
+    (
+        "unconfirmed_incident",
+        "A concrete incident at a stated location reported by a single source, with occurrence still "
+        "unconfirmed. Preserve its attributed nature; do not turn the report into confirmed fact.",
+    ),
+    (
+        "recap_or_old_period",
+        "A retrospective summary, weekly or monthly wrap, figures for an already ended old reporting "
+        "period, or a retelling of a past event rather than a newly released current fact. Use as_of "
+        "and source context to identify the reporting period.",
+    ),
+    (
+        "promotion",
+        "Promotion, solicitation, giveaways, reward mechanics or slogans whose purpose is to attract "
+        "users or participation rather than report a concrete new action or operating figure.",
+    ),
+    (
+        "commentary",
+        "Opinion, praise, criticism, prediction, analysis or a price target by a commentator, analyst, "
+        "influencer or company representative, without a concrete new action or the official policy "
+        "role described in official_communication.",
+    ),
+    (
+        "background",
+        "Routine updates, explanatory background, calendar reminders, an isolated price quote, "
+        "ceremonial or historical rhetoric, or repetition of an already reported position without "
+        "a substantive new fact. Use a more specific kind when its definition applies.",
+    ),
 )
-IMPORTANCE_LEVELS: Final[tuple[str, ...]] = (
+REPORT_KIND_QUESTION: Final = (
+    "Which kind of report best describes this claim according to its sources and as_of? Classify "
+    "what is being reported, independently of how much it matters or whether it deserves a push. "
+    "Use the most specific applicable category; distinguish a newly released current reporting "
+    "period from a retrospective or an old figure carried in source background."
+)
+MATERIALITY_QUESTION: Final = (
+    "How much material impact does the information this claim adds beyond messages have for this "
+    "reader's traded instruments? Compare every material clause. A shared core action does not "
+    "erase a new consequential size, horizon, recipient, target or attributed grounds; judge that "
+    "addition separately. Information already reported adds nothing. With no messages, judge the "
+    "claim itself. Judge impact, independently of report kind and notification eligibility."
+)
+MATERIALITY_LEVELS: Final[tuple[str, ...]] = (
     (
-        "No usable news for this reader: promotion, giveaways, reward or airdrop mechanics, "
-        "solicitation or slogans; self-reported usage, TVL or ranking figures; opinions, praise, "
-        "criticism or predictions by commentators, influencers, analysts or company staff with no new "
-        "action, decision or figure; ideological, ceremonial or historical rhetoric; a passing mention "
-        "of a well-known name."
+        "Negligible or niche added impact: no consequential new information for the reader's "
+        "instruments, including information messages already reported."
     ),
     (
-        "Background: true but routine. A routine price, index or percentage update without a "
-        "milestone; market colour and wraps; calendar reminders and schedules; an older fact or "
-        "background restated; an official repeating a position, demand or threat already reported; one "
-        "more incident in an ongoing conflict or dispute that does not change its course; small "
-        "transfers."
+        "Limited added impact: a secondary detail or effect of limited scope. A secondary scheduled "
+        "release without a stated surprise belongs here."
     ),
     (
-        "Worth recording, not worth a push: a limited or uncertain effect. Secondary details or terms "
-        "of an announced action; results, financing or deals of small or mid-sized companies outside "
-        "crypto; governance proposals and votes; filings, drafts, consultations, testnets or plans "
-        "without a firm date or measure; scheduled data released without a stated surprise; regional "
-        "or niche measures; an analyst's or bank's forecast or price target; an official's remarks on "
-        "a topic that does not reach rates, central-bank policy, currencies, trade, sanctions, "
-        "military action, energy, shipping or fiscal policy."
+        "Clear added impact on instruments this reader trades, including small crypto projects. "
+        "A primary scheduled release of employment, inflation, central-bank decisions, output, "
+        "major-company deliveries or results is at least this level even without a stated surprise; "
+        "a departure from expectations or prior readings can raise its impact further."
     ),
     (
-        "Worth a push: a concrete new action, milestone or official policy communication concerning "
-        "something this reader trades. A crypto project's product, mainnet or token launch, "
-        "partnership, integration, buyback or unlock, whatever the project's size; a listing on any "
-        "notable venue, a delisting, suspension or trading halt; a large company's product launch, "
-        "results, guidance or major deal; a new ETF or ETP, or its approval; an exchange or venue "
-        "action; a yield, price or index milestone with context (a multi-year high or low, a round "
-        "level crossed, a sharp move with a stated cause); a specific regulatory or enforcement "
-        "measure; a hack, outage or insolvency; macro data that departs from prior; a new policy "
-        "measure; a concrete incident or disruption affecting energy, shipping or supply; a head of "
-        "state or government, a central-bank policymaker, or a finance, trade, energy, foreign or "
-        "defence official newly stating an intent, decision, demand, threat, ultimatum, deadline, size "
-        "or number, or newly criticising or pressing the central bank, on interest rates or the policy "
-        "outlook, currencies, tariffs or trade, sanctions, military action between states, energy or "
-        "shipping supply, or fiscal policy, including a threat framed as possible or conditional, a "
-        "call for a larger or further rate move, a rejection of another government's proposal, and the "
-        "attribution of an attack to a state. Newly reported official grounds or an attribution of "
-        "cross-border responsibility for a concrete sanctions or enforcement action are substantive "
-        "policy communication even when the action itself was already announced."
+        "Broad added impact across major markets or many traded instruments, such as a consequential "
+        "macro or policy surprise, systemic disruption, or a major change to energy or shipping supply."
     ),
-    (
-        "Interrupt now: likely to move broad markets immediately. An unexpected central-bank decision, "
-        "or a policymaker signalling a larger or earlier move than previously communicated; a top "
-        "exchange halting withdrawals or a very large hack; a sharp war escalation hitting energy, "
-        "shipping or major economies, including a head of state's ultimatum, or a dated or imminent "
-        "military, sanctions, tariff or supply action against a major economy or energy producer; "
-        "approval or ban of a major asset's ETF; a systemic failure or default."
-    ),
+)
+INTERRUPT_QUESTION: Final = (
+    "Should this trader see the information this claim adds within a few minutes, ahead of other "
+    "notifications? Judge its urgency and consequence for this reader's trading decisions relative "
+    "to messages. Broad-market impact is not required: a consequential development for a traded "
+    "asset, major data surprise, critical market milestone, enforcement action, disruption or "
+    "imminent policy or supply change can deserve priority. Repeated information does not. "
+    "Answer independently of the report-kind eligibility rule."
 )
 ANCHOR_QUESTION: Final = (
     "Which message explicitly reported the same core fact, across languages, aliases and paraphrases? "
@@ -155,8 +204,11 @@ READER_QUESTIONS_IDENTITY: Final = identity(
     "news_reader_questions",
     READER_INPUT_VERSION,
     READER_INSTRUCTIONS,
-    IMPORTANCE_QUESTION,
-    IMPORTANCE_LEVELS,
+    REPORT_KIND_QUESTION,
+    REPORT_KIND_OPTIONS,
+    MATERIALITY_QUESTION,
+    MATERIALITY_LEVELS,
+    INTERRUPT_QUESTION,
     ANCHOR_QUESTION,
     ANCHOR_NONE_TEXT,
 )
@@ -240,11 +292,52 @@ def _present(value: Mapping[str, Any], absent: tuple[str, ...]) -> dict[str, Any
     return {key: item for key, item in value.items() if item not in (None, "", [], *absent)}
 
 
-class ImportanceEvidence(Exact):
-    # The probability-weighted level index, 0..4, and the distribution it came from.
-    value: float = Field(ge=0, le=len(IMPORTANCE_LEVELS) - 1)
-    probabilities: tuple[float, ...] = Field(min_length=len(IMPORTANCE_LEVELS), max_length=len(IMPORTANCE_LEVELS))
+Probability = Annotated[float, Field(ge=0, le=1)]
+
+
+class ReportKindEvidence(Exact):
+    value: ReportKind
+    probabilities: dict[ReportKind, Probability]
     confidence: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def check_options(self) -> ReportKindEvidence:
+        if set(self.probabilities) != {kind for kind, _ in REPORT_KIND_OPTIONS}:
+            raise ValueError("news_reader_report_kind_options_invalid")
+        if not isclose(sum(self.probabilities.values()), 1.0, abs_tol=1e-6):
+            raise ValueError("news_reader_report_kind_distribution_invalid")
+        return self
+
+
+class MaterialityEvidence(Exact):
+    # Expected level, used for display and sorting; decisions use the distribution.
+    value: float = Field(ge=0, le=len(MATERIALITY_LEVELS) - 1)
+    probabilities: tuple[Probability, ...] = Field(
+        min_length=len(MATERIALITY_LEVELS), max_length=len(MATERIALITY_LEVELS)
+    )
+    confidence: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def check_distribution(self) -> MaterialityEvidence:
+        if not isclose(sum(self.probabilities), 1.0, abs_tol=1e-6):
+            raise ValueError("news_reader_materiality_distribution_invalid")
+        return self
+
+
+class InterruptEvidence(Exact):
+    # Complete binary distribution, ordered false then true.
+    probabilities: tuple[Probability, Probability]
+    confidence: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def check_distribution(self) -> InterruptEvidence:
+        if not isclose(sum(self.probabilities), 1.0, abs_tol=1e-6):
+            raise ValueError("news_reader_interrupt_distribution_invalid")
+        return self
+
+    @property
+    def probability(self) -> float:
+        return self.probabilities[1]
 
 
 class AnchorEvidence(Exact):
@@ -268,17 +361,21 @@ class ReaderJudgment(Exact):
     # The answering adapter's identity and, when the provider reports it, the model that actually served it.
     identity: str | None = None
     served_model: str | None = None
-    importance: ImportanceEvidence | None = None
+    report_kind: ReportKindEvidence | None = None
+    materiality: MaterialityEvidence | None = None
+    interrupt: InterruptEvidence | None = None
     # None when no message was supplied: nothing can have reported the claim.
     anchor: AnchorEvidence | None = None
     error_code: str | None = None
 
     @model_validator(mode="after")
     def check_status(self) -> ReaderJudgment:
-        answer = (self.backend, self.identity, self.importance)
+        answer = (self.backend, self.identity, self.report_kind, self.materiality, self.interrupt)
         if self.status == "available" and (None in answer or self.error_code is not None):
             raise ValueError("news_reader_available_judgment_incomplete")
-        if self.status == "unavailable" and (self.error_code is None or answer != (None, None, None) or self.anchor):
+        if self.status == "unavailable" and (
+            self.error_code is None or any(item is not None for item in answer) or self.anchor
+        ):
             raise ValueError("news_reader_unavailable_judgment_has_answer")
         return self
 
@@ -294,7 +391,7 @@ class ReaderJudge(Protocol):
     identity: str
 
     async def judge(self, reader: ReaderInput, budget: Budget) -> ReaderJudgment:
-        """Ask both questions about one claim in one request.
+        """Ask the independent reader questions about one claim in one request.
 
         A provider that cannot answer yields an `unavailable` judgment; a configuration fault raises.
         """

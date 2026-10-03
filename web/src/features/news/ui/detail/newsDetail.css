@@ -312,6 +312,9 @@
     margin-top: 8px;
     font-variant-numeric: tabular-nums;
   }
+  .news-reader-score p + p {
+    margin-top: 4px;
+  }
   .news-reader-body,
   .news-reader-source-text {
     white-space: pre-wrap;

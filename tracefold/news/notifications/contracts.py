@@ -32,10 +32,11 @@ ClaimReason = Literal[
     "correction_of_sent",
     "protected_listing",
     "large_daily_move",
-    # the incremental importance of what the claim adds, against the answering backend's cuts
+    # calibrated probabilities over independent report kind, materiality and interrupt evidence
     "reader_key",
     "reader_push",
     "reader_feed",
+    "reader_ineligible",
     # deferred while the reader judgment cannot be had; recorded unassessed after READER_WAIT_MAX_MS
     "reader_unavailable",
     "reader_unassessed",
@@ -54,6 +55,7 @@ REASON_DECISIONS: Final[dict[ClaimReason, ClaimDecisionValue]] = {
     "reader_key": "notify",
     "reader_push": "notify",
     "reader_feed": "not_notified",
+    "reader_ineligible": "not_notified",
     "reader_unavailable": "deferred",
     "reader_unassessed": "not_notified",
 }
@@ -106,6 +108,22 @@ class ReaderRepairContext(Exact):
     body: str
 
 
+class ReaderPolicyScores(Exact):
+    """Frozen policy features and probabilities, separate from the model's answer evidence."""
+
+    e: float = Field(ge=0, le=1)
+    m: float = Field(ge=0, le=1)
+    i: float = Field(ge=0, le=1)
+    p_push: float = Field(ge=0, le=1)
+    p_key: float = Field(ge=0, le=1)
+    held: bool
+    certification_status: Literal["uncalibrated", "certified"]
+    # Frozen at decision time. Missing on records produced before cut provenance was added.
+    push_cut: float | None = Field(default=None, ge=0, le=1)
+    key_cut: float | None = Field(default=None, ge=0, le=1)
+    calibration_identity: str | None = None
+
+
 class ReaderRecord(Exact):
     """What the reader rows decided from, for one claim: novelty, the judgment and the frozen input's shape."""
 
@@ -118,6 +136,7 @@ class ReaderRecord(Exact):
     input_digest: str | None = None
     message_intents: tuple[str, ...] = ()
     judgment: ReaderJudgment | None = None
+    scores: ReaderPolicyScores | None = None
 
 
 class ClaimDecision(Exact):

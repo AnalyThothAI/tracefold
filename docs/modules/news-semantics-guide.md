@@ -135,13 +135,13 @@ App 消费 PublicUpdate，将符合公开契约的事实映射给 Trading。Trad
 
 **输入与处理。** Notifications 读取当前 head 与一致 ReaderSnapshot。回执召回检索实际已送回执的冻结 `sent_claims`，已链接回执优先，为每条命题选择至多 16 条可核验正文。reader 模型比较的是这些实际 sent 正文；当前 head、来源全文和“选中过 ref”都不能代替它们。`sending` 不作为已读正文，`ambiguous` 保留重复保护。
 
-代码先处理已失效、过时、已知、在途、结果不明、更正与受保护上币等规则。需要 reader 判断的命题各问两道题：新增内容有多重要，哪条已送消息报过同一核心事实。模型提供重要性分布和锚点证据，policy 决定是否通知。
+先处理已失效、过时、已知、在途、结果不明、更正与受保护上币等规则。其余每条命题在一次请求中按实际已送正文分别回答报道类型、新增影响、是否应在几分钟内优先看到、哪条消息已报过同一核心事实。代码资格表决定哪些类型可推，native / generated 各自的校准模型给出推送和重点概率；先过资格下限与推送切线，才可能标重点。期望值只供展示，held 是校准输入，锚点不乘入概率。完整规则见[通知表](news.md#notification)。
 
-新颖度和核心锚点决定适用分支。普通分支在期望值达到 push 门槛，**或** P(4) 达到尾部门槛时推送；held 分支须先过 held 门槛。未链接命题已有核心锚点，或适用 linked increment 时使用 held；development 和部分无锚点实际状态变化使用普通分支。经 reader 规则选中的命题达到 P(4) 门槛才标重点。完整顺序、例外及 native / generated 切点见[通知表](news.md#notification)。
+新颖度和核心锚点保留 held 的定义：未链接命题已有核心锚点，或适用 linked increment 时为 held；development 和符合无锚点、内容类型、言语行为及有效状态阶段要求的动作不为 held。held 是推送校准模型的一个输入，不另设切线；新增范围或数额仍可使锚定命题获得推送。e 是可推类型概率质量，m 是新增影响尾部概率，i 是优先打断概率。重点先须获准推送，再过自己的 p_key 切线。完整顺序、例外及 native / generated 独立校准状态见[通知表](news.md#notification)。
 
 假设 T0 的暂停卡片已结算 sent，T1 的“其他网络不受影响”才有这份正文作为比较依据。它可能只提供细节，也可能增加重要范围。锚点表示哪条消息报过核心事实，并不自动等于“没有新增信息”。T2 的恢复是后来状态，仍须检查实际 reader 上下文，不能因同故事就认定读者已知。
 
-**保存与交接。** 计划保存逐命题原因、reader 证据、所比较正文摘要与计时。选中集合形成稳定 intent；这一阶段没有实际送达事实。判断不可得先暂缓，超过持久等待上限记未评估，不按猜测推送。
+**保存与交接。** 计划保存逐命题原因、四组分布与 confidence、冻结策略概率和认证状态、所比较正文摘要与计时。选中集合形成稳定 intent；这一阶段没有实际送达事实。判断不可得先暂缓，超过持久等待上限记未评估，不按猜测推送。新四题目前未认证，评分路径进信息流；前置确定性规则继续生效。旧模型判断仅按历史结构只读显示，详情页不重新评分。
 
 **失败查哪里。** 已有 head 却无卡片时，查 notify work 与逐命题 reason，再查 intent。`reader_feed`、`known_to_reader`、等待在途和模型不可得各有原因，不能统称为发送失败。恢复入口见[运维](../OPERATIONS.md#news-retry)。
 
@@ -173,6 +173,7 @@ App 消费 PublicUpdate，将符合公开契约的事实映射给 Trading。Trad
 | 来源缺失或补抄未完成 | collector 连接、事故、Recovery 游标与 broker |
 | Event 有来源但没有新 head | semantic wanted/done、lease、尝试、错误和实际 read refs |
 | 已采用却没有卡片 | notify work、逐命题 reason、reader 不可得、intent 和文案准备 |
+| 新判断只进信息流 | report_kind 概率质量、materiality 尾部、p_push / p_key 和 certification_status；未认证时不以候选概率授权推送 |
 | 不确定有没有送到 | sending lease、provider outcome 和结算回执，不从请求推断成功 |
 | 没有价格或市场未知 | 类型化资产、目录与 quote freshness，与语义失败分开 |
 

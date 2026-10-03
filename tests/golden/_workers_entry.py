@@ -44,7 +44,8 @@ def main() -> int:
 
     # Loaded after the Workers root, in production's import order: DSPy's lazy import hooks must not
     # run before FastAPI/anyio finish importing.
-    scripted_generative_lm = importlib.import_module("tests.golden._scripted_news_lm").scripted_generative_lm
+    scripted_provider = importlib.import_module("tests.golden._scripted_news_lm")
+    scripted_generative_lm = scripted_provider.scripted_generative_lm
 
     settings = Settings(
         ws_token="golden-token",
@@ -68,9 +69,14 @@ def main() -> int:
         trading={"enabled": False},
     )
     settings.set_config_dir(Path(args.app_home))
-    # The provider sides are deterministic: the push provider, and the generative model provider below
-    # the production DSPy adapter. Broker routing, Workers composition, the News Agent, adoption,
+    # The provider sides and calibration are deterministic fixtures. A subprocess does not inherit
+    # pytest's opt-in calibration patch; supply the same arithmetic seam only in this test entry.
+    # Production defaults remain uncalibrated, and the ordinary policy certification gate still runs.
+    # Broker routing, Workers composition, the News Agent, adoption,
     # notification planning, transactions, card rendering, durable delivery and HTTP stay real.
+    from tracefold.news.notifications.policy import READER_CALIBRATIONS
+
+    READER_CALIBRATIONS["generated"] = scripted_provider.synthetic_reader_calibration()
     news_wiring._news_push_sender = lambda _settings: news_wiring._ComposedPushSender(sender=_scripted_push_sender())
     learning_runtime.generative_lm = scripted_generative_lm
     workers_root._WORKER_INTERNAL_PORT = args.probe_port
