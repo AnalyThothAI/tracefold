@@ -118,6 +118,8 @@ Assessor 一次输出两侧各自的 TP / SL / timeout 概率，以及最多 12 
 
 模型调用的截止时间从获得并发槽位后开始。排队等待不消耗提供商的超时预算。Assessor 未配置时，系统仍可建立 Case 和纸面标签；`forecast` 策略因预测缺失而选择 `abstain`。
 
+有 Assessor 时，Analysis 只在可用 turn 槽位内领取 Case，上限为 `min(max_active_cases, assessor.concurrent)`。完整 turn 预算由 40 秒准备、provider timeout、10 秒发布检查和 10 秒结算组成，lease 再包含 15 秒取消收尾余量。市场准备、文件写入和每次 DB 操作分别有界；取消时等待物理线程结束并回滚。冻结与最终结算在实际取得相关锁后读取数据库当前时间，旧 token 或过期 owner 不能写 assessment、策略结果或 Signal；最终 fence 失败整笔结算回滚。两个模型槽会限制准备并行度，确定性八 Case／每次 55 秒反例需四轮完成，领取后的合法工作不消耗模型前排队时间。
+
 ### 6. 保存六个策略各自的动作
 
 每个 Case 保存以下六个策略的结果：

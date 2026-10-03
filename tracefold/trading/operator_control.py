@@ -42,6 +42,8 @@ def control_entry_block(control: Any, *, unexpected_exposure: bool = False) -> s
         return "emergency_halt"
     if control.get("flatten_command_id") is not None:
         return "flatten_in_progress"
+    if control.get("execution_faults"):
+        return "execution_fault"
     if control["entries_paused"]:
         return "entries_paused"
     return None

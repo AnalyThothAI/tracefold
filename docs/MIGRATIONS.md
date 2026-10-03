@@ -2,7 +2,7 @@
 
 [手册](README.md) · [运维备份](OPERATIONS.md#backup) · [结构参考](generated/db-schema.md)
 
-当前 schema 使用 [Alembic 单链](../tracefold/platform/postgres/alembic/versions/)，基线为 `20260831_0340`，本版本 head 为 `20261002_0429`。当前账本共 28 张表：19 张 News、7 张 Trading，以及 `runtime_processes`、`alembic_version`。已应用的迁移是升级与恢复证据，文档清理不删除或重写这些文件。
+当前 schema 使用 [Alembic 单链](../tracefold/platform/postgres/alembic/versions/)，基线为 `20260831_0340`，本版本 head 为 `20261003_0430`。当前账本共 28 张表：19 张 News、7 张 Trading，以及 `runtime_processes`、`alembic_version`。已应用的迁移是升级与恢复证据，文档清理不删除或重写这些文件。
 
 本页只维护版本兼容、维护顺序、必要导出和回退边界。具体业务行为由模块手册维护，部署回执与历史性能结果从对应 Git / Issue 记录检索。
 
@@ -130,6 +130,14 @@ P4 拒绝未执行 P0、同 case 多个 assessment、输入/动作/计划/处置
 0417/0418 为不可降级的 Trading 硬切：先停旧执行进程，用签名场所读确认 DEMO 仓位、普通单和 Algo 单均为零，再备份所有 `trading_*` 表与归档目录。0417 建立 Signal v4 与订单/成交账本；0418 要求 Signal 表为空，删除旧 Analysis Case、Gate、WATCH 和逐调用记录。迁移与新镜像在同一维护窗口完成，不回填旧 DEMO 数据，回退使用已验证备份和旧镜像。
 
 ## 回退与验证
+
+### 0430：Trading 执行证据
+
+`20261003_0430` 接 0429，在现有 entries 增加准入文档与保证金预留、orders 增加非秘密请求与应用 resolution、accounts 增加未解决执行故障集合；不新增表，不改历史已终结事实。接受时一次冻结资金依据，保留原唯一约束、订单身份、用户控制和在途责任。见[执行手册](modules/execution.md)与[带责任迁移测试](../tests/integration/test_migration_trading_evidence_0430.py)。
+
+发布采用匹配镜像、数据库 head、配置身份与完整备份，按既有停写维护窗口进行；先记录实际仓位、普通／Algo 单和 unknown 责任，停 Executor 会暂停保护维护与到期退出，不能自动平仓作为迁移前置。升级失败事务回滚，成功后核对 0430 并先恢复责任与控制再消费新输入。
+
+0430 的 DDL 虽为新增字段，旧镜像不理解新故障与部分成交管理。隔离测试证明：只要存在新准入、请求、resolution 或未解决故障，downgrade 就拒绝并保留 0430；没有这些新证据时才允许回到 0429。已有新执行证据采用停止新增风险后的前向修复。场所已经执行订单后，不可恢复较早数据库备份来抹掉责任；配对恢复必须另经授权并先保留当前订单与场所核验。
 
 | 情况 | 支持的处理 |
 | --- | --- |

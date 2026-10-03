@@ -53,6 +53,17 @@ export function TradingSafetyStrip({
           执行器错误：{execution.last_error}；新增仓位已关闭。
         </p>
       ) : null}
+      {Object.values(execution.execution_faults ?? {}).map((fault) => (
+        <p
+          key={fault.responsibility}
+          role="status"
+          className="trading-alert-line"
+          data-tone="alert"
+        >
+          未解决执行风险：{fault.symbol} · {fault.code} · 仓位 {fault.position_amount}；
+          新增仓位受限，核验与退出仍继续。最近观察 {nsTime(fault.last_observed_at_ns)}。
+        </p>
+      ))}
       {!stale && execution.entry_block_reason === "account_reconcile_stale" ? (
         <p role="status" className="trading-alert-line" data-tone="caution">
           DEMO 签名账户读取已过期；新增仓位待重新核实。
@@ -65,6 +76,10 @@ export function TradingSafetyStrip({
       </p>
     </div>
   );
+}
+
+function nsTime(value: number): string {
+  return caseClock(Math.floor(value / 1_000_000));
 }
 
 export function TradingExposure({

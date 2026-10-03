@@ -8903,6 +8903,53 @@
         "title": "TradingDecisionRuntimeData",
         "type": "object"
       },
+      "TradingExecutionFaultData": {
+        "additionalProperties": false,
+        "properties": {
+          "client_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Client Ids",
+            "type": "array"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "first_observed_at_ns": {
+            "title": "First Observed At Ns",
+            "type": "integer"
+          },
+          "last_observed_at_ns": {
+            "title": "Last Observed At Ns",
+            "type": "integer"
+          },
+          "position_amount": {
+            "title": "Position Amount",
+            "type": "string"
+          },
+          "responsibility": {
+            "title": "Responsibility",
+            "type": "string"
+          },
+          "symbol": {
+            "title": "Symbol",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "responsibility",
+          "symbol",
+          "client_ids",
+          "position_amount",
+          "first_observed_at_ns",
+          "last_observed_at_ns"
+        ],
+        "title": "TradingExecutionFaultData",
+        "type": "object"
+      },
       "TradingExecutionReadinessData": {
         "additionalProperties": false,
         "description": "Executor heartbeat, admission state and the last signed DEMO account read.",
@@ -8972,6 +9019,13 @@
               }
             ],
             "title": "Entry Block Reason"
+          },
+          "execution_faults": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TradingExecutionFaultData"
+            },
+            "title": "Execution Faults",
+            "type": "object"
           },
           "facts_expire_at_ms": {
             "anyOf": [
@@ -9055,7 +9109,6 @@
       },
       "TradingExecutionRowData": {
         "additionalProperties": false,
-        "description": "One disposition or plan, folded from the executor's durable venue evidence.",
         "properties": {
           "account_slot": {
             "anyOf": [
@@ -9067,6 +9120,18 @@
               }
             ],
             "title": "Account Slot"
+          },
+          "admission": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Admission"
           },
           "case_id": {
             "anyOf": [
@@ -9145,6 +9210,18 @@
           "entry_id": {
             "title": "Entry Id",
             "type": "string"
+          },
+          "entry_resolution": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Resolution"
           },
           "exit_price": {
             "anyOf": [
@@ -9290,6 +9367,17 @@
               }
             ],
             "title": "Realized Pnl Usd"
+          },
+          "reserved_margin_usdt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserved Margin Usdt"
           },
           "source": {
             "enum": [

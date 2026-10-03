@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -36,6 +37,11 @@ from tracefold.trading.executor.core import SignalV4
 
 _LOG = logging.getLogger(__name__)
 _PAPER_BUFFER_MS = 120_000
+_PREPARATION_BUDGET_S = 40  # three bounded reads, 8s market fetch, file/freeze and scheduling
+_PUBLICATION_BUDGET_S = 10  # executor read + 5s catalogue
+_SETTLEMENT_BUDGET_S = 10  # queued short DB transaction and final fence
+_DB_OPERATION_BUDGET_S = 5
+_CLEANUP_MARGIN_S = 15
 
 
 def _clock_ms() -> int:
@@ -67,7 +73,15 @@ class AnalysisRunner:
         self.program_sha = program_sha
         self.fault_code = fault_code
         self._universe = _configured_universe(settings)
-        self._lease_ms = (settings.trading.analysis.model_timeout_seconds + 30) * 1_000
+        self._capacity = (
+            min(settings.trading.analysis.max_active_cases, assessor.concurrent)
+            if assessor
+            else settings.trading.analysis.max_active_cases
+        )
+        self._turn_slots = asyncio.Semaphore(self._capacity)
+        provider_budget = assessor.timeout_s if assessor else 0
+        self._turn_budget_s = _PREPARATION_BUDGET_S + provider_budget + _PUBLICATION_BUDGET_S + _SETTLEMENT_BUDGET_S
+        self._lease_ms = int((self._turn_budget_s + _CLEANUP_MARGIN_S) * 1_000)
         self._config_digest = _sha(
             {
                 "analysis": settings.trading.analysis.model_dump(mode="json"),
@@ -77,19 +91,38 @@ class AnalysisRunner:
         self._active: set[asyncio.Task[bool]] = set()
         self._label_task: asyncio.Task[int] | None = None
 
-    def _db(self, fn: Any, *, transaction: bool = False) -> Any:
+    def _db(self, fn: Any, *, transaction: bool = False, cancelled: threading.Event | None = None) -> Any:
         from tracefold.app.repository_session import repositories
 
-        with repositories(self.settings, application_name="tracefold_analysis") as repos:
-            if transaction:
-                with repos.transaction():
-                    return fn(repos)
-            return fn(repos)
+        with repositories(self.settings, application_name="tracefold_analysis") as repos, repos.transaction():
+            repos.conn.execute("SET LOCAL statement_timeout = '5s'")
+            repos.conn.execute("SET LOCAL lock_timeout = '4s'")
+            if cancelled is not None and cancelled.is_set():
+                raise RuntimeError("analysis_operation_abandoned")
+            result = fn(repos)
+            if cancelled is not None and cancelled.is_set():
+                raise RuntimeError("analysis_operation_abandoned")
+            return result
 
     async def _db_async(self, fn: Any, *, transaction: bool = False) -> Any:
-        return await asyncio.get_running_loop().run_in_executor(
-            self._db_pool, partial(self._db, fn, transaction=transaction)
+        cancelled = threading.Event()
+        future = asyncio.get_running_loop().run_in_executor(
+            self._db_pool, partial(self._db, fn, transaction=transaction, cancelled=cancelled)
         )
+        try:
+            return await asyncio.wait_for(asyncio.shield(future), timeout=_DB_OPERATION_BUDGET_S)
+        except (asyncio.CancelledError, TimeoutError):
+            cancelled.set()
+            # asyncio cancellation cannot stop a synchronous transaction. Keep
+            # the turn until the physical owner rolls back and closes its session.
+            while not future.done():
+                try:
+                    await asyncio.shield(future)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            raise
 
     async def relay_once(self, *, batch_size: int = 64) -> int:
         events = await self._db_async(lambda repos: repos.news.unacknowledged_trade_events(limit=batch_size))
@@ -218,6 +251,11 @@ class AnalysisRunner:
         )
 
     async def analyze_one(self, case: dict[str, Any] | None = None) -> bool:
+        async with self._turn_slots:
+            async with asyncio.timeout(self._turn_budget_s):
+                return await self._analyze_one(case)
+
+    async def _analyze_one(self, case: dict[str, Any] | None = None) -> bool:
         if case is None:
             case = await self._db_async(
                 lambda repos: repos.trading.claim_case(now_ms=_clock_ms(), lease_ms=self._lease_ms),
@@ -248,11 +286,14 @@ class AnalysisRunner:
                         exclude_trigger_id=case["trigger_id"],
                     )
                 )
-                prepared = await self.preparer.prepare(
-                    case=case,
-                    source_fact=dict(source["payload"]),
-                    base_rates=baselines,
-                    recent_context=tuple(recent_context),
+                prepared = await asyncio.wait_for(
+                    self.preparer.prepare(
+                        case=case,
+                        source_fact=dict(source["payload"]),
+                        base_rates=baselines,
+                        recent_context=tuple(recent_context),
+                    ),
+                    timeout=15,
                 )
                 view = prepared.view
                 reference_price = prepared.reference_price
@@ -260,7 +301,7 @@ class AnalysisRunner:
                     lambda repos: repos.trading.freeze_case(
                         case_id=case_id,
                         claim_token=token,
-                        now_ms=_clock_ms(),
+                        now_ms=None,
                         view=asdict(view),
                         raw_snapshot_ref=prepared.raw_snapshot_ref,
                         geometry_version=view.geometry.version,
@@ -293,12 +334,14 @@ class AnalysisRunner:
             live_action = next(
                 item for item in decisions if item.policy_id == self.settings.trading.analysis.active_policy
             )
-            publication = "abstained" if live_action.action == "abstain" else await self._publication_reason(case)
-            now_ms = _clock_ms()
+            publication: str | None = "abstained"
+            if live_action.action != "abstain":
+                publication = await asyncio.wait_for(self._publication_reason(case), timeout=_PUBLICATION_BUDGET_S)
 
             def settle(repos: Any) -> bool:
-                if not repos.trading.claim_is_current(case_id=case_id, claim_token=token, now_ms=now_ms):
+                if not repos.trading.claim_is_current(case_id=case_id, claim_token=token, now_ms=None):
                     return False
+                now_ms = _clock_ms()
                 repos.trading.record_forecast(
                     case_id=case_id,
                     program_sha=self.program_sha,
@@ -320,7 +363,8 @@ class AnalysisRunner:
                     signal_id = None
                     publish_status = publication
                     if publication is None:
-                        publish_status = repos.trading.publication_source_status(case_id=case_id, now_ms=now_ms)
+                        publish_status = repos.trading.publication_source_status(case_id=case_id, now_ms=None)
+                        now_ms = _clock_ms()
                         if publish_status is None and now_ms >= int(case["root_expires_at_ms"]):
                             publish_status = "signal_expired"
                         if publish_status is None and not RuntimeProcesses(
@@ -342,15 +386,16 @@ class AnalysisRunner:
                         publish_status=publish_status,
                         signal_id=signal_id,
                     )
-                return bool(
-                    repos.trading.finish_case(
-                        case_id=case_id,
-                        claim_token=token,
-                        status="complete",
-                        failure_code=None,
-                        now_ms=now_ms,
-                    )
+                completed = repos.trading.finish_case(
+                    case_id=case_id,
+                    claim_token=token,
+                    status="complete",
+                    failure_code=None,
+                    now_ms=None,
                 )
+                if not completed:
+                    raise RuntimeError("analysis_lease_lost")
+                return True
 
             await self._db_async(settle, transaction=True)
         except Exception as exc:
@@ -358,9 +403,9 @@ class AnalysisRunner:
             code = "data_missing" if isinstance(exc, (ValueError, KeyError)) else "provider"
 
             def fail(repos: Any) -> None:
-                now_ms = _clock_ms()
-                if not repos.trading.claim_is_current(case_id=case_id, claim_token=token, now_ms=now_ms):
+                if not repos.trading.claim_is_current(case_id=case_id, claim_token=token, now_ms=None):
                     return
+                now_ms = _clock_ms()
                 if not frozen_view:
                     legs = (
                         PaperLeg(
@@ -474,6 +519,14 @@ class AnalysisRunner:
             now_ms=_clock_ms(),
         )
 
+    def _case_finished(self, task: asyncio.Task[bool]) -> None:
+        self._active.discard(task)
+        if not task.cancelled():
+            try:
+                task.result()
+            except Exception:
+                _LOG.exception("analysis_turn_failed")
+
     async def run(self, stop: asyncio.Event) -> None:
         next_heartbeat = 0
         next_prune = 0
@@ -492,16 +545,10 @@ class AnalysisRunner:
                         )
                         next_heartbeat = now_ms + 5_000
                     await self.relay_once()
-                    while len(self._active) < self.settings.trading.analysis.max_active_cases:
-                        case = await self._db_async(
-                            lambda repos: repos.trading.claim_case(now_ms=_clock_ms(), lease_ms=self._lease_ms),
-                            transaction=True,
-                        )
-                        if case is None:
-                            break
-                        task = asyncio.create_task(self.analyze_one(case))
+                    while len(self._active) < self._capacity:
+                        task = asyncio.create_task(self.analyze_one())
                         self._active.add(task)
-                        task.add_done_callback(self._active.discard)
+                        task.add_done_callback(self._case_finished)
                     if self._label_task is None or self._label_task.done():
                         if self._label_task is not None:
                             self._label_task.result()

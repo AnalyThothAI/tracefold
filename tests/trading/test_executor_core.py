@@ -57,6 +57,12 @@ def facts() -> EntryFacts:
         market_max_qty=Decimal("100"),
         market_step=Decimal("0.01"),
         min_notional=Decimal("5"),
+        available_margin_usdt=Decimal("1000"),
+        actual_leverage=5,
+        mark_price=Decimal("100"),
+        taker_fee_rate=Decimal("0.0004"),
+        symbol_notional_cap=Decimal("100000"),
+        margin_type="crossed",
     )
 
 
@@ -94,7 +100,7 @@ def test_entry_gate_returns_one_named_disposition(change: dict, reason: str) -> 
 
 def test_sizing_counts_inflight_notional_and_market_step() -> None:
     result = admit(signal(), replace(facts(), active_notional_usdt=Decimal("4500")))
-    assert result.accepted and result.quantity == Decimal("4.99")
+    assert result.accepted and result.quantity == Decimal("4.89")
     assert result.quantity * facts().ask <= Decimal("500")
 
 
@@ -119,9 +125,9 @@ def plan() -> EntryLifecycleFacts:
     )
 
 
-def test_partial_entry_waits_for_terminal_before_protection() -> None:
-    assert step(replace(plan(), entry_order_status="PARTIALLY_FILLED")).action == "await_entry"
-    assert step(replace(plan(), entry_submission_unknown=True)).action == "query_entry"
+def test_partial_entry_is_protected_before_remainder_is_cancelled() -> None:
+    assert step(replace(plan(), entry_order_status="PARTIALLY_FILLED")).action == "submit_sl"
+    assert step(replace(plan(), entry_submission_unknown=True)).action == "submit_sl"
     assert step(plan()).action == "submit_sl"
     assert step(replace(plan(), sl_status="NEW")).action == "submit_tp"
     assert step(replace(plan(), sl_status="NEW", tp_status="NEW")).action == "await_venue"

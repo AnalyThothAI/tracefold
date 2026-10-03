@@ -85,6 +85,7 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
         "entries_paused": True,
         "emergency_halted": False,
         "unexpected_exposure": False,
+        "execution_faults": {},
         "last_error": None,
         "heartbeat_at_ms": None,
         "facts_expire_at_ms": None,

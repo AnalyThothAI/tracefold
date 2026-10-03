@@ -3477,6 +3477,23 @@ export interface components {
              */
             state: "disabled" | "unavailable" | "model_unconfigured" | "faulted" | "running";
         };
+        /** TradingExecutionFaultData */
+        TradingExecutionFaultData: {
+            /** Client Ids */
+            client_ids: string[];
+            /** Code */
+            code: string;
+            /** First Observed At Ns */
+            first_observed_at_ns: number;
+            /** Last Observed At Ns */
+            last_observed_at_ns: number;
+            /** Position Amount */
+            position_amount: string;
+            /** Responsibility */
+            responsibility: string;
+            /** Symbol */
+            symbol: string;
+        };
         /**
          * TradingExecutionReadinessData
          * @description Executor heartbeat, admission state and the last signed DEMO account read.
@@ -3509,6 +3526,10 @@ export interface components {
             entries_paused: boolean;
             /** Entry Block Reason */
             entry_block_reason?: string | null;
+            /** Execution Faults */
+            execution_faults?: {
+                [key: string]: components["schemas"]["TradingExecutionFaultData"];
+            };
             /** Facts Expire At Ms */
             facts_expire_at_ms?: number | null;
             /** Facts Remaining Ms */
@@ -3526,13 +3547,14 @@ export interface components {
              */
             unexpected_exposure: boolean;
         };
-        /**
-         * TradingExecutionRowData
-         * @description One disposition or plan, folded from the executor's durable venue evidence.
-         */
+        /** TradingExecutionRowData */
         TradingExecutionRowData: {
             /** Account Slot */
             account_slot?: string | null;
+            /** Admission */
+            admission?: {
+                [key: string]: unknown;
+            } | null;
             /** Case Id */
             case_id?: string | null;
             /**
@@ -3552,6 +3574,10 @@ export interface components {
             entry_filled_at_ns?: number | null;
             /** Entry Id */
             entry_id: string;
+            /** Entry Resolution */
+            entry_resolution?: {
+                [key: string]: unknown;
+            } | null;
             /** Exit Price */
             exit_price?: string | null;
             /** Exit Reason */
@@ -3580,6 +3606,8 @@ export interface components {
             position_closed_at_ns?: number | null;
             /** Realized Pnl Usd */
             realized_pnl_usd?: string | null;
+            /** Reserved Margin Usdt */
+            reserved_margin_usdt?: string | null;
             /**
              * Source
              * @enum {string}

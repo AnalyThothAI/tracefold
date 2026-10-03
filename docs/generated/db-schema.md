@@ -423,6 +423,7 @@
 | `last_full_reconcile_at_ns` | `BIGINT` | True | `None` |
 | `account_snapshot` | `JSONB` | True | `None` |
 | `trade_cursors` | `JSONB` | False | `'{}'::jsonb` |
+| `execution_faults` | `JSONB` | False | `'{}'::jsonb` |
 
 ## `trading_cases`
 
@@ -490,6 +491,8 @@
 | `net_pnl` | `NUMERIC` | True | `None` |
 | `pnl_deadline_ns` | `BIGINT` | True | `None` |
 | `updated_at_ns` | `BIGINT` | False | `None` |
+| `admission` | `JSONB` | True | `None` |
+| `reserved_margin_usdt` | `NUMERIC` | True | `None` |
 
 ## `trading_fills`
 
@@ -564,3 +567,5 @@
 | `resolved_at_ns` | `BIGINT` | True | `None` |
 | `evidence` | `JSONB` | True | `None` |
 | `updated_at_ns` | `BIGINT` | False | `None` |
+| `request` | `JSONB` | True | `None` |
+| `resolution` | `JSONB` | True | `None` |

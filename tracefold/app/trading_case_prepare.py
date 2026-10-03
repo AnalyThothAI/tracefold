@@ -207,7 +207,17 @@ class CasePreparer:
             },
             "features": features,
         }
-        snapshot_ref = await asyncio.get_running_loop().run_in_executor(
+        physical_write = asyncio.get_running_loop().run_in_executor(
             self.io_executor, write_snapshot, self.raw_root, snapshot
         )
+        try:
+            snapshot_ref = await asyncio.shield(physical_write)
+        except asyncio.CancelledError:
+            while not physical_write.done():
+                try:
+                    await asyncio.shield(physical_write)
+                except asyncio.CancelledError:
+                    continue
+            physical_write.result()
+            raise
         return PreparedCase(view, snapshot_ref, bars[-1].close)

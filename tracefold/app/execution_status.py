@@ -29,6 +29,7 @@ def execution_readiness_projection(
         "entries_paused": True,
         "emergency_halted": False,
         "unexpected_exposure": False,
+        "execution_faults": {},
         "last_error": None,
         "heartbeat_at_ms": None,
         "facts_expire_at_ms": None,
@@ -48,6 +49,7 @@ def execution_readiness_projection(
             "entries_paused": paused,
             "emergency_halted": halted,
             "unexpected_exposure": unexpected,
+            "execution_faults": state.get("execution_faults", {}),
             "last_full_reconcile_at_ms": None if full_at is None else int(full_at) // 1_000_000,
             "signed_account": state.get("account_snapshot"),
         }
@@ -63,7 +65,9 @@ def execution_readiness_projection(
         and now_ns - int(full_at) <= _FULL_RECONCILE_STALE_AFTER_NS
     )
     error = process.get("fault_code")
-    blocked = control_entry_block(control or result, unexpected_exposure=unexpected)
+    blocked = control_entry_block(
+        {**(control or result), "execution_faults": result["execution_faults"]}, unexpected_exposure=unexpected
+    )
     armed = alive and reconciled and blocked is None and error is None
     reason = (
         "executor_heartbeat_stale"

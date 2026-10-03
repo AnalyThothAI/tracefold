@@ -80,3 +80,20 @@ def test_order_not_found_is_distinct_from_ambiguous_503() -> None:
             assert caught.value.transient
 
     asyncio.run(run())
+
+
+def test_native_rejection_payload_is_retained_separately_from_resolution() -> None:
+    async def run():
+        raw = {"code": -2019, "msg": "Margin is insufficient."}
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(400, json=raw))
+        ) as client:
+            venue = DemoBinance(environment="DEMO", api_key="fixture-key", api_secret="fixture-secret", client=client)
+            with pytest.raises(BinanceFailure) as failure:
+                await venue.market_order(
+                    symbol="BTCUSDT", side="BUY", quantity=Decimal(1), client_id="fixture-reject", reduce_only=False
+                )
+            assert failure.value.evidence == raw
+            assert failure.value.definitely_not_executed
+
+    asyncio.run(run())

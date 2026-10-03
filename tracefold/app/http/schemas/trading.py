@@ -71,6 +71,16 @@ class TradingSignedAccountData(ExactApiSchema):
     algos: list[TradingSignedAlgoData] = Field(max_length=100)
 
 
+class TradingExecutionFaultData(ExactApiSchema):
+    code: str
+    responsibility: str
+    symbol: str
+    client_ids: list[str]
+    position_amount: str
+    first_observed_at_ns: int
+    last_observed_at_ns: int
+
+
 class TradingExecutionReadinessData(ExactApiSchema):
     """Executor heartbeat, admission state and the last signed DEMO account read."""
 
@@ -84,6 +94,7 @@ class TradingExecutionReadinessData(ExactApiSchema):
     entries_paused: bool = True
     emergency_halted: bool = False
     unexpected_exposure: bool = False
+    execution_faults: dict[str, TradingExecutionFaultData] = Field(default_factory=dict)
     last_error: str | None = None
     heartbeat_at_ms: int | None = None
     facts_expire_at_ms: int | None = None
@@ -220,6 +231,9 @@ class TradingScoreboardData(ExactApiSchema):
 
 
 class TradingExecutionRowData(ExactApiSchema):
+    admission: dict[str, Any] | None = None
+    reserved_margin_usdt: str | None = None
+    entry_resolution: dict[str, Any] | None = None
     """One disposition or plan, folded from the executor's durable venue evidence."""
 
     source: Literal["signal", "manual"]

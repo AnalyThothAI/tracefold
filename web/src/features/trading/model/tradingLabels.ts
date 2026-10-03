@@ -8,6 +8,8 @@ export const ENTRY_BLOCK_REASON_ZH: Record<string, string> = {
   emergency_halt: "已紧急停止",
   entries_paused: "开仓已暂停",
   unexpected_exposure: "账户检查发现异常",
+  execution_fault: "仍有未解决执行风险",
+  flatten_in_progress: "账户退出仍在核验",
 };
 
 export function entryBlockReasonLabel(reason: string | null | undefined): string {
@@ -24,9 +26,15 @@ export const SIGNAL_DISPOSITION_ZH: Record<string, string> = {
   symbol_exposure: "该市场已有仓位或挂单",
   capacity: "账户并发容量已满",
   quote_stale: "报价已过期",
+  quote_stale_before_send: "提交前报价已过期",
   spread: "点差超限",
   price_drift: "相对 LIVE 参考价偏移超限",
   equity_unavailable: "账户权益不可读",
+  available_margin: "可用保证金不足",
+  funding_facts_unavailable: "资金事实不完整",
+  margin_mode_unsupported: "保证金模式不受支持",
+  multi_assets_unsupported: "多资产模式不受支持",
+  execution_fault: "未解决执行风险阻止新增仓位",
   market_rules_invalid: "合约规则无效",
   leverage_capacity: "杠杆容量不足",
   market_lot_or_notional: "下单数量或名义金额不满足场所规则",
@@ -78,6 +86,8 @@ export const EXIT_REASON_ZH: Record<string, string> = {
   external: "外部平仓",
   entry_rejected: "入场被场所拒绝",
   protection_failed: "保护失败后平仓",
+  protection_unverified: "保护结果未查明后平仓",
+  protection_coverage_invalid: "保护覆盖不足后平仓",
   protection_trigger_immediate: "保护触发价已越过，安全平仓",
   protection_rules_missing: "保护规则缺失，安全平仓",
   partial_protection_exit: "保护部分成交后平仓",

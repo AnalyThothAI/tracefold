@@ -317,7 +317,6 @@ def test_populated_chain_preserves_model_inputs_and_all_public_ledgers(source, s
     assert "p4_verify ok" in verify_log
     assert sum(" md5=" in line for line in verify_log.splitlines() if line.startswith("p4_verify")) == 13
     with closing(connect_postgres_test()) as conn:
-        assert projections(TradingRepository(conn), case_id) == expected
         tables = {row["tablename"] for row in conn.execute("SELECT tablename FROM pg_tables WHERE schemaname='public'")}
         assert tables == {
             "alembic_version",
@@ -344,6 +343,16 @@ def test_populated_chain_preserves_model_inputs_and_all_public_ledgers(source, s
             == 0
         )
         assert RuntimeProcesses(conn).workers_row()["capabilities"]["news_editorial"]["state"] == "faulted"
+
+    # Historical P4 assertions above remain at 0424. The current repository
+    # requires the current schema; legacy rows acquire nullable evidence, not facts.
+    command.upgrade(source, "head")
+    for row in expected["executions"]:
+        if row.get("disposition_reason") == "accepted":
+            row.update(admission=None, reserved_margin_usdt=None, entry_resolution=None)
+    with closing(connect_postgres_test()) as conn:
+        assert projections(TradingRepository(conn), case_id) == expected
+        assert TradingRepository(conn).account(SLOT)["execution_faults"] == {}
 
 
 @pytest.mark.parametrize(

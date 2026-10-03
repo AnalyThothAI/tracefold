@@ -22,15 +22,39 @@ _CLIENT_ID = re.compile(r"^[\.A-Z\:/a-z0-9_-]{1,36}$")
 
 
 class BinanceFailure(RuntimeError):
-    def __init__(self, status: int, code: int | None, message: str) -> None:
+    def __init__(self, status: int, code: int | None, message: str, *, evidence: dict[str, Any] | None = None) -> None:
         self.status = status
         self.code = code
         self.message = message[:200]
+        self.evidence = evidence
         super().__init__(f"binance_http_{status}_code_{code}")
 
     @property
     def transient(self) -> bool:
         return self.status >= 500 or self.status == 429 or self.code in (-1000, -1001, -1003)
+
+    @property
+    def definitely_not_executed(self) -> bool:
+        """Known validation/admission errors only; retryability is a different fact."""
+        return 400 <= self.status < 500 and self.code in (
+            -1013,
+            -1021,
+            -1022,
+            -1100,
+            -1101,
+            -1102,
+            -1111,
+            -1116,
+            -1117,
+            -2010,
+            -2014,
+            -2015,
+            -2019,
+            -2021,
+            -2022,
+            -4136,
+            -4164,
+        )
 
 
 class DemoBinance:
@@ -78,7 +102,12 @@ class DemoBinance:
         if response.status_code >= 400:
             code = payload.get("code") if isinstance(payload, dict) else None
             message = payload.get("msg", "") if isinstance(payload, dict) else ""
-            raise BinanceFailure(response.status_code, int(code) if isinstance(code, int) else None, str(message))
+            raise BinanceFailure(
+                response.status_code,
+                int(code) if isinstance(code, int) else None,
+                str(message),
+                evidence=payload if isinstance(payload, dict) else None,
+            )
         return payload
 
     async def positions(self, symbol: str | None = None) -> list[dict[str, Any]]:
@@ -89,6 +118,24 @@ class DemoBinance:
 
     async def position_mode(self) -> dict[str, Any]:
         return await self._signed("GET", "/fapi/v1/positionSide/dual")
+
+    async def multi_assets_mode(self) -> dict[str, Any]:
+        return await self._signed("GET", "/fapi/v1/multiAssetsMargin")
+
+    async def symbol_config(self, symbol: str) -> list[dict[str, Any]]:
+        return await self._signed("GET", "/fapi/v1/symbolConfig", {"symbol": symbol})
+
+    async def commission_rate(self, symbol: str) -> dict[str, Any]:
+        return await self._signed("GET", "/fapi/v1/commissionRate", {"symbol": symbol})
+
+    async def mark_price(self, symbol: str) -> dict[str, Any]:
+        response = await self._client.get(_BASE + "/fapi/v1/premiumIndex", params={"symbol": symbol})
+        response.raise_for_status()
+        return response.json()
+
+    async def cancel_order(self, symbol: str, client_id: str) -> dict[str, Any]:
+        self._validate_id(client_id)
+        return await self._signed("DELETE", "/fapi/v1/order", {"symbol": symbol, "origClientOrderId": client_id})
 
     async def open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
         return await self._signed("GET", "/fapi/v1/openOrders", {"symbol": symbol} if symbol else None)
@@ -115,6 +162,14 @@ class DemoBinance:
         self._validate_id(client_id)
         try:
             return await self._signed("GET", "/fapi/v1/algoOrder", {"clientAlgoId": client_id})
+        except BinanceFailure as exc:
+            if exc.code == -2013:
+                return None
+            raise
+
+    async def query_order_id(self, symbol: str, order_id: str) -> dict[str, Any] | None:
+        try:
+            return await self._signed("GET", "/fapi/v1/order", {"symbol": symbol, "orderId": order_id})
         except BinanceFailure as exc:
             if exc.code == -2013:
                 return None

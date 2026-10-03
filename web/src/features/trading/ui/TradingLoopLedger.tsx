@@ -153,6 +153,18 @@ function ExecutionDetail({
       <div>
         <h3>冻结计划与退出</h3>
         <dl>
+          {row.reserved_margin_usdt != null ? (
+            <div>
+              <dt>准入资金预留</dt>
+              <dd>{row.reserved_margin_usdt} USDT · 已确认计入账户的份额不重复扣减</dd>
+            </div>
+          ) : null}
+          {row.entry_resolution?.definitely_not_executed === true ? (
+            <div>
+              <dt>入场核验</dt>
+              <dd>已确认零成交；不计入实际成交笔数</dd>
+            </div>
+          ) : null}
           <div>
             <dt>止损价</dt>
             <dd>{row.stop_trigger_price ?? "—"}</dd>

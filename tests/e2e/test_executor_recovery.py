@@ -6,6 +6,7 @@ import asyncio
 import time
 from decimal import Decimal
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import psycopg
@@ -30,14 +31,30 @@ class FakeDemo:
     async def positions(self) -> list[dict[str, Any]]:
         return [{"symbol": "BTCUSDT", "positionAmt": str(self.amount), "markPrice": "100", "entryPrice": "100"}]
 
-    async def open_orders(self) -> list[dict[str, Any]]:
+    async def open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
         return []
 
     async def open_algo_orders(self) -> list[dict[str, Any]]:
         return [value for value in self.algos.values() if value["algoStatus"] == "NEW"]
 
     async def account(self) -> dict[str, Any]:
-        return {"totalMarginBalance": "1000"}
+        return {
+            "totalMarginBalance": "1000",
+            "assets": [{"asset": "USDT", "marginBalance": "1000", "availableBalance": "1000", "initialMargin": "0"}],
+            "positions": [{"symbol": "BTCUSDT", "positionAmt": str(self.amount)}],
+        }
+
+    async def multi_assets_mode(self):
+        return {"multiAssetsMargin": False}
+
+    async def symbol_config(self, symbol):
+        return [{"symbol": symbol, "leverage": 5, "marginType": "CROSSED", "maxNotionalValue": "100000"}]
+
+    async def commission_rate(self, symbol):
+        return {"symbol": symbol, "takerCommissionRate": "0.0004"}
+
+    async def mark_price(self, symbol):
+        return {"symbol": symbol, "markPrice": "100"}
 
     async def position_mode(self) -> dict[str, Any]:
         return {"dualSidePosition": False}
@@ -76,7 +93,11 @@ class FakeDemo:
                 {
                     "id": trade_id,
                     "orderId": 123,
-                    "qty": str(quantity / 12),
+                    "qty": str(
+                        (quantity / 12).quantize(Decimal("0.000001"))
+                        if trade_id < 12
+                        else quantity - (quantity / 12).quantize(Decimal("0.000001")) * 11
+                    ),
                     "price": "100",
                     "realizedPnl": "0",
                     "commission": "0.01",
@@ -86,11 +107,34 @@ class FakeDemo:
             )
         raise httpx.TimeoutException("ambiguous", request=httpx.Request("POST", "https://demo-fapi.binance.com"))
 
+    async def cancel_order(self, symbol, client_id):
+        return {"symbol": symbol, "clientOrderId": client_id, "status": "CANCELED"}
+
     async def query_order(self, symbol: str, client_id: str) -> dict[str, Any] | None:
         assert symbol == "BTCUSDT"
         if client_id == self.entry_id:
-            return {"orderId": 123, "status": "FILLED", "clientOrderId": client_id}
+            return {
+                "orderId": 123,
+                "status": "FILLED",
+                "clientOrderId": client_id,
+                "symbol": symbol,
+                "side": "BUY",
+                "executedQty": str(sum(Decimal(row["qty"]) for row in self.trades if row["orderId"] == 123)),
+            }
         return None
+
+    async def query_order_id(self, symbol: str, order_id: str) -> dict[str, Any] | None:
+        trades = [row for row in self.trades if str(row["orderId"]) == order_id]
+        if not trades:
+            return None
+        return {
+            "symbol": symbol,
+            "orderId": int(order_id),
+            "clientOrderId": "underlying-" + order_id,
+            "side": "SELL",
+            "status": "FILLED",
+            "executedQty": str(sum(Decimal(row["qty"]) for row in trades)),
+        }
 
     async def protection_order(
         self,
@@ -110,6 +154,9 @@ class FakeDemo:
             "algoStatus": "NEW",
             "triggerPrice": str(trigger_price),
             "leg": leg,
+            "side": side,
+            "orderType": "STOP_MARKET" if leg == "sl" else "TAKE_PROFIT_MARKET",
+            "closePosition": True,
         }
         self.algos[client_id] = value
         return value
@@ -177,7 +224,14 @@ class ExternalDemo(FakeDemo):
                 "time": self.now_ns // 1_000_000,
             }
         )
-        return {"orderId": 900, "status": "FILLED", "clientOrderId": client_id}
+        return {
+            "orderId": 900,
+            "status": "FILLED",
+            "clientOrderId": client_id,
+            "executedQty": str(quantity),
+            "symbol": symbol,
+            "side": side,
+        }
 
     async def cancel_symbol_orders(self, symbol: str) -> dict[str, Any]:
         return {"symbol": symbol}
@@ -251,7 +305,7 @@ async def _exercise_recovery(e2e_postgres: str) -> None:
         assert sum(row["native_symbol"] == "BTCUSDT" for row in db.fill_ledger(since_ns=0, limit=20)) == 13
 
 
-def test_unknown_order_absent_after_window_terminates_without_resend(e2e_postgres: str) -> None:
+def test_unknown_order_absent_after_window_keeps_responsibility_without_resend(e2e_postgres: str) -> None:
     asyncio.run(_exercise_absent_order(e2e_postgres))
 
 
@@ -261,6 +315,7 @@ async def _exercise_absent_order(e2e_postgres: str) -> None:
     settings.trading.enabled = True
     settings.trading.execution.enabled = True
     settings.trading.execution.binance.environment = "DEMO"
+    settings.trading.execution.account_slot = "missing-order-demo"
     venue = MissingDemo(now)
     command_id = "b" * 64
     intent = prepare_operator_intent(
@@ -285,10 +340,15 @@ async def _exercise_absent_order(e2e_postgres: str) -> None:
         runner = ExecutorRunner(settings=settings, conn=conn, venue=venue)
         await runner._one_intent(now)
         assert db.entry_orders(command_id)[0]["status"] == "unknown"
-        await runner._reconcile(now + 8_000_000_000)
+        with patch("tracefold.app.executor._now_ns", return_value=now + 8_000_000_000):
+            await runner._reconcile(now + 8_000_000_000)
         plan = db.entry(command_id)
-        assert plan["state"] == "terminal" and plan["terminal_reason"] == "not_submitted"
-        assert db.entry_orders(command_id)[0]["status"] == "not_submitted"
+        assert plan["state"] == "accepted" and plan["terminal_at_ns"] is None
+        assert db.entry_orders(command_id)[0]["status"] == "unknown"
+        assert (
+            db.account(settings.trading.execution.account_slot)["execution_faults"][command_id]["code"]
+            == "order_resolution_unknown"
+        )
         assert len(venue.market_calls) == 1
 
 

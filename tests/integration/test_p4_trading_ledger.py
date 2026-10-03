@@ -86,11 +86,9 @@ def test_second_accept_for_active_symbol_records_symbol_exposure_without_sending
         asyncio.run(runner._one_signal(now + 3))
         assert len(venue.market_calls) == 1
         assert db.entry("a" * 64)["state"] == "accepted"
-        assert db.disposition(kind="signal", input_id="b" * 64) == {
-            "disposition": "refused",
-            "reason": "symbol_exposure",
-            "decided_at_ns": now + 3,
-        }
+        refused = db.disposition(kind="signal", input_id="b" * 64)
+        assert (refused["disposition"], refused["reason"]) == ("refused", "symbol_exposure")
+        assert refused["decided_at_ns"] >= now + 3
 
 
 @pytest.mark.parametrize(

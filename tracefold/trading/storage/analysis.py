@@ -59,11 +59,22 @@ def _sha(value: object) -> str:
 class AnalysisStorage:
     conn: Any
 
-    def claim_is_current(self, *, case_id: str, claim_token: str, now_ms: int) -> bool:
+    def claim_is_current(self, *, case_id: str, claim_token: str, now_ms: int | None) -> bool:
         row = self.conn.execute(
             "SELECT claim_token,lease_until_ms FROM trading_cases WHERE case_id=%s FOR UPDATE", (case_id,)
         ).fetchone()
-        return row is not None and row["claim_token"] == claim_token and row["lease_until_ms"] > now_ms
+        if now_ms is None:
+            now_ms = int(
+                self.conn.execute("SELECT (date_part('epoch',clock_timestamp()) * 1000)::bigint AS now_ms").fetchone()[
+                    "now_ms"
+                ]
+            )
+        return bool(
+            row is not None
+            and row["claim_token"] == claim_token
+            and row["lease_until_ms"] is not None
+            and row["lease_until_ms"] > now_ms
+        )
 
     def label_candidates(self, *, now_ms: int, buffer_ms: int, limit: int) -> list[dict[str, Any]]:
         return [
@@ -307,7 +318,7 @@ class AnalysisStorage:
         ).fetchone()
         return None if row is None else dict(row)
 
-    def publication_source_status(self, *, case_id: str, now_ms: int) -> str | None:
+    def publication_source_status(self, *, case_id: str, now_ms: int | None) -> str | None:
         """Check News correction and later public facts at the final publish fence."""
         identity = self.conn.execute(
             "SELECT t.source_fact_key FROM trading_cases c JOIN trading_inputs t ON t.input_id=c.trigger_id "
@@ -320,6 +331,12 @@ class AnalysisStorage:
             "SELECT pg_advisory_xact_lock(hashtextextended(%s,746))",
             (f"source|{identity['source_fact_key']}",),
         )
+        if now_ms is None:
+            now_ms = int(
+                self.conn.execute("SELECT (date_part('epoch',clock_timestamp()) * 1000)::bigint AS now_ms").fetchone()[
+                    "now_ms"
+                ]
+            )
         original = self.conn.execute(
             "SELECT t.input_id,t.kind,t.source_fact_key,t.source_revision,t.payload_sha256,"
             "t.payload,t.first_visible_at_ms,t.source_observed_at_ms,t.selected_asset_id,t.target_selection,"
@@ -362,7 +379,7 @@ class AnalysisStorage:
         *,
         case_id: str,
         claim_token: str,
-        now_ms: int,
+        now_ms: int | None,
         view: dict[str, Any],
         raw_snapshot_ref: str,
         geometry_version: str,
@@ -371,6 +388,14 @@ class AnalysisStorage:
         half_spread_bps: Decimal,
         reference_price: Decimal,
     ) -> bool:
+        if not self.claim_is_current(case_id=case_id, claim_token=claim_token, now_ms=now_ms):
+            return False
+        if now_ms is None:
+            now_ms = int(
+                self.conn.execute("SELECT (date_part('epoch',clock_timestamp()) * 1000)::bigint AS now_ms").fetchone()[
+                    "now_ms"
+                ]
+            )
         digest = _sha(view)
         row = self.conn.execute(
             "UPDATE trading_cases SET view=COALESCE(view,%s::jsonb),"
@@ -574,8 +599,16 @@ class AnalysisStorage:
                 raise ValueError("paper_leg_identity_conflict")
 
     def finish_case(
-        self, *, case_id: str, claim_token: str, status: str, failure_code: str | None, now_ms: int
+        self, *, case_id: str, claim_token: str, status: str, failure_code: str | None, now_ms: int | None
     ) -> bool:
+        if not self.claim_is_current(case_id=case_id, claim_token=claim_token, now_ms=now_ms):
+            return False
+        if now_ms is None:
+            now_ms = int(
+                self.conn.execute("SELECT (date_part('epoch',clock_timestamp()) * 1000)::bigint AS now_ms").fetchone()[
+                    "now_ms"
+                ]
+            )
         row = self.conn.execute(
             "UPDATE trading_cases SET state=%s,claim_token=NULL,lease_until_ms=NULL,"
             "failure_code=%s,decided_at_ms=%s,updated_at_ms=%s "
