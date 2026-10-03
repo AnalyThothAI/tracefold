@@ -148,7 +148,9 @@ def test_zero_rejection_and_unknown_send_have_distinct_pnl_and_statistics(failur
     class Venue(FakeDemo):
         async def market_order(self, **kwargs):
             if failure == "reject":
-                raise BinanceFailure(400, -2019, "insufficient margin")
+                raise BinanceFailure(
+                    400, -2019, "insufficient margin", evidence={"code": -2019, "msg": "insufficient margin"}
+                )
             if failure == "timeout":
                 raise httpx.ReadTimeout("ambiguous")
             return {"status": "FILLED", "orderId": 123}
@@ -171,7 +173,8 @@ def test_zero_rejection_and_unknown_send_have_distinct_pnl_and_statistics(failur
         order = db.entry_orders("a" * 64)[0]
         assert order["submitted_at_ns"] >= now and order["request"]["quantity"] == "1"
         if failure == "reject":
-            assert order["evidence"] is None and order["resolution"]["definitely_not_executed"]
+            assert order["evidence"] == {"code": -2019, "msg": "insufficient margin"}
+            assert order["resolution"]["definitely_not_executed"]
             with conn.transaction():
                 assert db.settle_pnl(plan=db.entry("a" * 64), now_ns=now) == "complete"
             assert db.entry("a" * 64)["net_pnl"] == 0
@@ -552,6 +555,7 @@ def test_external_flatten_failure_is_local_and_recovery_clears_only_own_symbol()
             return {
                 "orderId": 999,
                 "symbol": "BBBUSDT",
+                "side": request["side"],
                 "clientOrderId": request["client_id"],
                 "executedQty": "1",
                 "status": "FILLED",
@@ -656,3 +660,100 @@ def test_root_expiry_between_acceptance_and_post_prevents_send() -> None:
         assert order["request"] is None and order["submitted_at_ns"] is None
         assert order["resolution"]["definitely_not_executed"] is True
         assert venue.market_calls == []
+
+
+def test_cancel_algo_ack_keeps_unknown_until_original_identity_query() -> None:
+    class Venue(FakeDemo):
+        async def cancel_algo(self, client_id):
+            value = self.algos[client_id]
+            self.algos[client_id] = {**value, "algoStatus": "CANCELED"}
+            return {"algoId": value["algoId"], "clientAlgoId": client_id, "code": "200", "msg": "success"}
+
+    now = time.time_ns()
+    with closing(connect_postgres_test()) as conn:
+        db = prepare(conn, now)
+        venue = Venue(now)
+        venue.amount = Decimal("0.4")
+        runner = ExecutorRunner(settings=settings(), conn=conn, venue=venue)
+
+        async def run():
+            await runner._protect(db.entry("a" * 64), (await venue.positions())[0], leg="sl", now=now)
+            await runner._cancel_protection(db.entry("a" * 64), venue.algos, now)
+            order = next(o for o in db.entry_orders("a" * 64) if o["leg"] == "sl")
+            assert order["status"] == "unknown"
+            assert order["evidence"]["code"] == "200" and "algoStatus" not in order["evidence"]
+            await runner._refresh_entry_orders(db.entry("a" * 64), {}, now + 1, Decimal(0))
+            resolved = next(o for o in db.entry_orders("a" * 64) if o["leg"] == "sl")
+            assert resolved["status"] == "cancelled" and resolved["evidence"]["algoStatus"] == "CANCELED"
+
+        asyncio.run(run())
+
+
+def test_incomplete_algo_success_queries_identity_without_new_attempt() -> None:
+    class Venue(FakeDemo):
+        async def protection_order(self, **request):
+            self.market_calls.append(request["client_id"])
+            return {"clientAlgoId": request["client_id"], "algoId": 999}
+
+    now = time.time_ns()
+    with closing(connect_postgres_test()) as conn:
+        db = prepare(conn, now)
+        with conn.transaction():
+            db.update_order(
+                client_id="entry-a",
+                status="filled",
+                now_ns=now,
+                evidence={"clientOrderId": "entry-a", "symbol": "BTCUSDT", "side": "BUY", "executedQty": "0.4"},
+            )
+        venue = Venue(now)
+        venue.amount = Decimal("0.4")
+        runner = ExecutorRunner(settings=settings(), conn=conn, venue=venue)
+
+        async def run():
+            for instant in (now, now + 1):
+                await runner._step_plan(
+                    plan=db.entry("a" * 64),
+                    position=(await venue.positions())[0],
+                    open_algos={},
+                    force_flatten=False,
+                    now=instant,
+                )
+            assert len(venue.market_calls) == 1
+            order = next(o for o in db.entry_orders("a" * 64) if o["leg"] == "sl")
+            assert order["status"] == "unknown"
+            assert order["request"]["algoType"] == "CONDITIONAL"
+            assert order["request"]["type"] == "STOP_MARKET"
+
+        asyncio.run(run())
+
+
+def test_new_flatten_does_not_replace_unknown_command_or_reset_attempts() -> None:
+    from tests.integration.test_p0_executor_pending import intent
+
+    now = time.time_ns()
+    with closing(connect_postgres_test()) as conn:
+        seed_case(conn)
+        db = ExecutorStorage(conn)
+        with conn.transaction():
+            db.append_operator_intent(intent("a", "flatten", now))
+            db.apply_control(account_slot=SLOT, action="flatten", command_id="a" * 64, now_ns=now)
+            db.record_disposition(
+                kind="intent",
+                input_id="a" * 64,
+                account_slot=SLOT,
+                disposition="accepted",
+                reason="flatten_requested",
+                now_ns=now,
+            )
+            db.reserve_external_flatten(
+                client_id="unknown-exit", command_id="a" * 64, symbol="BTCUSDT", attempt=1, now_ns=now
+            )
+            db.begin_send(client_id="unknown-exit", request={"reduceOnly": True}, now_ns=now)
+            db.append_operator_intent(intent("b", "flatten", now + 1))
+        runner = ExecutorRunner(settings=settings(), conn=conn, venue=FakeDemo(now))
+        asyncio.run(runner._one_intent(now + 1))
+        assert db.control(SLOT)["flatten_command_id"] == "a" * 64
+        request = db.console_operator_intents(since_ns=0, action="flatten", limit=10)
+        second = next(row for row in request if row["command_id"] == "b" * 64)
+        assert second["disposition"] == "refused" and second["disposition_reason"] == "flatten_in_progress"
+        assert db.external_flatten_orders("a" * 64, "BTCUSDT")[0]["status"] == "unknown"

@@ -420,7 +420,9 @@ class ExecutorRunner:
         except BinanceFailure as exc:
             status = "rejected" if exc.definitely_not_executed else "unknown"
             with self.conn.transaction():
-                self.db.update_order(client_id=client_id, status=status, now_ns=now, error_code=exc.code)
+                self.db.update_order(
+                    client_id=client_id, status=status, now_ns=_now_ns(), error_code=exc.code, evidence=exc.evidence
+                )
                 if status == "rejected":
                     self.db.resolve_order(
                         client_id=client_id,
@@ -435,6 +437,8 @@ class ExecutorRunner:
             not isinstance(result, dict)
             or result.get("orderId") is None
             or result.get("clientOrderId") != client_id
+            or result.get("symbol") != symbol
+            or result.get("side") != side
             or result.get("executedQty") is None
             or result.get("status") not in ("NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "REJECTED")
         ):
@@ -492,7 +496,7 @@ class ExecutorRunner:
                     account_slot=self.account_slot, seq=int(intent["seq"])
                 ):
                     refusal = "superseded"
-                elif action == "resume_entries" and control["flatten_command_id"] is not None:
+                elif action in ("resume_entries", "flatten") and control["flatten_command_id"] is not None:
                     refusal = "flatten_in_progress"
                 if refusal is not None:
                     self.db.record_disposition(
@@ -1249,13 +1253,17 @@ class ExecutorRunner:
                 request={
                     "symbol": plan["native_symbol"],
                     "side": "SELL" if plan["side"] == "long" else "BUY",
-                    "leg": leg,
+                    "algoType": "CONDITIONAL",
+                    "type": "STOP_MARKET" if leg == "sl" else "TAKE_PROFIT_MARKET",
                     "triggerPrice": str(trigger),
-                    "quantity": None if quantity is None else str(quantity),
-                    "closePosition": quantity is None,
-                    "reduceOnly": quantity is not None,
+                    **(
+                        {"closePosition": "true"}
+                        if quantity is None
+                        else {"quantity": str(quantity), "reduceOnly": "true"}
+                    ),
                     "clientAlgoId": client_id,
                     "workingType": "MARK_PRICE",
+                    "newOrderRespType": "RESULT",
                 },
                 now_ns=_now_ns(),
             )
@@ -1279,6 +1287,7 @@ class ExecutorRunner:
                     status="rejected" if exc.definitely_not_executed else "unknown",
                     now_ns=now,
                     error_code=exc.code,
+                    evidence=exc.evidence,
                 )
             if exc.code == -2021:
                 await self._flatten(
@@ -1292,11 +1301,18 @@ class ExecutorRunner:
                 isinstance(result, dict)
                 and result.get("clientAlgoId") == client_id
                 and result.get("algoId") is not None
+                and result.get("symbol") == plan["native_symbol"]
+                and result.get("side") == ("SELL" if plan["side"] == "long" else "BUY")
+                and result.get("algoStatus")
+                in ("NEW", "PARTIALLY_FILLED", "TRIGGERING", "TRIGGERED", "FINISHED", "FILLED")
             )
             self.db.update_order(
                 client_id=client_id,
-                status="working" if valid else "unknown",
+                status=("filled" if result.get("algoStatus") in ("TRIGGERED", "FINISHED", "FILLED") else "working")
+                if valid
+                else "unknown",
                 now_ns=_now_ns(),
+                venue_order_id=str(result["actualOrderId"]) if valid and result.get("actualOrderId") else None,
                 evidence=result if isinstance(result, dict) else None,
             )
 
@@ -1359,7 +1375,9 @@ class ExecutorRunner:
                     raise
                 continue
             with self.conn.transaction():
-                self.db.update_order(client_id=client_id, status="cancelled", now_ns=now, evidence=result)
+                # DELETE acknowledges cancellation; query original identity before
+                # releasing the responsibility, including trigger/cancel races.
+                self.db.update_order(client_id=client_id, status="unknown", now_ns=_now_ns(), evidence=result)
 
 
 async def run_executor(settings: Any, stop: asyncio.Event | None = None) -> None:

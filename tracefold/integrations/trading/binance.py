@@ -22,10 +22,11 @@ _CLIENT_ID = re.compile(r"^[\.A-Z\:/a-z0-9_-]{1,36}$")
 
 
 class BinanceFailure(RuntimeError):
-    def __init__(self, status: int, code: int | None, message: str) -> None:
+    def __init__(self, status: int, code: int | None, message: str, *, evidence: dict[str, Any] | None = None) -> None:
         self.status = status
         self.code = code
         self.message = message[:200]
+        self.evidence = evidence
         super().__init__(f"binance_http_{status}_code_{code}")
 
     @property
@@ -101,7 +102,12 @@ class DemoBinance:
         if response.status_code >= 400:
             code = payload.get("code") if isinstance(payload, dict) else None
             message = payload.get("msg", "") if isinstance(payload, dict) else ""
-            raise BinanceFailure(response.status_code, int(code) if isinstance(code, int) else None, str(message))
+            raise BinanceFailure(
+                response.status_code,
+                int(code) if isinstance(code, int) else None,
+                str(message),
+                evidence=payload if isinstance(payload, dict) else None,
+            )
         return payload
 
     async def positions(self, symbol: str | None = None) -> list[dict[str, Any]]:

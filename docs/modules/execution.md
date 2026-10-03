@@ -136,6 +136,7 @@ Flatten 的处理顺序是：
 5. 签名核查零仓位、零挂单，再清除 command。
 
 完成核查并清除 command 前，resume 拒绝为 `flatten_in_progress`。
+同一期间的新 flatten 也拒绝为 `flatten_in_progress`，保留原 command 的 unknown 订单和尝试额度。
 
 | 情况 | 当前处理与恢复边界 |
 | --- | --- |

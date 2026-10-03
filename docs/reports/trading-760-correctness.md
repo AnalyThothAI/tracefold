@@ -21,8 +21,8 @@ tracefold-760-test-rabbitmq（45680 / 45681）；PG harness 克隆/迁移库及 
 | R2 | unknown / working / filled 的可归属部分敞口由真实 runner 发 SL；首次观测时钟只写一次；外来反向/超量/无执行证明仓位不认领；撤单 ACK 与最后成交竞争；closePosition 覆盖增长、数量不足降风险；unknown 保护保留原身份，不重发。 |
 | R3 | 风险动作先于 active / terminal 待补成交；即时错误与 10s 慢读取被 2s 预算局部延期；批次最多三个 symbol；fill 约束失败时 fill/归属/cursor 整批回滚；external flatten 撤单失败局部隔离。 |
 | R4 | 实际 AnalysisRunner / TradingAssessor 的 8 Case / 2 slots / 虚拟 55s 调用：最多两份领取，全部合法完成；真实 PG 锁等待后租约失权、换 token 后旧 finish 被拒；取消及重复取消等待物理 DB 操作回滚后才归还容量。 |
-| R5 | 三次可靠退出失败保存责任故障；重启、heartbeat、resume 均不清除；变更退出原因不重置次数；逐 symbol 恢复只清自己的故障并保留 command、用户 pause/halt；健康进程上的故障在 UI 可见。 |
-| R6 | 明确拒单、never-sent 与可靠原生零成交正常结算且不计成交笔数；timeout、503、坏/不完整回包、not-found 保留 unknown；已观察敞口不能被零 executedQty 覆盖；缺成交/非 USDT 费用沿用独立 PnL deadline，未知净收益不填零。 |
+| R5 | 新 flatten 不替换在途 command 或重置尝试；三次可靠退出失败保存责任故障；重启、heartbeat、resume 均不清除；变更退出原因不重置次数；逐 symbol 恢复只清自己的故障并保留 command、用户 pause/halt；健康进程上的故障在 UI 可见。 |
+| R6 | 原生拒单回包单独保留；Algo 撤单 ACK 与不完整成功按原身份查询，不伪造终态；明确拒单、never-sent 与可靠原生零成交正常结算且不计成交笔数；timeout、503、坏/不完整回包、not-found 保留 unknown；已观察敞口不能被零 executedQty 覆盖；缺成交/非 USDT 费用沿用独立 PnL deadline，未知净收益不填零。 |
 | 迁移 | 实际 0429 数据包含 active entry、unknown order、pause/flatten；0430 保留全部原字段/身份/控制；存在新责任时 downgrade 明确拒绝，事务回滚后 head 与事实保留。 |
 
 测试入口：[纯函数与编排反例](../../tests/trading/test_correctness_760.py)、
@@ -49,6 +49,8 @@ tracefold-760-test-rabbitmq（45680 / 45681）；PG harness 克隆/迁移库及 
 初次 hermetic 分发打包检查要求新 migration 被 Git 跟踪，新文件已加入。
 News 认证报告及前端的 CRLF 工作副本曾造成字节/格式失败；规范化不改变其 Git 内容、证书或测试断言。
 没有删除反例、跳过必需检查或把 pending CI 当作成功。
+
+发送/撤单证据复核后，专用 PG、adapter 和重启 E2E 三文件合计 31 passed。最终 HEAD 的全量 CI 仍由本 PR Checks 提供。
 
 ## 未执行
 
