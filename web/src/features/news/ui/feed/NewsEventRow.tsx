@@ -2,7 +2,13 @@ import { newsEventPath } from "@shared/routing/paths";
 import { Link } from "react-router-dom";
 
 import type { NewsFeedEvent, NewsQuote } from "../../api/newsQueries";
-import { absoluteTime, clockTime, eventHeadline, relativeTime } from "../../model/newsLabels";
+import {
+  absoluteTime,
+  clockTime,
+  eventHeadline,
+  relativeTime,
+  outcomeReason,
+} from "../../model/newsLabels";
 import { NewsAssetChips } from "../chrome/NewsAssetChips";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
@@ -91,7 +97,7 @@ export function NewsEventRow({
       {/* One line under the badge, never two: a sent row wants the time it went out, everything else wants
           the server's reason. */}
       {event.outcome.reason_zh ? (
-        <span className="news-event-reason">{event.outcome.reason_zh}</span>
+        <span className="news-event-reason">{outcomeReason(event.outcome)}</span>
       ) : sentAt ? (
         <span className="news-event-reason">推送于 {clockTime(sentAt)}</span>
       ) : null}

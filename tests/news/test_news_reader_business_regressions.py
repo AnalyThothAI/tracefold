@@ -140,8 +140,8 @@ def test_historical_reasons_and_known_receipts_remain_consistent_across_read_pat
     work = {"origin": "reader_v2", "state": "done", "plan": raw, "content_revision": "historical", "updated_at_ms": 10}
     view = notification_view(work, statements={})
     assert view is not None and view["plan_error_code"] is None
-    expected = "历史读者判断，仅进入信息流 · 读者已收到同一事实"
-    assert view["plan"]["claim_decisions"][0]["reason_zh"] == "历史读者判断，仅进入信息流"
+    expected = "旧版模型判断：只进信息流 · 另 1 件：读者已收到同一事实"
+    assert view["plan"]["claim_decisions"][0]["reason_zh"] == "旧版模型判断：只进信息流"
     assert claim_reasons_zh(raw["claim_decisions"]) == expected
     assert claim_reasons_zh(view["plan"]["claim_decisions"]) == expected
     outcome = event_outcome(

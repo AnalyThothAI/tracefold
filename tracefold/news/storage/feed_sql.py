@@ -7,6 +7,10 @@ from typing import Final
 # S608 exemptions below compose only the module's fixed feed predicate list; all request values stay bound.
 from ..models import ADMITTED_ADMISSIONS
 from ..source_contracts import EVENT_KINDS
+from ..updates.contracts import NOTIFICATION_CHANGES
+from .update_reads import duplicate_claims_sql
+
+_NOTIFICATION_CHANGE_KINDS_SQL: Final = ", ".join(f"'{kind}'" for kind in sorted(NOTIFICATION_CHANGES))
 
 STATUS_PRIMARY_ASSET_MARKETS_SQL: Final = """
     SELECT COALESCE(asset->>'market_type', 'unknown') AS market_type, count(*) AS n
@@ -57,6 +61,11 @@ READER_DELIVERY_KINDS_SQL: Final = "('update')"
 # The EventUpdate path (#706), after the ledger and the Gate: semantic work still owed a revision, or an
 # adopted head whose notification is undecided, deferred or decided to notify.
 _SEMANTIC_OWED_SQL: Final = "sw.state IN ('pending','failed')"
+_NOTIFICATION_REVISION_DRIFT_SQL: Final = (
+    "nw.state='done' AND (nw.detail->>'content_revision')<>h.content_revision"  # noqa: S608 -- fixed change kinds.
+    " AND EXISTS (SELECT 1 FROM jsonb_array_elements(h.document->'changes') change"
+    f" WHERE change->>'kind' IN ({_NOTIFICATION_CHANGE_KINDS_SQL}))"
+)
 _UPDATE_PENDING_SQL: Final = (
     f"({_SEMANTIC_OWED_SQL} AND sw.state='pending')"
     f" OR (NOT COALESCE({_SEMANTIC_OWED_SQL}, false) AND h.event_id IS NOT NULL"
@@ -67,13 +76,17 @@ _UPDATE_PENDING_SQL: Final = (
     " AND nd.plan->>'action'='notify' AND q.state='pending'"
     " AND q.content_revision=(nw.detail->>'content_revision'))"
 )
-_PENDING_CORE_SQL: Final = f"e.admission IN ({ADMITTED_SQL}) AND COALESCE(({_UPDATE_PENDING_SQL}), false)"
+_PENDING_CORE_SQL: Final = (
+    f"e.admission IN ({ADMITTED_SQL}) AND COALESCE(({_UPDATE_PENDING_SQL}), false)"
+    f" AND (COALESCE({_SEMANTIC_OWED_SQL}, false) OR NOT COALESCE(({_NOTIFICATION_REVISION_DRIFT_SQL}), false))"
+)
 _PUSHED_CORE_SQL: Final = (
     f"e.admission IN ({ADMITTED_SQL}) AND COALESCE(d.state='sent', false)"
     f" AND NOT COALESCE({_SEMANTIC_OWED_SQL}, false)"
     " AND (nw.subject_id IS NULL OR (nw.state='done' AND COALESCE(nd.plan->>'action','') <> 'no_notification'))"
     " AND NOT COALESCE(q.state='pending'"
     " AND (nw.subject_id IS NULL OR q.content_revision=(nw.detail->>'content_revision')), false)"
+    f" AND NOT COALESCE(({_NOTIFICATION_REVISION_DRIFT_SQL}), false)"
 )
 OUTCOME_GROUP_SQL: Final = {
     "pushed": _PUSHED_CORE_SQL,
@@ -281,7 +294,7 @@ def feed_page_sql(where_sql: str, *, order_sql: str = "e.opened_at_ms DESC, e.ev
     so its plans cannot silently drift back to a simplified SQL sketch.
     """
 
-    return f"""
+    page = f"""
         SELECT e.event_id, e.event_kind, e.leader_title,
                e.opened_at_ms, e.last_member_at_ms, e.member_count,
                e.admission, e.provider_score_max, e.engine_type, e.asset_class, e.grounded_assets,
@@ -293,6 +306,8 @@ def feed_page_sql(where_sql: str, *, order_sql: str = "e.opened_at_ms DESC, e.ev
                (sw.detail->>'last_outcome') AS semantic_last_outcome,
                sw.last_error_code AS semantic_last_error_code,
                h.content_revision AS update_content_revision, h.adopted_at_ms AS update_adopted_at_ms,
+               EXISTS (SELECT 1 FROM jsonb_array_elements(u.document->'changes') change
+                       WHERE change->>'kind' IN ({_NOTIFICATION_CHANGE_KINDS_SQL})) AS head_has_notification_changes,
                jsonb_array_length(u.document -> 'claims') AS update_claim_n,
                (SELECT COALESCE(jsonb_agg(asset ORDER BY claim_position, asset_position), '[]'::jsonb)
                   FROM jsonb_array_elements(u.document -> 'claims') WITH ORDINALITY AS listed(claim, claim_position)
@@ -302,42 +317,76 @@ def feed_page_sql(where_sql: str, *, order_sql: str = "e.opened_at_ms DESC, e.ev
                    AND NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
                    AND NOT (COALESCE(u.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
                ) AS update_primary_assets,
-               -- Twin of `update_view.headline_claim_statement`: what a later revision changed, else the lead claim.
-               COALESCE(
-                 (SELECT claim ->> 'statement'
-                    FROM jsonb_array_elements(u.document -> 'changes') WITH ORDINALITY AS changed(change, position)
-                    JOIN jsonb_array_elements(u.document -> 'claims') AS listed(claim)
-                      ON listed.claim ->> 'ref' = changed.change ->> 'current_ref'
-                   WHERE u.document ->> 'previous_content_revision' IS NOT NULL
-                     AND changed.change ->> 'kind' IN ('new_fact', 'parameter_change', 'phase_change', 'scope_change',
-                                                      'correction', 'conflict', 'possible_new')
-                     AND NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-                     AND NOT (COALESCE(u.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-                   ORDER BY changed.position LIMIT 1),
-                 (SELECT claim ->> 'statement'
-                    FROM jsonb_array_elements(u.document -> 'claims') WITH ORDINALITY AS listed(claim, position)
-                   WHERE NOT (COALESCE(u.document -> 'retired_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-                     AND NOT (COALESCE(u.document -> 'superseded_claim_refs', '[]'::jsonb) ? (claim ->> 'ref'))
-                   ORDER BY position LIMIT 1)
-               ) AS update_claim_headline,
+               headline.claim->>'statement' AS update_claim_headline,
+               headline.claim->>'ref' AS update_headline_claim_ref,
                nw.state AS notification_state, nw.attempts AS notification_attempts,
                nw.last_error_code AS notification_last_error_code,
                (nw.detail->>'content_revision') AS notification_content_revision,
                nd.plan ->> 'action' AS notification_action,
                nd.plan -> 'claim_decisions' AS notification_claim_decisions,
+               nd.decided_at_ms AS notification_decided_at_ms,
+               nw.state='done' AND (nw.detail->>'content_revision')<>h.content_revision
+                 AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(u.document->'changes') change
+                   WHERE change->>'kind' IN ({_NOTIFICATION_CHANGE_KINDS_SQL})) AS notification_carried,
+               (SELECT COALESCE(jsonb_agg(origin ORDER BY publisher,artifact),'[]'::jsonb) FROM (
+                 SELECT DISTINCT evidence.value#>>'{{source,publisher_id}}' AS publisher,
+                        evidence.value#>>'{{source,artifact_id}}' AS artifact,
+                        COALESCE(NULLIF(evidence.value#>>'{{source,origin_id}}',''),
+                                 NULLIF(evidence.value#>>'{{source,attribution}}',''),
+                                 evidence.value#>>'{{source,publisher_id}}') AS origin
+                 FROM jsonb_array_elements(u.document->'evidence') AS evidence(value)
+                 WHERE decided_head.document IS NOT NULL AND NOT EXISTS (
+                   SELECT 1 FROM jsonb_array_elements(decided_head.document->'evidence') previous
+                   WHERE previous#>>'{{source,publisher_id}}'
+                         IS NOT DISTINCT FROM evidence.value#>>'{{source,publisher_id}}'
+                     AND previous#>>'{{source,artifact_id}}'
+                         IS NOT DISTINCT FROM evidence.value#>>'{{source,artifact_id}}'
+                 )
+               ) added) AS notification_added_sources,
                d.kind AS delivery_kind, d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms,
                d.content_revision AS delivery_content_revision, d.payload_sha256 AS delivery_payload_sha256,
                d.error_code AS delivery_error_code, d.plan_key AS delivery_plan_key,
-               CASE WHEN d.kind = 'update' AND d.state = 'sent' AND d.content_revision=h.content_revision
+               CASE WHEN d.kind = 'update' AND d.state = 'sent' AND (
+                    d.content_revision=h.content_revision OR (nw.state='done'
+                    AND d.content_revision=(nw.detail->>'content_revision')
+                    AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(u.document->'changes') change
+                      WHERE change->>'kind' IN ({_NOTIFICATION_CHANGE_KINDS_SQL}))))
                     THEN NULLIF(btrim(d.card ->> 'headline_zh'), '') END AS sent_update_headline,
                q.state AS delivery_queue_state, q.error_code AS delivery_queue_error_code,
                q.content_revision AS delivery_queue_content_revision, q.frozen_card AS delivery_queue_frozen
           FROM news_events e
           {_feed_joins_sql()}
+          LEFT JOIN news_analyses decided_head ON decided_head.event_id=e.event_id
+           AND decided_head.content_revision=nw.detail->>'content_revision' AND nw.state='done'
+           AND (nw.detail->>'content_revision')<>h.content_revision
+           AND decided_head.adopted_at_ms IS NOT NULL
+          LEFT JOIN LATERAL (
+            SELECT claim FROM jsonb_array_elements(u.document->'claims') WITH ORDINALITY listed(claim,position)
+            WHERE NOT (COALESCE(u.document->'retired_claim_refs','[]'::jsonb) ? (claim->>'ref'))
+              AND NOT (COALESCE(u.document->'superseded_claim_refs','[]'::jsonb) ? (claim->>'ref'))
+            ORDER BY CASE WHEN u.document->>'previous_content_revision' IS NOT NULL THEN (
+              SELECT min(changed.position) FROM jsonb_array_elements(u.document->'changes')
+               WITH ORDINALITY changed(change,position)
+              WHERE change->>'current_ref'=claim->>'ref'
+                AND change->>'kind' IN ({_NOTIFICATION_CHANGE_KINDS_SQL})
+            ) END NULLS LAST,listed.position LIMIT 1
+          ) headline ON true
          WHERE {where_sql}
          ORDER BY {order_sql}
          LIMIT %s
     """  # noqa: S608
+    # Resolve duplicate provenance only after pagination, never in the counts or for the whole window.
+    return f"""
+      WITH selected AS MATERIALIZED ({page})
+      SELECT selected.*,duplicate.info AS duplicate_info
+      FROM selected LEFT JOIN LATERAL (
+        SELECT to_jsonb(original) AS info FROM ({duplicate_claims_sql("selected.event_id")}) original
+        WHERE selected.notification_state IS NULL AND selected.update_content_revision IS NOT NULL
+          AND NOT selected.head_has_notification_changes
+        LIMIT 1
+      ) duplicate ON true
+      ORDER BY {order_sql.replace("e.", "selected.")}
+    """  # noqa: S608 -- fixed identifiers.
 
 
 def feed_counts_sql(where_sql: str) -> str:

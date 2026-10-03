@@ -246,7 +246,7 @@ function emptyTitle(filters: NewsFeedFilters, search: NewsFeedSearch | null): st
   }
   if (search?.mode === "text") return "当前范围没有全文命中";
   if (filters.outcome === "pushed") return `${hoursLabel(filters.hours)}没有推送`;
-  if (filters.outcome === "held") return `${hoursLabel(filters.hours)}没有被拦截的事件`;
+  if (filters.outcome === "held") return `${hoursLabel(filters.hours)}没有未推送的事件`;
   if (filters.outcome === "pending") return "没有正在处理的事件";
   return `${hoursLabel(filters.hours)}没有匹配的事件`;
 }

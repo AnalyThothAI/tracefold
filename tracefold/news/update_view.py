@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from .notifications.contracts import ClaimDecision, FrozenCard, NotificationPlan, PlanTimings
 from .notifications.ports import DeliveryTimings
 from .taxonomy import IPTC_SUBJECT_LABELS_ZH, source_authority_zh
-from .updates.contracts import Claim, EventUpdate, Evidence
+from .updates.contracts import NOTIFICATION_CHANGES, Claim, EventUpdate, Evidence
 
 UPDATE_DECODE_ERROR: Final = "news_event_update_undecodable"
 PLAN_DECODE_ERROR: Final = "news_notification_plan_undecodable"
@@ -130,7 +130,7 @@ CLAIM_REASON_ZH: Final[dict[str, str]] = {
     "retired": "已撤回的命题",
     "send_outcome_unresolved": "本事件仍有发送进行中，等待其结果",
     "send_outcome_ambiguous": "此前发送结果不明，按可能已送达处理，不重发",
-    "stale_source": "来源已过时",
+    "stale_source": "同一事实 3 小时前已出现",
     "stale_occurrence": "所述事件发生在一周以前",
     "known_to_reader": "读者已收到同一事实",
     "linked_send_in_flight": "关联命题正在发送，等待其结果",
@@ -157,7 +157,7 @@ LEGACY_CLAIM_REASON_ZH: Final[dict[str, str]] = {
     "protected_listing": "上币公告",
     "large_daily_move": "商品/指数日内大幅波动",
     "retired": "已撤回的命题",
-    "stale_source": "来源已过时",
+    "stale_source": "同一事实 3 小时前已出现",
     "send_outcome_ambiguous": "此前发送结果不明，按可能已送达处理，不重发",
     "send_outcome_unresolved": "本事件仍有发送进行中，等待其结果",
 }
@@ -202,20 +202,83 @@ def semantic_state(work: Mapping[str, Any]) -> str:
     return "pending" if wanted > done else "done"
 
 
-def claim_reasons_zh(decisions: Any) -> str:
-    """The named reasons a plan did not notify, each once with its count when it repeats."""
+def claim_reasons_zh(decisions: Any, *, headline_ref: str | None = None) -> str:
+    """Lead with the titled fact, then describe the remaining facts without changing their decisions."""
 
-    counts: dict[str, int] = {}
+    reasons: list[tuple[str, str]] = []
     for row in decisions if isinstance(decisions, Sequence) and not isinstance(decisions, str) else ():
         if isinstance(row, Mapping) and row.get("decision") != "notify":
-            code = str(row.get("reason") or "")
             evidence = row.get("historical_judgment")
             if evidence is None and isinstance(record := row.get("reader"), Mapping):
                 evidence = record.get("judgment")
-            reason = _claim_reason_text(code, historical=_importance_era_evidence(evidence))
+            reason = claim_reason_zh(row, historical=_importance_era_evidence(evidence))
             if reason:
-                counts[reason] = counts.get(reason, 0) + 1
-    return " · ".join(f"{reason} ×{n}" if n > 1 else reason for reason, n in counts.items())
+                reasons.append((str(row.get("claim_ref") or ""), reason))
+    if not reasons:
+        return ""
+    lead = next((index for index, (ref, _) in enumerate(reasons) if ref == headline_ref), 0)
+    _, reason = reasons.pop(lead)
+    others = list(dict.fromkeys(text for _, text in reasons))
+    return reason + (f" · 另 {len(reasons)} 件：" + "、".join(others) if others else "")
+
+
+def claim_reason_zh(row: Mapping[str, Any], *, historical: bool = False) -> str:
+    code = str(row.get("reason") or "")
+    record = row.get("reader")
+    evidence = row.get("historical_judgment")
+    scores: Mapping[str, Any] = row
+    if isinstance(record, Mapping):
+        evidence = evidence or record.get("judgment")
+        if isinstance(record.get("scores"), Mapping):
+            scores = record["scores"]
+    historical = historical or _importance_era_evidence(evidence)
+    if code == "reader_feed" and not historical:
+        probability, cut = scores.get("p_push"), scores.get("push_cut")
+        if probability is not None and cut is not None:
+            return f"推送概率 {float(probability):.0%}，未到 {float(cut):.0%}"
+    if code == "reader_ineligible":
+        kind = row.get("report_kind_zh")
+        if not kind and isinstance(evidence, Mapping) and isinstance(evidence.get("report_kind"), Mapping):
+            kind = REPORT_KIND_ZH.get(str(evidence["report_kind"].get("value")))
+        if kind:
+            return f"{kind}类报道不推送"
+    return _claim_reason_text(code, historical=historical)
+
+
+def effective_notification(head: Mapping[str, Any] | None, work: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """A completed work left behind by non-notification changes still owns the decision.
+
+    Keep its real version and clock. Owed old work is not carried; contradictory head changes
+    are diagnosed instead of manufacturing a decision for a newer fact.
+    """
+    if work is None:
+        return None
+    result = dict(work)
+    result.update(carried=False, decided_revision=work.get("content_revision"), decided_at_ms=work.get("decided_at_ms"))
+    if head is None or work.get("content_revision") == head.get("content_revision"):
+        return result
+    if work.get("state") != "done":
+        return None
+    document = head.get("document")
+    has_changes = head.get("has_notification_changes")
+    if isinstance(document, Mapping):
+        has_changes = any(row.get("kind") in NOTIFICATION_CHANGES for row in document.get("changes", ()))
+    if has_changes is not False:
+        result["projection_error"] = "news_notification_revision_mismatch"
+        return result
+    result["carried"] = True
+    if isinstance(document, Mapping) and isinstance(work.get("decided_document"), Mapping):
+        old = work["decided_document"].get("evidence", ())
+        identities = {(row["source"]["publisher_id"], row["source"]["artifact_id"]) for row in old}
+        added = {}
+        for row in document.get("evidence", ()):
+            source = row["source"]
+            identity = (source["publisher_id"], source["artifact_id"])
+            if identity not in identities:
+                added[identity] = source.get("origin_id") or source.get("attribution") or source["publisher_id"]
+        result["added_sources"] = list(added.values())
+        result["carried_at_ms"] = head.get("adopted_at_ms")
+    return result
 
 
 def _importance_era_evidence(evidence: Any) -> bool:
@@ -228,7 +291,7 @@ def _importance_era_evidence(evidence: Any) -> bool:
 
 def _claim_reason_text(code: str, *, historical: bool = False) -> str:
     if historical and code == "reader_feed":
-        return "历史读者判断，仅进入信息流"
+        return "旧版模型判断：只进信息流"
     return CLAIM_REASON_ZH.get(code) or LEGACY_CLAIM_REASON_ZH.get(code) or code
 
 
@@ -255,7 +318,7 @@ _HEADLINE_CHANGE_KINDS = frozenset(
 )
 
 
-def headline_claim_statement(update: EventUpdate) -> str | None:
+def headline_claim_ref(update: EventUpdate) -> str | None:
     """The claim an unsent Event is titled by: what its latest revision changed, else its lead claim.
 
     A later revision keeps its earlier claims (a parameter change supersedes, it does not retire), so the
@@ -266,8 +329,13 @@ def headline_claim_statement(update: EventUpdate) -> str | None:
     if update.previous_content_revision is not None:
         for change in update.changes:
             if change.kind in _HEADLINE_CHANGE_KINDS and change.current_ref in live:
-                return live[change.current_ref]
-    return next(iter(live.values()), None)
+                return change.current_ref
+    return next(iter(live), None)
+
+
+def headline_claim_statement(update: EventUpdate) -> str | None:
+    ref = headline_claim_ref(update)
+    return next((claim.statement for claim in update.claims if claim.ref == ref), None)
 
 
 def _source(evidence: Evidence) -> dict[str, Any]:
@@ -481,7 +549,7 @@ def semantic_view(work: Mapping[str, Any] | None) -> dict[str, Any] | None:
 def _claim_reason_zh(row: ClaimDecision, *, historical: bool = False) -> str:
     """Reader copy names the reason; numeric evidence remains in separate fields."""
 
-    text = _claim_reason_text(row.reason, historical=historical)
+    text = claim_reason_zh(row.model_dump(mode="json"), historical=historical)
     if row.reader is not None and row.reader.earlier is not None:
         text += f"；{_zh(RENDER_ZH, row.reader.render)}此前已推送的一条"
     return text
@@ -643,6 +711,11 @@ def notification_view(work: Mapping[str, Any] | None, *, statements: Mapping[str
         "state": state,
         "state_zh": _zh(NOTIFICATION_STATE_ZH, state),
         "content_revision": str(work["content_revision"]),
+        "carried": bool(work.get("carried")),
+        "decided_revision": work.get("decided_revision") or str(work["content_revision"]),
+        "decided_at_ms": work.get("decided_at_ms"),
+        "added_sources": list(work.get("added_sources") or []),
+        "carried_at_ms": work.get("carried_at_ms"),
         "attempts": int(work.get("attempts") or 0),
         "last_error_code": work.get("last_error_code"),
         "next_attempt_at_ms": work.get("next_attempt_at_ms"),
@@ -769,10 +842,13 @@ __all__ = [
     "PLAN_REASON_ZH",
     "UPDATE_DECODE_ERROR",
     "LegacyClaimReason",
+    "claim_reason_zh",
     "claim_reasons_zh",
     "decode_plan",
     "decode_update",
+    "effective_notification",
     "event_update_view",
+    "headline_claim_ref",
     "headline_claim_statement",
     "intent_views",
     "notification_view",

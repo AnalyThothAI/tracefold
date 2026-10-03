@@ -8,6 +8,28 @@ import { newsUpdateDetailFixture } from "@tests/fixtures/newsFixture";
 import { describe, expect, it } from "vitest";
 
 describe("event reader", () => {
+  it("keeps a completed carried plan and real sent lines while rejecting owed older work", () => {
+    const detail = newsUpdateDetailFixture();
+    const notification = detail.processing!.notification!;
+    const intent = detail.processing!.intents![0];
+    const old = notification.content_revision;
+    detail.event_update!.content_revision = "e".repeat(64);
+    notification.carried = true;
+    notification.decided_revision = old;
+    notification.decided_at_ms = 1000;
+    intent.lines = [{ claim_ref: detail.event_update!.claims[1].ref, text_zh: "实际送达的中文" }];
+    expect(eventReader(detail).plan).toBe(notification.plan);
+    expect(eventReader(detail).latestSent).toBe(intent);
+    expect(eventReader(detail).facts[0]).toMatchObject({ sent: true, text: "实际送达的中文" });
+    notification.state = "pending";
+    expect(eventReader(detail).currentSent).toEqual([]);
+    expect(eventReader(detail).plan).toBeNull();
+    notification.state = "done";
+    detail.processing!.intents = [];
+    notification.plan!.action = "no_notification";
+    expect(eventReader(detail).plan).toBe(notification.plan);
+    expect(eventTiming(detail).end).toBe(1000);
+  });
   it("uses frozen Chinese lines only from sent intents of the adopted version", () => {
     const detail = newsUpdateDetailFixture();
     const claim = detail.event_update!.claims[1];

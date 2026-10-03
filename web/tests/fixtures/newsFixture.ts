@@ -32,6 +32,8 @@ export function newsOutcomeFixture(overrides: Partial<NewsOutcome> = {}): NewsOu
     group: "pushed",
     kind: "delivered",
     reason_zh: "",
+    reason_before_time_zh: "",
+    reason_after_time_zh: "",
     text_zh: "已推送",
     ...overrides,
   };
@@ -430,6 +432,7 @@ export function newsProcessingFixture(overrides: Partial<NewsProcessing> = {}): 
       },
     ],
     notification: {
+      carried: false,
       attempts: 0,
       content_revision: "f".repeat(64),
       next_attempt_at_ms: null,
@@ -527,6 +530,60 @@ export function newsProcessingFixture(overrides: Partial<NewsProcessing> = {}): 
 /** One current EventUpdate detail with optional variations. */
 export function newsUpdateDetailFixture(overrides: Partial<NewsEventDetail> = {}): NewsEventDetail {
   return newsEventDetailFixture(overrides);
+}
+
+export function newsCarriedDetailFixture(sent = true): NewsEventDetail {
+  const detail = newsUpdateDetailFixture();
+  const work = detail.processing!.notification!;
+  detail.event_update!.content_revision = "1".repeat(64);
+  work.carried = true;
+  work.decided_revision = work.content_revision;
+  work.decided_at_ms = NEWS_NOW_MS - 61_000;
+  work.carried_at_ms = NEWS_NOW_MS;
+  work.added_sources = ["追加通讯社"];
+  if (!sent) {
+    work.plan!.action = "no_notification";
+    work.plan!.claim_decisions!.forEach((claim) => {
+      claim.decision = "not_notified";
+      claim.reason = "reader_feed";
+      claim.reason_zh = "推送概率 26%，未到 37%";
+      claim.p_push = 0.26;
+      claim.push_cut = 0.37;
+    });
+    detail.processing!.intents = [];
+    detail.deliveries = [];
+    detail.outcome = newsOutcomeFixture({
+      kind: "not_notified",
+      group: "held",
+      text_zh: "未通知",
+      reason_zh: "推送概率 26%，未到 37%",
+    });
+  }
+  return detail;
+}
+
+export function newsDuplicateDetailFixture(received = false): NewsEventDetail {
+  const detail = newsUpdateDetailFixture();
+  detail.processing!.notification = null;
+  detail.processing!.intents = [];
+  detail.deliveries = [];
+  detail.outcome = newsOutcomeFixture({
+    kind: "duplicate",
+    group: "held",
+    text_zh: "重复",
+    reason_zh: "与更早事件重复",
+  });
+  detail.event_update!.duplicates = detail.event_update!.claims!.map((claim) => ({
+    claim_ref: claim.ref,
+    event_id: "evt-original",
+    headline: "原始关税报道",
+    first_available_at_ms: NEWS_NOW_MS - 3_600_000,
+    reporting_origin: "原始通讯社",
+    received_at_ms: received ? NEWS_NOW_MS - 3_590_000 : null,
+    reason_zh: received ? "" : "旧版模型判断：只进信息流",
+    decided_at_ms: NEWS_NOW_MS - 3_595_000,
+  }));
+  return detail;
 }
 
 export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStatus {

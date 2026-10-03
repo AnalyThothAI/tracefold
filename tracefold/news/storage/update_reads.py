@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Any, Final
 
 from ..notifications.novelty import ClaimLink
+from ..update_view import claim_reason_zh, effective_notification
 from .notification_view import pending_notification, receipt_notification
 from .semantic_jobs import semantic_job
 
@@ -35,9 +36,8 @@ EVENT_UPDATE_PREVIOUS_CLAIMS_SQL: Final = """
    SELECT update_ref,event_id,document FROM news_analyses
     WHERE event_id=%s AND update_ref=ANY(%s) AND adopted_at_ms IS NOT NULL
    UNION ALL
-   SELECT a.update_ref,a.event_id,a.document FROM news_events e
-    JOIN news_analyses a ON a.analysis_id=e.current_analysis_id
-    WHERE a.update_ref=ANY(%s) AND e.event_id<>%s
+   SELECT a.update_ref,a.event_id,a.document FROM news_analyses a
+    WHERE a.update_ref=ANY(%s) AND a.event_id<>%s AND a.adopted_at_ms IS NOT NULL
  ) prior CROSS JOIN LATERAL jsonb_array_elements(prior.document->'claims') claim
 """
 EVENT_SEMANTIC_WORK_SQL: Final = """
@@ -51,8 +51,10 @@ EVENT_SEMANTIC_OBSERVATIONS_SQL: Final = """
 """
 EVENT_NOTIFICATION_WORK_SQL: Final = """
  SELECT j.subject_id,j.state,j.attempts,j.last_error_code,j.next_attempt_at_ms,
- j.updated_at_ms,j.detail,n.plan,n.origin,n.decided_at_ms FROM news_jobs j
+ j.updated_at_ms,j.detail,n.plan,n.origin,n.decided_at_ms,a.document AS decided_document FROM news_jobs j
  LEFT JOIN news_notifications n ON n.notification_id=j.detail->>'decision_ref'
+ LEFT JOIN news_analyses a ON a.event_id=j.subject_id AND a.content_revision=j.detail->>'content_revision'
+  AND a.adopted_at_ms IS NOT NULL
  WHERE j.job_kind='notify' AND j.subject_id=%s
 """
 EVENT_DELIVERIES_SQL: Final = """
@@ -84,6 +86,81 @@ EVENT_KNOWN_RECEIPTS_SQL: Final = """
    ORDER BY settled_at_ms DESC,intent_id LIMIT 1
  ) receipt
 """
+
+
+def duplicate_claims_sql(event_id_sql: str) -> str:
+    """Restatement provenance stays attached to its adopted revision, even after new sources arrive.
+
+    The caller supplies a code-owned SQL identifier, never request text. Both the bounded feed
+    decoration and detail use the same indexed prior-update and claim-receipt lookups.
+    """
+    return f"""
+ SELECT DISTINCT ON (change->>'current_ref') change->>'current_ref' AS claim_ref,
+        change->>'previous_ref' AS previous_ref,prior.event_id,
+        COALESCE(receipt.card->>'headline_zh',claim->>'statement') AS headline,
+        claim->>'statement' AS statement,(claim->>'first_available_at_ms')::bigint AS first_available_at_ms,
+        item.reporting_origin,receipt.settled_at_ms AS received_at_ms,
+        original_head.document AS original_document,original_head.content_revision AS original_revision,
+        work.state AS original_state,work.detail->>'content_revision' AS decided_revision,
+        work.updated_at_ms AS decision_updated_at_ms,decision.decided_at_ms,decision.plan
+ FROM news_analyses history
+ CROSS JOIN LATERAL jsonb_array_elements(history.document->'changes') change
+ LEFT JOIN news_analyses prior ON prior.update_ref=change->>'previous_content_ref'
+  AND prior.adopted_at_ms IS NOT NULL
+ LEFT JOIN LATERAL (
+   SELECT value AS claim FROM jsonb_array_elements(prior.document->'claims')
+   WHERE value->>'ref'=change->>'previous_ref' LIMIT 1
+ ) previous ON true
+ LEFT JOIN news_events original ON original.event_id=prior.event_id
+ LEFT JOIN news_items item ON item.item_id=original.leader_item_id
+ LEFT JOIN news_analyses original_head ON original_head.analysis_id=original.current_analysis_id
+ LEFT JOIN news_jobs work ON work.job_kind='notify' AND work.subject_id=prior.event_id
+ LEFT JOIN news_notifications decision ON decision.notification_id=work.detail->>'decision_ref'
+ LEFT JOIN LATERAL (
+   SELECT card,settled_at_ms FROM news_notifications
+   WHERE kind='update' AND state='sent'
+     AND claim_refs @> to_jsonb(ARRAY[change->>'previous_ref'])
+   ORDER BY settled_at_ms DESC,intent_id LIMIT 1
+ ) receipt ON true
+ WHERE history.event_id={event_id_sql} AND history.adopted_at_ms IS NOT NULL
+   AND change->>'kind'='restatement'
+ ORDER BY change->>'current_ref',history.adopted_at_ms DESC,history.analysis_id DESC
+ """  # noqa: S608 -- callers pass fixed column names or a bound placeholder.
+
+
+EVENT_DUPLICATE_CLAIMS_SQL: Final = duplicate_claims_sql("%s")
+
+
+def duplicate_view(row: Mapping[str, Any]) -> dict[str, Any]:
+    work = effective_notification(
+        {"content_revision": row.get("original_revision"), "document": row.get("original_document")},
+        {
+            "state": row["original_state"],
+            "content_revision": row.get("decided_revision"),
+            "plan": row.get("plan"),
+            "decided_at_ms": row.get("decided_at_ms"),
+        }
+        if row.get("original_state")
+        else None,
+    )
+    plan = (work or {}).get("plan") or {} if not (work or {}).get("projection_error") else {}
+    decision = next(
+        (entry for entry in plan.get("claim_decisions", ()) if entry.get("claim_ref") == row.get("previous_ref")), None
+    )
+    return {
+        "claim_ref": row["claim_ref"],
+        "event_id": row.get("event_id"),
+        "headline": row.get("headline"),
+        "first_available_at_ms": row.get("first_available_at_ms"),
+        "reporting_origin": row.get("reporting_origin"),
+        "received_at_ms": row.get("received_at_ms"),
+        "reason_zh": claim_reason_zh(decision) if decision else "原条未记录可读取的推送判断",
+        "decided_at_ms": row.get("decided_at_ms") if decision else None,
+    }
+
+
+def duplicate_claims(conn: Any, event_id: str) -> list[dict[str, Any]]:
+    return [duplicate_view(row) for row in conn.execute(EVENT_DUPLICATE_CLAIMS_SQL, (event_id,)).fetchall()]
 
 
 def attach_earlier_receipts(conn: Any, work: dict[str, Any] | None, view: dict[str, Any] | None) -> None:
@@ -200,6 +277,7 @@ def notification_work(conn: Any, event_id: str) -> dict[str, Any] | None:
                 "next_attempt_at_ms",
                 "updated_at_ms",
                 "decided_at_ms",
+                "decided_document",
             )
         },
     }
@@ -216,6 +294,7 @@ def event_delivery_queue(conn: Any, event_id: str) -> list[dict[str, Any]]:
 __all__ = [
     "EVENT_DELIVERIES_SQL",
     "EVENT_DELIVERY_QUEUE_SQL",
+    "EVENT_DUPLICATE_CLAIMS_SQL",
     "EVENT_EARLIER_RECEIPTS_SQL",
     "EVENT_KNOWN_RECEIPTS_SQL",
     "EVENT_NOTIFICATION_WORK_SQL",
@@ -225,6 +304,9 @@ __all__ = [
     "EVENT_UPDATE_PREVIOUS_CLAIMS_SQL",
     "EVENT_UPDATE_REVISIONS_SQL",
     "attach_earlier_receipts",
+    "duplicate_claims",
+    "duplicate_claims_sql",
+    "duplicate_view",
     "event_deliveries",
     "event_delivery_queue",
     "event_update_head",

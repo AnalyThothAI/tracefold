@@ -14,12 +14,14 @@ from typing import Any
 from .outcome import (
     Outcome,
     admission_zh,
+    decision_clock,
     delivery_error_zh,
     error_code_zh,
     event_outcome,
     storyline_key_zh,
 )
 from .update_view import CHANGE_KIND_ZH, INTENT_STATE_ZH, semantic_state
+from .updates.contracts import NOTIFICATION_CHANGES
 
 
 def reader_delivery(
@@ -56,6 +58,10 @@ def event_timeline(
     semantic: Mapping[str, Any] | None = None,
     adopted: bool = False,
     notification: Mapping[str, Any] | None = None,
+    head: Mapping[str, Any] | None = None,
+    duplicate: Mapping[str, Any] | None = None,
+    has_restatement: bool = False,
+    headline_ref: str | None = None,
     evidence_snapshots: Sequence[Mapping[str, Any]] = (),
     revisions: Sequence[Mapping[str, Any]] = (),
     observations: Sequence[Mapping[str, Any]] = (),
@@ -76,6 +82,10 @@ def event_timeline(
         semantic=semantic,
         adopted=adopted,
         notification=notification,
+        head=head,
+        duplicate=duplicate,
+        has_restatement=has_restatement,
+        headline_ref=headline_ref,
     )
     steps: list[dict[str, Any]] = []
 
@@ -137,6 +147,7 @@ def event_timeline(
         revisions=revisions,
         observations=observations,
         notification_view=notification_view,
+        has_notification_work=notification is not None,
         intents=intents,
     )
     steps.extend(sorted(update_steps, key=lambda step: step["at_ms"]))
@@ -159,6 +170,7 @@ def _update_steps(
     revisions: Sequence[Mapping[str, Any]],
     observations: Sequence[Mapping[str, Any]],
     notification_view: Mapping[str, Any] | None,
+    has_notification_work: bool,
     intents: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     """The EventUpdate path's steps (#706), each from one durable row and never from a guess."""
@@ -218,6 +230,44 @@ def _update_steps(
                 },
             }
         )
+        if (
+            notification_view is None
+            and not has_notification_work
+            and isinstance(kinds, list)
+            and "restatement" in kinds
+            and not set(kinds) & NOTIFICATION_CHANGES
+        ):
+            steps.append(
+                {
+                    "stage": "notify",
+                    "title_zh": "通知",
+                    "at_ms": int(revision["adopted_at_ms"]),
+                    "summary_zh": "不建立通知：本版本只有复述",
+                    "facts": {"content_revision": revision["content_revision"]},
+                }
+            )
+        decided_at = (notification_view or {}).get("decided_at_ms")
+        if (
+            notification_view is not None
+            and notification_view.get("carried")
+            and decided_at is not None
+            and int(revision["adopted_at_ms"]) > int(decided_at)
+            and isinstance(kinds, list)
+            and not set(kinds) & NOTIFICATION_CHANGES
+        ):
+            steps.append(
+                {
+                    "stage": "notify",
+                    "title_zh": "沿用通知决策",
+                    "at_ms": int(revision["adopted_at_ms"]),
+                    "summary_zh": f"沿用 {decision_clock(int(decided_at))} 的通知决策（本版本无新增事实）",
+                    "facts": {
+                        "content_revision": revision["content_revision"],
+                        "decided_at_ms": decided_at,
+                        "decided_revision": notification_view.get("decided_revision"),
+                    },
+                }
+            )
     if semantic is not None and semantic_state(semantic) == "failed":
         steps.append(
             {
@@ -244,7 +294,7 @@ def _update_steps(
             {
                 "stage": "notify",
                 "title_zh": "通知决策",
-                "at_ms": int(notification_view["updated_at_ms"]),
+                "at_ms": int(notification_view.get("decided_at_ms") or notification_view["updated_at_ms"]),
                 "summary_zh": summary,
                 "facts": {
                     "action": plan.get("action"),

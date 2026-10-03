@@ -27,9 +27,13 @@ class NewsOutcomeData(ExactApiSchema):
         "notification_failed",
         "not_notified",
         "delivery_ambiguous",
+        "duplicate",
     ]
     text_zh: str
     reason_zh: str = ""
+    reason_at_ms: int | None = None
+    reason_before_time_zh: str = ""
+    reason_after_time_zh: str = ""
     group: Literal["pushed", "held", "pending"]
 
 

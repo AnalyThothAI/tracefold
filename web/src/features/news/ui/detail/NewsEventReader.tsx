@@ -11,11 +11,62 @@ import {
   seconds,
   sourceDisplayName,
 } from "../../model/eventReader";
-import { absoluteTime, validExternalUrl } from "../../model/newsLabels";
+import { absoluteTime, clockTime, outcomeReason, validExternalUrl } from "../../model/newsLabels";
 
 import type { NewsDetailNavigate } from "./NewsEventUpdate";
 
 type EarlierMessage = NonNullable<NewsClaimDecision["earlier"]>;
+type Duplicate = NonNullable<NonNullable<NewsEventDetail["event_update"]>["duplicates"]>[number];
+
+function OriginalEvent({ original }: { original: Duplicate }) {
+  return (
+    <div className="news-reader-earlier">
+      <p>
+        同一事实最早见于
+        {original.first_available_at_ms != null
+          ? ` · ${absoluteTime(original.first_available_at_ms)}`
+          : "更早事件"}
+        {original.reporting_origin ? ` · ${original.reporting_origin}` : ""}
+      </p>
+      {original.event_id ? (
+        <Link to={newsEventPath(original.event_id)}>{original.headline || "查看原事件"}</Link>
+      ) : (
+        <p>原事件暂不可读取。</p>
+      )}
+      <p>
+        原条状态：
+        {original.received_at_ms != null
+          ? `已推送 · ${clockTime(original.received_at_ms)} 送达`
+          : `未推送 · ${original.reason_zh}${original.decided_at_ms != null ? `（${clockTime(original.decided_at_ms)}）` : ""}`}
+      </p>
+    </div>
+  );
+}
+
+function carriedNote(detail: NewsEventDetail): string {
+  const notification = detail.processing?.notification;
+  if (!notification?.carried) return "";
+  const names = notification.added_sources ?? [];
+  const when =
+    notification.carried_at_ms == null ? "" : `${clockTime(notification.carried_at_ms)} `;
+  const source = names.length
+    ? `新增 ${names.length} 个来源（${names.join("、")}）`
+    : "仅非通知变化";
+  const decision =
+    notification.decided_at_ms == null ? "原有" : clockTime(notification.decided_at_ms);
+  return eventReader(detail).currentSent.length
+    ? `${when}${source}，事实没有变化，不再推送。这张卡片仍是读者收到的最新内容。`
+    : `${when}${source}，事实没有变化，沿用 ${decision} 的判断，不重新判断。`;
+}
+
+function deliveryReason(detail: NewsEventDetail): string {
+  const outcome = detail.outcome;
+  return detail.processing?.notification?.carried &&
+    outcome.kind === "not_notified" &&
+    outcome.reason_at_ms != null
+    ? `${outcome.reason_before_time_zh.replace(/ · $/, "")}（${clockTime(outcome.reason_at_ms)} 判断）`
+    : outcomeReason(outcome);
+}
 
 function EarlierNotification({ earlier }: { earlier: EarlierMessage }) {
   return (
@@ -101,9 +152,10 @@ export function NewsReaderDelivery({
         : [],
     ),
   );
-  const historical = reader.sent.filter(
-    (intent) => intent.content_revision !== detail.event_update?.content_revision,
-  );
+  const currentIds = new Set(reader.currentSent.map((intent) => intent.intent_id));
+  const historical = reader.sent.filter((intent) => !currentIds.has(intent.intent_id));
+  const duplicates =
+    detail.outcome.kind === "duplicate" ? (detail.event_update?.duplicates ?? []) : [];
   return (
     <section
       aria-label="读者收到的推送"
@@ -121,17 +173,37 @@ export function NewsReaderDelivery({
             onNavigate={onNavigate}
           />
         ))
+      ) : detail.outcome.kind === "duplicate" ? (
+        <>
+          <p className="news-reader-empty">本条不单独推送：内容与更早的事件相同</p>
+          {duplicates.map((original) => (
+            <OriginalEvent key={original.claim_ref} original={original} />
+          ))}
+          {!duplicates.length ? (
+            <p className="news-reader-note">与更早事件重复，原事件暂不可读取。</p>
+          ) : null}
+          <p className="news-reader-note">
+            复述不会重新判断，也不会单独推送；读者是否收到以原条为准。
+          </p>
+        </>
       ) : (
         <>
           <p className="news-reader-empty">
-            {detail.outcome.group === "pending" ? "本次尚未确认送达" : "本次没有确认送达的推送"}
+            {detail.outcome.group === "pending"
+              ? "本次尚未确认送达"
+              : detail.outcome.kind === "not_notified"
+                ? "本次未推送"
+                : "本次没有确认送达的推送"}
           </p>
-          <p className="news-reader-note">{detail.outcome.reason_zh}</p>
+          <p className="news-reader-note">{deliveryReason(detail)}</p>
           {Array.from(earlier.values()).map((message) => (
             <EarlierNotification earlier={message} key={message.intent_id} />
           ))}
         </>
       )}
+      {carriedNote(detail) ? (
+        <p className="news-reader-note news-reader-carried">{carriedNote(detail)}</p>
+      ) : null}
       {historical.length ? (
         <details className="news-detail-record">
           <summary>此前版本已送达 · {historical.length} 条</summary>
@@ -171,14 +243,22 @@ export function NewsReaderFacts({
     >
       <h2>
         {detail.event_update
-          ? `这条新闻说了 ${facts.length} 件事${sentCount ? `，推送了 ${sentCount} 件` : "，尚无确认送达"}`
+          ? `这条新闻说了 ${facts.length} 件事${
+              sentCount
+                ? `，推送了 ${sentCount} 件`
+                : detail.outcome.kind === "duplicate"
+                  ? "，与更早事件重复"
+                  : detail.outcome.kind === "not_notified"
+                    ? "，未推送"
+                    : "，尚无确认送达"
+            }`
           : "尚无已采用事实"}
       </h2>
       {!facts.length ? (
         <EmptyNote>尚无已采用事实，请先查看原文与处理状态。</EmptyNote>
       ) : (
         <ol className="news-reader-facts">
-          {facts.map(({ claim, number, decision, text, sent }) => {
+          {facts.map(({ claim, number, decision, text, sent, duplicate }) => {
             const pending = detail.processing?.intents?.find(
               (intent) =>
                 intent.content_revision === detail.event_update?.content_revision &&
@@ -191,17 +271,19 @@ export function NewsReaderFacts({
                 ? "已被后续变化替代"
                 : sent
                   ? `已推送${decision?.render === "increment" ? " · 补充" : decision?.render === "correction" ? " · 更正" : ""}`
-                  : pending
-                    ? pending.state_zh || pending.state
-                    : decision?.reason === "known_to_reader"
-                      ? "读者已知 · 未推送"
-                      : decision?.decision === "not_notified"
-                        ? "未推送"
-                        : decision?.decision === "deferred"
-                          ? "等待判断"
-                          : decision?.decision === "notify"
-                            ? "决定推送 · 尚未确认送达"
-                            : "尚无推送决定";
+                  : duplicate
+                    ? `重复 · ${duplicate.received_at_ms != null ? "原条已推送" : "未推送"}`
+                    : pending
+                      ? pending.state_zh || pending.state
+                      : decision?.reason === "known_to_reader"
+                        ? "读者已知 · 未推送"
+                        : decision?.decision === "not_notified"
+                          ? "未推送"
+                          : decision?.decision === "deferred"
+                            ? "等待判断"
+                            : decision?.decision === "notify"
+                              ? "决定推送 · 尚未确认送达"
+                              : "尚无推送决定";
             return (
               <li
                 className="news-reader-fact"
@@ -216,16 +298,28 @@ export function NewsReaderFacts({
                 <div>
                   <p className="news-reader-fact-state">
                     {status}
+                    {sent && currentSent[0]?.settled_at_ms != null
+                      ? ` · ${clockTime(currentSent[0].settled_at_ms)}`
+                      : ""}
                     {claim.disputed ? " · 来源有分歧" : ""}
                   </p>
                   <h3>{text || claim.statement}</h3>
                   {text ? <p className="news-reader-original">{claim.statement}</p> : null}
                   <p className="news-reader-reason">
-                    {decision?.reason_zh ||
-                      (claim.retired || claim.superseded
-                        ? "这一事实已不再作为当前内容。"
-                        : "尚未记录这件事的推送判断。")}
+                    {duplicate
+                      ? `与${duplicate.first_available_at_ms == null ? "更早" : ` ${clockTime(duplicate.first_available_at_ms)} `}事件中的事实等价（复述）；${duplicate.received_at_ms != null ? "读者已收到原条" : duplicate.reason_zh === "旧版模型判断：只进信息流" ? "原条只进信息流" : "原条未推送"}，本条沿用，不再推送。`
+                      : decision?.reason === "stale_source"
+                        ? `同一事实 ${absoluteTime(claim.first_available_at_ms)} 已出现（超过 3 小时）`
+                        : decision?.reason_zh ||
+                          (claim.retired || claim.superseded
+                            ? "这一事实已不再作为当前内容。"
+                            : "尚未记录这件事的推送判断。")}
                   </p>
+                  {duplicate?.event_id ? (
+                    <p className="news-reader-prior-link">
+                      <Link to={newsEventPath(duplicate.event_id)}>查看原事件 ↗</Link>
+                    </p>
+                  ) : null}
                   {decision?.earlier ? (
                     <p className="news-reader-prior-link">
                       读者 {absoluteTime(decision.earlier.received_at_ms)} 已收到{" "}
@@ -264,6 +358,9 @@ export function NewsReaderFacts({
                           {decision.push_cut != null
                             ? `（推送线 ${(decision.push_cut * 100).toFixed(0)}%）`
                             : "（推送线未记录）"}
+                          {detail.processing?.notification?.decided_at_ms != null
+                            ? ` · ${clockTime(detail.processing.notification.decided_at_ms)} 判断`
+                            : ""}
                           {` · 重点概率 ${(decision.p_key * 100).toFixed(0)}%`}
                           {decision.key_cut != null
                             ? `（重点线 ${(decision.key_cut * 100).toFixed(0)}%）`
@@ -444,7 +541,7 @@ export function NewsReaderStory({ detail }: { detail: NewsEventDetail }) {
                     {event.outcome.text_zh}
                     {event.received_at_ms != null ? ` ${absoluteTime(event.received_at_ms)}` : ""}
                   </p>
-                  <small>{event.outcome.reason_zh}</small>
+                  <small>{outcomeReason(event.outcome)}</small>
                 </div>
               </li>
             ))}
@@ -472,7 +569,7 @@ export function NewsReaderTiming({ detail }: { detail: NewsEventDetail }) {
         {timing.end == null
           ? "未记录完成时刻，暂不展示总耗时。"
           : timing.completed
-            ? "从收到本事件到当前版本最后一次确认送达。"
+            ? "从收到本事件到有效决定的最后一次确认送达。"
             : "从收到本事件到本次通知决定；没有确认送达。"}
       </p>
       {timing.parts.length ? (

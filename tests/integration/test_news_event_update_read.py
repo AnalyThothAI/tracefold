@@ -23,6 +23,7 @@ from tests.support.news_event_updates import (
     persist_update,
     queue_intent,
     raised_update,
+    repeat_update,
     settle_intent,
     silent_plan,
 )
@@ -161,6 +162,101 @@ def _feed(news: Any, **over: Any) -> dict[str, Any]:
     }
     params.update(over)
     return news.list_feed(**params)
+
+
+@pytest.mark.parametrize("pushed", [True, False])
+def test_non_notification_head_carries_real_decision_and_receipt_across_all_reads(conn, pushed) -> None:
+    seeded = _seed(conn)
+    head = seeded["raised"] if pushed else seeded["silent"]
+    repos = repositories_for_connection(conn)
+    before = _feed(repos.news)["counts"]
+    updated = repeat_update(head, event_id=head.event_id, head=head, adopted_at_ms=NOW - 10_000)
+    assert not any(change.kind in {"new_fact", "parameter_change"} for change in updated.changes)
+    with repos.transaction():
+        persist_update(conn, updated)
+        persist_semantic_work(
+            conn,
+            head.event_id,
+            wanted=updated.input_revision,
+            done=updated.input_revision,
+            now_ms=NOW - 10_000,
+            last_outcome="adopted",
+        )
+    feed = _feed(repos.news)
+    detail = repos.news.event_detail(head.event_id)
+    row = next(row for row in feed["events"] if row["event_id"] == head.event_id)
+    assert row["outcome"] == detail["outcome"]
+    assert feed["counts"] == before
+    notification = detail["processing"]["notification"]
+    assert notification["carried"] is True
+    assert notification["decided_revision"] == head.content_revision
+    assert notification["content_revision"] != updated.content_revision
+    assert notification["added_sources"] == ["additional wire"]
+    assert any(step["title_zh"] == "通知决策" for step in detail["timeline"])
+    assert any(step["title_zh"] == "沿用通知决策" for step in detail["timeline"])
+    if pushed:
+        assert row["outcome"]["kind"] == "delivered"
+        assert row["update"]["headline"] == detail["event_update"]["headline"] == SENT_HEADLINE
+        assert "之后新增 1 个来源" in row["outcome"]["reason_zh"]
+    else:
+        assert row["outcome"]["kind"] == "not_notified"
+        assert "判断，之后仅新增来源" in row["outcome"]["reason_zh"]
+    with repos.transaction():
+        conn.execute("UPDATE news_jobs SET state='pending' WHERE job_kind='notify' AND subject_id=%s", (head.event_id,))
+    owed = repos.news.event_detail(head.event_id)
+    assert owed["processing"]["notification"] is None
+    assert owed["outcome"]["group"] == "pending"
+    owed_feed = _feed(repos.news)
+    assert next(row["outcome"] for row in owed_feed["events"] if row["event_id"] == head.event_id) == owed["outcome"]
+    assert any(row["event_id"] == head.event_id for row in _feed(repos.news, outcome="pending")["events"])
+    assert not any(step["title_zh"] == "沿用通知决策" for step in owed["timeline"])
+
+
+def test_notification_revision_drift_is_held_in_feed_counts_and_detail(conn) -> None:
+    seeded = _seed(conn)
+    head = seeded["raised"]
+    with conn.transaction():
+        conn.execute(
+            "UPDATE news_jobs SET detail=jsonb_set(detail,'{content_revision}',to_jsonb(%s::text)) "
+            "WHERE job_kind='notify' AND subject_id=%s",
+            (seeded["silent"].content_revision, head.event_id),
+        )
+    repos = repositories_for_connection(conn)
+    detail = repos.news.event_detail(head.event_id)
+    row = next(row for row in _feed(repos.news)["events"] if row["event_id"] == head.event_id)
+    assert row["outcome"] == detail["outcome"]
+    assert row["outcome"]["text_zh"] == "通知状态异常"
+    assert row["outcome"]["group"] == "held"
+    assert any(row["event_id"] == head.event_id for row in _feed(repos.news, outcome="held")["events"])
+    assert not any(row["event_id"] == head.event_id for row in _feed(repos.news, outcome="pushed")["events"])
+
+
+@pytest.mark.parametrize("pushed", [True, False])
+def test_restatement_links_original_even_after_original_and_duplicate_receive_new_sources(conn, pushed) -> None:
+    seeded = _seed(conn)
+    original = seeded["raised"] if pushed else seeded["silent"]
+    repos = repositories_for_connection(conn)
+    duplicate = repeat_update(original, event_id="repeated", adopted_at_ms=NOW - 20_000)
+    with repos.transaction():
+        _event(repos.news, "repeated", opened_at_ms=NOW - 25_000)
+        persist_update(conn, duplicate)
+        persist_semantic_work(conn, "repeated", wanted=1, done=1, now_ms=NOW - 20_000, last_outcome="adopted")
+        newer = repeat_update(original, event_id=original.event_id, head=original, adopted_at_ms=NOW - 10_000)
+        persist_update(conn, newer)
+        newest = repeat_update(duplicate, event_id=duplicate.event_id, head=duplicate, adopted_at_ms=NOW - 5_000)
+        persist_update(conn, newest)
+        persist_semantic_work(conn, "repeated", wanted=2, done=2, now_ms=NOW - 5_000, last_outcome="adopted")
+    detail = repos.news.event_detail("repeated")
+    row = next(row for row in _feed(repos.news)["events"] if row["event_id"] == "repeated")
+    assert row["outcome"] == detail["outcome"]
+    assert row["outcome"]["kind"] == "duplicate" and row["outcome"]["group"] == "held"
+    (reference,) = detail["event_update"]["duplicates"]
+    assert reference["event_id"] == original.event_id
+    assert bool(reference["received_at_ms"]) is pushed
+    assert reference["headline"]
+    if not pushed:
+        assert reference["reason_zh"] == "推送概率未达要求，只进信息流"
+    assert any(step["title_zh"] == "通知" for step in detail["timeline"])
 
 
 def test_feed_and_detail_assets_follow_current_primary_claims_not_source_tags(conn) -> None:

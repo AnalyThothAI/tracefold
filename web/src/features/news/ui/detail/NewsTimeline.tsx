@@ -67,7 +67,11 @@ function TimelineStep({
             <span className="news-timeline-delta">+{optionalDuration(delta)}</span>
           )}
         </div>
-        <p className="news-timeline-summary">{step.summary_zh}</p>
+        <p className="news-timeline-summary">
+          {step.title_zh === "沿用通知决策" && typeof step.facts?.decided_at_ms === "number"
+            ? `沿用 ${clockTime(step.facts.decided_at_ms)} 的通知决策（本版本无新增事实）`
+            : step.summary_zh}
+        </p>
         {facts.length ? (
           <button
             aria-expanded={open}

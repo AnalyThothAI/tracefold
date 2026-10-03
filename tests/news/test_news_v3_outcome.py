@@ -2,13 +2,92 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tracefold.news.health import status_health
 from tracefold.news.outcome import (
     admission_zh,
     delivery_error_zh,
+    event_outcome,
     storyline_key_zh,
 )
 from tracefold.news.timeline import event_timeline
+from tracefold.news.update_view import claim_reasons_zh, effective_notification
+
+
+@pytest.mark.parametrize(
+    ("original", "copy"),
+    [
+        (None, "与更早事件重复"),
+        ({"received_at_ms": 0}, "读者 00:00 UTC 已收到同一事实"),
+        ({"first_available_at_ms": 0}, "同一事实 00:00 UTC 已出现 · 原条未推送"),
+    ],
+)
+def test_duplicate_outcome_uses_original_receipt_or_appearance(original, copy) -> None:
+    result = event_outcome(
+        admission="candidate",
+        delivery=None,
+        adopted=True,
+        head={"has_notification_changes": False},
+        has_restatement=True,
+        duplicate=original,
+    )
+    assert (result.kind, result.group, result.reason_zh) == ("duplicate", "held", copy)
+
+
+def test_effective_decision_keeps_version_and_clock_and_rejects_drift() -> None:
+    head = {"content_revision": "v2", "has_notification_changes": False}
+    work = {
+        "content_revision": "v1",
+        "state": "done",
+        "action": "no_notification",
+        "decided_at_ms": 0,
+        "added_sources": ["wire"],
+        "claim_decisions": [
+            {"claim_ref": "fact", "decision": "not_notified", "reason": "reader_feed", "p_push": 0.26, "push_cut": 0.37}
+        ],
+    }
+    effective = effective_notification(head, work)
+    assert effective["carried"] and effective["decided_revision"] == "v1" and effective["decided_at_ms"] == 0
+    assert "carried" not in work
+    silent = event_outcome(admission="candidate", delivery=None, adopted=True, head=head, notification=work)
+    assert silent.reason_zh == "推送概率 26%，未到 37% · 00:00 UTC 判断，之后仅新增来源"
+    sent = event_outcome(
+        admission="candidate",
+        adopted=True,
+        head=head,
+        notification=work | {"action": "notify"},
+        delivery={"content_revision": "v1", "state": "sent", "settled_at_ms": 1000},
+    )
+    assert sent.kind == "delivered" and "之后新增 1 个来源" in sent.reason_zh
+    for state in ("pending", "failed"):
+        assert effective_notification(head, work | {"state": state}) is None
+    mismatch = event_outcome(
+        admission="candidate",
+        adopted=True,
+        head=head | {"has_notification_changes": True},
+        notification=work,
+        delivery={"state": "sent"},
+    )
+    assert mismatch.text_zh == "通知状态异常" and mismatch.group == "held"
+
+
+def test_headline_reason_numeric_and_historical_copy() -> None:
+    decisions = [
+        {"claim_ref": "old", "decision": "not_notified", "reason": "stale_source"},
+        {
+            "claim_ref": "lead",
+            "decision": "not_notified",
+            "reason": "reader_feed",
+            "reader": {"scores": {"p_push": 0.12, "push_cut": 0.37}},
+        },
+    ]
+    assert claim_reasons_zh(decisions, headline_ref="lead") == (
+        "推送概率 12%，未到 37% · 另 1 件：同一事实 3 小时前已出现"
+    )
+    decisions[1]["reader"] = {"judgment": {"importance": 0.1}}
+    assert claim_reasons_zh(decisions, headline_ref="lead").startswith("旧版模型判断：只进信息流")
+
 
 NOW = 1_800_000_000_000
 

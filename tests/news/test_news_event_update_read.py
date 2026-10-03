@@ -126,7 +126,9 @@ def test_outcome_texts_name_the_key_card_and_the_reasons_nothing_was_sent() -> N
             ],
         },
     )
-    assert silent.reason_zh == "推送概率未达要求，只进信息流 ×2 · 读者已收到同一事实"
+    assert silent.reason_zh == (
+        "推送概率未达要求，只进信息流 · 另 2 件：推送概率未达要求，只进信息流、读者已收到同一事实"
+    )
     # editorial_v1 history keeps its own reasons, marked as the old editor's.
     legacy = _outcome(
         semantic=_DONE,

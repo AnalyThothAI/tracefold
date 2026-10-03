@@ -7,7 +7,7 @@
     grid-template-areas:
       "time main badge"
       "time main reason";
-    grid-template-columns: 54px minmax(0, 1fr) 150px;
+    grid-template-columns: 54px minmax(0, 1fr) 190px;
     grid-template-rows: auto 1fr;
     gap: 3px 14px;
     align-items: start;
@@ -152,10 +152,6 @@
 
     .news-event-badge {
       justify-self: end;
-    }
-
-    .news-event-row[data-outcome-group="held"] .news-event-badge {
-      display: none;
     }
 
     .news-event-reason {

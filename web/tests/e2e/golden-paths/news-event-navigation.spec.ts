@@ -64,7 +64,7 @@ test("Enter opens the Event and the return link restores the feed filters", asyn
   await expect(page).toHaveURL(filteredFeedPath);
   await expect(page.getByRole("heading", { name: "新闻事件流" })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "news search" })).toHaveValue("tariff");
-  await expect(page.getByRole("tab", { name: "被拦截 271" })).toHaveAttribute(
+  await expect(page.getByRole("tab", { name: "未推送 271" })).toHaveAttribute(
     "aria-selected",
     "true",
   );

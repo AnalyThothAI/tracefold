@@ -179,6 +179,39 @@ def silent_plan(update: EventUpdate, *, reader_revision: str = "reader-1") -> No
     )
 
 
+def repeat_update(
+    original: EventUpdate, *, event_id: str, adopted_at_ms: int, head: EventUpdate | None = None
+) -> EventUpdate:
+    """Use the real assembly path for an equivalent report or an extra source."""
+    claim = original.current_claims[0]
+    evidence = material(claim.statement, publisher=f"extra-{event_id}-{adopted_at_ms}", origin="additional wire")
+    source = FrozenInput(
+        event_id=event_id,
+        revision=1 if head is None else head.input_revision + 1,
+        lineage_id=f"{event_id}:repeat:{adopted_at_ms}",
+        evidence=(evidence,),
+        prior=(PriorClaim(event_id=original.event_id, content_revision=original.content_revision, claim=claim),),
+    )
+    extraction = Extraction.model_validate(
+        {
+            "claims": [
+                {
+                    "slot": "repeat",
+                    "statement": claim.statement,
+                    "topics": list(claim.topics),
+                    "fields": claim.fields.model_dump(mode="json"),
+                    "citations": [{"evidence_ref": evidence.ref, "quote": evidence.text}],
+                }
+            ],
+            "relations": [{"slot": "repeat", "previous_ref": claim.ref, "relation": "equivalent"}],
+            "supports": [{"slot": "repeat", "evidence_ref": evidence.ref, "relation": "supports"}],
+        }
+    )
+    update = assemble_update(source, extraction, head, adopted_at_ms=adopted_at_ms)
+    assert update is not None
+    return update
+
+
 def persist_update(conn: Any, update: EventUpdate, *, completed_at_ms: int | None = None) -> str:
     """Write one observation and its adopted revision, and move the head to it. Returns the result id."""
 
