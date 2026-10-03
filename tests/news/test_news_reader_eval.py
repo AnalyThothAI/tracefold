@@ -25,6 +25,7 @@ from scripts.eval_news_reader import (
     certify_sequence,
     check_selection,
     clopper_pearson_lower,
+    features,
     fit,
     fit_cut_sequences,
     guide_version,
@@ -35,21 +36,32 @@ from scripts.eval_news_reader import (
     register_holdout_use,
     render_report,
     sample_owner,
+    score_representatives,
     split_cases,
     story_frame,
     verify_candidate,
     volume_report,
 )
+from scripts.export_news_reader_calibration import backend_entry
 from scripts.news_reader_labeling import GUIDE_VERSION
-from tracefold.news.notifications.novelty import ReaderNovelty
-from tracefold.news.notifications.policy import KIND_FLOOR, PUSHABLE_KINDS, ReaderCalibration
+from tracefold.news.notifications.novelty import ClaimLink, ReaderNovelty
+from tracefold.news.notifications.policy import (
+    KIND_FLOOR,
+    PUSHABLE_KINDS,
+    READER_POLICIES,
+    ReaderCalibration,
+    reader_decision,
+    reader_scores,
+)
 from tracefold.news.notifications.reader import (
     READER_QUESTIONS_IDENTITY,
+    AnchorEvidence,
     InterruptEvidence,
     MaterialityEvidence,
     ReaderJudgment,
     ReportKindEvidence,
 )
+from tracefold.news.updates.contracts import ClaimFields
 from tracefold.news.updates.identity import digest
 
 BOUNDARY = 1_000_000
@@ -154,6 +166,88 @@ def candidate() -> dict[str, Any]:
     }
     result["candidate_identity"] = digest(result)
     return result
+
+
+@pytest.mark.parametrize("novelty", ["unlinked", "increment", "development"])
+@pytest.mark.parametrize("anchor", [None, {"m1": 0.9, "none": 0.1}, {"m1": 0.8, "none": 0.2}])
+@pytest.mark.parametrize("phase", ["effective", "unknown"])
+@pytest.mark.parametrize("floor", [1, 2, 3])
+def test_features_held_and_representative_predictions_match_runtime_exactly(novelty, anchor, phase, floor):
+    row = case(0)
+    row["reader_novelty"] = ReaderNovelty(novelty=novelty, intent_id=None if novelty == "unlinked" else "receipt")
+    row["message_intents"] = ["receipt"]
+    row["reader_input"]["messages"] = ["An earlier launch was announced"]
+    row["reader_input"]["claim"]["fields"]["phase"] = phase
+    answer = judgment().model_copy(
+        update={"anchor": None if anchor is None else AnchorEvidence(probabilities=anchor, confidence=0.9)}
+    )
+    calibration = ReaderCalibration(**{**asdict(READER_POLICIES["native"].calibration), "materiality_floor": floor})
+    decision = reader_decision(
+        row["reader_novelty"],
+        answer,
+        first_available_at_ms=20,
+        message_intents=row["message_intents"],
+        claim_fields=ClaimFields.model_validate(row["reader_input"]["claim"]["fields"]),
+        calibration=calibration,
+    )
+    push_x, _ = features(row, answer, floor)
+    assert decision.scores is not None
+    assert push_x[-1] == float(decision.scores.held)
+    expected = reader_scores(answer, held=decision.scores.held, calibration=calibration)
+    score = score_representatives([row], {row["case_id"]: answer}, {"calibration": asdict(calibration)})["0"]
+    assert (score["p_push"], score["p_key"]) == (expected.p_push, expected.p_key)
+
+
+def test_representative_at_native_cut_uses_the_runtime_accumulation_order() -> None:
+    row = case(0)
+    answer = judgment(0.8227253701530348).model_copy(
+        update={
+            "report_kind": ReportKindEvidence(
+                value="background",
+                confidence=0.9,
+                probabilities={kind: {"new_action": 0.3, "background": 0.7}.get(kind, 0.0) for kind in PUSHABLE_KINDS},
+            )
+        }
+    )
+    calibration = READER_POLICIES["native"].calibration
+    score = score_representatives([row], {"0": answer}, {"calibration": asdict(calibration)})["0"]
+    expected = reader_scores(answer, calibration=calibration)
+    assert (score["p_push"], score["p_key"]) == (expected.p_push, expected.p_key)
+    assert score["p_push"] == 0.37200000000000005
+    assert score["eligible"] and score["p_push"] >= calibration.push_cut
+
+
+@pytest.mark.parametrize("novelty", ["known", "in_flight", "correction"])
+def test_features_keep_deterministic_exceptions_out_of_calibration(novelty):
+    row = case(0)
+    row["reader_novelty"] = (
+        ReaderNovelty(
+            novelty="development",
+            intent_id="receipt",
+            settled_at_ms=1,
+            path=(ClaimLink(current_ref="c", previous_ref="a", relation="corrects", asserted_at_ms=1),),
+        )
+        if novelty == "correction"
+        else ReaderNovelty(novelty=novelty, intent_id="receipt")
+    )
+    row["first_available_at_ms"] = 20
+    with pytest.raises(ValueError, match="deterministic_exception_not_calibration_case"):
+        features(row, judgment(), 2)
+
+
+def test_old_protocol_candidates_and_certificates_are_rejected() -> None:
+    assert PROTOCOL == "news_reader_calibration_v4"
+    old = {**candidate(), "protocol": "news_reader_calibration_v3"}
+    with pytest.raises(ValueError, match="frozen_fit_candidate_required"):
+        owner_frame([], [], old)
+    with pytest.raises(ValueError, match="certificate_identity_mismatch"):
+        backend_entry(
+            {**old, "phase": "certify"},
+            backend="native",
+            report_ref="fixture.md",
+            report_bytes=b"fixture",
+            reader_identity="fixture",
+        )
 
 
 def scenario(key_stories: int = 20) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

@@ -279,6 +279,36 @@ def _sigmoid(value: float) -> float:
     return exponential / (1 + exponential)
 
 
+def logistic(coefficients: Sequence[float], x: Sequence[float]) -> float:
+    """Predict with the runtime's intercept-first, left-to-right accumulation."""
+
+    value = coefficients[0]
+    for coefficient, feature in zip(coefficients[1:], x, strict=True):
+        value += coefficient * feature
+    return _sigmoid(value)
+
+
+def _reader_probabilities(judgment: ReaderJudgment, materiality_floor: int) -> tuple[float, float, float]:
+    if judgment.report_kind is None or judgment.materiality is None or judgment.interrupt is None:
+        raise ValueError("news_reader_judgment_unavailable")
+    # Validated distributions tolerate provider rounding at 1e-6. Keep the raw
+    # evidence intact while ensuring a summed probability is still in [0, 1].
+    e = min(
+        1.0,
+        sum(probability for kind, probability in judgment.report_kind.probabilities.items() if PUSHABLE_KINDS[kind]),
+    )
+    m = min(1.0, sum(judgment.materiality.probabilities[materiality_floor:]))
+    return e, m, judgment.interrupt.probability
+
+
+def reader_vectors(judgment: ReaderJudgment, *, held: bool, materiality_floor: int) -> tuple[list[float], list[float]]:
+    """The same ordered features for runtime, fitting and certification."""
+
+    e, m, i = _reader_probabilities(judgment, materiality_floor)
+    logit_e = _logit(e)
+    return [logit_e, _logit(m), float(held)], [_logit(i), logit_e]
+
+
 def reader_scores(
     judgment: ReaderJudgment,
     *,
@@ -306,22 +336,14 @@ def reader_scores(
         and READER_CALIBRATIONS[judgment.backend] is policy.calibration
         else identity("news_reader_calibration", judgment.backend, asdict(calibration))
     )
-    # Validated distributions tolerate provider rounding at 1e-6. Keep the raw
-    # evidence intact while ensuring a summed probability is still in [0, 1].
-    e = min(
-        1.0,
-        sum(probability for kind, probability in judgment.report_kind.probabilities.items() if PUSHABLE_KINDS[kind]),
-    )
-    m = min(1.0, sum(judgment.materiality.probabilities[calibration.materiality_floor :]))
-    i = judgment.interrupt.probability
-    a, b1, b2, b3 = calibration.push_coefficients
-    c, d, f = calibration.key_coefficients
+    e, m, i = _reader_probabilities(judgment, calibration.materiality_floor)
+    push_x, key_x = reader_vectors(judgment, held=held, materiality_floor=calibration.materiality_floor)
     return ReaderPolicyScores(
         e=e,
         m=m,
         i=i,
-        p_push=_sigmoid(a + b1 * _logit(e) + b2 * _logit(m) + b3 * held),
-        p_key=_sigmoid(c + d * _logit(i) + f * _logit(e)),
+        p_push=logistic(calibration.push_coefficients, push_x),
+        p_key=logistic(calibration.key_coefficients, key_x),
         held=held,
         certification_status=calibration.certification_status,
         push_cut=calibration.push_cut,
@@ -349,6 +371,39 @@ def novelty_outcome(novelty: ReaderNovelty, *, first_available_at_ms: int) -> Re
     ):
         return ReaderDecision("correction", "correction", novelty.intent_id)
     return None
+
+
+def reader_anchor_held(
+    novelty: ReaderNovelty,
+    judgment: ReaderJudgment,
+    *,
+    message_intents: Sequence[str],
+    claim_fields: ClaimFields | None,
+    calibration: ReaderCalibration,
+) -> tuple[str | None, bool]:
+    """Resolve the core-fact anchor and held input without running a push decision."""
+
+    if novelty.novelty == "development":
+        anchor = novelty.intent_id
+    else:
+        index = None if judgment.anchor is None else anchor_index(judgment.anchor, calibration)
+        if index is not None and index >= len(message_intents):
+            raise ValueError("news_reader_anchor_message_missing")
+        anchor = None if index is None else message_intents[index]
+    # A semantic information link can join an incident to its later recovery,
+    # or a plan to actual execution. An unanchored effective state change is
+    # scored as its own action. Unknown phase, promises, parameters and mere
+    # corroboration retain the existing increment hurdle.
+    effective_action = (
+        claim_fields is not None
+        and claim_fields.content_kind in {"state_change", "official_measure"}
+        and claim_fields.mode in {"observation", "decision"}
+        and claim_fields.phase in {"ordered", "effective", "executing", "completed", "cancelled"}
+    )
+    held = (novelty.novelty == "increment" and not (anchor is None and effective_action)) or (
+        novelty.novelty == "unlinked" and anchor is not None
+    )
+    return anchor, held
 
 
 def reader_decision(
@@ -380,25 +435,8 @@ def reader_decision(
         raise ValueError("news_reader_judgment_unavailable")
     supplied = calibration
     calibration = calibration or calibration_for(judgment, reader_identity=reader_identity)
-    if novelty.novelty == "development":
-        anchor = novelty.intent_id
-    else:
-        index = None if judgment.anchor is None else anchor_index(judgment.anchor, calibration)
-        if index is not None and index >= len(message_intents):
-            raise ValueError("news_reader_anchor_message_missing")
-        anchor = None if index is None else message_intents[index]
-    # A semantic information link can join an incident to its later recovery,
-    # or a plan to actual execution. An unanchored effective state change is
-    # scored as its own action. Unknown phase, promises, parameters and mere
-    # corroboration retain the existing increment hurdle.
-    effective_action = (
-        claim_fields is not None
-        and claim_fields.content_kind in {"state_change", "official_measure"}
-        and claim_fields.mode in {"observation", "decision"}
-        and claim_fields.phase in {"ordered", "effective", "executing", "completed", "cancelled"}
-    )
-    held = (novelty.novelty == "increment" and not (anchor is None and effective_action)) or (
-        novelty.novelty == "unlinked" and anchor is not None
+    anchor, held = reader_anchor_held(
+        novelty, judgment, message_intents=message_intents, claim_fields=claim_fields, calibration=calibration
     )
     scores = reader_scores(judgment, held=held, calibration=supplied, reader_identity=reader_identity)
     pushed = (
