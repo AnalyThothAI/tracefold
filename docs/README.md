@@ -38,6 +38,7 @@
 | :--- | :--- | :--- |
 | [**News**](modules/news.md)<br/>[语义链路入门](modules/news-semantics-guide.md) | 多来源如何形成知识版本？哪些命题被通知？修订和失败如何恢复？入门篇用示意案例走完全链路 | `news/pipeline` · `news/updates` |
 | [**读者标注规范**](modules/news-reader-labeling.md) | 如何分工盲标、冻结故事抽样框、按已知选中量认证切线？ | `scripts/news_reader_labeling.py` · `scripts/eval_news_reader.py` |
+| [**读者判断研究与复核**](modules/news-reader-research.md) | 推送判断如何标注、认证、上线？上线后怎样复核卡片量、精度和重复？下一轮做什么？ | `scripts/eval_news_reader.py` · [#812](https://github.com/AnalyThothAI/tracefold/issues/812) |
 | [**OI 与市场观察**](modules/oi.md) | 测量如何解析和分组？为什么通知阈值不等于交易过滤？ | `news/oi_signals.py` · `news/market_notifications.py` |
 | [**Wallets**](modules/wallets.md) | 完整回执如何支撑同窗口净买入？首次与当前快照有什么区别？ | `news/chain_tape` |
 | [**Market Review**](modules/market-review.md) | 同名资产如何区分？当前报价和发送时价格补充如何计算？ | `news/market_review` |
@@ -65,6 +66,7 @@
 | :--- | :--- |
 | 一条新闻从接入到推送经过哪些步骤？ | [语义链路入门](modules/news-semantics-guide.md) · [端到端数据流](modules/news.md#section-端到端数据流) |
 | 新闻为什么不推送？ | [逐命题通知](modules/news.md#notification) · [精确版本恢复](OPERATIONS.md#news-retry) |
+| 推送切线怎样认证，上线后怎样复核？ | [读者判断研究与复核](modules/news-reader-research.md) · [认证批 1](reports/news-805-certification.md) |
 | 一条消息为什么有多个 Event？ | [输入范围与身份](modules/news.md#input) |
 | 模型究竟调用几次？ | [NewsAgent 与预算](modules/news.md#agent) |
 | 召回命中为什么不等于重复新闻？ | [统一术语](../CONTEXT.md#decision-terms) · [候选与排序](modules/news.md#related-recall) |

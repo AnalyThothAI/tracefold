@@ -369,7 +369,7 @@ native / generated 独立校准，由 [reader_calibration.json](../../tracefold/
 
 计划逐命题冻结四组分布、confidence 与 `e / m / i / p_push / p_key / held / certification_status / push_cut / key_cut / calibration_identity`。资格质量低于 0.3 的原因是 `reader_ineligible`，与概率不足、未认证分别展示。HTTP 和详情页读取记录的分布、分数和当时切线，不按当前资格表或当前校准重算历史；旧记录没有切线则返回 null。普通详情展示影响四档分布、概率及冻结切线。旧 importance 结构只在 `historical_judgment` 中只读显示，当前运行时拒绝旧判断；模型题目身份随拆题改变，输入保持 v3，改资格表和校准参数不改变模型缓存身份。
 
-离线数据、候选冻结和认证流程见[标注规范](news-reader-labeling.md)与[实现状态](../reports/news-805-implementation.md)。认证总体是候选时间边界之后完整命题普查中的独立故事代表，每条切线选中的故事由冻结分数精确已知，owner 标签只用来估计其中该推的比例。召回、覆盖和延迟使用同一 owner 抽样框，保留失败或缺失调用及既有确定性决定。切换与回滚使用[排空和重新规划步骤](../OPERATIONS.md#news-reader-switch)，不删除冻结事实或重置失败预算。
+离线数据、候选冻结和认证流程见[标注规范](news-reader-labeling.md)与[实现状态](../reports/news-805-implementation.md)；完整的研究过程、上线复核口径和下一轮方案见[读者判断研究与复核](news-reader-research.md)。认证总体是候选时间边界之后完整命题普查中的独立故事代表，每条切线选中的故事由冻结分数精确已知，owner 标签只用来估计其中该推的比例。召回、覆盖和延迟使用同一 owner 抽样框，保留失败或缺失调用及既有确定性决定。切换与回滚使用[排空和重新规划步骤](../OPERATIONS.md#news-reader-switch)，不删除冻结事实或重置失败预算。
 
 <details>
 <summary>读者四题英文全文（来源：reader.py）</summary>
