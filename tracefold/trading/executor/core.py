@@ -84,6 +84,20 @@ class EntryFacts:
     hedge_mode: bool = False
     flatten_in_progress: bool = False
     unexpected_exposure: bool = False
+    execution_fault: bool = False
+    available_margin_usdt: Decimal | None = None
+    unreflected_pending_margin_usdt: Decimal = Decimal(0)
+    actual_leverage: int = 0
+    margin_type: str = ""
+    multi_assets_mode: bool = False
+    mark_price: Decimal = Decimal(0)
+    taker_fee_rate: Decimal = Decimal(0)
+    symbol_notional_cap: Decimal = Decimal(0)
+    snapshot_started_at_ns: int = 0
+    initial_margin_usdt: Decimal = Decimal(0)
+    active_entry_versions: tuple[tuple[str, int], ...] = ()
+    venue_quote_at_ns: int | None = None
+    venue_mark_at_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +105,8 @@ class EntryVerdict:
     accepted: bool
     reason: str
     quantity: Decimal | None = None
+    reserved_margin_usdt: Decimal | None = None
+    bounded_price: Decimal | None = None
 
 
 def admit(signal: SignalV4, facts: EntryFacts) -> EntryVerdict:
@@ -106,6 +122,7 @@ def admit(signal: SignalV4, facts: EntryFacts) -> EntryVerdict:
             "emergency_halted": facts.emergency_halted,
             "entries_paused": facts.entries_paused,
             "flatten_command_id": True if facts.flatten_in_progress else None,
+            "execution_faults": facts.execution_fault,
         },
         unexpected_exposure=facts.unexpected_exposure,
     )
@@ -113,6 +130,10 @@ def admit(signal: SignalV4, facts: EntryFacts) -> EntryVerdict:
         return refuse(blocked)
     if facts.hedge_mode:
         return refuse("hedge_mode_unsupported")
+    if facts.multi_assets_mode:
+        return refuse("multi_assets_unsupported")
+    if facts.margin_type not in ("crossed", "isolated"):
+        return refuse("margin_mode_unsupported")
     if facts.symbol_position or facts.symbol_regular_orders or facts.symbol_algo_orders:
         return refuse("symbol_exposure")
     if facts.active_entries >= facts.max_entries:
@@ -135,13 +156,45 @@ def admit(signal: SignalV4, facts: EntryFacts) -> EntryVerdict:
     free_notional = facts.equity_usdt * facts.max_leverage - facts.active_notional_usdt
     if free_notional <= 0:
         return refuse("leverage_capacity")
-    quantity = (min(risk_notional, free_notional) / executable / facts.market_step).to_integral_value(
-        rounding=ROUND_DOWN
-    ) * facts.market_step
-    quantity = min(quantity, facts.market_max_qty)
-    if quantity < facts.market_min_qty or quantity * executable < facts.min_notional:
+    if (
+        facts.available_margin_usdt is None
+        or facts.available_margin_usdt < 0
+        or facts.actual_leverage < 1
+        or facts.mark_price <= 0
+        or not 0 <= facts.taker_fee_rate < 1
+        or facts.symbol_notional_cap <= 0
+    ):
+        return refuse("funding_facts_unavailable")
+    # A bounded adverse fill consumes initial margin, taker fees and opening loss
+    # relative to mark. Isolated openings allocate margin from the same USDT
+    # available balance; cross openings also cannot reuse position initial margin.
+    buffer = executable * Decimal(signal.max_drift_bps) / 10_000
+    bounded_price = executable + buffer
+    opening_loss = (
+        max(Decimal(0), executable - facts.mark_price if signal.side == "long" else facts.mark_price - executable)
+        + buffer
+    )
+    unit_margin = max(bounded_price, facts.mark_price) / facts.actual_leverage
+    unit_cost = unit_margin + bounded_price * facts.taker_fee_rate + opening_loss
+    available = max(Decimal(0), facts.available_margin_usdt - facts.unreflected_pending_margin_usdt)
+    if available <= 0:
+        return refuse("available_margin")
+    raw = min(
+        risk_notional / bounded_price,
+        free_notional / bounded_price,
+        available / unit_cost,
+        facts.symbol_notional_cap / bounded_price,
+        facts.market_max_qty,
+    )
+    quantity = (raw / facts.market_step).to_integral_value(rounding=ROUND_DOWN) * facts.market_step
+    if (
+        quantity < facts.market_min_qty
+        or quantity > facts.market_max_qty
+        or quantity * executable < facts.min_notional
+        or quantity % facts.market_step
+    ):
         return refuse("market_lot_or_notional")
-    return EntryVerdict(True, "accepted", quantity)
+    return EntryVerdict(True, "accepted", quantity, quantity * unit_cost, bounded_price)
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +224,7 @@ class EntryStep:
     action: Literal[
         "await_entry",
         "query_entry",
+        "cancel_entry",
         "submit_sl",
         "submit_tp",
         "query_sl",
@@ -187,11 +241,17 @@ class EntryStep:
 def step(facts: EntryLifecycleFacts) -> EntryStep:
     """Choose one recoverable action; the runner persists intent before venue I/O."""
 
-    if facts.entry_submission_unknown:
-        return EntryStep("query_entry", "entry_submission_unknown")
-    if facts.entry_order_status not in ("FILLED", "CANCELED", "EXPIRED", "REJECTED", "NOT_SUBMITTED"):
-        return EntryStep("await_entry", "entry_not_terminal")
     if facts.position_amount == 0:
+        if facts.entry_submission_unknown:
+            return EntryStep("query_entry", "entry_submission_unknown")
+        if facts.entry_order_status not in ("FILLED", "CANCELED", "EXPIRED", "REJECTED", "NOT_SUBMITTED"):
+            return EntryStep("cancel_entry", "entry_may_increase_exposure")
+        if facts.flatten_status in ("NEW", "PARTIALLY_FILLED", "unknown"):
+            return EntryStep("query_flatten", "flatten_pending")
+        if facts.sl_submission_unknown:
+            return EntryStep("query_sl", "protection_submission_unknown")
+        if facts.tp_submission_unknown:
+            return EntryStep("query_tp", "protection_submission_unknown")
         if facts.sl_status in ("NEW", "PARTIALLY_FILLED") or facts.tp_status in ("NEW", "PARTIALLY_FILLED"):
             return EntryStep("cancel_protection", "venue_flat")
         if facts.exit_fill_client_id in facts.sl_client_ids:
@@ -217,6 +277,10 @@ def step(facts: EntryLifecycleFacts) -> EntryStep:
         if facts.sl_attempts >= 3:
             return EntryStep("flatten", "protection_failed")
         return EntryStep("submit_sl", "unprotected")
+    if facts.entry_submission_unknown:
+        return EntryStep("query_entry", "entry_submission_unknown")
+    if facts.entry_order_status not in ("FILLED", "CANCELED", "EXPIRED", "REJECTED", "NOT_SUBMITTED"):
+        return EntryStep("cancel_entry", "partial_entry_remainder")
     if facts.tp_submission_unknown:
         return EntryStep("query_tp", "protection_submission_unknown")
     if facts.tp_status not in ("NEW", "PARTIALLY_FILLED", "FILLED"):

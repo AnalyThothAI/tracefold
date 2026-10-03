@@ -69,8 +69,8 @@ def seed_case(conn) -> None:
     conn.execute(
         """INSERT INTO trading_cases(case_id,trigger_id,trigger_kind,asset_id,native_symbol,mapping_digest,
              created_at_ms,root_expires_at_ms,state,updated_at_ms)
-           VALUES (%s,%s,'oi','crypto:BTC','BTCUSDT','test',1,2,'pending',1)""",
-        ("c" * 64, "c" * 64),
+           VALUES (%s,%s,'oi','crypto:BTC','BTCUSDT','test',1,%s,'pending',1)""",
+        ("c" * 64, "c" * 64, time.time_ns() // 1_000_000 + 3_600_000),
     )
     ExecutorStorage(conn).ensure_account(SLOT)
     conn.commit()

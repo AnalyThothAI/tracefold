@@ -234,6 +234,9 @@ def test_runner_freezes_live_data_and_finishes_without_executor(tmp_path, postgr
             )
 
     class Assessor:
+        concurrent = 2
+        timeout_s = 60
+
         async def assess(self, _view):
             return AssessmentResult(
                 Forecast(

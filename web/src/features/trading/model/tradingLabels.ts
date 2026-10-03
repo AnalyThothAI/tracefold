@@ -8,6 +8,8 @@ export const ENTRY_BLOCK_REASON_ZH: Record<string, string> = {
   emergency_halt: "已紧急停止",
   entries_paused: "开仓已暂停",
   unexpected_exposure: "账户检查发现异常",
+  execution_fault: "仍有未解决执行风险",
+  flatten_in_progress: "账户退出仍在核验",
 };
 
 export function entryBlockReasonLabel(reason: string | null | undefined): string {
@@ -27,6 +29,11 @@ export const SIGNAL_DISPOSITION_ZH: Record<string, string> = {
   spread: "点差超限",
   price_drift: "相对 LIVE 参考价偏移超限",
   equity_unavailable: "账户权益不可读",
+  available_margin: "可用保证金不足",
+  funding_facts_unavailable: "资金事实不完整",
+  margin_mode_unsupported: "保证金模式不受支持",
+  multi_assets_unsupported: "多资产模式不受支持",
+  execution_fault: "未解决执行风险阻止新增仓位",
   market_rules_invalid: "合约规则无效",
   leverage_capacity: "杠杆容量不足",
   market_lot_or_notional: "下单数量或名义金额不满足场所规则",

@@ -58,6 +58,29 @@ describe("TradingPage", () => {
     expect(await screen.findByLabelText("执行安全状态")).toBeVisible();
   });
 
+  it("keeps unresolved execution risk visible while the heartbeat is healthy", async () => {
+    const status = tradingStatusFixture();
+    status.execution.entries_armed = false;
+    status.execution.entry_block_reason = "execution_fault";
+    status.execution.execution_faults = {
+      entry: {
+        code: "exit_attempts_exhausted",
+        responsibility: "entry",
+        symbol: "SOLUSDT",
+        position_amount: "0.4",
+        client_ids: ["exit-3"],
+        first_observed_at_ns: TRADING_NOW_MS * 1_000_000,
+        last_observed_at_ns: TRADING_NOW_MS * 1_000_000,
+      },
+    };
+    server.use(
+      http.get(/.*\/api\/trading\/status$/, () => HttpResponse.json({ ok: true, data: status })),
+    );
+    renderTrading();
+    expect(await screen.findByText(/未解决执行风险：SOLUSDT/)).toBeVisible();
+    expect(screen.getByText("仍有未解决执行风险")).toBeVisible();
+  });
+
   it("shows the same six policy scores and explicit insufficient data returned by the API", async () => {
     renderTrading("/trading?tab=scoreboard");
     expect(await screen.findByRole("heading", { name: "预测 → 决策 → 纸面 → 执行" })).toBeVisible();

@@ -33,12 +33,15 @@ SCOREBOARD_EXECUTIONS_SQL = (
     "SELECT c.program_sha,c.case_id,a->>'action' AS action,e.net_pnl,e.reserved_notional,e.stop_bps "
     "FROM trading_cases c JOIN trading_entries e ON e.case_id=c.case_id "
     "CROSS JOIN LATERAL jsonb_array_elements(c.policy_decisions) a WHERE c.case_id=ANY(%s) "
-    "AND a->>'signal_id'=e.entry_id AND e.pnl_status='complete'"
+    "AND a->>'signal_id'=e.entry_id AND e.pnl_status='complete' "
+    "AND EXISTS (SELECT 1 FROM trading_orders o JOIN trading_fills f USING(client_order_id) "
+    "WHERE o.entry_id=e.entry_id AND o.leg='entry' AND f.quantity>0)"
 )
 SCOREBOARD_DISPOSITIONS_SQL = (
     "SELECT count(*) FILTER (WHERE state IN ('accepted','open','closing','terminal')) AS accepted, "
-    "count(*) FILTER (WHERE opened_at_ns IS NOT NULL) AS filled "
-    "FROM trading_entries WHERE source='signal' AND entry_id=ANY(%s)"
+    "count(*) FILTER (WHERE EXISTS (SELECT 1 FROM trading_orders o JOIN trading_fills f USING(client_order_id) "
+    "WHERE o.entry_id=e.entry_id AND o.leg='entry' AND f.quantity>0)) AS filled "
+    "FROM trading_entries e WHERE source='signal' AND entry_id=ANY(%s)"
 )
 
 

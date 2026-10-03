@@ -75,13 +75,21 @@ def test_executor_ledger_roundtrip(e2e_postgres: str) -> None:
         assert not db.record_fill(symbol="ETHUSDT", trade=entry_trade)
         assert db.attribute_unbound_fills(symbol="ETHUSDT", now_ns=now) == 0
         db.update_order(
-            client_id=entry_id, status="filled", now_ns=now, venue_order_id="123", evidence={"status": "FILLED"}
+            client_id=entry_id,
+            status="filled",
+            now_ns=now,
+            venue_order_id="123",
+            evidence={"status": "FILLED", "executedQty": "0.01"},
         )
         db.reserve_order(
             client_id=exit_id, entry_id=command_id, native_symbol="ETHUSDT", leg="time_exit", attempt=1, now_ns=now
         )
         db.update_order(
-            client_id=exit_id, status="filled", now_ns=now, venue_order_id="124", evidence={"status": "FILLED"}
+            client_id=exit_id,
+            status="filled",
+            now_ns=now,
+            venue_order_id="124",
+            evidence={"status": "FILLED", "executedQty": "0.01"},
         )
         db.record_fill(
             symbol="ETHUSDT",

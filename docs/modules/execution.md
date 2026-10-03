@@ -68,13 +68,15 @@ Executor 并行读取签名仓位、普通订单、Algo 订单、权益、持仓
 | 杠杆容量、`MARKET_LOT_SIZE`、最小名义金额 | 确认数量符合账户和合约约束 |
 | LIVE 参考价漂移和 DEMO 盘口点差 | 确认当前可执行价格没有偏离研究约束 |
 
-数量按权益风险比例与冻结止损距离计算。已有仓位和待成交订单预留的名义金额都占用容量。最终数量按步长向下取整。
+数量同时受三项约束：USDT 权益风险比例与冻结止损距离、配置杠杆对应的组合名义上限、实际可用 USDT 保证金。场所实际杠杆、mark 与有界成交价之间的开仓亏损、账户 taker 费率、价格缓冲、symbol 名义上限和 MARKET 步长共同限制数量；执行器不会改变场所杠杆或保证金模式。当前仅支持单向、单资产 USDT 的 crossed / isolated 新开仓。
+
+账户信息在仓位和订单读取后取得，仍不是原子快照。entry 保存 `admission`、名义预留和 `reserved_margin_usdt`；只有原订单执行证据与两次账户／仓位数量共同证明的份额才不再重复扣减。部分成交的未成交余量继续占用额度，确认取消后释放。旧活跃 entry 的 NULL 准入证据不视为零占用，采用保守预留。
 
 ### 4. 先提交接受与订单预留，再访问交易所
 
 Signal 的 `accept_entry` 路径只更新 pending 行。手动入场则锁定尚未处置的 intent，创建 accepted entry，并记录命令处置。
 
-接受入场与订单预留在同一事务提交。条件更新落败时，不预留也不发送订单；同账户、同 symbol 只允许一个 accepted/open/closing entry。
+自动与手动共用提交路径：短事务锁账户、重核控制、时效和活跃责任版本，一次保存接受、准入依据、资金预留与订单身份。条件更新落败时，不预留也不发送订单；同账户、同 symbol 只允许一个 accepted/open/closing entry。POST 前再复核控制并保存实际发送时刻和非秘密请求参数。
 
 每条腿的 client ID 由账户槽位、入场身份、腿和尝试序号的 SHA-256 确定，结果是 32 个 Binance 合法字符。稳定身份使重启后能够查询同一请求的实际结果。
 
@@ -82,7 +84,7 @@ Signal 的 `accept_entry` 路径只更新 pending 行。手动入场则锁定尚
 
 ### 5. 核实持仓，再建立止损和止盈
 
-订单达到终态并确认持仓时钟后，Executor 先挂止损、再挂止盈 Algo 条件单。保护采用 `MARK_PRICE`，优先使用 `closePosition=true`。
+首次观察到有原订单身份、方向和执行数量证明的非零敞口，即建立一次 `opened_at_ns` 生命周期时钟；它不是精确撮合时间，撮合时间仍来自 fills。入场尚未终态时先建立有效止损，再按原身份撤销增险余单并重新核验仓位，随后维护止盈。保护采用 `MARK_PRICE`，优先使用 `closePosition=true`；方向、订单类型、触发价和覆盖数量必须有效。相同 symbol 或唯一活跃 entry 本身不是归属证明。
 
 场所不支持该方式时，执行器按实际仓位数量尝试 reduce-only。每条保护腿最多尝试三次；结果不确定时先查询。保护失败后，流程转入 reduce-only 市价平仓。
 
@@ -95,6 +97,10 @@ Signal 的 `accept_entry` 路径只更新 pending 行。手动入场则锁定尚
 场所显示平仓后，执行器撤销剩余保护，再把 Entry 置为终态。成交来自 DEMO `userTrades`，通过持久 `fromId` 游标续读，并用订单 ID 关联 Entry。
 
 原生成交数量、价格和费用不能改写。订单身份查明后，只可一次补入账户、client ID 和归属时钟。手续费资产不是 USDT 时，不把不同币种直接相减，也不报告已知净收益。
+
+风险推进先于成交历史补齐。每轮最多补齐三个 symbol，每次 GET 最多两秒；轮转覆盖终态待补与账户 flatten。网络失败只延期该读取、不推进游标；fill、归属与游标在同一短事务提交，写库失败向外报告并整批回滚。账户 flatten 每轮轮转处理最多三个 symbol，局部查询或撤单失败不阻断其他合格 symbol。
+
+明确拒绝或可靠原生零成交终态可完成零金额结算，不创建假 fill，也不计入实际成交笔数。timeout、503、坏 JSON、不完整成功回包和暂时 not-found 保留 unknown；超过查询窗口保存待处理故障，不据此推断未发送。PnL 不再用计划数量补齐缺失的 executedQty。
 
 终态后的 PnL 证据未在限时内齐全时，结果标为 `evidence_incomplete`。证据不完整不会让 Entry 永远保持 open。
 
@@ -112,6 +118,8 @@ Signal 的 `accept_entry` 路径只更新 pending 行。手动入场则锁定尚
 只读监控根据 Entry、订单、保护与仓位事实，推导 `pending / accepted / submission_unknown / rejected / expired / ordered / filled / protected / closed` 阶段。这是展示词表，不是另一套执行账本，也不是交易所原始状态的替代来源。
 
 ## 操作与恢复
+
+`trading_accounts.execution_faults` 按 entry 或 command/symbol 保存有限未解决责任，包含代码、相关 client IDs、首次／最近观察时间和实际仓位证据。退出尝试耗尽后不再无限新建订单。故障统一阻断自动与手动新增风险，保护、查询、撤单和退出仍继续；heartbeat、重启和普通 resume 不清除故障。只有新鲜证据证明该责任解决才清除自身故障，不改变用户 pause/halt。
 
 `tracefold trading issue` 可提交暂停、恢复、紧急停止、手动入场或账户 flatten。命令入账表示请求已保存；平仓与撤单须以签名账户读回为准。
 

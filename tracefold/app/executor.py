@@ -7,6 +7,7 @@ import hashlib
 import logging
 import time
 from contextlib import suppress
+from dataclasses import asdict, replace
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -18,6 +19,7 @@ from tracefold.app.repository_session import postgres_connection
 from tracefold.integrations.trading.binance import BinanceFailure, DemoBinance
 from tracefold.platform.postgres.runtime_processes import RuntimeProcesses
 from tracefold.trading.executor.core import EntryFacts, EntryLifecycleFacts, SignalV4, admit, client_order_id, step
+from tracefold.trading.operator_control import control_entry_block
 from tracefold.trading.storage.executor import ExecutorStorage
 
 _LOG = logging.getLogger(__name__)
@@ -76,6 +78,8 @@ class ExecutorRunner:
         self._runtime_started = False
         self._last_active_read_ns = 0
         self._last_full_read_ns = 0
+        self._history_offset = 0
+        self._flatten_offset = 0
 
     def heartbeat(self, *, now_ns: int, fault_code: str | None = None) -> None:
         self.db.ensure_account(self.account_slot)
@@ -127,17 +131,55 @@ class ExecutorRunner:
         if facts is None:
             self._refuse_signal(signal, now=now, disposition="refused", reason="execution_venue_unlisted")
             return
-        verdict = admit(signal, facts)
-        if not verdict.accepted or verdict.quantity is None:
-            disposition = "expired" if verdict.reason == "expired" else "refused"
-            self._refuse_signal(signal, now=now, disposition=disposition, reason=verdict.reason)
-            return
+        await self._submit_entry(signal, facts, command_id=None)
+
+    async def _submit_entry(self, signal: SignalV4, facts: EntryFacts, *, command_id: str | None) -> None:
+        """Both sources enter through one account lock, reservation and one POST."""
         entry_id = client_order_id(namespace=self.account_slot, entry_id=signal.signal_id, leg="entry", attempt=1)
         try:
             with self.conn.transaction():
+                control = self.db.lock_account(self.account_slot)
+                active = self.db.active_entries(self.account_slot)
+                if tuple((row["entry_id"], row["updated_at_ns"]) for row in active) != facts.active_entry_versions:
+                    return
+                now = _now_ns()
+                source_reason = (
+                    None if command_id is not None else self.db.entry_source_reason(case_id=signal.case_id, now_ns=now)
+                )
+                if source_reason is not None:
+                    self.db.record_disposition(
+                        kind="signal",
+                        input_id=signal.signal_id,
+                        account_slot=self.account_slot,
+                        disposition="refused",
+                        reason=source_reason,
+                        now_ns=now,
+                    )
+                    return
+                now = _now_ns()
+                facts = replace(
+                    facts,
+                    now_ns=now,
+                    entries_paused=bool(control["entries_paused"]),
+                    emergency_halted=bool(control["emergency_halted"]),
+                    flatten_in_progress=control["flatten_command_id"] is not None,
+                    execution_fault=bool(control["execution_faults"]),
+                    unexpected_exposure=bool(control["unexpected_exposure"]),
+                )
+                verdict = admit(signal, facts)
+                if not verdict.accepted or verdict.quantity is None or verdict.reserved_margin_usdt is None:
+                    self.db.record_disposition(
+                        kind="signal" if command_id is None else "intent",
+                        input_id=signal.signal_id,
+                        account_slot=self.account_slot,
+                        disposition="expired" if verdict.reason == "expired" else "refused",
+                        reason=verdict.reason,
+                        now_ns=now,
+                    )
+                    return
                 if not self.db.accept_entry(
                     entry_id=signal.signal_id,
-                    command_id=None,
+                    command_id=command_id,
                     account_slot=self.account_slot,
                     native_symbol=signal.native_symbol,
                     side=signal.side,
@@ -147,6 +189,13 @@ class ExecutorRunner:
                     tp_bps=signal.tp_bps,
                     max_hold_s=signal.max_hold_s,
                     now_ns=now,
+                    admission={
+                        "facts": asdict(facts),
+                        "verdict": asdict(verdict),
+                        "pending_accounting": "unproven_remainder_retained",
+                    },
+                    reserved_margin_usdt=verdict.reserved_margin_usdt,
+                    reserved_notional=verdict.quantity * cast(Decimal, verdict.bounded_price),
                 ):
                     return
                 self.db.reserve_order(
@@ -157,8 +206,18 @@ class ExecutorRunner:
                     attempt=1,
                     now_ns=now,
                 )
-        except UniqueViolation:
-            self._refuse_signal(signal, now=now, disposition="refused", reason="symbol_exposure")
+        except UniqueViolation as exc:
+            if exc.diag.constraint_name != "trading_entries_one_active_symbol":
+                raise
+            with self.conn.transaction():
+                self.db.record_disposition(
+                    kind="signal" if command_id is None else "intent",
+                    input_id=signal.signal_id,
+                    account_slot=self.account_slot,
+                    disposition="refused",
+                    reason="symbol_exposure",
+                    now_ns=_now_ns(),
+                )
             return
         await self._send_market(
             entry_id=signal.signal_id,
@@ -183,21 +242,29 @@ class ExecutorRunner:
 
     async def _entry_facts(self, signal: SignalV4) -> EntryFacts | None:
         quote_requested_at_ns = _now_ns()
-        positions, orders, algos, account, mode, quote, catalogue = await asyncio.gather(
+        positions, orders, algos, mode, quote, catalogue, multi, configs, fees, mark = await asyncio.gather(
             self.venue.positions(),
             self.venue.open_orders(),
             self.venue.open_algo_orders(),
-            self.venue.account(),
             self.venue.position_mode(),
             self.venue.book_ticker(signal.native_symbol),
             self.venue.exchange_info(),
+            self.venue.multi_assets_mode(),
+            self.venue.symbol_config(signal.native_symbol),
+            self.venue.commission_rate(signal.native_symbol),
+            self.venue.mark_price(signal.native_symbol),
         )
+        account = await self.venue.account()
+        asset = next((row for row in account["assets"] if row["asset"] == "USDT"), None)
+        config = next((row for row in configs if row["symbol"] == signal.native_symbol), None)
+        if asset is None or config is None:
+            raise ValueError("funding_facts_missing")
         positions = cast(list[dict[str, Any]], positions)
         orders = cast(list[dict[str, Any]], orders)
         algos = cast(list[dict[str, Any]], algos)
-        account = cast(dict[str, Any], account)
         mode = cast(dict[str, Any], mode)
         quote = cast(dict[str, Any], quote)
+        mark = cast(dict[str, Any], mark)
         catalogue = cast(dict[str, Any], catalogue)
         rules = _symbol_rules(catalogue, signal.native_symbol)
         if rules is None:
@@ -205,10 +272,50 @@ class ExecutorRunner:
         active = self.db.active_entries(self.account_slot)
         position_by_symbol = {row["symbol"]: row for row in positions if Decimal(str(row["positionAmt"])) != 0}
         notional = sum(
-            abs(Decimal(str(row["positionAmt"])) * Decimal(str(row["markPrice"])))
-            for row in position_by_symbol.values()
+            (
+                abs(Decimal(str(row["positionAmt"])) * Decimal(str(row["markPrice"])))
+                for row in position_by_symbol.values()
+            ),
+            Decimal(0),
         )
-        notional += sum(plan["reserved_notional"] for plan in active if plan["native_symbol"] not in position_by_symbol)
+        pending_margin = Decimal(0)
+        account_positions = {row["symbol"]: row for row in account.get("positions", ())}
+        for plan in active:
+            quantity = Decimal(str(plan["quantity"]))
+            entry = next((o for o in self.db.entry_orders(plan["entry_id"]) if o["leg"] == "entry"), None)
+            reflected = Decimal(0)
+            evidence = {} if entry is None else entry["evidence"] or {}
+            venue_position = position_by_symbol.get(plan["native_symbol"], {})
+            cash_position = account_positions.get(plan["native_symbol"], {})
+            if (
+                entry
+                and evidence.get("clientOrderId") == entry["client_order_id"]
+                and evidence.get("executedQty") is not None
+                and entry["updated_at_ns"] <= quote_requested_at_ns
+                and self._position_owned(plan, entry, venue_position)
+                and (Decimal(str(cash_position.get("positionAmt", 0))) > 0) == (plan["side"] == "long")
+                and cash_position.get("positionSide", "BOTH") == "BOTH"
+            ):
+                reflected = min(
+                    Decimal(str(evidence["executedQty"])),
+                    abs(Decimal(str(venue_position.get("positionAmt", 0)))),
+                    abs(Decimal(str(cash_position.get("positionAmt", 0)))),
+                )
+            liable_quantity = quantity
+            if (
+                entry
+                and entry["status"] in ("filled", "cancelled", "rejected", "not_submitted")
+                and evidence.get("clientOrderId") == entry["client_order_id"]
+                and evidence.get("executedQty") is not None
+            ):
+                liable_quantity = Decimal(str(evidence["executedQty"]))
+            fraction = max(Decimal(0), (liable_quantity - reflected) / quantity)
+            notional += Decimal(str(plan["reserved_notional"])) * fraction
+            # NULL on old active entries retains a conservative 1x reservation.
+            margin = plan.get("reserved_margin_usdt")
+            pending_margin += (
+                Decimal(str(plan["reserved_notional"])) if margin is None else Decimal(str(margin))
+            ) * fraction
         risk = self.settings.trading.execution.risk
         control = self.db.control(self.account_slot)
         state = self.db.account(self.account_slot)
@@ -223,7 +330,7 @@ class ExecutorRunner:
             symbol_algo_orders=sum(row["symbol"] == signal.native_symbol for row in algos),
             active_entries=len(active),
             max_entries=5,
-            equity_usdt=Decimal(str(account["totalMarginBalance"])),
+            equity_usdt=Decimal(str(asset["marginBalance"])),
             active_notional_usdt=notional,
             max_leverage=risk.max_leverage,
             risk_fraction=risk.risk_fraction_per_trade,
@@ -235,6 +342,20 @@ class ExecutorRunner:
             market_max_qty=rules["max_qty"],
             market_step=rules["step"],
             min_notional=rules["min_notional"],
+            execution_fault=bool(control.get("execution_faults")),
+            available_margin_usdt=Decimal(str(asset["availableBalance"])),
+            initial_margin_usdt=Decimal(str(asset["initialMargin"])),
+            unreflected_pending_margin_usdt=pending_margin,
+            actual_leverage=int(config["leverage"]),
+            margin_type=str(config["marginType"]).lower(),
+            symbol_notional_cap=Decimal(str(config["maxNotionalValue"])),
+            multi_assets_mode=multi["multiAssetsMargin"] is not False,
+            mark_price=Decimal(str(mark["markPrice"])),
+            taker_fee_rate=Decimal(str(fees["takerCommissionRate"])),
+            snapshot_started_at_ns=quote_requested_at_ns,
+            active_entry_versions=tuple((row["entry_id"], row["updated_at_ns"]) for row in active),
+            venue_quote_at_ns=None if quote.get("time") is None else int(quote["time"]) * 1_000_000,
+            venue_mark_at_ns=None if mark.get("time") is None else int(mark["time"]) * 1_000_000,
             hedge_mode=str(mode["dualSidePosition"]).lower() == "true"
             or any(row.get("positionSide", "BOTH") != "BOTH" for row in positions),
         )
@@ -250,6 +371,43 @@ class ExecutorRunner:
         reduce_only: bool,
         now: int,
     ) -> None:
+        now = _now_ns()
+        with self.conn.transaction():
+            if entry_id is not None and not reduce_only:
+                control = self.db.lock_account(self.account_slot)
+                plan = self.db.entry(entry_id)
+                if plan is None:
+                    raise RuntimeError("entry_missing_before_send")
+                blocked = control_entry_block(control, unexpected_exposure=bool(control["unexpected_exposure"]))
+                if plan["source"] == "signal":
+                    blocked = blocked or self.db.entry_source_reason(case_id=plan["case_id"], now_ns=now)
+                now = _now_ns()
+                if blocked is not None or now >= plan["expires_at_ns"]:
+                    self.db.update_order(client_id=client_id, status="not_submitted", now_ns=now)
+                    self.db.resolve_order(
+                        client_id=client_id,
+                        resolution={"definitely_not_executed": True, "reason": blocked or "expired_before_send"},
+                    )
+                    self.db.set_entry_state(
+                        entry_id=entry_id,
+                        status="terminal",
+                        now_ns=now,
+                        terminal_reason=blocked or "expired_before_send",
+                    )
+                    return
+            self.db.begin_send(
+                client_id=client_id,
+                request={
+                    "symbol": symbol,
+                    "side": side,
+                    "type": "MARKET",
+                    "quantity": str(quantity),
+                    "reduceOnly": reduce_only,
+                    "newClientOrderId": client_id,
+                    "newOrderRespType": "RESULT",
+                },
+                now_ns=now,
+            )
         try:
             result = await self.venue.market_order(
                 symbol=symbol, side=side, quantity=quantity, client_id=client_id, reduce_only=reduce_only
@@ -260,15 +418,43 @@ class ExecutorRunner:
             _LOG.warning("executor_order_unknown %s: %s", client_id, type(exc).__name__)
             return
         except BinanceFailure as exc:
-            status = "unknown" if exc.transient else "rejected"
+            status = "rejected" if exc.definitely_not_executed else "unknown"
             with self.conn.transaction():
                 self.db.update_order(client_id=client_id, status=status, now_ns=now, error_code=exc.code)
+                if status == "rejected":
+                    self.db.resolve_order(
+                        client_id=client_id,
+                        resolution={"definitely_not_executed": True, "reason": "venue_rejected", "code": exc.code},
+                    )
                 if entry_id is not None and not reduce_only and status == "rejected":
                     self.db.set_entry_state(
                         entry_id=entry_id, status="terminal", now_ns=now, terminal_reason="entry_rejected"
                     )
             return
-        status = "filled" if result.get("status") == "FILLED" else "working"
+        if (
+            not isinstance(result, dict)
+            or result.get("orderId") is None
+            or result.get("clientOrderId") != client_id
+            or result.get("executedQty") is None
+            or result.get("status") not in ("NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "REJECTED")
+        ):
+            with self.conn.transaction():
+                self.db.update_order(
+                    client_id=client_id,
+                    status="unknown",
+                    now_ns=_now_ns(),
+                    evidence=result if isinstance(result, dict) else None,
+                )
+            return
+        status = (
+            "filled"
+            if result["status"] == "FILLED"
+            else "cancelled"
+            if result["status"] in ("CANCELED", "EXPIRED")
+            else "rejected"
+            if result["status"] == "REJECTED"
+            else "working"
+        )
         with self.conn.transaction():
             self.db.update_order(
                 client_id=client_id,
@@ -277,8 +463,6 @@ class ExecutorRunner:
                 venue_order_id=str(result["orderId"]),
                 evidence=result,
             )
-            if entry_id is not None and not reduce_only and status == "filled":
-                self.db.set_entry_state(entry_id=entry_id, status="open", now_ns=now, opened_at_ns=now)
 
     async def _one_intent(self, now: int) -> None:
         state = self.db.account(self.account_slot)
@@ -378,47 +562,7 @@ class ExecutorRunner:
         if facts is None:
             self._refuse_intent(intent, now=now, reason="execution_venue_unlisted")
             return
-        verdict = admit(signal, facts)
-        if not verdict.accepted or verdict.quantity is None:
-            self._refuse_intent(intent, now=now, reason=verdict.reason)
-            return
-        entry_id = client_order_id(namespace=self.account_slot, entry_id=command_id, leg="entry", attempt=1)
-        try:
-            with self.conn.transaction():
-                if not self.db.accept_entry(
-                    entry_id=command_id,
-                    command_id=command_id,
-                    account_slot=self.account_slot,
-                    native_symbol=symbol,
-                    side=side,
-                    quantity=str(verdict.quantity),
-                    reference_price=str(mid),
-                    stop_bps=signal.stop_bps,
-                    tp_bps=signal.tp_bps,
-                    max_hold_s=signal.max_hold_s,
-                    now_ns=now,
-                ):
-                    return
-                self.db.reserve_order(
-                    client_id=entry_id,
-                    entry_id=command_id,
-                    native_symbol=symbol,
-                    leg="entry",
-                    attempt=1,
-                    now_ns=now,
-                )
-        except UniqueViolation:
-            self._refuse_intent(intent, now=now, reason="symbol_exposure")
-            return
-        await self._send_market(
-            entry_id=command_id,
-            symbol=symbol,
-            side="BUY" if side == "long" else "SELL",
-            quantity=verdict.quantity,
-            client_id=entry_id,
-            reduce_only=False,
-            now=now,
-        )
+        await self._submit_entry(signal, facts, command_id=command_id)
 
     def _refuse_intent(self, intent: dict[str, Any], *, now: int, reason: str) -> None:
         with self.conn.transaction():
@@ -452,16 +596,25 @@ class ExecutorRunner:
             for row in algos
             if str(row.get("clientAlgoId") or "") not in known_client_ids
         }
+        entry_evidence = {
+            plan["native_symbol"]: next(
+                (order for order in self.db.entry_orders(plan["entry_id"]) if order["leg"] == "entry"), None
+            )
+            for plan in active_entries
+        }
+        owned_positions = {
+            str(row["symbol"])
+            for row in positions
+            if (plan := plan_by_symbol.get(str(row["symbol"]))) is not None
+            and (entry := entry_evidence.get(str(row["symbol"]))) is not None
+            and self._position_owned(plan, entry, row, self.db.confirmed_entry_quantity(plan["entry_id"]))
+        }
         incompatible_positions = {
             str(row["symbol"])
             for row in positions
             if Decimal(str(row["positionAmt"])) != 0
             and (plan := plan_by_symbol.get(str(row["symbol"]))) is not None
-            and (
-                (Decimal(str(row["positionAmt"])) > 0) != (plan["side"] == "long")
-                or abs(Decimal(str(row["positionAmt"]))) > Decimal(str(plan["quantity"]))
-                or row.get("positionSide", "BOTH") != "BOTH"
-            )
+            and str(row["symbol"]) not in owned_positions
         }
         unexpected = bool(unexpected_symbols or unexpected_orders or incompatible_positions)
         observed_at_ns = _now_ns()
@@ -486,7 +639,7 @@ class ExecutorRunner:
                             "unRealizedProfit",
                         )
                     },
-                    "owned": row["symbol"] in active_symbols,
+                    "owned": row["symbol"] in owned_positions,
                 }
                 for row in nonzero_positions[:100]
             ],
@@ -545,33 +698,62 @@ class ExecutorRunner:
         plans = self.db.active_entries(self.account_slot)
         awaiting_fills = self.db.entries_awaiting_fills(self.account_slot)
         control = self.db.control(self.account_slot)
+        if plans:
+            snapshot_started = _now_ns()
+            positions, open_algos = await asyncio.gather(self.venue.positions(), self.venue.open_algo_orders())
+            if _now_ns() - snapshot_started > 5 * _NS_PER_SECOND:
+                return
+            positions_by_symbol = {row["symbol"]: row for row in positions}
+            algos_by_client_id = {row["clientAlgoId"]: row for row in open_algos}
+            for plan in plans:
+                if _now_ns() - snapshot_started > 5 * _NS_PER_SECOND:
+                    snapshot_started = _now_ns()
+                    positions, open_algos = await asyncio.wait_for(
+                        asyncio.gather(self.venue.positions(), self.venue.open_algo_orders()), timeout=5
+                    )
+                    positions_by_symbol = {row["symbol"]: row for row in positions}
+                    algos_by_client_id = {row["clientAlgoId"]: row for row in open_algos}
+                try:
+                    await asyncio.wait_for(
+                        self._refresh_entry_orders(
+                            plan,
+                            algos_by_client_id,
+                            _now_ns(),
+                            Decimal(str(positions_by_symbol.get(plan["native_symbol"], {}).get("positionAmt", 0))),
+                        ),
+                        timeout=3,
+                    )
+                except (TimeoutError, httpx.HTTPError, BinanceFailure) as exc:
+                    _LOG.warning("executor_order_refresh_deferred %s: %s", plan["entry_id"], type(exc).__name__)
+                    continue  # Old order evidence cannot be labelled fresh.
+                if _now_ns() - snapshot_started > 5 * _NS_PER_SECOND:
+                    continue
+                try:
+                    await self._step_plan(
+                        plan=plan,
+                        position=positions_by_symbol.get(plan["native_symbol"]),
+                        open_algos=algos_by_client_id,
+                        force_flatten=bool(control.get("flatten_command_id")),
+                        now=_now_ns(),
+                    )
+                except (httpx.HTTPError, BinanceFailure) as exc:
+                    _LOG.warning("executor_reconcile_deferred %s: %s", plan["entry_id"], type(exc).__name__)
         if control.get("flatten_command_id"):
             await self._reconcile_account_flatten(str(control["flatten_command_id"]), plans, now)
-        if not plans:
-            for symbol in sorted({plan["native_symbol"] for plan in awaiting_fills}):
-                await self._sync_trades(symbol, now)
+        # History has a separate bounded phase, after every eligible risk action.
+        symbols = {plan["native_symbol"] for plan in (*plans, *awaiting_fills)}
+        if control.get("flatten_command_id"):
+            symbols.update(self.db.external_flatten_symbols(str(control["flatten_command_id"])))
+        await self._history_batch(sorted(symbols), now)
+
+    async def _history_batch(self, symbols: list[str], now: int) -> None:
+        if not symbols:
             return
-        positions, open_algos = await asyncio.gather(self.venue.positions(), self.venue.open_algo_orders())
-        positions_by_symbol = {row["symbol"]: row for row in positions}
-        algos_by_client_id = {row["clientAlgoId"]: row for row in open_algos}
-        for plan in plans:
-            try:
-                await self._refresh_entry_orders(plan, algos_by_client_id, now)
-            except (httpx.HTTPError, BinanceFailure) as exc:
-                _LOG.warning("executor_order_refresh_deferred %s: %s", plan["entry_id"], type(exc).__name__)
-        for symbol in sorted({plan["native_symbol"] for plan in (*plans, *awaiting_fills)}):
+        offset = self._history_offset % len(symbols)
+        selected = (symbols[offset:] + symbols[:offset])[:3]
+        self._history_offset = (offset + len(selected)) % len(symbols)
+        for symbol in selected:
             await self._sync_trades(symbol, now)
-        for plan in plans:
-            try:
-                await self._step_plan(
-                    plan=plan,
-                    position=positions_by_symbol.get(plan["native_symbol"]),
-                    open_algos=algos_by_client_id,
-                    force_flatten=bool(control.get("flatten_command_id")),
-                    now=now,
-                )
-            except (httpx.HTTPError, BinanceFailure) as exc:
-                _LOG.warning("executor_reconcile_deferred %s: %s", plan["entry_id"], type(exc).__name__)
 
     async def _reconcile_account_flatten(self, command_id: str, plans: list[dict[str, Any]], now: int) -> None:
         positions, orders, algos = await asyncio.gather(
@@ -582,96 +764,168 @@ class ExecutorRunner:
         ):
             _LOG.critical("executor_flatten_requires_one_way_position_mode")
             return
-        # Ordinary resting orders may increase exposure after a flatten. Cancel and verify them first.
+        blocked_symbols: set[str] = set()
+        observed_symbols = {str(row["symbol"]) for row in positions}
+        positions.extend(
+            {"symbol": symbol, "positionAmt": "0", "positionSide": "BOTH"}
+            for symbol in self.db.external_flatten_symbols(command_id)
+            if symbol not in observed_symbols
+        )
+        candidates = sorted({str(row["symbol"]) for row in (*positions, *orders, *algos)})
+        offset = self._flatten_offset % len(candidates) if candidates else 0
+        selected = set((candidates[offset:] + candidates[:offset])[:3])
+        self._flatten_offset = offset + len(selected)
         for symbol in sorted({str(row["symbol"]) for row in orders}):
-            await self.venue.cancel_symbol_orders(symbol)
-        if orders and await self.venue.open_orders():
-            return
+            if symbol not in selected:
+                blocked_symbols.add(symbol)
+                continue
+            try:
+                await asyncio.wait_for(self.venue.cancel_symbol_orders(symbol), timeout=2)
+                if await asyncio.wait_for(self.venue.open_orders(symbol), timeout=2):
+                    blocked_symbols.add(symbol)
+            except (TimeoutError, httpx.HTTPError, BinanceFailure) as exc:
+                blocked_symbols.add(symbol)
+                _LOG.warning("executor_flatten_cancel_deferred %s: %s", symbol, type(exc).__name__)
 
         owned = {str(plan["native_symbol"]) for plan in plans}
         for position in positions:
             amount = Decimal(str(position["positionAmt"]))
             symbol = str(position["symbol"])
-            if amount == 0 or symbol in owned:
+            if symbol in owned or symbol in blocked_symbols or symbol not in selected:
                 continue
-            prior = self.db.external_flatten_orders(command_id, symbol)
-            if prior:
-                latest = prior[-1]
-                if latest["status"] in ("reserved", "unknown", "submitted", "working"):
-                    evidence = await self.venue.query_order(symbol, latest["client_order_id"])
-                    if evidence is not None:
-                        remote = str(evidence.get("status", ""))
-                        status = (
-                            "filled"
-                            if remote == "FILLED"
-                            else "rejected"
-                            if remote == "REJECTED"
-                            else "cancelled"
-                            if remote in ("CANCELED", "EXPIRED")
-                            else "working"
+            try:
+                prior = self.db.external_flatten_orders(command_id, symbol)
+                if prior:
+                    latest = prior[-1]
+                    if latest["status"] in ("reserved", "unknown", "submitted", "working"):
+                        evidence = await asyncio.wait_for(
+                            self.venue.query_order(symbol, latest["client_order_id"]), timeout=2
                         )
-                        with self.conn.transaction():
-                            self.db.update_order(
-                                client_id=latest["client_order_id"],
-                                status=status,
-                                now_ns=now,
-                                venue_order_id=str(evidence["orderId"]),
-                                evidence=evidence,
+                        if evidence is not None:
+                            if (
+                                not isinstance(evidence, dict)
+                                or evidence.get("clientOrderId") != latest["client_order_id"]
+                                or evidence.get("symbol") != symbol
+                                or evidence.get("executedQty") is None
+                                or evidence.get("orderId") is None
+                                or evidence.get("status")
+                                not in ("NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "REJECTED")
+                            ):
+                                raise BinanceFailure(200, None, "invalid_external_flatten_evidence")
+                            remote = str(evidence.get("status", ""))
+                            status = (
+                                "filled"
+                                if remote == "FILLED"
+                                else "rejected"
+                                if remote == "REJECTED"
+                                else "cancelled"
+                                if remote in ("CANCELED", "EXPIRED")
+                                else "working"
                             )
-                        if status in ("rejected", "cancelled"):
-                            _LOG.critical("executor_external_flatten_terminal_without_flat %s", symbol)
+                            with self.conn.transaction():
+                                self.db.update_order(
+                                    client_id=latest["client_order_id"],
+                                    status=status,
+                                    now_ns=now,
+                                    venue_order_id=str(evidence["orderId"]),
+                                    evidence=evidence,
+                                )
+                            if status == "working":
+                                continue
+                        else:
+                            if now - latest["updated_at_ns"] >= _ORDER_WINDOW_NS:
+                                with self.conn.transaction():
+                                    self.db.record_fault(
+                                        account_slot=self.account_slot,
+                                        responsibility=f"{command_id}|{symbol}",
+                                        code="order_resolution_unknown",
+                                        symbol=symbol,
+                                        client_ids=[latest["client_order_id"]],
+                                        amount=amount,
+                                        now_ns=now,
+                                    )
                             continue
-                        if status != "filled":
-                            continue
-                    elif now - latest["updated_at_ns"] >= _ORDER_WINDOW_NS:
-                        with self.conn.transaction():
-                            self.db.update_order(
-                                client_id=latest["client_order_id"], status="not_submitted", now_ns=now
-                            )
-                    else:
-                        continue
-                elif latest["status"] == "rejected":
-                    _LOG.critical("executor_external_flatten_rejected %s", symbol)
+                if amount == 0:
                     continue
-            attempt = len(prior) + 1
-            if attempt > 3:
-                _LOG.critical("executor_external_flatten_exhausted %s", symbol)
-                continue
-            client_id = client_order_id(
-                namespace=self.account_slot,
-                entry_id=f"{command_id}|{symbol}",
-                leg="account_flatten",
-                attempt=attempt,
-            )
-            with self.conn.transaction():
-                self.db.reserve_external_flatten(
-                    client_id=client_id, command_id=command_id, symbol=symbol, attempt=attempt, now_ns=now
+                attempt = len(prior) + 1
+                if attempt > 3:
+                    with self.conn.transaction():
+                        self.db.record_fault(
+                            account_slot=self.account_slot,
+                            responsibility=f"{command_id}|{symbol}",
+                            code="exit_attempts_exhausted",
+                            symbol=symbol,
+                            client_ids=[row["client_order_id"] for row in prior],
+                            amount=amount,
+                            now_ns=now,
+                        )
+                    continue
+                client_id = client_order_id(
+                    namespace=self.account_slot,
+                    entry_id=f"{command_id}|{symbol}",
+                    leg="account_flatten",
+                    attempt=attempt,
                 )
-            await self._send_market(
-                entry_id=None,
-                symbol=symbol,
-                side="SELL" if amount > 0 else "BUY",
-                quantity=abs(amount),
-                client_id=client_id,
-                reduce_only=True,
-                now=now,
-            )
-            await self._sync_trades(symbol, now)
+                with self.conn.transaction():
+                    self.db.reserve_external_flatten(
+                        client_id=client_id, command_id=command_id, symbol=symbol, attempt=attempt, now_ns=now
+                    )
+                await self._send_market(
+                    entry_id=None,
+                    symbol=symbol,
+                    side="SELL" if amount > 0 else "BUY",
+                    quantity=abs(amount),
+                    client_id=client_id,
+                    reduce_only=True,
+                    now=now,
+                )
 
-        if any(Decimal(str(row["positionAmt"])) != 0 for row in positions):
-            return
-        for symbol in sorted({str(row["symbol"]) for row in algos}):
-            await self.venue.cancel_symbol_algo_orders(symbol)
+            except (TimeoutError, httpx.HTTPError, BinanceFailure) as exc:
+                _LOG.warning("executor_external_flatten_deferred %s: %s", symbol, type(exc).__name__)
+
+        nonzero_symbols = {str(row["symbol"]) for row in positions if Decimal(str(row["positionAmt"])) != 0}
+        for symbol in sorted({str(row["symbol"]) for row in algos} & selected - nonzero_symbols):
+            try:
+                await asyncio.wait_for(self.venue.cancel_symbol_algo_orders(symbol), timeout=2)
+            except (TimeoutError, httpx.HTTPError, BinanceFailure) as exc:
+                blocked_symbols.add(symbol)
+                _LOG.warning("executor_flatten_algo_cancel_deferred %s: %s", symbol, type(exc).__name__)
         positions, orders, algos = await asyncio.gather(
             self.venue.positions(), self.venue.open_orders(), self.venue.open_algo_orders()
         )
-        if not any(Decimal(str(row["positionAmt"])) != 0 for row in positions) and not orders and not algos:
+        remaining = {str(row["symbol"]) for row in positions if Decimal(str(row["positionAmt"])) != 0} | {
+            str(row["symbol"]) for row in (*orders, *algos)
+        }
+        recovered = {
+            symbol
+            for symbol in selected - remaining - blocked_symbols - owned
+            if not any(
+                order["status"] in ("reserved", "unknown", "submitted", "working")
+                for order in self.db.external_flatten_orders(command_id, symbol)
+            )
+        }
+        if recovered:
             with self.conn.transaction():
+                for symbol in recovered:
+                    self.db.clear_fault(account_slot=self.account_slot, responsibility=f"{command_id}|{symbol}")
+        if not any(Decimal(str(row["positionAmt"])) != 0 for row in positions) and not orders and not algos:
+            if self.db.unresolved_external_flatten(str(command_id)) or self.db.active_entries(self.account_slot):
+                return
+            with self.conn.transaction():
+                for key in self.db.lock_account(self.account_slot)["execution_faults"]:
+                    if key.startswith(command_id + "|"):
+                        self.db.clear_fault(account_slot=self.account_slot, responsibility=key)
                 self.db.clear_flatten(account_slot=self.account_slot)
 
     async def _sync_trades(self, symbol: str, now: int) -> None:
         cursor = self.db.trade_cursor(symbol, account_slot=self.account_slot)
-        trades = await self.venue.user_trades(symbol, from_id=cursor)
+        try:
+            trades = await asyncio.wait_for(self.venue.user_trades(symbol, from_id=cursor), timeout=2)
+        except (TimeoutError, httpx.HTTPError, BinanceFailure) as exc:
+            _LOG.warning("executor_trade_history_deferred %s: %s", symbol, type(exc).__name__)
+            return
+        # Only external GET failures are deferred. Ledger failures propagate and
+        # all fills, attribution and cursor advancement share one transaction.
         with self.conn.transaction():
             for trade in trades:
                 self.db.record_fill(symbol=symbol, trade=trade)
@@ -685,10 +939,17 @@ class ExecutorRunner:
                 )
 
     async def _refresh_entry_orders(
-        self, plan: dict[str, Any], open_algos: dict[str, dict[str, Any]], now: int
+        self, plan: dict[str, Any], open_algos: dict[str, dict[str, Any]], now: int, position_amount: Decimal
     ) -> None:
         for order in self.db.entry_orders(plan["entry_id"]):
             client_id = order["client_order_id"]
+            if order["status"] == "reserved" and order.get("request") is None and plan.get("admission") is not None:
+                with self.conn.transaction():
+                    self.db.update_order(client_id=client_id, status="not_submitted", now_ns=now)
+                    self.db.resolve_order(
+                        client_id=client_id, resolution={"definitely_not_executed": True, "reason": "intent_never_sent"}
+                    )
+                continue
             if order["leg"] in ("sl", "tp"):
                 evidence = open_algos.get(client_id)
                 if evidence is None:
@@ -696,6 +957,24 @@ class ExecutorRunner:
                 if evidence is None:
                     status = None
                 else:
+                    if (
+                        not isinstance(evidence, dict)
+                        or evidence.get("clientAlgoId") != client_id
+                        or evidence.get("symbol") != plan["native_symbol"]
+                        or evidence.get("algoStatus")
+                        not in (
+                            "NEW",
+                            "PARTIALLY_FILLED",
+                            "TRIGGERING",
+                            "TRIGGERED",
+                            "FINISHED",
+                            "FILLED",
+                            "CANCELED",
+                            "EXPIRED",
+                            "REJECTED",
+                        )
+                    ):
+                        raise BinanceFailure(200, None, "invalid_algo_query_evidence")
                     remote = str(evidence.get("algoStatus", ""))
                     status = (
                         "working"
@@ -712,6 +991,15 @@ class ExecutorRunner:
                 if evidence is None:
                     status = None
                 else:
+                    if (
+                        not isinstance(evidence, dict)
+                        or evidence.get("clientOrderId") != client_id
+                        or evidence.get("symbol") != plan["native_symbol"]
+                        or evidence.get("executedQty") is None
+                        or evidence.get("status")
+                        not in ("NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "REJECTED")
+                    ):
+                        raise BinanceFailure(200, None, "invalid_order_query_evidence")
                     remote = str(evidence.get("status", ""))
                     status = (
                         "filled"
@@ -734,9 +1022,40 @@ class ExecutorRunner:
                         venue_order_id=None if venue_id is None else str(venue_id),
                         evidence=evidence,
                     )
-            elif order["status"] in ("reserved", "unknown") and now - order["updated_at_ns"] >= _ORDER_WINDOW_NS:
+            elif order["status"] in ("reserved", "unknown", "submitted", "working"):
                 with self.conn.transaction():
-                    self.db.update_order(client_id=client_id, status="not_submitted", now_ns=now)
+                    self.db.update_order(client_id=client_id, status="unknown", now_ns=now)
+                    if now - (order["submitted_at_ns"] or order["updated_at_ns"]) < _ORDER_WINDOW_NS:
+                        continue
+                    self.db.record_fault(
+                        account_slot=self.account_slot,
+                        responsibility=plan["entry_id"],
+                        code="order_resolution_unknown",
+                        symbol=plan["native_symbol"],
+                        client_ids=[client_id],
+                        amount=position_amount,
+                        now_ns=now,
+                    )
+
+    @staticmethod
+    def _position_owned(
+        plan: dict[str, Any], entry: dict[str, Any], position: dict[str, Any], confirmed_quantity: Decimal = Decimal(0)
+    ) -> bool:
+        amount = Decimal(str(position.get("positionAmt", 0)))
+        evidence = entry["evidence"] or {}
+        native_qty = Decimal(str(evidence.get("executedQty", 0)))
+        proven_qty = max(native_qty, confirmed_quantity)
+        return bool(
+            amount
+            and proven_qty > 0
+            and abs(amount) <= proven_qty
+            and abs(amount) <= Decimal(str(plan["quantity"]))
+            and (amount > 0) == (plan["side"] == "long")
+            and position.get("positionSide", "BOTH") == "BOTH"
+            and evidence.get("clientOrderId") == entry["client_order_id"]
+            and evidence.get("symbol") == plan["native_symbol"]
+            and evidence.get("side") == ("BUY" if plan["side"] == "long" else "SELL")
+        )
 
     async def _step_plan(
         self,
@@ -755,7 +1074,21 @@ class ExecutorRunner:
         if entry is None:
             raise ValueError("plan_entry_order_missing")
         amount = Decimal(str(position["positionAmt"])) if position is not None else Decimal(0)
-        if amount and entry["status"] in ("filled", "cancelled") and current["opened_at_ns"] is None:
+        if amount and not self._position_owned(
+            current, entry, position or {}, self.db.confirmed_entry_quantity(plan["entry_id"])
+        ):
+            with self.conn.transaction():
+                self.db.record_fault(
+                    account_slot=self.account_slot,
+                    responsibility=plan["entry_id"],
+                    code="unattributed_position",
+                    symbol=plan["native_symbol"],
+                    client_ids=[entry["client_order_id"]],
+                    amount=amount,
+                    now_ns=now,
+                )
+            return
+        if amount and current["opened_at_ns"] is None:
             with self.conn.transaction():
                 self.db.set_entry_state(entry_id=plan["entry_id"], status="open", now_ns=now, opened_at_ns=now)
             current = self.db.entry(plan["entry_id"])
@@ -770,8 +1103,27 @@ class ExecutorRunner:
             order = latest.get(leg)
             if order is None:
                 return None
+            if leg in ("sl", "tp") and order["status"] == "working":
+                proof = order["evidence"] or {}
+                valid = (
+                    proof.get("symbol") == plan["native_symbol"]
+                    and proof.get("side") == ("SELL" if plan["side"] == "long" else "BUY")
+                    and proof.get("orderType", proof.get("type"))
+                    == ("STOP_MARKET" if leg == "sl" else "TAKE_PROFIT_MARKET")
+                    and Decimal(str(proof.get("triggerPrice", 0))) > 0
+                    and (
+                        str(proof.get("closePosition", False)).lower() == "true"
+                        or (
+                            str(proof.get("reduceOnly", False)).lower() == "true"
+                            and Decimal(str(proof.get("quantity", 0))) >= abs(amount)
+                        )
+                    )
+                )
+                if not valid:
+                    return "INVALID"
+            if order["status"] == "working":
+                return str((order["evidence"] or {}).get("status", "NEW"))
             return {
-                "working": "NEW",
                 "filled": "FILLED",
                 "cancelled": "CANCELED",
                 "rejected": "REJECTED",
@@ -781,9 +1133,24 @@ class ExecutorRunner:
             }.get(order["status"])
 
         if force_flatten and amount:
+            if entry["status"] in ("working", "submitted"):
+                await self._cancel_entry(current, entry, now)
+                return
             await self._flatten(current, amount, reason="operator_flatten", now=now)
             return
         last_flatten = latest.get("safety_flatten") or latest.get("time_exit")
+        uncertain_protection = [
+            order
+            for leg, order in latest.items()
+            if leg in ("sl", "tp")
+            and order["status"] in ("unknown", "reserved")
+            and now - (order["submitted_at_ns"] or order["updated_at_ns"]) >= _ORDER_WINDOW_NS
+        ]
+        if amount and uncertain_protection:
+            if entry["status"] in ("working", "submitted"):
+                await self._cancel_entry(current, entry, now)
+            await self._flatten(current, amount, reason="protection_unverified", now=now)
+            return
         facts = EntryLifecycleFacts(
             now_ns=now,
             entered_at_ns=current["opened_at_ns"],
@@ -803,9 +1170,20 @@ class ExecutorRunner:
             tp_client_ids=frozenset(order["client_order_id"] for order in orders if order["leg"] == "tp"),
         )
         action = step(facts)
+        if action.action == "flatten" and entry["status"] in ("working", "submitted"):
+            await self._cancel_entry(current, entry, now)
+            return
+        if action.action == "cancel_entry":
+            await self._cancel_entry(current, entry, now)
+            return
         if action.action in ("await_entry", "await_venue", "query_entry", "query_sl", "query_tp", "query_flatten"):
             return
         if action.action in {"submit_sl", "submit_tp"}:
+            leg = "sl" if action.action == "submit_sl" else "tp"
+            if status(leg) == "INVALID":
+                await self._cancel_protection(current, open_algos, now)
+                await self._flatten(current, amount, reason="protection_coverage_invalid", now=now)
+                return
             await self._protect(current, position, leg="sl" if action.action == "submit_sl" else "tp", now=now)
         elif action.action == "flatten":
             await self._flatten(current, amount, reason=action.reason, now=now)
@@ -813,12 +1191,18 @@ class ExecutorRunner:
             await self._cancel_protection(current, open_algos, now)
         elif action.action == "terminal":
             with self.conn.transaction():
+                self.db.clear_fault(account_slot=self.account_slot, responsibility=plan["entry_id"])
                 self.db.set_entry_state(
                     entry_id=plan["entry_id"],
                     status="terminal",
                     now_ns=now,
                     terminal_reason=current["terminal_reason"] or action.reason,
                 )
+
+    async def _cancel_entry(self, plan: dict[str, Any], entry: dict[str, Any], now: int) -> None:
+        await self.venue.cancel_order(plan["native_symbol"], entry["client_order_id"])
+        # Cancellation acknowledgement races fills; the next fresh position/order
+        # snapshot establishes quantity and terminality, never this DELETE alone.
 
     async def _protect(
         self, plan: dict[str, Any], position: dict[str, Any] | None, *, leg: Literal["sl", "tp"], now: int
@@ -858,6 +1242,23 @@ class ExecutorRunner:
                 attempt=attempt,
                 now_ns=now,
             )
+        quantity = None if attempt == 1 else abs(Decimal(str(position["positionAmt"])))
+        with self.conn.transaction():
+            self.db.begin_send(
+                client_id=client_id,
+                request={
+                    "symbol": plan["native_symbol"],
+                    "side": "SELL" if plan["side"] == "long" else "BUY",
+                    "leg": leg,
+                    "triggerPrice": str(trigger),
+                    "quantity": None if quantity is None else str(quantity),
+                    "closePosition": quantity is None,
+                    "reduceOnly": quantity is not None,
+                    "clientAlgoId": client_id,
+                    "workingType": "MARK_PRICE",
+                },
+                now_ns=_now_ns(),
+            )
         try:
             result = await self.venue.protection_order(
                 symbol=plan["native_symbol"],
@@ -865,7 +1266,7 @@ class ExecutorRunner:
                 leg=leg,
                 trigger_price=trigger,
                 client_id=client_id,
-                quantity=None if attempt == 1 else abs(Decimal(str(position["positionAmt"]))),
+                quantity=quantity,
             )
         except (httpx.TransportError, httpx.TimeoutException):
             with self.conn.transaction():
@@ -875,7 +1276,7 @@ class ExecutorRunner:
             with self.conn.transaction():
                 self.db.update_order(
                     client_id=client_id,
-                    status="unknown" if exc.transient else "rejected",
+                    status="rejected" if exc.definitely_not_executed else "unknown",
                     now_ns=now,
                     error_code=exc.code,
                 )
@@ -883,11 +1284,21 @@ class ExecutorRunner:
                 await self._flatten(
                     plan, Decimal(str(position["positionAmt"])), reason="protection_trigger_immediate", now=now
                 )
-            elif not exc.transient and exc.code not in (-1102, -4136):
+            elif exc.definitely_not_executed and exc.code not in (-1102, -4136):
                 await self._flatten(plan, Decimal(str(position["positionAmt"])), reason="protection_failed", now=now)
             return
         with self.conn.transaction():
-            self.db.update_order(client_id=client_id, status="working", now_ns=now, evidence=result)
+            valid = (
+                isinstance(result, dict)
+                and result.get("clientAlgoId") == client_id
+                and result.get("algoId") is not None
+            )
+            self.db.update_order(
+                client_id=client_id,
+                status="working" if valid else "unknown",
+                now_ns=_now_ns(),
+                evidence=result if isinstance(result, dict) else None,
+            )
 
     async def _flatten(self, plan: dict[str, Any], amount: Decimal, *, reason: str, now: int) -> None:
         if amount == 0:
@@ -895,12 +1306,25 @@ class ExecutorRunner:
         leg: Literal["time_exit", "safety_flatten"] = (
             "time_exit" if reason == "time_exit" or plan["terminal_reason"] == "time_exit" else "safety_flatten"
         )
-        prior = [order for order in self.db.entry_orders(plan["entry_id"]) if order["leg"] == leg]
-        if prior and prior[-1]["status"] not in ("filled", "rejected", "not_submitted"):
+        prior = [
+            order for order in self.db.entry_orders(plan["entry_id"]) if order["leg"] in ("time_exit", "safety_flatten")
+        ]
+        if prior:
+            leg = cast(Literal["time_exit", "safety_flatten"], prior[0]["leg"])
+        if prior and prior[-1]["status"] not in ("filled", "rejected", "cancelled", "not_submitted"):
             return
         attempt = len(prior) + 1
         if attempt > 3:
-            _LOG.critical("executor_flatten_exhausted %s", plan["entry_id"])
+            with self.conn.transaction():
+                self.db.record_fault(
+                    account_slot=self.account_slot,
+                    responsibility=plan["entry_id"],
+                    code="exit_attempts_exhausted",
+                    symbol=plan["native_symbol"],
+                    client_ids=[row["client_order_id"] for row in prior],
+                    amount=amount,
+                    now_ns=now,
+                )
             return
         client_id = client_order_id(namespace=self.account_slot, entry_id=plan["entry_id"], leg=leg, attempt=attempt)
         with self.conn.transaction():

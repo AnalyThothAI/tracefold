@@ -110,6 +110,7 @@ class TradingAssessor:
         self.program = program
         self.lm = lm
         self.timeout_s = timeout_s
+        self.concurrent = concurrent
         self._slots = asyncio.Semaphore(concurrent)
 
     async def assess(self, view: CaseView) -> AssessmentResult:

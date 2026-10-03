@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import Any, cast
 
 from tracefold.trading.executor.core import SignalV4
@@ -27,7 +28,7 @@ OPERATOR_INTENTS_SQL = (
 EXECUTION_ENTRIES_SQL = (
     "SELECT e.entry_id,CASE WHEN e.source='signal' THEN e.entry_id END AS signal_id,"
     "e.command_id,e.account_slot,e.native_symbol,e.side,e.quantity,e.stop_bps,e.tp_bps,e.max_hold_s,"
-    "e.state,e.opened_at_ns,e.terminal_at_ns,e.terminal_reason,e.pnl_status,e.realized_pnl,"
+    "e.admission,e.reserved_margin_usdt,e.state,e.opened_at_ns,e.terminal_at_ns,e.terminal_reason,e.pnl_status,e.realized_pnl,"
     "e.fees,e.net_pnl,e.updated_at_ns,e.case_id,CASE WHEN e.source='signal' THEN "
     "e.requested_at_ns END AS decided_at_ns,"
     "CASE WHEN e.source='signal' THEN e.expires_at_ns END AS expires_at_ns,i.requested_at_ns FROM trading_entries e "
@@ -50,7 +51,7 @@ EXECUTION_REFUSALS_SQL = """
     ORDER BY disposed_at_ns DESC LIMIT %s
     """
 EXECUTION_ORDERS_SQL = (
-    "SELECT client_order_id,entry_id,leg,attempt,status,error_code,evidence FROM trading_orders "
+    "SELECT client_order_id,entry_id,leg,attempt,status,error_code,evidence,resolution FROM trading_orders "
     "WHERE entry_id=ANY(%s) ORDER BY entry_id,attempt"
 )
 EXECUTION_FILLS_SQL = (
@@ -71,7 +72,9 @@ REALIZED_TOTALS_SQL = """
       COALESCE(SUM(net_pnl) FILTER (WHERE pnl_status='complete'
           AND terminal_at_ns>=%s AND terminal_at_ns<%s),0) AS net_today,
       COALESCE(SUM(net_pnl) FILTER (WHERE pnl_status='complete'),0) AS net_total
-    FROM trading_entries WHERE account_slot=%s AND state='terminal'
+    FROM trading_entries e WHERE account_slot=%s AND state='terminal'
+      AND EXISTS (SELECT 1 FROM trading_orders o JOIN trading_fills f USING(client_order_id)
+                  WHERE o.entry_id=e.entry_id AND o.leg='entry' AND f.quantity>0)
     """
 
 
@@ -127,6 +130,62 @@ class ExecutorStorage:
     def control(self, account_slot: str) -> dict[str, Any]:
         row = self.conn.execute("SELECT * FROM trading_accounts WHERE account_slot=%s", (account_slot,)).fetchone()
         return row or {"entries_paused": True, "emergency_halted": False, "flatten_command_id": None}
+
+    def lock_account(self, account_slot: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT * FROM trading_accounts WHERE account_slot=%s FOR UPDATE", (account_slot,)
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("executor_state_missing")
+        return cast(dict[str, Any], row)
+
+    def record_fault(
+        self,
+        *,
+        account_slot: str,
+        responsibility: str,
+        code: str,
+        symbol: str,
+        client_ids: list[str],
+        amount: Decimal,
+        now_ns: int,
+    ) -> None:
+        previous = self.lock_account(account_slot)["execution_faults"].get(responsibility, {})
+        fault = {
+            "code": code,
+            "responsibility": responsibility,
+            "symbol": symbol,
+            "client_ids": client_ids,
+            "position_amount": str(amount),
+            "first_observed_at_ns": previous.get("first_observed_at_ns", now_ns),
+            "last_observed_at_ns": now_ns,
+        }
+        self.conn.execute(
+            "UPDATE trading_accounts SET execution_faults=jsonb_set(execution_faults,ARRAY[%s],%s::jsonb) "
+            "WHERE account_slot=%s",
+            (responsibility, json.dumps(fault), account_slot),
+        )
+
+    def clear_fault(self, *, account_slot: str, responsibility: str) -> None:
+        self.conn.execute(
+            "UPDATE trading_accounts SET execution_faults=execution_faults-%s WHERE account_slot=%s",
+            (responsibility, account_slot),
+        )
+
+    def begin_send(self, *, client_id: str, request: dict[str, Any], now_ns: int) -> None:
+        row = self.conn.execute(
+            "UPDATE trading_orders SET request=%s::jsonb,submitted_at_ns=%s,status='unknown',"
+            "updated_at_ns=%s WHERE client_order_id=%s AND status='reserved' RETURNING client_order_id",
+            (json.dumps(request, default=str), now_ns, now_ns, client_id),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("order_already_sent_or_not_reserved")
+
+    def resolve_order(self, *, client_id: str, resolution: dict[str, Any]) -> None:
+        self.conn.execute(
+            "UPDATE trading_orders SET resolution=%s::jsonb WHERE client_order_id=%s",
+            (json.dumps(resolution), client_id),
+        )
 
     def set_control(self, *, account_slot: str, paused: bool, halted: bool, now_ns: int) -> None:
         self.conn.execute(
@@ -186,6 +245,24 @@ class ExecutorStorage:
             (account_slot,),
         ).fetchone()
         return None if row is None else SignalV4.model_validate_json(json.dumps(row["request"]))
+
+    def entry_source_reason(self, *, case_id: str, now_ns: int) -> str | None:
+        from tracefold.trading.storage.analysis import AnalysisStorage
+
+        source = AnalysisStorage()
+        source.conn = self.conn
+        row = self.conn.execute(
+            "SELECT root_expires_at_ms FROM trading_cases WHERE case_id=%s FOR SHARE", (case_id,)
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("entry_source_missing")
+        reason = source.publication_source_status(case_id=case_id, now_ms=None)
+        now_ns = int(
+            self.conn.execute(
+                "SELECT (date_part('epoch',clock_timestamp()) * 1000000000)::bigint AS now_ns"
+            ).fetchone()["now_ns"]
+        )
+        return reason or ("source_expired" if now_ns // 1_000_000 >= row["root_expires_at_ms"] else None)
 
     def next_intent(self, *, account_slot: str) -> dict[str, Any] | None:
         return cast(
@@ -271,12 +348,27 @@ class ExecutorStorage:
         tp_bps: int,
         max_hold_s: int,
         now_ns: int,
+        admission: dict[str, Any] | None = None,
+        reserved_margin_usdt: Decimal | None = None,
+        reserved_notional: Decimal | None = None,
     ) -> bool:
-        values = (quantity, reference_price, quantity, reference_price, stop_bps, tp_bps, max_hold_s, now_ns, now_ns)
+        notional = Decimal(quantity) * Decimal(reference_price) if reserved_notional is None else reserved_notional
+        values = (
+            quantity,
+            reference_price,
+            notional,
+            stop_bps,
+            tp_bps,
+            max_hold_s,
+            None if admission is None else json.dumps(admission, default=str),
+            reserved_margin_usdt,
+            now_ns,
+            now_ns,
+        )
         if command_id is None:
             row = self.conn.execute(
-                "UPDATE trading_entries SET quantity=%s,reference_price=%s,reserved_notional=%s::numeric * %s::numeric,"
-                "stop_bps=%s,tp_bps=%s,max_hold_s=%s,state='accepted',pnl_status='pending',reason='accepted',"
+                "UPDATE trading_entries SET quantity=%s,reference_price=%s,reserved_notional=%s,"
+                "stop_bps=%s,tp_bps=%s,max_hold_s=%s,admission=%s::jsonb,reserved_margin_usdt=%s,state='accepted',pnl_status='pending',reason='accepted',"
                 "disposed_at_ns=%s,updated_at_ns=%s WHERE entry_id=%s AND account_slot=%s AND native_symbol=%s "
                 "AND side=%s AND state='pending' RETURNING entry_id",
                 (*values, entry_id, account_slot, native_symbol, side),
@@ -298,8 +390,9 @@ class ExecutorStorage:
         self.conn.execute(
             "INSERT INTO trading_entries(entry_id,source,command_id,account_slot,native_symbol,side,requested_at_ns,"
             "expires_at_ns,created_at_ns,quantity,reference_price,reserved_notional,stop_bps,tp_bps,max_hold_s,"
+            "admission,reserved_margin_usdt,"
             "state,pnl_status,reason,disposed_at_ns,updated_at_ns) "
-            "VALUES (%s,'manual',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::numeric * %s::numeric,%s,%s,%s,"
+            "VALUES (%s,'manual',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,"
             "'accepted','pending','accepted',%s,%s)",
             (
                 entry_id,
@@ -378,6 +471,24 @@ class ExecutorStorage:
                 "AND leg='account_flatten' ORDER BY attempt",
                 (command_id, symbol),
             ).fetchall(),
+        )
+
+    def external_flatten_symbols(self, command_id: str) -> list[str]:
+        return [
+            str(row["native_symbol"])
+            for row in self.conn.execute(
+                "SELECT DISTINCT native_symbol FROM trading_orders WHERE command_id=%s", (command_id,)
+            ).fetchall()
+        ]
+
+    def unresolved_external_flatten(self, command_id: str) -> bool:
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM trading_orders WHERE command_id=%s "
+                "AND status IN ('reserved','unknown','submitted','working') LIMIT 1",
+                (command_id,),
+            ).fetchone()
+            is not None
         )
 
     def update_order(
@@ -494,6 +605,14 @@ class ExecutorStorage:
                 "SELECT * FROM trading_orders WHERE entry_id=%s ORDER BY leg,attempt", (entry_id,)
             ).fetchall(),
         )
+
+    def confirmed_entry_quantity(self, entry_id: str) -> Decimal:
+        row = self.conn.execute(
+            "SELECT COALESCE(SUM(f.quantity),0) AS quantity FROM trading_fills f "
+            "JOIN trading_orders o USING(client_order_id) WHERE o.entry_id=%s AND o.leg='entry'",
+            (entry_id,),
+        ).fetchone()
+        return Decimal(str(row["quantity"]))
 
     def trade_cursor(self, symbol: str, *, account_slot: str) -> int | None:
         row = self.conn.execute(
@@ -621,11 +740,25 @@ class ExecutorStorage:
             (plan["entry_id"],),
         ).fetchone()
         entry_evidence = {} if entry_order is None else entry_order["evidence"] or {}
-        expected_entry = Decimal(str(entry_evidence.get("executedQty", plan["quantity"])))
+        resolution = self.conn.execute(
+            "SELECT resolution FROM trading_orders WHERE entry_id=%s AND leg='entry'", (plan["entry_id"],)
+        ).fetchone()
+        proof = {} if resolution is None else resolution["resolution"] or {}
+        raw_quantity = entry_evidence.get("executedQty")
+        expected_entry = None if raw_quantity is None else Decimal(str(raw_quantity))
+        zero_consistent = entry_qty == 0 and exit_qty == 0 and plan["opened_at_ns"] is None
+        proven_zero = proof.get("definitely_not_executed") is True and zero_consistent
         complete = bool(
             entry_order
             and entry_order["status"] in ("filled", "cancelled", "rejected", "not_submitted")
-            and entry_qty >= expected_entry
+            and (
+                proven_zero
+                or (
+                    expected_entry is not None
+                    and entry_qty == expected_entry
+                    and (expected_entry > 0 or zero_consistent)
+                )
+            )
             and exit_qty >= entry_qty
             and all(row["fees_in_usdt"] for row in rows)
         )
@@ -701,6 +834,11 @@ class ExecutorStorage:
             result.append(
                 {
                     "source": "signal" if plan["signal_id"] is not None else "manual",
+                    "admission": plan["admission"],
+                    "reserved_margin_usdt": None
+                    if plan["reserved_margin_usdt"] is None
+                    else str(plan["reserved_margin_usdt"]),
+                    "entry_resolution": None if entry is None else entry["resolution"],
                     "entry_id": plan["entry_id"],
                     "case_id": plan["case_id"],
                     "market_key": f"crypto:perp:{base}:USDT",
