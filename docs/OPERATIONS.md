@@ -222,11 +222,11 @@ native 推送已由[认证批 1](reports/news-805-certification.md)认证（切�
 1. 保存当前镜像身份、回滚镜像、校准文件摘要与数据库备份。按既有发布流程准备目标镜像，先不要启动新 Workers。
 2. 先核对 pending intent 的失败次数和 provider 结果。有重试/发送历史的 pending 必须让旧版本按原预算完成有界重试或结算，不能清空计数后交给新版本再试。
    然后在部署目录停止旧 Workers：`docker compose stop workers`。核对进程已退出；正常停机会释放未发送 lease，但不会清除冻结卡片。
-3. 通过数据库容器读取 update intent 状态；`sending` 必须为零。非零时先核实 provider 结果并完成正常结算/孤儿对账，不能用维护 SQL 将其改成未发送。
+3. 通过数据库容器读取 update intent 状态（容器内的 `POSTGRES_USER` 是不能登录的属主角色，维护 SQL 以 `tracefold` 连接）；`sending` 必须为零。非零时先核实 provider 结果并完成正常结算/孤儿对账，不能用维护 SQL 将其改成未发送。
 
 ```bash
 docker compose exec -T postgres sh -eu -c \
-  'exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+  'exec psql -v ON_ERROR_STOP=1 -U tracefold -d tracefold' <<'SQL'
 SELECT state,count(*) FROM news_notifications WHERE kind='update' GROUP BY state ORDER BY state;
 SELECT count(*) AS pending_with_attempt_history FROM news_notifications
 WHERE kind='update' AND state='pending'
@@ -244,7 +244,7 @@ SQL
 
 ```bash
 docker compose exec -T postgres sh -eu -c \
-  'exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' \
+  'exec psql -v ON_ERROR_STOP=1 -U tracefold -d tracefold' \
   < scripts/news_reader_switch.sql
 ```
 
