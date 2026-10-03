@@ -37,7 +37,7 @@
 | 模块 | 读完后能回答 | 主要入口 |
 | :--- | :--- | :--- |
 | [**News**](modules/news.md)<br/>[语义链路入门](modules/news-semantics-guide.md) | 多来源如何形成知识版本？哪些命题被通知？修订和失败如何恢复？入门篇用示意案例走完全链路 | `news/pipeline` · `news/updates` |
-| [**读者标注规范**](modules/news-reader-labeling.md) | 如何独立盲标、冻结故事抽样框、认证切线并保留失败分母？ | `scripts/news_reader_labeling.py` · `scripts/eval_news_reader.py` |
+| [**读者标注规范**](modules/news-reader-labeling.md) | 如何分工盲标、冻结故事抽样框、按已知选中量认证切线？ | `scripts/news_reader_labeling.py` · `scripts/eval_news_reader.py` |
 | [**OI 与市场观察**](modules/oi.md) | 测量如何解析和分组？为什么通知阈值不等于交易过滤？ | `news/oi_signals.py` · `news/market_notifications.py` |
 | [**Wallets**](modules/wallets.md) | 完整回执如何支撑同窗口净买入？首次与当前快照有什么区别？ | `news/chain_tape` |
 | [**Market Review**](modules/market-review.md) | 同名资产如何区分？当前报价和发送时价格补充如何计算？ | `news/market_review` |
@@ -109,6 +109,7 @@ AI 开发入口由[共享指引](agents/shared-router.md)同步至 [AGENTS.md](.
 | [命题召回校准](reports/issue-791-claim-recall-2026-10-02.md) | 固定模型、RRF 校准与已知召回误差；其中独立服务的工程记录属于旧版本 |
 | [读者判断校准](reports/news-791-b.md) | v5 命题读数、reader v3、真实重问与未通过指标；不作为部署健康报告 |
 | [本地 ONNX 与维护验收](reports/news-799.md) | 当前 Workers 本地编码器、兼容性、降级、回填与资源证明 |
+| [读者推送认证批 1](reports/news-805-certification.md) | 四题读者 native 推送切线 0.372 的 owner 精度证书、未通过门槛与日量估计；重点未认证 |
 
 报告保留测量时间、版本和局限；当前运行行为以模块手册为准，操作步骤以运维与迁移手册为准。
 

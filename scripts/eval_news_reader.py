@@ -1,9 +1,13 @@
-"""Offline reader calibration: fit, independent certification, then read-only report.
+"""Offline reader calibration: fit, owner selection, certification, then read-only report.
 
 Run each phase separately. No provider, database, cache or sender is constructed.
 Old importance scores are historical evidence, never converted into new answers.
 Claude labels can train a candidate; only independent owner labels certify it.
 Install optional fitting dependencies with ``uv sync --group research``.
+
+Certification population: one representative per independent story in a complete claim census after the
+candidate's time boundary. Every representative is scored by the frozen candidate, so the stories any cut
+selects are known exactly; owner labels only estimate the push (key) rate among them, stratum by stratum.
 """
 
 from __future__ import annotations
@@ -12,6 +16,7 @@ import argparse
 import json
 import math
 import random
+import re
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, replace
@@ -20,8 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from scripts.news_reader_diagnostics import baseline_auc, diagnostic_report
-from scripts.news_reader_io import read_jsonl, write_jsonl
-from scripts.news_reader_labeling import GUIDE_VERSION
+from scripts.news_reader_io import dataset_sha256, read_jsonl, write_jsonl
 from tracefold.news.notifications.novelty import ClaimLink, LinkedReceipt, ReaderNovelty, reader_novelty
 from tracefold.news.notifications.policy import (
     KIND_FLOOR,
@@ -34,9 +38,9 @@ from tracefold.news.notifications.policy import (
 )
 from tracefold.news.notifications.reader import READER_QUESTIONS_IDENTITY, ReaderBackend, ReaderInput, ReaderJudgment
 from tracefold.news.updates.contracts import ClaimFields
-from tracefold.news.updates.identity import digest
+from tracefold.news.updates.identity import digest, identity
 
-PROTOCOL = "news_reader_calibration_v2"
+PROTOCOL = "news_reader_calibration_v3"
 FIT_CONFIG: dict[str, Any] = {
     "C": 1.0,
     "solver": "lbfgs",
@@ -45,10 +49,18 @@ FIT_CONFIG: dict[str, Any] = {
     "folds": 5,
     "sklearn_version": "1.9.1",
 }
-# This order is fixed before seeing certification labels. Stop at the first failure.
-CUT_SEQUENCE = (0.99, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5)
-PUSH_TARGET, KEY_TARGET, DELTA = 0.65, 0.75, 0.1
+PUSH_TARGET, KEY_TARGET = 0.65, 0.75
+# One-sided error per field; push and key together keep a family error of 0.1 per backend.
+FIELD_DELTA = 0.05
 PUSH_MINIMUM, KEY_MINIMUM = 150, 60
+# Frozen before labels from scores only: the candidate's push region, key candidates outside it, the rest.
+STRATA = ("push_region", "key_region", "rest")
+STORY_RULE = "union of claim-Event membership and recorded claim links over the complete census"
+REPRESENTATIVE_RULE = (
+    "earliest member by (first_available_at_ms, case_id); stories with a member before the boundary excluded"
+)
+SCORE_TOLERANCE = 1e-12
+_GUIDE = re.compile(r"^news_reader_owner_guide_v\d+:[0-9a-f]{64}$")
 
 
 def load(path: Path) -> list[dict[str, Any]]:
@@ -59,8 +71,8 @@ def load(path: Path) -> list[dict[str, Any]]:
         ReaderInput.model_validate(row["reader_input"])
         if not row.get("story_id") or not row.get("guide_version") or not row.get("labeler"):
             raise ValueError("news_reader_eval_label_provenance_required")
-        if row["guide_version"] != GUIDE_VERSION:
-            raise ValueError("news_reader_eval_owner_guide_changed")
+        if not _GUIDE.match(str(row["guide_version"])):
+            raise ValueError("news_reader_eval_guide_version_invalid")
         label = row["label"]
         if label.get("push") not in {"push", "borderline", "feed"} or not isinstance(label.get("key"), bool):
             raise ValueError("news_reader_eval_current_labels_required")
@@ -88,6 +100,14 @@ def load(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def guide_version(rows: Sequence[Mapping[str, Any]]) -> str:
+    """The one labeling guide every row was labeled under; it need not be the current code guide."""
+    versions = {row.get("guide_version") for row in rows}
+    if len(versions) != 1 or not _GUIDE.match(str(version := next(iter(versions)))):
+        raise ValueError("news_reader_eval_single_guide_version_required")
+    return str(version)
+
+
 def assemble(
     cases: Sequence[Mapping[str, Any]],
     labels: Sequence[Mapping[str, Any]],
@@ -105,6 +125,7 @@ def assemble(
     chosen: dict[str, dict[str, Any]] = {}
     proxy_stories: dict[str, str] = {}
     seen = set()
+    guide_version(labels)
     for raw in labels:
         case, labeler = raw["case_id"], raw["labeler"]
         if case not in inputs or raw.get("reader_input_sha256") != digest(inputs[case]["reader_input"]):
@@ -112,8 +133,6 @@ def assemble(
         if (case, labeler) in seen:
             raise ValueError("news_reader_eval_duplicate_case_labeler")
         seen.add((case, labeler))
-        if raw.get("guide_version") != GUIDE_VERSION:
-            raise ValueError("news_reader_eval_owner_guide_changed")
         if labeler != "owner" and not labeler.startswith("claude:"):
             raise ValueError("news_reader_eval_labeler_invalid")
         if labeler != "owner":
@@ -198,33 +217,37 @@ def assemble(
     return sorted(assembled, key=lambda row: row["case_id"])
 
 
+def _judgment(record: Mapping[str, Any], reader_input: Mapping[str, Any], backend: ReaderBackend) -> ReaderJudgment:
+    """One exact-input answer to the current questions from the requested backend."""
+    if "importance" in record:
+        raise ValueError("news_reader_eval_historical_scores_require_real_reask")
+    if record.get("questions_identity") != READER_QUESTIONS_IDENTITY:
+        raise ValueError("news_reader_eval_questions_changed")
+    if record.get("input_sha256") != digest(reader_input):
+        raise ValueError("news_reader_eval_answer_input_changed")
+    if (
+        record.get("kind") != "reader"
+        or record.get("requested_backend") != backend
+        or not record.get("program_identity")
+    ):
+        raise ValueError("news_reader_eval_answer_provenance_required")
+    judgment = ReaderJudgment.model_validate(record["judgment"])
+    if judgment.status != "available" or judgment.backend != backend:
+        raise ValueError("news_reader_eval_requested_backend_unavailable")
+    count = len(reader_input["messages"])
+    if (judgment.anchor is None) != (count == 0) or (
+        judgment.anchor is not None and len(judgment.anchor.probabilities) != count + 1
+    ):
+        raise ValueError("news_reader_eval_answer_shape_mismatch")
+    return judgment
+
+
 def recorded(rows: Sequence[Mapping[str, Any]], backend: ReaderBackend) -> dict[str, ReaderJudgment]:
     answers = {}
     for row in rows:
         record = row.get("answers", {}).get(backend)
-        if record is None:
-            continue
-        if "importance" in record:
-            raise ValueError("news_reader_eval_historical_scores_require_real_reask")
-        if record.get("questions_identity") != READER_QUESTIONS_IDENTITY:
-            raise ValueError("news_reader_eval_questions_changed")
-        if record.get("input_sha256") != digest(row["reader_input"]):
-            raise ValueError("news_reader_eval_answer_input_changed")
-        if (
-            record.get("kind") != "reader"
-            or record.get("requested_backend") != backend
-            or not record.get("program_identity")
-        ):
-            raise ValueError("news_reader_eval_answer_provenance_required")
-        judgment = ReaderJudgment.model_validate(record["judgment"])
-        if judgment.status != "available" or judgment.backend != backend:
-            raise ValueError("news_reader_eval_requested_backend_unavailable")
-        count = len(row["reader_input"]["messages"])
-        if (judgment.anchor is None) != (count == 0) or (
-            judgment.anchor is not None and len(judgment.anchor.probabilities) != count + 1
-        ):
-            raise ValueError("news_reader_eval_answer_shape_mismatch")
-        answers[row["case_id"]] = judgment
+        if record is not None:
+            answers[row["case_id"]] = _judgment(record, row["reader_input"], backend)
     answer_provenance(rows, answers, backend)
     return answers
 
@@ -326,37 +349,6 @@ def dataset_digest(rows: Sequence[Mapping[str, Any]]) -> str:
         [
             {key: value for key, value in row.items() if key != "reader_novelty"}
             for row in sorted(rows, key=lambda row: row["case_id"])
-        ]
-    )
-
-
-HOLDOUT_ANNOTATION_FIELDS = {
-    "label",
-    "labeler",
-    "guide_version",
-    "inclusion_probability",
-    "sampling_design",
-    "sampling_unit",
-    "sampling_frame",
-    "stratum",
-    "story_id",
-}
-
-
-def frozen_dataset_digest(rows: Sequence[Mapping[str, Any]], certification: Sequence[str]) -> str:
-    """Permit later gold only in held-out rows; inputs, story grouping, answers and fit labels stay frozen."""
-    ids = set(certification)
-    return dataset_digest(
-        [
-            {
-                **{
-                    key: value
-                    for key, value in row.items()
-                    if row["case_id"] not in ids or key not in HOLDOUT_ANNOTATION_FIELDS
-                },
-                "split_story_id": row.get("split_story_id", row["story_id"]),
-            }
-            for row in rows
         ]
     )
 
@@ -492,8 +484,7 @@ def fit(rows: Sequence[Mapping[str, Any]], backend: ReaderBackend) -> dict[str, 
         raise ValueError("news_reader_eval_research_dependency_version_changed")
 
     split = split_cases(rows)
-    if any(row["guide_version"] != GUIDE_VERSION for row in rows):
-        raise ValueError("news_reader_eval_owner_guide_changed")
+    version = guide_version(rows)
     answers = recorded(rows, backend)
     training = [
         row
@@ -554,7 +545,7 @@ def fit(rows: Sequence[Mapping[str, Any]], backend: ReaderBackend) -> dict[str, 
         {
             "case_id": row["case_id"],
             "input_sha256": digest(row["reader_input"]),
-            "guide_version": GUIDE_VERSION,
+            "guide_version": version,
             "p_push": p,
             "p_key": k,
         }
@@ -568,7 +559,8 @@ def fit(rows: Sequence[Mapping[str, Any]], backend: ReaderBackend) -> dict[str, 
         "eligibility_table_sha256": digest(PUSHABLE_KINDS),
         "kind_floor": KIND_FLOOR,
         "dataset_sha256": dataset_digest(rows),
-        "guide_versions": sorted({row["guide_version"] for row in rows}),
+        # Owner labels that certify this candidate must be labeled under the same guide.
+        "guide_version": version,
         "split": split,
         "calibration": asdict(calibration),
         "cut_sequence": fit_cut_sequences(predictions, len(split["certification"])),
@@ -581,18 +573,7 @@ def fit(rows: Sequence[Mapping[str, Any]], backend: ReaderBackend) -> dict[str, 
         "label_sources": dict(Counter(row["labeler"] for row in training)),
         "certification_status": "uncalibrated",
         "fit_config": {**FIT_CONFIG, "materiality_floors": list(FIT_CONFIG["materiality_floors"])},
-        "fit_dataset_sha256": dataset_digest([row for row in rows if row["case_id"] in split["fit"]]),
     }
-    # Use the canonical frozen holdout including provenance, omitting only the derived object.
-    artifact["holdout_identity"] = digest(
-        {
-            "backend": backend,
-            "dataset": frozen_dataset_digest(
-                [row for row in rows if row["case_id"] in split["certification"]], split["certification"]
-            ),
-        }
-    )
-    artifact["frozen_dataset_sha256"] = frozen_dataset_digest(rows, split["certification"])
     artifact["candidate_identity"] = candidate_identity(artifact)
     return artifact
 
@@ -603,8 +584,8 @@ DERIVATION_FIELDS = (
     "questions_identity",
     "eligibility_table_sha256",
     "kind_floor",
-    "frozen_dataset_sha256",
-    "guide_versions",
+    "dataset_sha256",
+    "guide_version",
     "split",
     "calibration",
     "cut_sequence",
@@ -613,8 +594,6 @@ DERIVATION_FIELDS = (
     "materiality_candidates",
     "oof_predictions",
     "fit_config",
-    "fit_dataset_sha256",
-    "holdout_identity",
 )
 
 
@@ -666,8 +645,8 @@ def register_holdout_use(path: Path, artifact: Mapping[str, Any], *, certificati
         lock.unlink()
 
 
-def clopper_pearson_lower(successes: int, trials: int, delta: float = DELTA) -> float:
-    """Invert the exact binomial upper tail; no pseudo-counts or fractional weights."""
+def clopper_pearson_lower(successes: int, trials: int, delta: float) -> float:
+    """One-sided exact lower bound: invert the binomial upper tail; no pseudo-counts or fractional weights."""
     if not 0 <= successes <= trials or not 0 < delta < 1:
         raise ValueError("news_reader_eval_binomial_arguments_invalid")
     if not successes:
@@ -693,458 +672,677 @@ def clopper_pearson_lower(successes: int, trials: int, delta: float = DELTA) -> 
     return (low + high) / 2
 
 
-def _sampling_strata(rows: Sequence[Mapping[str, Any]]) -> list[str]:
-    if not rows or any(
-        row.get("sampling_design") not in {"uniform", "stratified"} or row.get("inclusion_probability") is None
-        for row in rows
-    ):
-        raise ValueError("news_reader_eval_probability_sample_required")
-    designs = {row["sampling_design"] for row in rows}
-    if len(designs) != 1:
-        raise ValueError("news_reader_eval_mixed_sampling_design")
-    if designs == {"uniform"}:
-        if len({row["inclusion_probability"] for row in rows}) != 1:
-            raise ValueError("news_reader_eval_uniform_probability_changed")
-        return ["uniform"]
-    strata = sorted({row.get("stratum", "") for row in rows})
-    if not all(strata):
-        raise ValueError("news_reader_eval_stratum_required")
-    for stratum in strata:
-        if len({row["inclusion_probability"] for row in rows if row["stratum"] == stratum}) != 1:
-            raise ValueError("news_reader_eval_probability_must_be_constant_within_stratum")
-    return strata
+# --------------------------------------------------------------------------------------------------------------
+# Holdout story frame over a complete claim census, scored by the frozen candidate.
+
+_CENSUS_FIELDS = (
+    "case_id",
+    "claim_ref",
+    "event_id",
+    "first_available_at_ms",
+    "decided_at_ms",
+    "reader_input",
+    "message_intents",
+)
 
 
-def sampling_frame(rows: Sequence[Mapping[str, Any]]) -> Mapping[str, Any]:
-    """A claim sample with distinct observed story IDs is not a story probability frame."""
+def census_claims(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Validate a complete claim-decision census and keep each claim's first recorded decision."""
+    if not rows or len({row["case_id"] for row in rows}) != len(rows):
+        raise ValueError("news_reader_eval_empty_or_duplicate_cases")
     frames = [row.get("sampling_frame") for row in rows]
-    if not frames or not isinstance(frames[0], Mapping) or any(frame != frames[0] for frame in frames):
-        raise ValueError("news_reader_eval_frozen_sampling_frame_required")
-    frame = frames[0]
     if (
-        not frame.get("frame_id")
-        or frame.get("unit") != "independent_story_representative"
-        or any(row.get("sampling_unit") != frame["unit"] for row in rows)
-        or frame.get("selection_frozen_before_labels") is not True
-        or frame.get("story_grouping_reviewed") is not True
-        or frame.get("scope") != "holdout"
-    ):
-        raise ValueError("news_reader_eval_independent_owner_story_sampling_frame_required")
-    sizes = frame.get("stratum_sizes")
-    if (
-        not isinstance(sizes, Mapping)
-        or not sizes
-        or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in sizes.values())
-        or set(frame.get("certification_strata", [])) != set(sizes)
-        or frame.get("units") != sum(sizes.values())
-    ):
-        raise ValueError("news_reader_eval_population_stratum_sizes_required")
-    selected_ids = frame.get("selected_case_ids")
-    if (
-        not isinstance(selected_ids, list)
-        or len(selected_ids) != len(set(selected_ids))
-        or set(selected_ids) != {row["case_id"] for row in rows}
-    ):
-        raise ValueError("news_reader_eval_selected_owner_labels_incomplete")
-    for stratum, population in sizes.items():
-        observed = [
-            row for row in rows if ("uniform" if row["sampling_design"] == "uniform" else row["stratum"]) == stratum
-        ]
-        if len(observed) > population:
-            raise ValueError("news_reader_eval_sample_exceeds_population_frame")
-        if frame.get("selection_design") == "stratified_srs_without_replacement" and any(
-            not math.isclose(row["inclusion_probability"], len(observed) / population, abs_tol=1e-12)
-            for row in observed
-        ):
-            raise ValueError("news_reader_eval_joint_selection_probability_changed")
-    return frame
-
-
-def sample_owner(
-    rows: Sequence[Mapping[str, Any]],
-    candidate: Mapping[str, Any],
-    *,
-    per_stratum: int,
-    seed: int,
-    story_grouping_reviewed: bool = False,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Freeze gold selection before gold labels, from a genuine census only.
-
-    Proxy grouping proposes the finite story frame; it is not evidence that the
-    stories are independent. The separate grouping-review attestation concerns
-    the whole frame, before seeing owner push/key labels.
-    """
-    if candidate.get("phase") != "fit":
-        raise ValueError("news_reader_eval_frozen_fit_candidate_required")
-    if per_stratum <= 0 or any(row["labeler"] == "owner" for row in rows):
-        raise ValueError("news_reader_eval_owner_selection_must_precede_gold_labels")
-    sources = [row.get("case_sampling", row) for row in rows]
-    frames = [source.get("sampling_frame") for source in sources]
-    if (
-        not frames
-        or not isinstance(frames[0], Mapping)
+        not isinstance(frames[0], Mapping)
         or any(frame != frames[0] for frame in frames)
         or frames[0].get("unit") != "claim_decision"
         or frames[0].get("units") != len(rows)
-        or any(source.get("inclusion_probability") != 1 for source in sources)
+        or any(row.get("inclusion_probability") != 1 for row in rows)
     ):
-        raise ValueError("news_reader_eval_complete_claim_census_required_for_story_frame")
-    verify_candidate(rows, candidate)
-    holdout = set(candidate["split"]["certification"])
-    stories: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for row in rows:
-        if row["case_id"] in holdout:
-            stories[row.get("split_story_id", row["story_id"])].append(row)
-    representatives = [min(group, key=lambda row: (_time(row), row["case_id"])) for group in stories.values()]
-    strata: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for row in representatives:
-        source = row.get("case_sampling", row)
-        if not source.get("stratum"):
-            raise ValueError("news_reader_eval_owner_frame_stratum_required")
-        strata[source["stratum"]].append(row)
-    sizes = {stratum: len(group) for stratum, group in sorted(strata.items())}
-    boundary_date = datetime.fromtimestamp(candidate["split"]["boundary_ms"] / 1000, UTC).date().isoformat()
-    source_days = frames[0].get("days")
-    if not isinstance(source_days, list) or not source_days:
-        raise ValueError("news_reader_eval_frozen_census_calendar_required")
-    holdout_days = sorted(day for day in source_days if day >= boundary_date)
-    frame = {
-        "unit": "independent_story_representative",
-        "scope": "holdout",
-        "boundary_ms": candidate["split"]["boundary_ms"],
-        "units": len(representatives),
-        "stratum_sizes": sizes,
-        "certification_strata": sorted(sizes),
-        "days": holdout_days,
-        "partial_first_day": candidate["split"]["boundary_ms"] % 86400000 != 0,
-        "selection_frozen_before_labels": True,
-        "story_grouping_reviewed": story_grouping_reviewed,
-        "source_claim_frame_id": frames[0]["frame_id"],
-        "selection_design": "stratified_srs_without_replacement",
-        "candidate_identity": candidate["candidate_identity"],
-        "population_target": (
-            "one predetermined representative per frozen census holdout story; not all production claims or Event/cards"
-        ),
+        raise ValueError("news_reader_eval_complete_claim_census_required")
+    first: dict[str, dict[str, Any]] = {}
+    for raw in sorted(rows, key=lambda row: (row.get("decided_at_ms", 0), row["case_id"])):
+        if any(raw.get(field) is None for field in _CENSUS_FIELDS):
+            raise ValueError("news_reader_eval_census_case_fields_required")
+        ReaderInput.model_validate(raw["reader_input"])
+        if len(raw["message_intents"]) != len(raw["reader_input"]["messages"]):
+            raise ValueError("news_reader_eval_message_intents_mismatch")
+        if raw["claim_ref"] in first:
+            continue
+        row = dict(raw)
+        novelty = reader_novelty(
+            row["claim_ref"],
+            [ClaimLink.model_validate(link) for link in row.get("links", [])],
+            [LinkedReceipt.model_validate(receipt) for receipt in row.get("receipts", [])],
+        )
+        if "novelty" in row and novelty != ReaderNovelty.model_validate(row["novelty"]):
+            raise ValueError("news_reader_eval_novelty_drift")
+        row["reader_novelty"] = novelty
+        first[row["claim_ref"]] = row
+    return sorted(first.values(), key=lambda row: row["case_id"])
+
+
+def story_frame(claims: Sequence[Mapping[str, Any]], boundary_ms: int) -> dict[str, Any]:
+    """Independent holdout stories and their representatives.
+
+    A story is the union of claim-Event membership and recorded claim links over the whole census, so a story
+    reaching back before the candidate's boundary is excluded rather than split.
+    """
+    parent: dict[tuple[str, str], tuple[str, str]] = {}
+
+    def find(node: tuple[str, str]) -> tuple[str, str]:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    def union(left: tuple[str, str], right: tuple[str, str]) -> None:
+        parent[find(left)] = find(right)
+
+    for row in claims:
+        union(("claim", row["claim_ref"]), ("event", row["event_id"]))
+        for link in row.get("links", []):
+            union(("claim", link["current_ref"]), ("claim", link["previous_ref"]))
+    groups: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    for row in claims:
+        groups[find(("claim", row["claim_ref"]))].append(row)
+    representatives, crossing, holdout_claims = {}, 0, 0
+    for members in groups.values():
+        times = [int(row["first_available_at_ms"]) for row in members]
+        if min(times) < boundary_ms:
+            crossing += max(times) >= boundary_ms
+            continue
+        story = identity("news_reader_story", sorted(row["claim_ref"] for row in members))
+        representatives[story] = min(members, key=lambda row: (int(row["first_available_at_ms"]), row["case_id"]))
+        holdout_claims += len(members)
+    return {
+        "representatives": dict(sorted(representatives.items())),
+        "census_claims": len(claims),
+        "holdout_claims": holdout_claims,
+        "stories": len(representatives),
+        "boundary_crossing_stories": crossing,
     }
+
+
+def journal_answers(
+    cases: Mapping[str, Mapping[str, Any]],
+    journals: Sequence[Mapping[str, Any]],
+    backend: ReaderBackend,
+) -> tuple[dict[str, ReaderJudgment], dict[str, Mapping[str, Any]], dict[str, Any] | None]:
+    """Exact-input answers for frozen cases; failed and skipped calls stay without an answer.
+
+    Journals may also cover other cases (for example the fitting sample); only these cases are read.
+    """
+    latest: dict[str, Mapping[str, Any]] = {}
+    for record in journals:
+        case = record["case_id"]
+        if case not in cases:
+            continue
+        if record.get("input_sha256") != digest(cases[case]["reader_input"]):
+            raise ValueError("news_reader_eval_journal_input_changed")
+        if case in latest and not (latest[case].get("error_code") or latest[case].get("error_class")):
+            raise ValueError("news_reader_eval_duplicate_successful_journal_case")
+        latest[case] = record
+    answers, records = {}, {}
+    provenance = set()
+    for case, record in latest.items():
+        records[case] = record
+        if record.get("skipped") or record.get("error_code") or record.get("error_class"):
+            continue
+        answers[case] = judgment = _judgment(record, cases[case]["reader_input"], backend)
+        provenance.add((judgment.identity, judgment.served_model, record["program_identity"]))
+    if len(provenance) > 1:
+        raise ValueError("news_reader_eval_single_model_adapter_identity_required")
+    adapter = None
+    if provenance:
+        identity_, served_model, program = next(iter(provenance))
+        adapter = {"adapter_identity": identity_, "served_model": served_model, "program_identity": program}
+    return answers, records, adapter
+
+
+def score_representatives(
+    representatives: Sequence[Mapping[str, Any]],
+    answers: Mapping[str, ReaderJudgment],
+    candidate: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Frozen-candidate scores for every representative; fixed rules and missing answers cannot be selected."""
+    calibration = ReaderCalibration(**candidate["calibration"])
+    scores: dict[str, dict[str, Any]] = {}
+    for row in representatives:
+        case = row["case_id"]
+        if not applicable(row) or novelty_outcome(row["reader_novelty"], first_available_at_ms=_time(row)) is not None:
+            scores[case] = {"scored": False, "reason": "fixed_rule", "eligible": False, "p_push": None, "p_key": None}
+            continue
+        if case not in answers:
+            scores[case] = {"scored": False, "reason": "no_answer", "eligible": False, "p_push": None, "p_key": None}
+            continue
+        push_x, key_x = features(row, answers[case], calibration.materiality_floor)
+        e = reader_scores(answers[case], calibration=calibration).e
+        scores[case] = {
+            "scored": True,
+            "e": e,
+            "eligible": e >= KIND_FLOOR,
+            "p_push": _predict(calibration.push_coefficients, [push_x])[0],
+            "p_key": _predict(calibration.key_coefficients, [key_x])[0],
+        }
+    return scores
+
+
+def stratum_of(score: Mapping[str, Any], *, push_cut: float, key_cut: float) -> str:
+    if score["scored"] and score["eligible"] and score["p_push"] >= push_cut:
+        return "push_region"
+    if score["scored"] and score["eligible"] and score["p_key"] >= key_cut:
+        return "key_region"
+    return "rest"
+
+
+def _sample_size(value: Any) -> int | str:
+    if value == "all":
+        return "all"
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    raise ValueError("news_reader_eval_owner_sample_size_invalid")
+
+
+def draw_selection(strata: Mapping[str, str], sizes: Mapping[str, Any], seed: int) -> dict[str, str]:
+    """Simple random samples without replacement, stratum by stratum in fixed order; `all` is a census."""
     rng = random.Random(seed)  # noqa: S311 -- reproducible sampling, not a cryptographic operation.
-    selected, roster = [], []
-    for stratum, group in sorted(strata.items()):
-        ordered_group = sorted(group, key=lambda row: row["case_id"])
-        count = min(per_stratum, len(ordered_group))
-        picked = {row["case_id"] for row in rng.sample(ordered_group, count)}
-        for row in ordered_group:
-            roster.append(
-                {
-                    "case_id": row["case_id"],
-                    "split_story_id": row.get("split_story_id", row["story_id"]),
-                    "stratum": stratum,
-                }
-            )
-            if row["case_id"] in picked:
-                selected.append(
-                    {
-                        "case_id": row["case_id"],
-                        "reader_input": row["reader_input"],
-                        "sampling_design": "stratified",
-                        "sampling_unit": frame["unit"],
-                        "sampling_frame": frame,
-                        "stratum": stratum,
-                        "inclusion_probability": count / len(ordered_group),
-                    }
-                )
-    frame["selected_case_ids"] = sorted(row["case_id"] for row in selected)
-    frame["frame_id"] = digest({"frame": frame, "representatives": sorted(row["case_id"] for row in representatives)})
+    selected = {}
+    for name in STRATA:
+        population = sorted(case for case, stratum in strata.items() if stratum == name)
+        size = _sample_size(sizes[name])
+        count = len(population) if size == "all" else min(int(size), len(population))
+        for case in rng.sample(population, count):
+            selected[case] = name
+    return dict(sorted(selected.items()))
+
+
+def owner_frame(
+    census: Sequence[Mapping[str, Any]],
+    journals: Sequence[Mapping[str, Any]],
+    candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Recompute the holdout frame, the representatives' answers and the frozen candidate's scores."""
+    if candidate.get("phase") != "fit" or candidate.get("protocol") != PROTOCOL:
+        raise ValueError("news_reader_eval_frozen_fit_candidate_required")
+    if (
+        candidate["kind_floor"] != KIND_FLOOR
+        or candidate["questions_identity"] != READER_QUESTIONS_IDENTITY
+        or candidate["eligibility_table_sha256"] != digest(PUSHABLE_KINDS)
+    ):
+        raise ValueError("news_reader_eval_questions_or_eligibility_changed")
+    claims = census_claims(census)
+    boundary = int(candidate["split"]["boundary_ms"])
+    stories = story_frame(claims, boundary)
+    representatives = list(stories["representatives"].values())
+    answers, records, provenance = journal_answers(
+        {row["case_id"]: row for row in representatives}, journals, candidate["backend"]
+    )
+    if provenance is not None and provenance != candidate["answer_provenance"]:
+        raise ValueError("news_reader_eval_model_adapter_changed")
+    boundary_day = datetime.fromtimestamp(boundary / 1000, UTC).date().isoformat()
+    census_days = census[0]["sampling_frame"].get("days")
+    if not isinstance(census_days, list) or not census_days:
+        raise ValueError("news_reader_eval_frozen_census_calendar_required")
+    return {
+        "census_dataset_sha256": dataset_sha256(census),
+        "summary": {
+            "unit": "independent_story_representative",
+            "scope": "holdout",
+            "boundary_ms": boundary,
+            "census_claim_decisions": len(census),
+            "census_claims": stories["census_claims"],
+            "holdout_claims": stories["holdout_claims"],
+            "stories": stories["stories"],
+            "boundary_crossing_stories": stories["boundary_crossing_stories"],
+            "story_rule": STORY_RULE,
+            "representative_rule": REPRESENTATIVE_RULE,
+            "days": sorted(day for day in census_days if day >= boundary_day),
+            "partial_first_day": boundary % 86_400_000 != 0,
+        },
+        "stories": {story: row["case_id"] for story, row in stories["representatives"].items()},
+        "representatives": {row["case_id"]: row for row in representatives},
+        "answers": answers,
+        "records": records,
+        "scores": score_representatives(representatives, answers, candidate),
+    }
+
+
+def check_selection(
+    selection: Mapping[str, Any], frame: Mapping[str, Any], candidate: Mapping[str, Any]
+) -> dict[str, str]:
+    """A frozen selection is valid only for these recomputed scores and its own score-only strata."""
+    push_cut, key_cut = selection.get("push_cut"), selection.get("key_cut")
+    if (
+        not isinstance(push_cut, float)
+        or not isinstance(key_cut, float)
+        or push_cut not in candidate["cut_sequence"]["push"]
+        or key_cut not in candidate["cut_sequence"]["key"]
+    ):
+        raise ValueError("news_reader_eval_selection_cut_not_in_candidate_sequence")
+    if selection.get("frozen_before_labels") is not True:
+        raise ValueError("news_reader_eval_selection_must_precede_owner_labels")
+    sizes = selection.get("sample_sizes")
+    if not isinstance(sizes, Mapping) or set(sizes) != set(STRATA):
+        raise ValueError("news_reader_eval_owner_sample_size_invalid")
+    declared = selection.get("representatives")
+    scores = frame["scores"]
+    if not isinstance(declared, Mapping) or set(declared) != set(scores):
+        raise ValueError("news_reader_eval_selection_frame_changed")
+    for case, score in scores.items():
+        claimed = declared[case]
+        if bool(claimed.get("eligible")) != score["eligible"] or any(
+            (claimed.get(field) is None) != (score[field] is None)
+            or (score[field] is not None and not math.isclose(claimed[field], score[field], abs_tol=SCORE_TOLERANCE))
+            for field in ("p_push", "p_key")
+        ):
+            raise ValueError("news_reader_eval_selection_scores_changed")
+    strata = {case: stratum_of(score, push_cut=push_cut, key_cut=key_cut) for case, score in scores.items()}
+    selected = selection.get("selected")
+    if not isinstance(selected, Mapping) or any(strata.get(case) != stratum for case, stratum in selected.items()):
+        raise ValueError("news_reader_eval_selection_stratum_changed")
+    for name in STRATA:
+        population = sum(stratum == name for stratum in strata.values())
+        size = _sample_size(sizes[name])
+        expected = population if size == "all" else min(int(size), population)
+        if sum(stratum == name for stratum in selected.values()) != expected:
+            raise ValueError("news_reader_eval_selection_sample_size_changed")
+    return strata
+
+
+def selection_manifest(
+    candidate: Mapping[str, Any],
+    frame: Mapping[str, Any],
+    selection: Mapping[str, Any],
+    *,
+    external: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    strata = check_selection(selection, frame, candidate)
+    populations = Counter(strata.values())
+    sampled = Counter(selection["selected"].values())
     manifest = {
         "protocol": PROTOCOL,
+        "phase": "owner_selection",
+        "backend": candidate["backend"],
         "candidate_identity": candidate["candidate_identity"],
-        "holdout_identity": candidate["holdout_identity"],
-        "sampling_frame": frame,
-        "selection": {"per_stratum": per_stratum, "seed": seed},
-        "story_roster": roster,
-        "selected": [{"case_id": row["case_id"], "input_sha256": digest(row["reader_input"])} for row in selected],
-        "independence_status": "reviewed" if story_grouping_reviewed else "proxy_grouping_unverified_cannot_certify",
+        "guide_version": candidate["guide_version"],
+        "census_dataset_sha256": frame["census_dataset_sha256"],
+        "frame": frame["summary"],
+        "stories": frame["stories"],
+        "selection": {
+            "push_cut": selection["push_cut"],
+            "key_cut": selection["key_cut"],
+            "seed": selection.get("seed"),
+            "sample_sizes": dict(selection["sample_sizes"]),
+            "representatives": {
+                case: {field: score[field] for field in ("scored", "eligible", "p_push", "p_key")}
+                for case, score in sorted(frame["scores"].items())
+            },
+            "selected": dict(sorted(selection["selected"].items())),
+            "frozen_before_labels": True,
+        },
+        "strata": {
+            name: {
+                "population": populations[name],
+                "sampled": sampled[name],
+                "inclusion_probability": sampled[name] / populations[name] if populations[name] else None,
+            }
+            for name in STRATA
+        },
+        "external_selection": None if external is None else dict(external),
     }
-    return selected, manifest
+    manifest["selection_id"] = digest(manifest)
+    return manifest
 
 
-def clopper_pearson_upper(successes: int, trials: int, delta: float = DELTA) -> float:
-    return 1 - clopper_pearson_lower(trials - successes, trials, delta)
+def sample_owner(
+    census: Sequence[Mapping[str, Any]],
+    journals: Sequence[Mapping[str, Any]],
+    fit_rows: Sequence[Mapping[str, Any]],
+    candidate: Mapping[str, Any],
+    *,
+    push_cut: float | None = None,
+    key_cut: float | None = None,
+    sizes: Mapping[str, Any] | None = None,
+    seed: int | None = None,
+    frozen: Mapping[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Freeze the owner selection from scores only, before any owner label.
+
+    Either draw it (cuts from the candidate's sequences, per-stratum sizes or `all`, a seed) or validate a
+    selection frozen elsewhere before labels by recomputing the frame and every representative's score.
+    """
+    verify_candidate(fit_rows, candidate)
+    frame = owner_frame(census, journals, candidate)
+    external = None
+    if frozen is None:
+        if push_cut is None or key_cut is None or sizes is None or seed is None:
+            raise ValueError("news_reader_eval_owner_selection_arguments_required")
+        strata = {
+            case: stratum_of(score, push_cut=push_cut, key_cut=key_cut) for case, score in frame["scores"].items()
+        }
+        selection = {
+            "push_cut": push_cut,
+            "key_cut": key_cut,
+            "seed": seed,
+            "sample_sizes": dict(sizes),
+            "representatives": frame["scores"],
+            "selected": draw_selection(strata, sizes, seed),
+            "frozen_before_labels": True,
+        }
+    else:
+        selection = dict(frozen)
+        strata = check_selection(frozen, frame, candidate)
+        reproduced = None
+        if isinstance(frozen.get("seed"), int):
+            reproduced = draw_selection(strata, frozen["sample_sizes"], frozen["seed"]) == dict(frozen["selected"])
+        external = {"selection_sha256": digest(frozen), "seed_reproduces_selection": reproduced}
+    manifest = selection_manifest(candidate, frame, selection, external=external)
+    case_story = {case: story for story, case in frame["stories"].items()}
+    blind_frame = {
+        "unit": "independent_story_representative",
+        "selection_id": manifest["selection_id"],
+        "selected_case_ids": sorted(manifest["selection"]["selected"]),
+        "selection_frozen_before_labels": True,
+    }
+    rows = []
+    for case, stratum in manifest["selection"]["selected"].items():
+        row = frame["representatives"][case]
+        if not isinstance(row.get("source_texts"), list) or not row["source_texts"]:
+            raise ValueError("news_reader_eval_selected_source_text_required")
+        rows.append(
+            {
+                "case_id": case,
+                "claim_ref": row["claim_ref"],
+                "reader_input": row["reader_input"],
+                "source_texts": row["source_texts"],
+                "story_id": case_story[case],
+                "stratum": stratum,
+                "inclusion_probability": manifest["strata"][stratum]["inclusion_probability"],
+                "sampling_design": "stratified",
+                "sampling_unit": blind_frame["unit"],
+                "sampling_frame": blind_frame,
+                "guide_version": candidate["guide_version"],
+            }
+        )
+    return rows, manifest
+
+
+# --------------------------------------------------------------------------------------------------------------
+# Certification of a known selected population.
 
 
 def certify_sequence(
-    rows: Sequence[Mapping[str, Any]],
-    probabilities: Mapping[str, float],
     *,
+    scores: Mapping[str, float],
+    strata: Mapping[str, str],
+    labels: Mapping[str, bool],
+    cuts: Sequence[float],
     target: float,
     minimum: int,
-    delta: float = DELTA / 2,
-    cuts: Sequence[float] = CUT_SEQUENCE,
-    eligible: set[str] | None = None,
-    field: str = "push",
+    delta: float,
 ) -> dict[str, Any]:
-    if list(cuts) != sorted(set(cuts), reverse=True) or not cuts or any(not 0 <= cut <= 1 for cut in cuts):
+    """Fixed sequence, strict to loose, stopping at the first failure.
+
+    For each cut the selected population S_c = {score >= c} is known exactly. In stratum h, N_h = |S_c ∩ h|,
+    n_h owner-labelled members of S_c ∩ h, k_h positives. The bound is Σ N_h · CP(k_h, n_h, δ/H) / Σ N_h over
+    the H strata with N_h > 0; a stratum with no labelled member contributes 0. The sequence starts at the
+    first cut whose population reaches the minimum (scores only); a passing cut also needs that many labels.
+    """
+    if not cuts or list(cuts) != sorted(set(cuts), reverse=True) or any(not 0 <= cut <= 1 for cut in cuts):
         raise ValueError("news_reader_eval_strict_to_loose_fixed_sequence_required")
-    if any(row["labeler"] != "owner" for row in rows):
-        raise ValueError("news_reader_eval_proxy_labels_cannot_certify")
-    if len({row["story_id"] for row in rows}) != len(rows):
-        raise ValueError("news_reader_eval_independent_story_representatives_required")
-    observed_strata = _sampling_strata(rows)
-    frame = sampling_frame(rows)
-    strata = sorted(frame["stratum_sizes"])
-    if not set(observed_strata).issubset(strata) or (observed_strata == ["uniform"] and strata != ["uniform"]):
-        raise ValueError("news_reader_eval_sampling_stratum_not_in_frame")
-    story_strata: dict[str, set[str]] = defaultdict(set)
-    for row in rows:
-        story_strata[row["story_id"]].add("uniform" if observed_strata == ["uniform"] else row["stratum"])
-    if any(len(values) > 1 for values in story_strata.values()):
-        raise ValueError("news_reader_eval_story_crosses_sampling_strata")
-    tested, chosen = [], None
-    for cut in cuts:
-        selected = [
-            row
-            for row in rows
-            if row["case_id"] in probabilities
-            and probabilities[row["case_id"]] >= cut
-            and (eligible is None or row["case_id"] in eligible)
+    if not set(scores) <= set(strata) or not set(labels) <= set(strata):
+        raise ValueError("news_reader_eval_certification_outside_frame")
+    populations = {cut: sum(score >= cut for score in scores.values()) for cut in cuts}
+    start = next((index for index, cut in enumerate(cuts) if populations[cut] >= minimum), None)
+    sequence = [] if start is None else list(cuts[start:])
+    tested: list[dict[str, Any]] = []
+    chosen = None
+    for cut in sequence:
+        selected = {case for case, score in scores.items() if score >= cut}
+        counts = {}
+        for name in STRATA:
+            members = [case for case in selected if strata[case] == name]
+            labelled = [case for case in members if case in labels]
+            counts[name] = (len(members), len(labelled), sum(labels[case] for case in labelled))
+        active = [name for name, (size, _, _) in counts.items() if size]
+        alpha = delta / len(active)
+        bounds = {
+            name: clopper_pearson_lower(positives, labelled, alpha) if labelled else 0.0
+            for name, (_, labelled, positives) in counts.items()
+            if name in active
+        }
+        reports = [
+            {
+                "stratum": name,
+                "population": size,
+                "labelled": labelled,
+                "positives": positives,
+                "delta": alpha if name in active else None,
+                "lower_bound": bounds.get(name),
+            }
+            for name, (size, labelled, positives) in counts.items()
         ]
-        stratum_reports = []
-        numerator_lower = denominator_upper = 0.0
-        for stratum in strata:
-            cases = [
-                row for row in selected if ("uniform" if observed_strata == ["uniform"] else row["stratum"]) == stratum
-            ]
-            sampled = [
-                row for row in rows if ("uniform" if observed_strata == ["uniform"] else row["stratum"]) == stratum
-            ]
-            n = len(cases)
-            k = sum(row["label"][field] is True if field == "key" else row["label"][field] == "push" for row in cases)
-            population_fraction = frame["stratum_sizes"][stratum] / frame["units"]
-            alpha = delta / (2 * len(strata))
-            joint_lower = clopper_pearson_lower(k, len(sampled), alpha)
-            selection_upper = clopper_pearson_upper(n, len(sampled), alpha)
-            numerator_lower += population_fraction * joint_lower
-            denominator_upper += population_fraction * selection_upper
-            stratum_reports.append(
-                {
-                    "stratum": stratum,
-                    "owner_labels": len(cases),
-                    "independent_stories": n,
-                    "successful_stories": k,
-                    "sampled_stories": len(sampled),
-                    "population_stories": frame["stratum_sizes"][stratum],
-                    "population_fraction": population_fraction,
-                    "delta": delta if strata == ["uniform"] else alpha,
-                    "lower_bound": clopper_pearson_lower(k, n, delta) if strata == ["uniform"] else None,
-                    "selected_positive_joint_lower": joint_lower,
-                    "selected_mass_upper": selection_upper,
-                }
-            )
-        # Pre-frozen population masses, not sample quotas. Simultaneous bounds
-        # on joint positive selection and selection mass yield a valid ratio.
-        # A zero-selected stratum remains present with an upper unknown mass;
-        # it is never dropped after looking at model outputs or owner labels.
-        lower = (
-            stratum_reports[0]["lower_bound"]
-            if strata == ["uniform"]
-            else numerator_lower / denominator_upper
-            if denominator_upper
-            else 0.0
-        )
-        independent = sum(report["independent_stories"] for report in stratum_reports)
-        passed = lower >= target and independent >= minimum
+        population = sum(counts[name][0] for name in active)
+        lower = sum(counts[name][0] * bounds[name] for name in active) / population
+        labelled_total = sum(counts[name][1] for name in active)
+        positives = sum(counts[name][2] for name in active)
         result = {
             "cut": cut,
+            "population": population,
+            "independent_stories": labelled_total,
+            "positives": positives,
+            "labelled_precision": positives / labelled_total if labelled_total else None,
             "lower_bound": lower,
-            "independent_stories": independent,
-            "owner_labels": len(selected),
-            "passed": passed,
-            "strata": stratum_reports,
+            "passed": lower >= target and labelled_total >= minimum,
+            "strata": reports,
         }
         tested.append(result)
-        if not passed:
+        if not result["passed"]:
             break
         chosen = result
     return {
         "status": "certified" if chosen else "uncalibrated",
         "selected": chosen,
         "tested": tested,
+        "sequence": sequence,
+        "populations": {str(cut): count for cut, count in populations.items()},
+        "failure": None
+        if chosen
+        else "population_below_minimum"
+        if start is None
+        else "precision_or_labelled_stories_below_minimum",
         "target": target,
         "delta": delta,
         "minimum_independent_stories": minimum,
-        "precision_estimand": "selected independent story representatives in the frozen holdout frame",
-        "bound_method": "selected-binomial CP" if strata == ["uniform"] else "simultaneous joint/selection CP ratio",
-        "sampling_frame_id": frame["frame_id"],
+        "precision_estimand": "frozen-candidate-selected independent story representatives in the holdout frame",
+        "bound_method": "known selected population; stratified one-sided Clopper-Pearson, Bonferroni over strata",
         "stop_rule": "first failure; no later cuts inspected",
         "labels": "owner only",
     }
 
 
-def certify(rows: Sequence[Mapping[str, Any]], artifact: Mapping[str, Any]) -> dict[str, Any]:
-    if artifact["phase"] != "fit":
-        raise ValueError("news_reader_eval_frozen_fit_candidate_required")
-    if artifact["split"] != split_cases(rows):
-        raise ValueError("news_reader_eval_certification_split_changed")
-    if artifact.get("frozen_dataset_sha256") != frozen_dataset_digest(rows, artifact["split"]["certification"]):
-        raise ValueError("news_reader_eval_frozen_dataset_changed")
+def _owner_labels(
+    labels: Sequence[Mapping[str, Any]], manifest: Mapping[str, Any], frame: Mapping[str, Any]
+) -> dict[str, dict[str, Any]]:
+    owner = {row["case_id"]: dict(row) for row in labels}
+    if len(owner) != len(labels) or set(owner) != set(manifest["selection"]["selected"]):
+        raise ValueError("news_reader_eval_selected_owner_labels_incomplete")
+    case_story = {case: story for story, case in manifest["stories"].items()}
+    for case, row in owner.items():
+        label = row.get("label") or {}
+        if row.get("labeler") != "owner":
+            raise ValueError("news_reader_eval_proxy_labels_cannot_certify")
+        if row.get("guide_version") != manifest["guide_version"]:
+            raise ValueError("news_reader_eval_owner_guide_changed")
+        if row.get("reader_input_sha256") != digest(frame["representatives"][case]["reader_input"]):
+            raise ValueError("news_reader_eval_label_input_changed")
+        if row.get("story_id") != case_story[case]:
+            raise ValueError("news_reader_eval_independent_story_representatives_required")
+        if label.get("push") not in {"push", "borderline", "feed"} or not isinstance(label.get("key"), bool):
+            raise ValueError("news_reader_eval_current_labels_required")
+        if label["key"] and label["push"] != "push":
+            raise ValueError("news_reader_eval_key_requires_push")
+        if label.get("kind") not in PUSHABLE_KINDS:
+            raise ValueError("news_reader_eval_label_invalid")
+    return owner
+
+
+def certify(
+    census: Sequence[Mapping[str, Any]],
+    journals: Sequence[Mapping[str, Any]],
+    fit_rows: Sequence[Mapping[str, Any]],
+    candidate: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    labels: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Certify the frozen candidate on owner labels of its frozen holdout selection; no fitting or cut search."""
+    verify_candidate(fit_rows, candidate)
+    frame = owner_frame(census, journals, candidate)
     if (
-        artifact["kind_floor"] != KIND_FLOOR
-        or artifact["questions_identity"] != READER_QUESTIONS_IDENTITY
-        or artifact["eligibility_table_sha256"] != digest(PUSHABLE_KINDS)
+        manifest.get("protocol") != PROTOCOL
+        or manifest.get("phase") != "owner_selection"
+        or manifest.get("candidate_identity") != candidate["candidate_identity"]
+        or manifest.get("guide_version") != candidate["guide_version"]
+        or manifest.get("census_dataset_sha256") != frame["census_dataset_sha256"]
+        or manifest.get("frame") != frame["summary"]
+        or manifest.get("stories") != frame["stories"]
+        or manifest.get("selection_id")
+        != digest({key: value for key, value in manifest.items() if key != "selection_id"})
     ):
-        raise ValueError("news_reader_eval_questions_or_eligibility_changed")
-    if artifact["cut_sequence"] != fit_cut_sequences(
-        artifact["oof_predictions"], len(artifact["split"]["certification"])
-    ):
-        raise ValueError("news_reader_eval_certification_sequence_changed")
-    verify_candidate(rows, artifact)
-    answers = recorded(rows, artifact["backend"])
-    if artifact["answer_provenance"] != answer_provenance(rows, answers, artifact["backend"]):
-        raise ValueError("news_reader_eval_model_adapter_changed")
-    if artifact["guide_versions"] != [GUIDE_VERSION] or any(row["guide_version"] != GUIDE_VERSION for row in rows):
-        raise ValueError("news_reader_eval_owner_guide_changed")
-    owner = [row for row in rows if row["case_id"] in artifact["split"]["certification"] and row["labeler"] == "owner"]
-    for row in owner:
-        applicable(row)
-    model_owner = [row for row in owner if applicable(row) and row["case_id"] in answers]
-    calibration = ReaderCalibration(**artifact["calibration"])
-    push, key, eligible = {}, {}, set()
-    for row in model_owner:
-        push_x, key_x = features(row, answers[row["case_id"]], calibration.materiality_floor)
-        push[row["case_id"]] = _predict(calibration.push_coefficients, [push_x])[0]
-        key[row["case_id"]] = _predict(calibration.key_coefficients, [key_x])[0]
-        if reader_scores(answers[row["case_id"]], calibration=calibration).e >= KIND_FLOOR:
-            eligible.add(row["case_id"])
+        raise ValueError("news_reader_eval_owner_selection_changed")
+    strata = check_selection(manifest["selection"], frame, candidate)
+    owner = _owner_labels(labels, manifest, frame)
+    backend: ReaderBackend = candidate["backend"]
+    calibration = ReaderCalibration(**candidate["calibration"])
+    scores = frame["scores"]
+    eligible = {case: score for case, score in scores.items() if score["scored"] and score["eligible"]}
+    push_scores = {case: float(score["p_push"]) for case, score in eligible.items()}
+    push_cuts = [cut for cut in candidate["cut_sequence"]["push"] if cut >= manifest["selection"]["push_cut"]]
+    push_certificate = certify_sequence(
+        scores=push_scores,
+        strata=strata,
+        labels={case: row["label"]["push"] == "push" for case, row in owner.items()},
+        cuts=push_cuts,
+        target=PUSH_TARGET,
+        minimum=PUSH_MINIMUM,
+        delta=FIELD_DELTA,
+    )
+    push_cut = push_certificate["selected"]["cut"] if push_certificate["selected"] else None
+    pushed = set() if push_cut is None else {case for case, score in push_scores.items() if score >= push_cut}
+    key_certificate: dict[str, Any] = {"status": "not_tested", "failure": "push_uncertified", "selected": None}
+    if push_cut is not None:
+        # Key implies push. The push cut was chosen with these labels, so the key error is split over every push
+        # cut the sequence could have certified.
+        key_certificate = certify_sequence(
+            scores={case: float(eligible[case]["p_key"]) for case in pushed},
+            strata=strata,
+            labels={case: bool(row["label"]["key"]) for case, row in owner.items()},
+            cuts=[cut for cut in candidate["cut_sequence"]["key"] if cut >= manifest["selection"]["key_cut"]],
+            target=KEY_TARGET,
+            minimum=KEY_MINIMUM,
+            delta=FIELD_DELTA / len(push_certificate["sequence"]),
+        )
+    key_cut = key_certificate["selected"]["cut"] if key_certificate.get("selected") else None
+    keys = set() if key_cut is None else {case for case in pushed if eligible[case]["p_key"] >= key_cut}
+    reviewed = replace(
+        calibration,
+        push_cut=push_cut,
+        key_cut=key_cut,
+        certification_status="certified" if push_cut is not None else "uncalibrated",
+    )
+    rows = []
+    for case, label in sorted(owner.items()):
+        stratum = manifest["selection"]["selected"][case]
+        record = frame["records"].get(case)
+        answered = case in frame["answers"]
+        rows.append(
+            {
+                **frame["representatives"][case],
+                **{key: label[key] for key in ("label", "labeler", "guide_version", "story_id")},
+                "stratum": stratum,
+                "sampling_design": "stratified",
+                "inclusion_probability": manifest["strata"][stratum]["inclusion_probability"],
+                "answers": {backend: record} if answered else {},
+                "reask_failures": {backend: record} if record is not None and not answered else {},
+            }
+        )
+    model_rows = [row for row in rows if scores[row["case_id"]]["scored"]]
+    push_report = probability_report(
+        [int(row["label"]["push"] == "push") for row in model_rows],
+        [float(scores[row["case_id"]]["p_push"]) for row in model_rows],
+        [_weight(row) for row in model_rows],
+    )
+    key_report = probability_report(
+        [int(row["label"]["key"]) for row in model_rows],
+        [float(scores[row["case_id"]]["p_key"]) for row in model_rows],
+        [_weight(row) for row in model_rows],
+    )
+    prior_auc = baseline_auc(model_rows, backend)
+    discrimination = (
+        None
+        if prior_auc is None or push_report["auc"] is None
+        else push_report["auc"] >= prior_auc and (key_cut is None or (key_report["auc"] or 0) >= 0.7)
+    )
+    certification_dataset = {
+        "census_dataset_sha256": frame["census_dataset_sha256"],
+        "selection_id": manifest["selection_id"],
+        "owner_labels_sha256": dataset_sha256(sorted(labels, key=lambda row: row["case_id"])),
+    }
     report = {
-        **artifact,
+        "protocol": PROTOCOL,
         "phase": "certify",
-        "fitting_source_dataset_sha256": artifact["dataset_sha256"],
-        "dataset_sha256": dataset_digest(rows),
-        "certification_owner_cases": len(owner),
-        "certification_available_reader_cases": len(model_owner),
+        "backend": backend,
+        "questions_identity": READER_QUESTIONS_IDENTITY,
+        "eligibility_table_sha256": digest(PUSHABLE_KINDS),
+        "kind_floor": KIND_FLOOR,
+        "guide_version": candidate["guide_version"],
+        "candidate_identity": candidate["candidate_identity"],
+        "fit_dataset_sha256": candidate["dataset_sha256"],
+        **certification_dataset,
+        "dataset_sha256": digest(certification_dataset),
+        "holdout_identity": digest(
+            {
+                "backend": backend,
+                "census_dataset_sha256": frame["census_dataset_sha256"],
+                "boundary_ms": frame["summary"]["boundary_ms"],
+            }
+        ),
+        "answer_provenance": candidate["answer_provenance"],
+        "calibration": asdict(reviewed),
+        "certification_status": reviewed.certification_status,
+        "certification_scope": "push and key"
+        if key_cut is not None
+        else "push only; no claim is key"
+        if push_cut is not None
+        else "none",
+        "push_certificate": push_certificate,
+        "key_certificate": key_certificate,
+        "frame": frame["summary"],
+        "strata": manifest["strata"],
+        "selection": {key: manifest["selection"][key] for key in ("push_cut", "key_cut", "seed", "sample_sizes")},
+        "external_selection": manifest["external_selection"],
+        "owner_labels": len(owner),
+        "owner_label_sources": dict(Counter(row.get("label_sources", {}).get("push", "owner") for row in labels)),
+        "holdout_metrics": {"push": push_report, "key": key_report, "same_input_v3_auc": prior_auc},
+        "discrimination_passed": discrimination,
+        "population_probability_sample_verified": True,
+        "diagnostics": diagnostic_report(
+            rows, frame["answers"], backend=backend, calibration=reviewed, pushed_case_ids=pushed, key_case_ids=keys
+        ),
+        "volume": volume_report(frame["summary"]["days"], list(frame["representatives"].values()), pushed, keys),
         "release_ready": False,
         "holdout_protocol": {
-            "candidate_identity": artifact["candidate_identity"],
-            "holdout_identity": artifact["holdout_identity"],
+            "candidate_identity": candidate["candidate_identity"],
             "candidate_derivation_verified": True,
-            "rule": "one frozen candidate per holdout/backend; no tuning or repeated candidate search after access",
+            "rule": "one frozen candidate per holdout census and backend; no tuning or candidate search after access",
             "limitation": (
                 "reconstruction and local ledger do not prove absence of external holdout access; owner review required"
             ),
         },
-        "diagnostics": diagnostic_report(owner, answers, backend=artifact["backend"], calibration=calibration),
-        "population": {
-            "precision": (
-                "reader-selected available answers among independent story representatives in frozen owner holdout"
-            ),
-            "probability_quality": "available reader-applicable owner holdout, conditional on answered calls",
-            "recall_and_volume": (
-                "full owner holdout; fixed notifications included, failed/absent reader calls do not push"
-            ),
-            "fixed_case_count": len(owner) - sum(applicable(row) for row in owner),
-        },
     }
-    if not owner:
-        report.update(certification_status="uncalibrated", certification_failure="owner_probability_sample_required")
-        return finalize_report(report)
-    try:
-        _sampling_strata(owner)
-        frame = sampling_frame(owner)
-        if frame.get("boundary_ms") != artifact["split"]["boundary_ms"]:
-            raise ValueError("news_reader_eval_sampling_frame_holdout_changed")
-        if len({row["story_id"] for row in owner}) != len(owner):
-            raise ValueError("news_reader_eval_independent_story_representatives_required")
-    except ValueError as exc:
-        report.update(certification_status="uncalibrated", certification_failure=str(exc))
-        return finalize_report(report)
-    report["sampling_frame"] = frame
-    report["population_probability_sample_verified"] = True
-    push_report = probability_report(
-        [int(row["label"]["push"] == "push") for row in model_owner],
-        [push[row["case_id"]] for row in model_owner],
-        [_weight(row) for row in model_owner],
-    )
-    key_report = probability_report(
-        [int(row["label"]["key"]) for row in model_owner],
-        [key[row["case_id"]] for row in model_owner],
-        [_weight(row) for row in model_owner],
-    )
-    # Same-input baseline is mandatory; a historical aggregate AUC is not paired evidence.
-    prior_auc = baseline_auc(model_owner, artifact["backend"])
-    discrimination_passed = (
-        prior_auc is not None
-        and push_report["auc"] is not None
-        and push_report["auc"] >= prior_auc
-        and key_report["auc"] is not None
-        and key_report["auc"] >= 0.7
-    )
-    report.update(
-        holdout_metrics={"push": push_report, "key": key_report, "same_input_v3_auc": prior_auc},
-        discrimination_passed=discrimination_passed,
-        diagnostics=diagnostic_report(owner, answers, backend=artifact["backend"], calibration=calibration),
-    )
-    if not discrimination_passed:
-        report.update(
-            certification_status="uncalibrated", certification_failure="discrimination_or_paired_baseline_unverified"
-        )
-        return finalize_report(report)
-    push_certificate = certify_sequence(
-        owner, push, target=PUSH_TARGET, minimum=PUSH_MINIMUM, eligible=eligible, cuts=artifact["cut_sequence"]["push"]
-    )
-    pushed = (
-        set()
-        if push_certificate["selected"] is None
-        else {case for case in eligible if push[case] >= push_certificate["selected"]["cut"]}
-    )
-    # Selection of a push cut uses the same labels; protect key certification
-    # against that adaptivity by testing every possible push conditioning cut
-    # with Bonferroni alpha, each using its own fixed key sequence.
-    key_certificates = {
-        str(cut): certify_sequence(
-            owner,
-            key,
-            target=KEY_TARGET,
-            minimum=KEY_MINIMUM,
-            delta=DELTA / (2 * len(artifact["cut_sequence"]["push"])),
-            eligible={case for case in eligible if push[case] >= cut},
-            field="key",
-            cuts=artifact["cut_sequence"]["key"],
-        )
-        for cut in artifact["cut_sequence"]["push"]
-    }
-    key_certificate = (
-        key_certificates[str(push_certificate["selected"]["cut"])] if push_certificate["selected"] else None
-    )
-    certified = (
-        push_certificate["selected"] is not None
-        and key_certificate is not None
-        and key_certificate["selected"] is not None
-    )
-    reviewed = replace(
-        calibration,
-        push_cut=push_certificate["selected"]["cut"] if push_certificate["selected"] else None,
-        key_cut=key_certificate["selected"]["cut"] if key_certificate and key_certificate["selected"] else None,
-        certification_status="certified" if certified else "uncalibrated",
-    )
-    keys = {case for case in pushed if reviewed.key_cut is not None and key[case] >= reviewed.key_cut}
-    report.update(
-        calibration=asdict(reviewed),
-        certification_status=reviewed.certification_status,
-        push_certificate=push_certificate,
-        key_certificate=key_certificate,
-        key_conditioning_certificates=key_certificates,
-        volume=volume_report(
-            owner, pushed | {row["case_id"] for row in owner if row.get("deterministic_decision") == "notify"}, keys
-        ),
-        diagnostics=diagnostic_report(
-            owner, answers, backend=artifact["backend"], calibration=reviewed, pushed_case_ids=pushed, key_case_ids=keys
-        ),
-    )
-    if not certified:
-        report["certification_failure"] = (
-            "push_precision_or_sample_count"
-            if push_certificate["selected"] is None
-            else "key_precision_or_sample_count"
-        )
+    if push_cut is None:
+        report["certification_failure"] = push_certificate["failure"]
     return finalize_report(report)
 
 
@@ -1175,88 +1373,95 @@ def finalize_report(report: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
-def volume_report(rows: Sequence[Mapping[str, Any]], pushed: set[str], keys: set[str]) -> dict[str, Any]:
-    if any(row.get("inclusion_probability") is None for row in rows):
-        return {"status": "unestimated", "reason": "inclusion_probability_missing"}
-    days: dict[str, dict[str, float]] = defaultdict(lambda: {"push": 0.0, "key": 0.0})
-    frame_days = {day for row in rows for day in (row.get("sampling_frame") or {}).get("days", [])}
-    for day in frame_days:
-        days[day]
-    for row in rows:
-        day = row["reader_input"]["as_of"]
-        days[day]  # Include sampled days with zero pushes in P10/P50/P90.
-        for field, selected in (("push", pushed), ("key", keys)):
-            if row["case_id"] in selected:
-                days[day][field] += _weight(row)
-    quantiles = {}
-    for field in ("push", "key"):
-        values = sorted(value[field] for value in days.values())
-        quantiles[field] = {
-            f"p{p}": values[min(len(values) - 1, int((len(values) - 1) * p / 100))] if values else None
-            for p in (10, 50, 90)
-        }
-    unit = (rows[0].get("sampling_frame") or {}).get("unit") if rows else None
+def volume_report(
+    days: Sequence[str], representatives: Sequence[Mapping[str, Any]], pushed: set[str], keys: set[str]
+) -> dict[str, Any]:
+    """Exact selected story representatives per frozen as_of day; every representative is scored."""
+    counts: dict[str, dict[str, int]] = {day: {"push": 0, "key": 0} for day in days}
+    for row in representatives:
+        day = counts.setdefault(row["reader_input"]["as_of"], {"push": 0, "key": 0})
+        day["push"] += row["case_id"] in pushed
+        day["key"] += row["case_id"] in keys
     return {
-        "status": "estimated",
         "estimand": (
-            "HT story representatives by frozen ReaderInput.as_of; no inferred all-claim/Event/card weights"
-            if unit == "independent_story_representative"
-            else "Horvitz-Thompson claims by frozen ReaderInput.as_of; no inferred Event/card weights"
+            "holdout story representatives selected at the certified cuts, by ReaderInput.as_of; "
+            "not claims, Events or cards"
         ),
-        "days": dict(days),
-        "quantiles": quantiles,
+        "days": dict(sorted(counts.items())),
+        "totals": {"push": len(pushed), "key": len(keys)},
         "guardrail_only": True,
-        "calendar_complete": bool(frame_days),
-        "sampled_cases": len(rows),
         "volume_acceptance": "owner review required; volume never moves cuts",
     }
 
 
-def render_report(artifact: Mapping[str, Any], evidence_path: str | None = None) -> str:
+def render_report(artifact: Mapping[str, Any], evidence_name: str | None = None) -> str:
     """Render recorded evidence only; do not fit, select cuts or change artifacts."""
     status = artifact.get("certification_status", "uncalibrated")
     lines = [
         f"# News reader {artifact['backend']} calibration",
         "",
-        f"Status: **{status}**.",
+        f"Status: **{status}** ({artifact.get('certification_scope', 'none')}).",
         "",
         f"Dataset SHA-256: `{artifact['dataset_sha256']}`.",
+        f"Candidate: `{artifact.get('candidate_identity')}`.",
         f"Questions: `{artifact['questions_identity']}`.",
-        f"Guides: {', '.join(artifact['guide_versions'])}.",
+        f"Guide: `{artifact.get('guide_version')}`.",
         f"Release ready: **{str(artifact.get('release_ready', False)).lower()}**.",
         "",
         "Claude is a fitting proxy. Precision certification uses owner labels and independent stories.",
         "No provider reask, production cache write, notification, deployment or empirical evidence is synthesized.",
         "",
-        "```json",
-        json.dumps(
-            {
-                key: artifact[key]
-                for key in (
-                    "answer_provenance",
-                    "calibration",
-                    "certification_failure",
-                    "holdout_metrics",
-                    "diagnostics",
-                    "push_certificate",
-                    "key_certificate",
-                    "volume",
-                    "release_requirements",
-                    "release_gates",
-                    "holdout_protocol",
-                    "population",
-                )
-                if key in artifact
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        "```",
-        "",
     ]
-    if evidence_path:
-        lines.extend([f"Machine-readable evidence: [{Path(evidence_path).name}]({evidence_path}).", ""])
+    for field in ("push", "key"):
+        proof = artifact.get(f"{field}_certificate") or {}
+        lines.extend(
+            f"- {field} cut {result['cut']}: {result['population']} selected stories, "
+            f"{result['independent_stories']} owner-labelled, {result['positives']} positive, "
+            f"lower bound {result['lower_bound']:.3f} ({'pass' if result['passed'] else 'fail'})."
+            for result in proof.get("tested", [])
+        )
+        if proof and not proof.get("tested"):
+            lines.append(f"- {field}: not tested ({proof.get('failure')}).")
+    lines.extend(
+        [
+            "",
+            "```json",
+            json.dumps(
+                {
+                    key: artifact[key]
+                    for key in (
+                        "answer_provenance",
+                        "calibration",
+                        "certification_failure",
+                        "frame",
+                        "strata",
+                        "selection",
+                        "external_selection",
+                        "holdout_metrics",
+                        "diagnostics",
+                        "push_certificate",
+                        "key_certificate",
+                        "volume",
+                        "release_requirements",
+                        "release_gates",
+                        "holdout_protocol",
+                    )
+                    if key in artifact
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            "```",
+            "",
+        ]
+    )
+    if evidence_name:
+        lines.extend([f"Machine-readable evidence: `{evidence_name}`.", ""])
     return "\n".join(lines)
+
+
+def _sizes(value: str) -> int | str:
+    return "all" if value == "all" else int(value)
 
 
 def main() -> None:
@@ -1272,24 +1477,30 @@ def main() -> None:
     fit_parser.add_argument("--backend", choices=("native", "generated"), required=True)
     fit_parser.add_argument("--input", type=Path, required=True)
     fit_parser.add_argument("--output", type=Path, required=True)
-    owner_parser = commands.add_parser(
-        "owner-sample", help="Freeze blinded gold selection from a complete proxy story census before owner labels."
-    )
-    owner_parser.add_argument("--input", type=Path, required=True)
-    owner_parser.add_argument("--candidate", type=Path, required=True)
-    owner_parser.add_argument("--per-stratum", type=int, required=True)
-    owner_parser.add_argument("--seed", type=int, required=True)
-    owner_parser.add_argument(
-        "--story-grouping-reviewed",
-        action="store_true",
-        help="Attest independent review of the complete proxy story grouping before gold selection.",
-    )
-    owner_parser.add_argument("--output", type=Path, required=True)
+    for name, text in (
+        ("owner-sample", "Score the holdout story frame and freeze the owner selection before labels."),
+        ("certify", "Certify the frozen candidate with owner labels of its frozen selection."),
+    ):
+        command = commands.add_parser(name, help=text)
+        command.add_argument("--census", type=Path, required=True, help="Complete claim census (exporter --census).")
+        command.add_argument("--journal", type=Path, action="append", required=True, help="Candidate-backend reasks.")
+        command.add_argument("--fit-input", type=Path, required=True, help="The candidate's fitting dataset.")
+        command.add_argument("--candidate", type=Path, required=True)
+        command.add_argument("--output", type=Path, required=True)
+    owner_parser = commands.choices["owner-sample"]
     owner_parser.add_argument("--manifest", type=Path, required=True)
-    cert_parser = commands.add_parser("certify", help="Certify the frozen candidate with independent owner labels.")
-    cert_parser.add_argument("--input", type=Path, required=True)
-    cert_parser.add_argument("--candidate", type=Path, required=True)
-    cert_parser.add_argument("--output", type=Path, required=True)
+    owner_parser.add_argument("--push-cut", type=float, help="Loosest push cut tested; from the candidate sequence.")
+    owner_parser.add_argument("--key-cut", type=float, help="Loosest key cut tested; from the candidate sequence.")
+    owner_parser.add_argument("--push-sample", type=_sizes, help="push_region sample size or all.")
+    owner_parser.add_argument("--key-sample", type=_sizes, help="key_region sample size or all.")
+    owner_parser.add_argument("--rest-sample", type=_sizes, help="rest sample size or all.")
+    owner_parser.add_argument("--seed", type=int)
+    owner_parser.add_argument(
+        "--frozen-selection", type=Path, help="Validate a selection frozen elsewhere before labels instead of drawing."
+    )
+    cert_parser = commands.choices["certify"]
+    cert_parser.add_argument("--selection", type=Path, required=True, help="owner-sample manifest.")
+    cert_parser.add_argument("--labels", type=Path, required=True, help="import-owner label journal.")
     cert_parser.add_argument(
         "--holdout-ledger", type=Path, required=True, help="Persistent one-candidate-per-holdout usage journal."
     )
@@ -1307,38 +1518,54 @@ def main() -> None:
             journals["generated"] = read_jsonl(args.generated_journal)
         write_jsonl(args.output, assemble(cases, labels, journals))
         return
-    elif args.phase == "fit":
+    if args.phase == "fit":
         result = json.dumps(fit(load(args.input), args.backend), ensure_ascii=False, indent=2) + "\n"
-    elif args.phase == "owner-sample":
-        if args.output.resolve() == args.manifest.resolve():
-            raise ValueError("news_reader_eval_owner_blind_and_manifest_paths_must_differ")
-        selection, manifest = sample_owner(
-            load(args.input),
-            json.loads(args.candidate.read_text("utf-8")),
-            per_stratum=args.per_stratum,
-            seed=args.seed,
-            story_grouping_reviewed=args.story_grouping_reviewed,
-        )
-        write_jsonl(args.output, selection)
-        args.manifest.parent.mkdir(parents=True, exist_ok=True)
-        with args.manifest.open("w", encoding="utf-8") as stream:
-            args.manifest.chmod(0o600)
-            stream.write(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
-        return
-    elif args.phase == "certify":
+    elif args.phase in {"owner-sample", "certify"}:
+        census = read_jsonl(args.census)
+        journal = [row for path in args.journal for row in read_jsonl(path)]
+        fit_rows = load(args.fit_input)
         candidate = json.loads(args.candidate.read_text("utf-8"))
-        rows = load(args.input)
-        verify_candidate(rows, candidate)
-        register_holdout_use(args.holdout_ledger, candidate, certification_dataset_sha256=dataset_digest(rows))
-        certificate = certify(rows, candidate)
+        if args.phase == "owner-sample":
+            if args.output.resolve() == args.manifest.resolve():
+                parser.error("selection rows and manifest must be separate paths")
+            drawn = (args.push_cut, args.key_cut, args.push_sample, args.key_sample, args.rest_sample, args.seed)
+            if (args.frozen_selection is None) == any(value is None for value in drawn) or (
+                args.frozen_selection is not None and any(value is not None for value in drawn)
+            ):
+                parser.error("give either every draw argument or --frozen-selection")
+            selection, manifest = sample_owner(
+                census,
+                journal,
+                fit_rows,
+                candidate,
+                push_cut=args.push_cut,
+                key_cut=args.key_cut,
+                sizes=None
+                if args.push_sample is None
+                else {"push_region": args.push_sample, "key_region": args.key_sample, "rest": args.rest_sample},
+                seed=args.seed,
+                frozen=None if args.frozen_selection is None else json.loads(args.frozen_selection.read_text("utf-8")),
+            )
+            write_jsonl(args.output, selection)
+            args.manifest.parent.mkdir(parents=True, exist_ok=True)
+            with args.manifest.open("w", encoding="utf-8") as stream:
+                args.manifest.chmod(0o600)
+                stream.write(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+            return
+        manifest = json.loads(args.selection.read_text("utf-8"))
+        labels = read_jsonl(args.labels)
+        certificate = certify(census, journal, fit_rows, candidate, manifest, labels)
+        register_holdout_use(
+            args.holdout_ledger,
+            certificate,
+            certification_dataset_sha256=certificate["owner_labels_sha256"],
+        )
         certificate["holdout_protocol"].update(
-            ledger_ref=str(args.holdout_ledger.resolve()),
-            local_registration=True,
-            ledger_records_sha256=digest(read_jsonl(args.holdout_ledger)),
+            local_registration=True, ledger_records_sha256=digest(read_jsonl(args.holdout_ledger))
         )
         result = json.dumps(certificate, ensure_ascii=False, indent=2) + "\n"
     else:
-        result = render_report(json.loads(args.artifact.read_text("utf-8")), str(args.artifact.resolve()))
+        result = render_report(json.loads(args.artifact.read_text("utf-8")), args.artifact.name)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(result, encoding="utf-8")
 

@@ -45,14 +45,14 @@ uv run --locked python scripts/eval_news_recall.py \
 
 `uv run --locked python -m scripts.reask_news_models speech|extraction|reader --input /private/sample.jsonl --output /private/journal.jsonl` 直接使用操作者选定的 News 模型路由，不构造数据库、判断缓存或发送器。reader 分别选择 `--backend native|generated`；回退生成的结果不能计为 native 证据。日志保存精确输入摘要、问题与程序身份、实际后端、判断器与服务模型身份，以及调用耗时；恢复时拒绝输入、程序、问题、后端或 case 集合改变。抽取重问保留真实引用校验，模型异常内容不会进入日志。
 
-`uv run --locked python -m scripts.label_news_reader annotate --input /private/blind-cases.jsonl --output /private/claude-labels.jsonl` 使用独立 owner 规范；`guide_version` 绑定独立规范正文、共享报道类型定义及资格表的摘要。Claude 只见命题、来源、日期与随机排序的已推消息；模型读数与生产结果不传入，返回锚点映射回原序。Claude 标签是代理，`report --owner … --proxy … --candidate … --output …` 输出与 owner 金标的逐字段 κ、混淆矩阵和折外预测复核队列，不自动改标签。
+`uv run --locked python -m scripts.label_news_reader annotate --input /private/cases.jsonl.gz --output /private/claude-labels.jsonl` 使用当前独立 owner 规范；`guide_version` 绑定规范正文、共享报道类型定义及资格表的摘要。Claude 只见命题、来源、被引用原文、日期与随机排序的已推消息；模型读数与生产结果不传入，返回锚点映射回原序，并给出判重 `repeat`。Claude 标签是代理，`report --owner … --proxy … --candidate … --output …` 输出 owner 与代理在推送/重点上的 κ、混淆矩阵、判重确认数和折外预测复核队列，不自动改标签。
 
-重问和 `annotate` 会发出真实模型调用，需按 [#805 实现与认证边界](../docs/reports/news-805-implementation.md)另获授权。本次实现没有执行真实重问、Claude 标注或上线。历史 [#791 报告](../docs/reports/news-791-b.md)保存原问题的证据，旧 importance 分布不能进入当前读者校准。
+重问和 `annotate` 会发出真实模型调用，需另获授权。历史 [#791 报告](../docs/reports/news-791-b.md)保存原问题的证据，旧 importance 分布不能进入当前读者校准。
 
-冻结导出、人工 owner 盲标、代理组装、fit → owner-sample → certify → report → 运行时导出的完整命令与状态见 [#805 实现记录](../docs/reports/news-805-implementation.md)。JSONL 与 JSONL.gz 输入由共享 IO 读取；reask/annotate 追加日志输出必须是普通 JSONL。
+冻结导出（`--census` 保留窗口内全部决定）、代理组装、fit → owner-sample → prepare-owner → import-owner → certify → report → 运行时导出的流程见 [#805 实现记录](../docs/reports/news-805-implementation.md)，真实认证的命令与数字见 [推送认证批 1](../docs/reports/news-805-certification.md)。JSONL 与 JSONL.gz 输入由共享 IO 读取；reask/annotate 追加日志输出必须是普通 JSONL。
 
-`assemble` 可重复提供 `--labels`，owner 覆盖重叠的代理标签；原日志分别保留。原始 claim_decision 框不能直接认证独立故事，`owner-sample` 只从完整 census 建立预先审阅的最近故事代表框，固定选择及最终联合概率。非 census 的分层样本仍可拟合。
+`assemble` 可重复提供 `--labels`，所有标签须属同一规范版本；候选记录该版本，认证的 owner 标签须同版。`owner-sample` 在完整 census 上建立候选时间边界之后的独立故事框，用冻结候选给每个代表打分，看标签前按分数分层抽样，或用 `--frozen-selection` 校验别处冻结的选择。owner 只回答推送和重点，`import-owner --proxy …` 从代理标签补齐类型、锚点和判重。
 
-`fit` 冻结较早标签、全部输入/回答/拆分、配置、m*、系数、折外预测与切线序列。`certify` 重建候选，并要求持久 `--holdout-ledger` 绑定一个候选及首次读取的完整金标数据；不能重哈希改参数或换样本反复尝试。当前规范的独立 owner 故事才计入 150/60 门槛；等概率 Clopper–Pearson 与分层同时保守比率均不把逆概率权重当作二项样本。
+`fit` 冻结较早标签、全部输入/回答/拆分、配置、m*、系数、折外预测与切线序列。`certify` 重建候选、故事框、分数和选择，并要求持久 `--holdout-ledger` 绑定一个候选及其 owner 标签；不能重哈希改参数或换样本反复尝试。每条切线选中的故事由分数精确已知，分层 Clopper–Pearson 只对 owner 推送比例取界；owner 标注的独立故事至少 150/60 才能通过。
 
-失败和缺失调用保留在完整流程召回、覆盖及延迟分母，成功回答上的条件指标另报。精度认证与完整 release gates 分开，卡片日量、owner 取舍与 holdout 使用审阅仍需外部证据。导出默认 release_ready=false。运行时加载、历史切线与公开原因见 [News](../docs/modules/news.md#notification)，标签语义见 [标注规范](../docs/modules/news-reader-labeling.md)，生产切换见 [排空和对称回滚](../docs/OPERATIONS.md#news-reader-switch)。研究组精确锁定 scikit-learn==1.9.1；默认应用依赖和测试不安装它。
+失败和缺失调用保留在完整流程召回、覆盖及延迟分母，成功回答上的条件指标另报。精度认证与完整 release gates 分开，卡片日量、owner 取舍与 holdout 使用审阅仍需外部证据，未通过的测得门槛需 owner 书面豁免。导出默认 release_ready=false，没有证书的后端保持零系数占位。运行时加载、历史切线与公开原因见 [News](../docs/modules/news.md#notification)，标签语义见 [标注规范](../docs/modules/news-reader-labeling.md)，生产切换见 [排空和对称回滚](../docs/OPERATIONS.md#news-reader-switch)。研究组精确锁定 scikit-learn==1.9.1；默认应用依赖和测试不安装它。

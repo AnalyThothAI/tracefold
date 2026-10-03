@@ -95,8 +95,10 @@ class ReaderCalibration:
             cut is not None and not 0 <= cut <= 1 for cut in (self.push_cut, self.key_cut)
         ):
             raise ValueError("news_reader_calibration_cut_invalid")
+        # A certificate always names its push cut. Key is certified separately: a push-only certificate
+        # leaves key_cut empty, and then no claim is ever key.
         if self.certification_status not in {"uncalibrated", "certified"} or (
-            self.certification_status == "certified" and (self.push_cut is None or self.key_cut is None)
+            self.certification_status == "certified" and self.push_cut is None
         ):
             raise ValueError("news_reader_calibration_certification_invalid")
 
@@ -108,7 +110,7 @@ PUSHABLE_KINDS: Final[dict[ReportKind, bool]] = {
     "scheduled_data": True,
     "self_reported_metric": True,
     "unconfirmed_incident": True,
-    "recap_or_old_period": False,
+    "recap_or_old_period": True,
     "promotion": False,
     "commentary": False,
     "background": False,

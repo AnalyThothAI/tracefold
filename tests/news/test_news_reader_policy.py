@@ -212,6 +212,18 @@ def test_probability_extremes_and_calibration_validation() -> None:
         replace(CALIBRATION, push_coefficients=(float("nan"), 0, 0, 0))
     with pytest.raises(ValueError, match="certification_invalid"):
         replace(CALIBRATION, push_cut=None)
+    assert replace(CALIBRATION, key_cut=None).certification_status == "certified"
+
+
+def test_push_only_certificate_pushes_but_never_marks_a_claim_key() -> None:
+    push_only = replace(CALIBRATION, key_cut=None)
+    novelty = ReaderNovelty(novelty="unlinked")
+    urgent = judgment(0.9, i=1)
+    assert decide(novelty, urgent).outcome == "key"
+    result = decide(novelty, urgent, calibration=push_only)
+    assert result.outcome == "push" and result.scores.key_cut is None
+    assert result.scores.p_key > CALIBRATION.key_cut
+    assert decide(novelty, judgment(0.2, i=1), calibration=push_only).outcome == "feed"
 
 
 def test_provider_rounding_does_not_make_derived_mass_exceed_one() -> None:
@@ -265,20 +277,61 @@ def install_document(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, document: 
     return policies["native"]
 
 
-def test_bundled_artifact_is_explicitly_unfitted_and_digest_bound() -> None:
+def test_bundled_artifact_binds_the_push_only_native_certificate_and_its_report() -> None:
     from tracefold.news.notifications.policy import NOTIFICATION_POLICY_IDENTITY, READER_POLICIES
+    from tracefold.news.notifications.reader import READER_QUESTIONS_IDENTITY
+    from tracefold.news.updates.identity import digest
 
-    path = Path(__file__).parents[2] / "tracefold/news/notifications/reader_calibration.json"
+    root = Path(__file__).parents[2]
+    path = root / "tracefold/news/notifications/reader_calibration.json"
     policies = ReaderPolicy.load()
     assert set(policies) == {"native", "generated"}
     for backend, policy in policies.items():
         assert policy.artifact_sha256 == sha256(path.read_bytes()).hexdigest()
         assert policy == READER_POLICIES[backend]
-        assert policy.calibration.certification_status == "uncalibrated" and not policy.release_ready
-        assert policy.calibration.push_cut is policy.calibration.key_cut is None
-        assert policy.dataset_sha256 is policy.report_ref is None
-        assert policy.review_ref is policy.review_sha256 is None
+        assert policy.questions_identity == READER_QUESTIONS_IDENTITY
+        assert policy.eligibility_table_sha256 == digest(PUSHABLE_KINDS)
+    native, generated = policies["native"], policies["generated"]
+    assert native.calibration.certification_status == "certified"
+    assert (native.calibration.push_cut, native.calibration.key_cut) == (0.372, None)
+    assert native.guide_version is not None and native.guide_version.startswith("news_reader_owner_guide_v5:")
+    # The bound report is the committed certification report, byte for byte.
+    assert native.report_ref == "docs/reports/news-805-certification.md"
+    assert native.report_sha256 == sha256((root / native.report_ref).read_bytes()).hexdigest()
+    if native.release_ready:
+        assert native.review_ref and native.review_sha256 and native.reviewed_by and native.reviewed_at
+    else:
+        assert native.review_ref is native.review_sha256 is native.reviewed_by is None
+    assert generated.calibration == ReaderCalibration() and not generated.release_ready
+    assert generated.dataset_sha256 is generated.report_ref is generated.reader_identity is None
     assert NOTIFICATION_POLICY_IDENTITY.startswith("news_notification_policy:")
+
+
+def test_released_push_only_native_certificate_pushes_and_never_marks_key(tmp_path, monkeypatch) -> None:
+    bundled = json.loads(
+        (Path(__file__).parents[2] / "tracefold/news/notifications/reader_calibration.json").read_text()
+    )
+    native = bundled["backends"]["native"] | {
+        "release_ready": True,
+        "review_ref": "synthetic-release-review.json",
+        "review_sha256": "c" * 64,
+        "reviewed_by": "synthetic-reviewer",
+        "reviewed_at": "2026-10-03T12:00:00Z",
+    }
+    install_document(tmp_path, monkeypatch, {**bundled, "backends": {**bundled["backends"], "native": native}})
+    answer = judgment(1, i=1).model_copy(
+        update={"identity": native["answer_identity"], "served_model": native["served_model"]}
+    )
+    options = {"first_available_at_ms": 20, "message_intents": (), "reader_identity": native["reader_identity"]}
+    result = reader_decision(ReaderNovelty(novelty="unlinked"), answer, **options)
+    assert result.outcome == "push" and result.scores.certification_status == "certified"
+    assert result.scores.p_push >= 0.372 and result.scores.key_cut is None
+    weak = judgment(0.01, i=1).model_copy(
+        update={"identity": native["answer_identity"], "served_model": native["served_model"]}
+    )
+    assert reader_decision(ReaderNovelty(novelty="unlinked"), weak, **options).outcome == "feed"
+    generated = judgment(1, i=1, backend="generated")
+    assert reader_decision(ReaderNovelty(novelty="unlinked"), generated, **options).outcome == "feed"
 
 
 def test_runtime_requires_release_review_and_both_actual_reader_identities(tmp_path, monkeypatch) -> None:

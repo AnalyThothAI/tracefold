@@ -6,35 +6,35 @@
         "materiality_floor": 2,
         "kind_floor": 0.3,
         "push_coefficients": [
-          0.0,
-          0.0,
-          0.0,
-          0.0
+          -1.15027461665269,
+          0.07773685709039625,
+          0.45115935771277244,
+          -0.768013102999232
         ],
         "key_coefficients": [
-          0.0,
-          0.0,
-          0.0
+          -6.860142004912846,
+          2.238999249947966,
+          0.06841218538497315
         ],
-        "push_cut": null,
+        "push_cut": 0.372,
         "key_cut": null,
         "anchor_none_below": 0.2,
-        "certification_status": "uncalibrated"
+        "certification_status": "certified"
       },
       "questions_identity": "news_reader_questions:f98af6943278e7e3fc186bbca685548683cd9256b4bd6fd3f5ab551cb982c4e0",
-      "eligibility_table_sha256": "dc85a5d39389316abd061caf28dd108e03e73f0582f9890f94ae133543465d5c",
-      "reader_identity": null,
-      "answer_identity": null,
-      "served_model": null,
-      "dataset_sha256": null,
-      "guide_version": null,
-      "report_ref": null,
-      "report_sha256": null,
+      "eligibility_table_sha256": "0608ae6ac16e45e01b99dfe9abee011d8d32791479c2a49c5b4ace4d3cea225c",
+      "reader_identity": "news_reader_judge:33f09c44b4deec6fa6892485308b5c2dfd9a72030dd1c3602f3cbbfb828c1677",
+      "answer_identity": "news_reader_native:1cf75ce9a81a3a747c4549a7a80c6137df928a4850b7604d44b7e5f7f2bb9173",
+      "served_model": "typesafe/jev-1.13-20260917",
+      "dataset_sha256": "55d28372c8ca34a2c5d34d708bafbb2e99933cd3382f7e9c74fc6ae0f5c8992c",
+      "guide_version": "news_reader_owner_guide_v5:d7aeb8783ad604167e29ba1c63115b6c896c4d3388f26f4320a924052b2da307",
+      "report_ref": "docs/reports/news-805-certification.md",
+      "report_sha256": "fe698f990d473238f731e110bbefd999bbbfdadc815775026c4309dde31d57b6",
       "release_ready": false,
-      "reviewed_by": null,
-      "reviewed_at": null,
       "review_ref": null,
-      "review_sha256": null
+      "review_sha256": null,
+      "reviewed_by": null,
+      "reviewed_at": null
     },
     "generated": {
       "calibration": {
@@ -57,7 +57,7 @@
         "certification_status": "uncalibrated"
       },
       "questions_identity": "news_reader_questions:f98af6943278e7e3fc186bbca685548683cd9256b4bd6fd3f5ab551cb982c4e0",
-      "eligibility_table_sha256": "dc85a5d39389316abd061caf28dd108e03e73f0582f9890f94ae133543465d5c",
+      "eligibility_table_sha256": "0608ae6ac16e45e01b99dfe9abee011d8d32791479c2a49c5b4ace4d3cea225c",
       "reader_identity": null,
       "answer_identity": null,
       "served_model": null,
@@ -66,10 +66,10 @@
       "report_ref": null,
       "report_sha256": null,
       "release_ready": false,
-      "reviewed_by": null,
-      "reviewed_at": null,
       "review_ref": null,
-      "review_sha256": null
+      "review_sha256": null,
+      "reviewed_by": null,
+      "reviewed_at": null
     }
   }
 }

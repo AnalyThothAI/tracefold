@@ -4,6 +4,13 @@ The CLI requires explicit bounds and TRACEFOLD_READONLY_DSN. It reads original
 adopted versions and recorded receipt selections, never current heads or recall.
 Claim decisions are the sampling units, not independent story representatives.
 No provider, judgment cache or sender is constructed.
+
+Each case also carries the text of the evidence its claim cites, outside the
+model input: labelers judge the fact completed from its own source, the reader
+model never sees it. A decision recorded by a judge program whose inputs this
+code reproduces is checked exactly; a program none of whose recorded inputs
+reproduce answered an earlier input rendering, so its inputs are rebuilt from
+the same adopted update and sent bodies and marked as such.
 """
 
 from __future__ import annotations
@@ -28,7 +35,9 @@ from tracefold.news.notifications.reader import REPORT_KIND_OPTIONS, ReaderInput
 from tracefold.news.updates.contracts import EventUpdate
 from tracefold.news.updates.identity import digest, identity
 
-PROTOCOL: Final = "news_reader_case_export_v1"
+PROTOCOL: Final = "news_reader_case_export_v2"
+# Labelers read each cited evidence text; one runaway document must not dominate a case.
+SOURCE_TEXT_CHARS_MAX: Final = 2_500
 _READER_REASONS: Final = frozenset(
     {"reader_push", "reader_key", "reader_feed", "reader_ineligible", "reader_unavailable", "reader_unassessed"}
 )
@@ -221,9 +230,13 @@ def restore_case(
     if len(intents) != len(set(intents)):
         raise ValueError("news_reader_export_duplicate_message_intent")
     by_id = {receipt["intent_id"]: receipt for receipt in receipts}
-    compared = {
-        receipt["intent_id"]: receipt["payload_sha256"] for receipt in decision["plan"].get("compared_receipts", ())
-    }
+    # Plans recorded before compared receipts existed still bind each body to its own sent payload digest.
+    plan = decision["plan"]
+    compared = (
+        None
+        if "compared_receipts" not in plan
+        else {receipt["intent_id"]: receipt["payload_sha256"] for receipt in plan["compared_receipts"]}
+    )
     messages, message_hashes = [], []
     for intent in intents:
         receipt = by_id.get(intent)
@@ -232,17 +245,20 @@ def restore_case(
             raise ValueError("news_reader_export_original_message_missing")
         card = receipt.get("card") or {}
         body, payload = card.get("body"), card.get("payload_sha256")
-        if not isinstance(body, str) or digest(body) != payload or compared.get(intent) != payload:
+        if (
+            not isinstance(body, str)
+            or digest(body) != payload
+            or (compared is not None and compared.get(intent) != payload)
+        ):
             raise ValueError("news_reader_export_original_payload_mismatch")
         messages.append(body)
         message_hashes.append(payload)
     frozen = ReaderInput.of(claim, update, messages)
     applicable = row["reason"] in _READER_REASONS
     original_digest = record.get("input_digest")
-    if original_digest is not None and original_digest != frozen.digest:
-        raise ValueError("news_reader_export_original_input_mismatch")
     if applicable and original_digest is None:
         raise ValueError("news_reader_export_original_input_unverifiable")
+    evidence_text = {item.ref: item.text for item in update.evidence}
     links = tuple(ClaimLink.model_validate(link) for link in record.get("link_path", ()))
     if any(link.asserted_at_ms > at_ms for link in links):
         raise ValueError("news_reader_export_future_link")
@@ -274,8 +290,13 @@ def restore_case(
         "reader_input": frozen.model_dump(mode="json"),
         "reader_input_sha256": frozen.digest,
         "recorded_input_sha256": original_digest,
-        "reader_input_provenance": "verified_original" if original_digest is not None else "derived_unasked",
+        # Settled for the whole export by bind_input_provenance once every judge program is known.
+        "reader_input_provenance": None if original_digest is not None else "derived_unasked",
         "source_document_sha256": digest(raw_update["document"]),
+        "source_texts": [
+            evidence_text[ref][:SOURCE_TEXT_CHARS_MAX]
+            for ref in dict.fromkeys(citation.evidence_ref for citation in claim.citations)
+        ],
         "message_intents": intents,
         "message_payload_sha256": message_hashes,
         "links": [link.model_dump(mode="json") for link in links],
@@ -302,6 +323,35 @@ def restore_case(
     }
 
 
+def bind_input_provenance(rows: Sequence[dict[str, Any]]) -> dict[str, dict[str, int]]:
+    """Settle each recorded input against the judge program that recorded it.
+
+    The input rendering is a property of the judge program (`plan.reader_identity`). A program with at least
+    one input this code reproduces exactly renders inputs as this code does, so every other recorded input of
+    that program must reproduce too: a mismatch is drift and aborts the export. A program none of whose
+    recorded inputs reproduce answered an earlier rendering (before reader v3 every input differs); its inputs
+    are rebuilt from the same adopted update and sent bodies and marked `rebuilt`, never digest-verified.
+    """
+    reproduced = {
+        row["reader_identity"]
+        for row in rows
+        if row["recorded_input_sha256"] is not None and row["recorded_input_sha256"] == row["reader_input_sha256"]
+    }
+    programs: dict[str, Counter[str]] = defaultdict(Counter)
+    for row in rows:
+        recorded = row["recorded_input_sha256"]
+        if recorded is None:
+            row["reader_input_provenance"] = "derived_unasked"
+        elif recorded == row["reader_input_sha256"]:
+            row["reader_input_provenance"] = "verified_original"
+        elif row["reader_identity"] in reproduced:
+            raise ValueError("news_reader_export_original_input_mismatch")
+        else:
+            row["reader_input_provenance"] = "rebuilt"
+        programs[str(row["reader_identity"])][row["reader_input_provenance"]] += 1
+    return {program: dict(sorted(counts.items())) for program, counts in sorted(programs.items())}
+
+
 def export_cases(
     conn: Any,
     *,
@@ -310,16 +360,19 @@ def export_cases(
     per_stratum: int = 50,
     key_per_stratum: int = 100,
     seed: int = 805,
+    census: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     frame = decision_frame(conn.execute(DECISIONS_SQL, (from_ms, to_ms)).fetchall())
+    # A census keeps every claim decision (inclusion probability 1): the frame owner-sample groups into stories.
     selected, manifest = sample_frame(
         frame,
         from_ms=from_ms,
         to_ms=to_ms,
-        per_stratum=per_stratum,
-        key_per_stratum=key_per_stratum,
+        per_stratum=len(frame) if census else per_stratum,
+        key_per_stratum=len(frame) if census else key_per_stratum,
         seed=seed,
     )
+    manifest["census"] = census
     update_refs = sorted({row["decision"]["update_ref"] for row in selected})
     updates = {row["update_ref"]: row for row in conn.execute(UPDATES_SQL, (update_refs,)).fetchall()}
     intent_ids, claim_refs = set(), set()
@@ -331,10 +384,12 @@ def export_cases(
             claim_refs.update((link["current_ref"], link["previous_ref"]))
     receipts = conn.execute(RECEIPTS_SQL, (to_ms, sorted(intent_ids), sorted(claim_refs))).fetchall()
     rows = [restore_case(row, updates, receipts) for row in selected]
+    programs = bind_input_provenance(rows)
     manifest.update(
         selected_units=len(rows),
         dataset_sha256=dataset_sha256(rows),
         input_provenance_counts=dict(Counter(row["reader_input_provenance"] for row in rows)),
+        input_provenance_by_judge_program=programs,
         reader_applicable_units=sum(row["reader_applicable"] for row in rows),
         deterministic_units=sum(not row["reader_applicable"] for row in rows),
     )
@@ -348,6 +403,9 @@ def main() -> None:
     parser.add_argument("--per-stratum", type=int, default=50)
     parser.add_argument("--key-per-stratum", type=int, default=100)
     parser.add_argument("--seed", type=int, default=805)
+    parser.add_argument(
+        "--census", action="store_true", help="Keep every claim decision in the window (story-frame input)."
+    )
     parser.add_argument("--output", type=Path, required=True, help="JSONL.gz frozen cases")
     parser.add_argument("--manifest", type=Path, required=True)
     args = parser.parse_args()
@@ -371,6 +429,7 @@ def main() -> None:
             per_stratum=args.per_stratum,
             key_per_stratum=args.key_per_stratum,
             seed=args.seed,
+            census=args.census,
         )
     if write_jsonl(args.output, rows) != manifest["dataset_sha256"]:
         raise ValueError("news_reader_export_dataset_digest_mismatch")

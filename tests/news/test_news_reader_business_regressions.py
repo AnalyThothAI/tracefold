@@ -189,9 +189,7 @@ def test_split_business_policy(case: dict, backend: str) -> None:
         message_intents=("earlier",) if anchored else (),
     )
     assert result.outcome == (
-        "ineligible"
-        if case["kind"] in {"recap_or_old_period", "promotion", "commentary", "background"}
-        else case["expected_outcome"]
+        "ineligible" if case["kind"] in {"promotion", "commentary", "background"} else case["expected_outcome"]
     )
     assert result.anchor_intent_id == ("earlier" if anchored else None)
     assert result.scores is not None and result.scores.certification_status == "certified"

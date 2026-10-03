@@ -64,7 +64,25 @@ def test_paired_auc_and_recall_need_bound_baseline_evidence() -> None:
         calibration=ReaderCalibration(),
         pushed_case_ids={"0"},
     )
-    assert report["recall"] == {"push": 1, "paired_v3": 1, "key": None, "at_least_paired_v3": True}
+    assert report["recall"] == {
+        "push": 1,
+        "paired_v3": 1,
+        "recorded_production": None,
+        "key": None,
+        "at_least_paired_v3": True,
+    }
+    # The decision production recorded for the same claims is descriptive, never the paired v3 control.
+    recorded = deepcopy(rows)
+    recorded[0]["original_decision"] = "not_notified"
+    recorded[1]["original_decision"] = "notify"
+    report = diagnostic_report(
+        recorded,
+        {"0": _answer(), "1": _answer("background")},
+        backend="native",
+        calibration=ReaderCalibration(),
+        pushed_case_ids={"0"},
+    )
+    assert report["recall"]["recorded_production"] == 0 and report["recall"]["at_least_paired_v3"] is True
     missing = deepcopy(rows)
     missing[0].pop("baseline_v3")
     missing[0]["baseline_v3_probability"] = 0.99

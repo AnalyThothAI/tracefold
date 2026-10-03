@@ -75,7 +75,7 @@
 
 Event 详情的 `processing.notification.state` 为 `pending` / `done` / `failed`；`failed` 是通知工作的持久终态，带 `last_error_code`，对应结果 `outcome.kind = notification_failed`（归入“被拦截”），只有 `news retry-work --kind notification` 按精确 content revision 重开。逐命题原因 `send_outcome_ambiguous` 表示此前发送结果不明、按可能已送达处理且不重发；`send_outcome_unresolved` 只表示本 Event 仍有发送进行中。`processing.notification.plan.origin` 的 `reader_v2` 仍表示读者决定的生产者。新记录逐命题保存 `novelty`、`render`、`reader_backend`，以及 `report_kind`、`materiality`、`interrupt` 三组完整分布和 confidence，锚点证据保持独立；冻结的策略分数包括 `e / m / i / p_push / p_key`、held、认证状态、`push_cut / key_cut / calibration_identity`。资格下限拦截原因独立为 `reader_ineligible`。公开详情提供 `materiality_probabilities` 的四档顺序 0..3、两个概率和原决定的切线，缺失历史字段为 null，不加载当前 policy 补算。旧 importance 记录仅按原结构只读展示，不转换为新判断。
 
-`ReaderPolicy.load()` 读取版本为 `news_reader_calibration_v1`、恰好包含 native/generated 的校准文件，拒绝额外字段、非法参数、缺失认证来源和不完整激活审阅。文件摘要及类型资格表进入通知策略身份；`release_ready` 和实际模型/题目身份共同控制可执行认证。激活记录必须保留审阅来源 `review_ref`、每后端审阅记录的 canonical `review_sha256`、审阅者及含时区时间，供追溯卡片回放、日量取舍与 holdout 使用证据。离线 `news_reader_calibration_v2` 拟合/认证证据须经导出桥接进入该运行时格式，不能直接把拟合候选当作生产参数。[规范](modules/news-reader-labeling.md)维护标签语义，[切换说明](OPERATIONS.md#news-reader-switch)维护 pending 排空与重新规划边界。
+`ReaderPolicy.load()` 读取版本为 `news_reader_calibration_v1`、恰好包含 native/generated 的校准文件，拒绝额外字段、非法参数、缺失认证来源和不完整激活审阅。文件摘要及类型资格表进入通知策略身份；`release_ready` 和实际模型/题目身份共同控制可执行认证。激活记录必须保留审阅来源 `review_ref`、每后端审阅记录的 canonical `review_sha256`、审阅者及含时区时间，供追溯卡片回放、日量取舍、门槛豁免与 holdout 使用证据。`certified` 必须有推送切线；重点切线可以为空，此时没有命题成为重点。`guide_version` 是认证 owner 标签实际使用的规范版本。离线 `news_reader_calibration_v3` 拟合/认证证据须经导出桥接进入该运行时格式，不能直接把拟合候选当作生产参数。[规范](modules/news-reader-labeling.md)维护标签语义，[切换说明](OPERATIONS.md#news-reader-switch)维护 pending 排空与重新规划边界。
 
 News 状态在每个 Serve 进程合并并发测量，成功结果缓存 30 秒；刷新时并发读取者最多沿用 60 秒前的结果，无可用结果最多等待 2 秒。失败轮次共享并缓存 1 秒，在无可用结果或等待超时时以 503 / `service_busy` 返回。年龄和健康判断使用同一 `measured_at_ms`，缓存期间该时间与 ETag 稳定。
 
@@ -125,7 +125,7 @@ bootstrap 无需 token，其余业务读取先检查 `Authorization: Bearer ...`
 
 新采用内容使用 `news_event_update_v2`；旧 v1 保留原始内容与哈希。Event 详情读取当前 adopted update、来源、语义工作、通知决策及真实发送回执。读者投影增加 `processing.intents[].lines`（按冻结正文顺序且通过摘要核验的中文行）、意图自己的 `timings` / `plan_timings`、通知计划的 `timings`，以及逐事实决定的 `earlier`（此前真正送达的事件、标题、正文与时间）。分布与策略概率读取当时冻结的证据，不按当前系数重算历史推送线；未认证概率明确标为候选。无法可靠拆分正文时 `lines` 为空，不按采用顺序猜映射。`story` 只查询当前非空故事线、当前收到时刻前后各 24 小时，最多当前事件加最近 29 条，`has_more` 表示窗口仍有其他记录；不把 `none` 分桶或同故事线推导成相同事实。只有旧事实的 Event 仍可看到来源和实际回执，但不再生成旧 verdict 的详情投影，也不会由旧 verdict 合成新 Claim。
 
-读者问题替换、未认证常量和上线前证据要求见 [#805 实现报告](reports/news-805-implementation.md)。旧真实分布不被转换为新问题证据。
+读者问题替换、认证流程和上线前证据要求见 [#805 实现报告](reports/news-805-implementation.md)，当前推送证书见[认证批 1](reports/news-805-certification.md)。旧真实分布不被转换为新问题证据。
 
 公开编辑型契约 `news_public_update_v1` 区分 `catalyst_delta` 与 `source_update`。前者给合格变化内容一个研究入口，后者显式更新旧 claim refs，可能跨 Event；它不创建新研究有效期或自动影响已有仓位。
 

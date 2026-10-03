@@ -342,10 +342,10 @@ Claim 身份材料不包含 statement 措辞或 content_kind 读法。适用的�
 | 报道类型 | 当前资格 |
 | --- | --- |
 | new_action / official_communication / market_move | 可推 |
-| scheduled_data / self_reported_metric / unconfirmed_incident | 可推 |
-| recap_or_old_period / promotion / commentary / background | 不可推 |
+| scheduled_data / self_reported_metric / unconfirmed_incident / recap_or_old_period | 可推 |
+| promotion / commentary / background | 不可推 |
 
-[资格表](../../tracefold/news/notifications/policy.py)是 owner 规则的唯一落点。`e` 为可推类型的概率质量，固定资格下限为 0.3；`m` 为所选影响档位及以上概率质量；`i` 为优先打断概率。推送模型为 `sigmoid(a + b1·logit(e) + b2·logit(m) + b3·held)`，重点模型为 `sigmoid(c + d·logit(i) + f·logit(e))`。先过资格下限和推送概率切线，重点再过自己的概率切线；重点不能绕过推送。
+[资格表](../../tracefold/news/notifications/policy.py)是 owner 规则的唯一落点。`recap_or_old_period` 可推：附在当期公司报道后的最新财报行可以推送，纯回顾由低影响留在信息流。`e` 为可推类型的概率质量，固定资格下限为 0.3；`m` 为所选影响档位及以上概率质量；`i` 为优先打断概率。推送模型为 `sigmoid(a + b1·logit(e) + b2·logit(m) + b3·held)`，重点模型为 `sigmoid(c + d·logit(i) + f·logit(e))`。先过资格下限和推送概率切线，重点再过自己的概率切线；重点不能绕过推送。
 
 `held` 定义保持不变：已锚定的未链接事实或适用 linked increment。linked increment 通常为 held；以下例外必须同时满足三个条件：
 
@@ -357,13 +357,13 @@ Claim 身份材料不包含 statement 措辞或 content_kind 读法。适用的�
 
 锚点概率只控制对应消息选择和补充写法，不乘入分数，也没有独立 held 切线；`P(none) < 0.2` 时选择概率最高的具体消息。一个已锚定命题若新增重要数额或期限，仍可由增量影响和推送校准模型获准推送。
 
-native / generated 独立校准，由 [reader_calibration.json](../../tracefold/news/notifications/reader_calibration.json) 和 `ReaderPolicy.load()` 加载。文件保存系数、m*、固定资格下限、切线、数据集摘要、规范版本与报告摘要；文件字节摘要和资格表进入策略身份。可执行认证还须匹配当前问题、生产组合判断器、实际作答适配器及 served model，并有完整门槛证据和 owner 审阅。身份不匹配或 `release_ready=false` 时按未认证处理。
+native / generated 独立校准，由 [reader_calibration.json](../../tracefold/news/notifications/reader_calibration.json) 和 `ReaderPolicy.load()` 加载。文件保存系数、m*、固定资格下限、切线、数据集摘要、认证标签的规范版本与报告摘要；文件字节摘要和资格表进入策略身份。可执行认证还须匹配当前问题、生产组合判断器、实际作答适配器及 served model，并有 owner 发布审阅（外部证据及未通过门槛的书面豁免）。身份不匹配或 `release_ready=false` 时按未认证处理。认证可以只覆盖推送：`push_cut` 有值而 `key_cut` 为空时照常推送，但没有任何命题成为重点。
 
-当前两个后端均为 `uncalibrated`：零系数为未拟合占位，推送/重点切线为空，模型评分路径仅进信息流。确定性更正、上币、大涨跌等前置规则保持原行为。真实重问、owner 独立标签和认证报告完成后才可通过[离线导出桥接](../../scripts/export_news_reader_calibration.py)生成待审阅文件；桥接默认不激活，也不覆盖生产文件。#791 的[旧读者评测](../reports/news-791-b.md)保留历史证明范围，不能认证新四题。
+当前 native 推送已由[认证批 1](../reports/news-805-certification.md)认证：切线 0.372，单侧精度下界 0.783，`key_cut` 为空；文件在 owner 发布审阅写入前仍是 `release_ready=false`，此时模型评分只进信息流。generated 回退后端未认证（零系数占位），它的回答始终只进信息流。确定性更正、上币、大涨跌等前置规则保持原行为。交易范围规则（农产品、非美宏观、非美地缘）只在标注规范中，运行时不执行，下一轮写进读者问题后重新认证。#791 的[旧读者评测](../reports/news-791-b.md)保留历史证明范围，不能认证新四题。
 
 计划逐命题冻结四组分布、confidence 与 `e / m / i / p_push / p_key / held / certification_status / push_cut / key_cut / calibration_identity`。资格质量低于 0.3 的原因是 `reader_ineligible`，与概率不足、未认证分别展示。HTTP 和详情页读取记录的分布、分数和当时切线，不按当前资格表或当前校准重算历史；旧记录没有切线则返回 null。普通详情展示影响四档分布、概率及冻结切线。旧 importance 结构只在 `historical_judgment` 中只读显示，当前运行时拒绝旧判断；模型题目身份随拆题改变，输入保持 v3，改资格表和校准参数不改变模型缓存身份。
 
-离线数据、候选冻结和认证流程见[标注规范](news-reader-labeling.md)与[实现状态](../reports/news-805-implementation.md)。召回、覆盖和延迟使用完整 owner 抽样框，保留失败或缺失调用及既有确定性决定；成功回答上的条件指标单独报告。切换与回滚使用[排空和重新规划步骤](../OPERATIONS.md#news-reader-switch)，不删除冻结事实或重置失败预算。
+离线数据、候选冻结和认证流程见[标注规范](news-reader-labeling.md)与[实现状态](../reports/news-805-implementation.md)。认证总体是候选时间边界之后完整命题普查中的独立故事代表，每条切线选中的故事由冻结分数精确已知，owner 标签只用来估计其中该推的比例。召回、覆盖和延迟使用同一 owner 抽样框，保留失败或缺失调用及既有确定性决定。切换与回滚使用[排空和重新规划步骤](../OPERATIONS.md#news-reader-switch)，不删除冻结事实或重置失败预算。
 
 <details>
 <summary>读者四题英文全文（来源：reader.py）</summary>

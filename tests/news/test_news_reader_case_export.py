@@ -11,7 +11,9 @@ import pytest
 from scripts.export_news_reader_cases import (
     DECISIONS_SQL,
     RECEIPTS_SQL,
+    SOURCE_TEXT_CHARS_MAX,
     UPDATES_SQL,
+    bind_input_provenance,
     decision_frame,
     export_cases,
     receipt_as_of,
@@ -102,7 +104,10 @@ def test_export_restores_original_version_and_receipt_order_and_blinds_metadata(
     newer = raised_update(first_update("export-original"))
     updates[newer.ref] = {"event_id": newer.event_id, "document": newer.model_dump(mode="json")}
     restored = restore_case(selected(decisions), updates, list(reversed(receipts)))
+    assert bind_input_provenance([restored]) == {"historical-v3": {"verified_original": 1}}
     assert restored["reader_input"]["claim"]["statement"] == first_update("export-original").claims[0].statement
+    # The cited evidence text travels outside the model input for labelers; the uncited rival does not.
+    assert restored["source_texts"] == ["Agency announces 25% tariff on steel imports effective October 1."]
     assert restored["reader_input"]["messages"] == ["second selected receipt", "first selected receipt"]
     assert restored["reader_input_sha256"] == restored["recorded_input_sha256"]
     assert restored["reader_input_provenance"] == "verified_original"
@@ -111,6 +116,7 @@ def test_export_restores_original_version_and_receipt_order_and_blinds_metadata(
     assert restored["report_kind_stratum"] == "unknown"
     assert "story_id" not in restored
     blinded, _ = blind_case(restored)
+    assert blinded["source_text"] == restored["source_texts"][0]
     assert not ({"original_reason", "decision_ref", "sampling_frame", "reader_input_sha256"} & blinded.keys())
     assert "fields" not in blinded
     output = tmp_path / "cases.jsonl.gz"
@@ -121,12 +127,10 @@ def test_export_restores_original_version_and_receipt_order_and_blinds_metadata(
     assert write_jsonl(output, [restored]) == checksum and output.read_bytes() == compressed
 
 
-@pytest.mark.parametrize("broken", ["input", "payload", "compared", "future", "missing"])
+@pytest.mark.parametrize("broken", ["payload", "compared", "future", "missing"])
 def test_selected_input_or_receipt_drift_fails_instead_of_dropping_and_resampling(broken: str) -> None:
     decisions, updates, receipts = facts()
-    if broken == "input":
-        decisions[0]["plan"]["claim_decisions"][0]["reader"]["input_digest"] = "wrong"
-    elif broken == "payload":
+    if broken == "payload":
         receipts[0]["card"]["body"] += " changed"
     elif broken == "compared":
         decisions[0]["plan"]["compared_receipts"][0]["payload_sha256"] = "wrong"
@@ -138,12 +142,46 @@ def test_selected_input_or_receipt_drift_fails_instead_of_dropping_and_resamplin
         restore_case(selected(decisions), updates, receipts)
 
 
+def test_input_rendering_is_settled_per_recorded_judge_program() -> None:
+    decisions, updates, receipts = facts()
+    verified = restore_case(selected(decisions), updates, receipts)
+    drifted = dict(verified, case_id="drifted", recorded_input_sha256="recorded-by-the-same-program")
+    # A program that reproduces one input renders as this code does: any other mismatch is drift.
+    with pytest.raises(ValueError, match="original_input_mismatch"):
+        bind_input_provenance([dict(verified), dict(drifted)])
+    # A program none of whose inputs reproduce answered an earlier rendering; rebuild, never digest-verify.
+    older = dict(drifted, reader_identity="pre-v3-judge")
+    assert bind_input_provenance([dict(verified), older]) == {
+        "historical-v3": {"verified_original": 1},
+        "pre-v3-judge": {"rebuilt": 1},
+    }
+    assert older["reader_input_provenance"] == "rebuilt"
+
+
+def test_plans_before_compared_receipts_still_bind_each_body_to_its_sent_payload() -> None:
+    decisions, updates, receipts = facts()
+    del decisions[0]["plan"]["compared_receipts"]
+    restored = restore_case(selected(decisions), updates, receipts)
+    assert restored["reader_input"]["messages"] == ["second selected receipt", "first selected receipt"]
+    receipts[0]["card"]["body"] += " changed"
+    with pytest.raises(ValueError, match="original_payload_mismatch"):
+        restore_case(selected(decisions), updates, receipts)
+
+
+def test_cited_source_text_is_capped_per_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    decisions, updates, receipts = facts()
+    assert SOURCE_TEXT_CHARS_MAX == 2_500
+    monkeypatch.setattr("scripts.export_news_reader_cases.SOURCE_TEXT_CHARS_MAX", 6)
+    assert restore_case(selected(decisions), updates, receipts)["source_texts"] == ["Agency"]
+
+
 def test_fixed_rules_are_marked_unasked_and_future_settlement_preserves_inflight() -> None:
     decisions, updates, receipts = facts()
     row = decisions[0]["plan"]["claim_decisions"][0]
     row.update(reason="protected_listing", decision="notify")
     row.pop("reader")
     restored = restore_case(selected(decisions), updates, receipts)
+    bind_input_provenance([restored])
     assert restored["reader_applicable"] is False
     assert restored["pre_reader_reason"] == "protected_listing"
     assert restored["deterministic_decision"] == "notify"
@@ -255,6 +293,8 @@ def test_export_reader_only_uses_bound_original_fact_queries() -> None:
         def fetchall(self) -> list[dict[str, Any]]:
             return self.rows
 
-    rows, manifest = export_cases(Connection(), from_ms=STAMP, to_ms=STAMP + 1_000)
+    rows, manifest = export_cases(Connection(), from_ms=STAMP, to_ms=STAMP + 1_000, census=True)
     assert manifest["selected_units"] == 1 and manifest["reader_applicable_units"] == 1
+    assert manifest["census"] is True and rows[0]["inclusion_probability"] == 1
+    assert manifest["input_provenance_by_judge_program"] == {"historical-v3": {"verified_original": 1}}
     assert manifest["dataset_sha256"] == dataset_sha256(rows)

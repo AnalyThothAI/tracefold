@@ -1,8 +1,10 @@
 """Versioned owner-rule blind annotation and proxy agreement/review reports.
 
-Claude receives source text and randomly ordered sent messages, with tools disabled.
-Its labels are fitting proxies, never certified truth. Reporting is local and read-only.
-Provider annotation must be explicitly requested with the ``annotate`` subcommand.
+Claude receives the claim, its cited source text and randomly ordered sent messages, with tools disabled.
+Its labels are fitting proxies and the duplicate judgment the owner confirms; never certified truth.
+The owner answers only push and key for each frozen case (and confirms or overrules a proxy duplicate);
+kind and anchor come from the proxy label of the same case, with that provenance recorded.
+Reporting is local and read-only. Provider annotation must be explicitly requested with ``annotate``.
 """
 
 from __future__ import annotations
@@ -11,8 +13,11 @@ import argparse
 import asyncio
 import json
 import random
+import re
 import tempfile
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,11 +29,9 @@ from tracefold.news.updates.identity import digest
 _ALLOWED = {
     "case_id",
     "claim_ref",
-    "statement",
-    "quotes",
-    "as_of",
-    "messages",
     "reader_input",
+    "source_texts",
+    "guide_version",
     "first_available_at_ms",
     "story_id",
     "stratum",
@@ -74,51 +77,53 @@ _LABEL_METADATA = (
     "deterministic_decision",
     "original_reason",
 )
-OWNER_IMPORT_PROTOCOL = "news_reader_owner_blind_import_v1"
+_GUIDE = re.compile(r"^news_reader_owner_guide_v\d+:[0-9a-f]{64}$")
+SOURCE_TEXT_SEPARATOR = "\n---\n"
+OWNER_IMPORT_PROTOCOL = "news_reader_owner_blind_import_v2"
+OWNER_ANSWER_FIELDS = {"case_id", "push", "key", "dup", "note", "guide_version", "reviewed_at"}
 
 
 def blind_case(
     row: Mapping[str, Any],
     shuffle: Callable[[list[int]], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, str]]:
-    """Drop extraction fields and metadata; randomize anchors without changing the stored input."""
+    """Drop extraction fields and metadata; randomize anchors without changing the stored input.
+
+    The cited source text travels beside the frozen model input, so a labeler can complete a statement that
+    omits its subject or object from its own source. The reader model never sees it.
+    """
     if set(row) - _ALLOWED:
         raise ValueError("news_blind_label_input_has_scores_or_readings")
-    if "reader_input" in row:
-        source = ReaderInput.model_validate(row["reader_input"])
-        statement, quotes, as_of, messages = (
-            source.claim.statement,
-            [item.quote for item in source.sources],
-            source.as_of.isoformat(),
-            list(source.messages),
-        )
-        sources = [
-            {key: value for key, value in item.model_dump(mode="json").items() if key != "quote" and value is not None}
-            for item in source.sources
-        ]
-    else:
-        statement, quotes, as_of, messages = (
-            row["statement"],
-            row["quotes"],
-            row["as_of"],
-            list(row.get("messages", [])),
-        )
-        sources = []
+    texts = row.get("source_texts")
+    if (
+        "reader_input" not in row
+        or not isinstance(texts, list)
+        or not texts
+        or not all(isinstance(text, str) and text for text in texts)
+    ):
+        raise ValueError("news_blind_label_source_text_required")
+    source = ReaderInput.model_validate(row["reader_input"])
+    messages = list(source.messages)
     order = list(range(len(messages)))
     (shuffle or random.SystemRandom().shuffle)(order)
     mapping = {f"m{i + 1}": f"m{original + 1}" for i, original in enumerate(order)}
     payload = {
         "case_id": row["case_id"],
-        "statement": statement,
-        "quotes": quotes,
-        "sources": sources,
-        "as_of": as_of,
+        "statement": source.claim.statement,
+        "quotes": [item.quote for item in source.sources],
+        "sources": [
+            {key: value for key, value in item.model_dump(mode="json").items() if key != "quote" and value is not None}
+            for item in source.sources
+        ],
+        "source_text": SOURCE_TEXT_SEPARATOR.join(texts),
+        "as_of": source.as_of.isoformat(),
         "messages": [{"id": f"m{i + 1}", "body": messages[original]} for i, original in enumerate(order)],
     }
     return payload, mapping
 
 
 def normalize_label(value: Mapping[str, Any], mapping: Mapping[str, str]) -> dict[str, Any]:
+    """A proxy label in original message order, with its duplicate judgment (`repeat`)."""
     label = dict(value["label"])
     if (
         label.get("kind") not in _KINDS
@@ -127,12 +132,22 @@ def normalize_label(value: Mapping[str, Any], mapping: Mapping[str, str]) -> dic
         or label.get("anchor") not in {"none", *mapping}
         or not label.get("note")
         or not value.get("story_id")
+        or not isinstance(value.get("repeat"), bool)
     ):
         raise ValueError("news_blind_label_invalid")
     if label["key"] and label["push"] != "push":
         raise ValueError("news_blind_label_key_requires_push")
+    if value["repeat"] and (label["push"] != "feed" or label["anchor"] == "none"):
+        raise ValueError("news_blind_label_repeat_requires_anchored_feed")
     label["anchor"] = "none" if label["anchor"] == "none" else mapping[label["anchor"]]
-    return {"case_id": value["case_id"], "story_id": value["story_id"], "label": label}
+    return {"case_id": value["case_id"], "story_id": value["story_id"], "repeat": value["repeat"], "label": label}
+
+
+def _guide_version(rows: Sequence[Mapping[str, Any]]) -> str:
+    versions = {row.get("guide_version") for row in rows}
+    if len(versions) != 1 or not isinstance(version := next(iter(versions)), str) or not _GUIDE.match(version):
+        raise ValueError("news_blind_label_single_guide_version_required")
+    return version
 
 
 def prepare_owner(
@@ -140,7 +155,10 @@ def prepare_owner(
     *,
     shuffle: Callable[[list[int]], None] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Prepare human text only; preserve original inputs and selection privately."""
+    """Prepare human text only; preserve original inputs, the guide version and selection privately.
+
+    The guide version is the one the frozen candidate was fitted with, carried by the owner-sample rows.
+    """
     cases = [row["case_id"] for row in rows]
     frames = [row.get("sampling_frame") for row in rows]
     if (
@@ -154,6 +172,7 @@ def prepare_owner(
         or any(row.get("sampling_unit") != frames[0]["unit"] or "reader_input" not in row for row in rows)
     ):
         raise ValueError("news_owner_blind_frozen_selection_required")
+    guide_version = _guide_version(rows)
     public, entries = [], []
     for row in rows:
         payload, mapping = blind_case(row, shuffle)
@@ -171,8 +190,8 @@ def prepare_owner(
         )
     manifest = {
         "protocol": OWNER_IMPORT_PROTOCOL,
-        "guide_version": GUIDE_VERSION,
-        "annotation_identity": ANNOTATION_IDENTITY,
+        "guide_version": guide_version,
+        "selection_id": frames[0].get("selection_id"),
         "source_dataset_sha256": dataset_sha256(rows),
         "blind_dataset_sha256": dataset_sha256(public),
         "selected_case_ids": cases,
@@ -182,23 +201,51 @@ def prepare_owner(
     return public, manifest
 
 
+def _owner_answer(raw: Mapping[str, Any], guide_version: str) -> dict[str, Any]:
+    if set(raw) != OWNER_ANSWER_FIELDS:
+        raise ValueError("news_owner_answer_fields_invalid")
+    if (
+        raw["push"] not in {"push", "feed", "borderline"}
+        or not isinstance(raw["key"], bool)
+        or raw["dup"] not in {None, "agree", "disagree"}
+        or not isinstance(raw["note"], str)
+    ):
+        raise ValueError("news_owner_answer_invalid")
+    if raw["guide_version"] != guide_version:
+        raise ValueError("news_owner_answer_guide_changed")
+    try:
+        stamp = datetime.fromisoformat(str(raw["reviewed_at"]))
+    except ValueError as exc:
+        raise ValueError("news_owner_answer_reviewed_at_invalid") from exc
+    if stamp.tzinfo is None:
+        raise ValueError("news_owner_answer_reviewed_at_invalid")
+    return dict(raw)
+
+
 def import_owner(
     source: Sequence[Mapping[str, Any]],
     human: Sequence[Mapping[str, Any]],
     manifest: Mapping[str, Any],
+    proxy: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Bind complete human labels to frozen blind material and restore anchors."""
+    """Bind complete owner push/key answers to frozen blind material and the proxy's kind, anchor and duplicate.
+
+    The owner judges whether new information merits push or key; duplicates are judged by the proxy. A
+    confirmed proxy duplicate is feed whatever the owner's push answer; an overruled one takes the owner's
+    push and key. The proxy's kind and anchor fill the label, and every field names its source.
+    """
     if (
         manifest.get("protocol") != OWNER_IMPORT_PROTOCOL
-        or manifest.get("guide_version") != GUIDE_VERSION
-        or manifest.get("annotation_identity") != ANNOTATION_IDENTITY
         or manifest.get("manifest_sha256")
         != digest({key: value for key, value in manifest.items() if key != "manifest_sha256"})
         or manifest.get("source_dataset_sha256") != dataset_sha256(source)
+        or manifest.get("guide_version") != _guide_version(source)
     ):
         raise ValueError("news_owner_blind_manifest_or_source_changed")
+    guide_version = manifest["guide_version"]
     source_ids = [row["case_id"] for row in source]
     human_ids = [row["case_id"] for row in human]
+    proxy_ids = [row["case_id"] for row in proxy]
     entries = manifest["cases"]
     entry_ids = [row["case_id"] for row in entries]
     if (
@@ -211,7 +258,10 @@ def import_owner(
         or set(source_ids) != set(human_ids)
     ):
         raise ValueError("news_owner_blind_selected_labels_incomplete")
+    if len(set(proxy_ids)) != len(proxy_ids) or set(proxy_ids) != set(source_ids):
+        raise ValueError("news_owner_proxy_labels_incomplete")
     by_id = {row["case_id"]: row for row in human}
+    proxies = {row["case_id"]: row for row in proxy}
     records, public = [], []
     for original, entry in zip(source, entries, strict=True):
         metadata = {key: original[key] for key in _LABEL_METADATA if key in original}
@@ -233,20 +283,54 @@ def import_owner(
 
         payload, _ = blind_case(original, restore_order)
         blind_sha = digest(payload)
-        raw = by_id[original["case_id"]]
-        if (
-            set(raw) != {"case_id", "blind_input_sha256", "story_id", "label"}
-            or raw["blind_input_sha256"] != blind_sha
-            or entry["blind_input_sha256"] != blind_sha
-        ):
+        if entry["blind_input_sha256"] != blind_sha:
             raise ValueError("news_owner_blind_material_sha256_mismatch")
         public.append({**payload, "blind_input_sha256": blind_sha})
+        answer = _owner_answer(by_id[original["case_id"]], guide_version)
+        suggestion = proxies[original["case_id"]]
+        if (
+            not str(suggestion.get("labeler", "")).startswith("claude:")
+            or suggestion.get("guide_version") != guide_version
+            or suggestion.get("reader_input_sha256") != entry["reader_input_sha256"]
+        ):
+            raise ValueError("news_owner_proxy_label_provenance_mismatch")
+        identity_order = {f"m{i + 1}": f"m{i + 1}" for i in range(count)}
+        proxy_label = normalize_label(suggestion, identity_order)
+        duplicate = proxy_label["repeat"]
+        if duplicate != (answer["dup"] is not None):
+            raise ValueError("news_owner_duplicate_answer_mismatch")
+        confirmed = answer["dup"] == "agree"
+        push = "feed" if confirmed else answer["push"]
+        key = False if confirmed else answer["key"]
+        if key and push != "push":
+            raise ValueError("news_blind_label_key_requires_push")
         records.append(
-            normalize_label(raw, mapping)
-            | {
+            {
+                "case_id": original["case_id"],
+                "story_id": original["story_id"],
+                "label": {
+                    "kind": proxy_label["label"]["kind"],
+                    "anchor": proxy_label["label"]["anchor"],
+                    "push": push,
+                    "key": key,
+                    "note": answer["note"],
+                },
+                "label_sources": {
+                    "kind": "proxy",
+                    "anchor": "proxy",
+                    "push": "proxy_duplicate_confirmed_by_owner" if confirmed else "owner",
+                    "key": "proxy_duplicate_confirmed_by_owner" if confirmed else "owner",
+                },
+                "owner_answer": {key: answer[key] for key in ("push", "key", "dup", "note")},
+                "proxy_source": {
+                    "labeler": suggestion["labeler"],
+                    "story_id": proxy_label["story_id"],
+                    "repeat": duplicate,
+                    "label_sha256": digest(proxy_label["label"]),
+                },
                 "labeler": "owner",
-                "guide_version": GUIDE_VERSION,
-                "annotation_identity": ANNOTATION_IDENTITY,
+                "guide_version": guide_version,
+                "reviewed_at": answer["reviewed_at"],
                 "input_sha256": entry["input_sha256"],
                 "reader_input_sha256": entry["reader_input_sha256"],
                 "blind_input_sha256": blind_sha,
@@ -330,7 +414,7 @@ async def label(args: argparse.Namespace) -> None:
                         reader_input_sha256=digest(original["reader_input"]) if "reader_input" in original else None,
                         annotator_models=sorted(envelope.get("modelUsage", {})),
                         annotator_effort="low",
-                        protocol="news_reader_blind_labels_v4",
+                        protocol="news_reader_blind_labels_v5",
                         proxy=True,
                         **{key: original[key] for key in _LABEL_METADATA if key in original},
                     )
@@ -400,6 +484,7 @@ def _agreement(a: list[Any], b: list[Any], categories: Sequence[Any], *, quadrat
 
 
 def agreement_report(owner: Sequence[Mapping[str, Any]], proxy: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Owner/proxy agreement on the fields the owner answers: push and key, plus duplicate confirmations."""
     if any(row.get("labeler") != "owner" for row in owner):
         raise ValueError("news_blind_label_gold_owner_required")
     if any(not row.get("labeler", "").startswith("claude:") for row in proxy):
@@ -407,22 +492,16 @@ def agreement_report(owner: Sequence[Mapping[str, Any]], proxy: Sequence[Mapping
     gold, labels = {row["case_id"]: row for row in owner}, {row["case_id"]: row for row in proxy}
     if len(gold) != len(owner) or len(labels) != len(proxy):
         raise ValueError("news_blind_label_report_duplicate_case")
-    overlapping = sorted(gold.keys() & labels.keys())
-    if any(gold[case].get("guide_version") != labels[case].get("guide_version") for case in overlapping):
+    if len({row.get("guide_version") for row in [*owner, *proxy]}) != 1:
         raise ValueError("news_blind_label_agreement_guide_mismatch")
-    if any(row.get("guide_version") != GUIDE_VERSION for row in [*owner, *proxy]):
-        raise ValueError("news_blind_label_owner_guide_changed")
+    overlapping = sorted(gold.keys() & labels.keys())
     if any(
         not gold[case].get("reader_input_sha256")
         or gold[case].get("reader_input_sha256") != labels[case].get("reader_input_sha256")
         for case in overlapping
     ):
         raise ValueError("news_blind_label_agreement_input_changed")
-    fields: dict[str, Sequence[Any]] = {
-        "kind": [kind for kind, _ in REPORT_KIND_OPTIONS],
-        "push": ["feed", "borderline", "push"],
-        "key": [False, True],
-    }
+    fields: dict[str, Sequence[Any]] = {"push": ["feed", "borderline", "push"], "key": [False, True]}
     reports = {
         field: _agreement(
             [gold[case]["label"][field] for case in overlapping],
@@ -432,19 +511,15 @@ def agreement_report(owner: Sequence[Mapping[str, Any]], proxy: Sequence[Mapping
         )
         for field, categories in fields.items()
     }
-    anchor = (
-        _agreement(
-            [gold[case]["label"]["anchor"] for case in overlapping],
-            [labels[case]["label"]["anchor"] for case in overlapping],
-            sorted({row["label"]["anchor"] for row in [*owner, *proxy]}),
-        )
-        if overlapping
-        else {"cases": 0}
+    duplicates = Counter(
+        (gold[case].get("owner_answer") or {}).get("dup") for case in overlapping if labels[case].get("repeat")
     )
     return {
-        "protocol": "news_reader_proxy_agreement_v1",
+        "protocol": "news_reader_proxy_agreement_v2",
         "overlapping_owner_cases": len(overlapping),
-        "fields": {**reports, "anchor": anchor},
+        "fields": reports,
+        "proxy_duplicates": {"confirmed": duplicates.get("agree", 0), "overruled": duplicates.get("disagree", 0)},
+        "owner_fields": "push and key; kind and anchor are the proxy's",
         "proxy_is_truth": False,
         "key_certification_labels": "owner only",
         "key_disagreement_above_20_percent": reports["key"]["disagreement_rate"] is not None
@@ -463,7 +538,7 @@ def review_queue(proxy: Sequence[Mapping[str, Any]], fitted: Mapping[str, Any]) 
         if case not in predictions or row["label"]["push"] == "borderline":
             continue
         prediction = predictions[case]
-        if row.get("guide_version") != GUIDE_VERSION or prediction.get("guide_version") != GUIDE_VERSION:
+        if row.get("guide_version") != prediction.get("guide_version"):
             raise ValueError("news_blind_label_review_guide_changed")
         if not row.get("reader_input_sha256") or row.get("reader_input_sha256") != prediction.get("input_sha256"):
             raise ValueError("news_blind_label_review_input_changed")
@@ -502,7 +577,13 @@ def main() -> None:
     owner_import.add_argument("--input", type=Path, required=True, help="The original frozen owner-sample file.")
     owner_import.add_argument("--manifest", type=Path, required=True, help="Private prepare-owner manifest.")
     owner_import.add_argument(
-        "--labels", type=Path, required=True, help="Human case_id/blind SHA/story_id/label JSONL[.gz]."
+        "--labels",
+        type=Path,
+        required=True,
+        help="Owner answers: case_id, push, key, dup, note, guide_version, reviewed_at (JSONL[.gz]).",
+    )
+    owner_import.add_argument(
+        "--proxy", type=Path, required=True, help="Claude labels of the same cases (kind, anchor, duplicate)."
     )
     owner_import.add_argument("--output", type=Path, required=True, help="Owner label journal JSONL[.gz].")
     report = commands.add_parser("report")
@@ -525,10 +606,13 @@ def main() -> None:
             args.manifest.chmod(0o600)
             stream.write(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     elif args.command == "import-owner":
-        if args.output.resolve() in {path.resolve() for path in (args.input, args.manifest, args.labels)}:
-            parser.error("owner output must preserve source, private manifest and human labels")
+        if args.output.resolve() in {path.resolve() for path in (args.input, args.manifest, args.labels, args.proxy)}:
+            parser.error("owner output must preserve source, private manifest, owner answers and proxy labels")
         records = import_owner(
-            read_jsonl(args.input), read_jsonl(args.labels), json.loads(args.manifest.read_text("utf-8"))
+            read_jsonl(args.input),
+            read_jsonl(args.labels),
+            json.loads(args.manifest.read_text("utf-8")),
+            read_labels(args.proxy),
         )
         write_jsonl(args.output, records)
     else:

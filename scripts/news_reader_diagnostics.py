@@ -136,7 +136,13 @@ def diagnostic_report(
             if isinstance(prior, (int, float)) and math.isfinite(prior) and prior >= 0:
                 paired_latency.append((duration, weight))
                 old_latency.append((prior, weight))
-    push_recall = baseline_recall = key_recall = None
+    push_recall = baseline_recall = key_recall = production_recall = None
+    # The decision production actually recorded for the same claim decision: descriptive, not a paired control.
+    if positive_total and all(row.get("original_decision") in {"notify", "not_notified", "deferred"} for row in rows):
+        production_recall = (
+            sum(_weight(row) for row in rows if row["label"]["push"] == "push" and row["original_decision"] == "notify")
+            / positive_total
+        )
     if pushed_case_ids is not None and positive_total:
         push_recall = (
             sum(
@@ -201,6 +207,7 @@ def diagnostic_report(
         "recall": {
             "push": push_recall,
             "paired_v3": baseline_recall,
+            "recorded_production": production_recall,
             "key": key_recall,
             "at_least_paired_v3": None
             if push_recall is None or baseline_recall is None
